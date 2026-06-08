@@ -33,9 +33,10 @@ from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware.filesystem import FilesystemPermission
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.language_models import BaseChatModel
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from app.writer.middleware.context_assembler_middleware import ContextAssemblerMiddleware
-from app.writer.subagents.outline.outline_subagent import (
+from app.writer.subagents.outline_subagent import (
     MiddlewareFactory,
     SecondaryDecision,
     _agent_from_subagent_spec,
@@ -43,17 +44,17 @@ from app.writer.subagents.outline.outline_subagent import (
     _messages_text,
     _required_result,
 )
-from app.writer.subagents.evaluation import EvaluationType, build_evaluation_subagent
+from app.writer.subagents.evaluation_subagent import EvaluationType, build_evaluation_subagent
 
-# 写作子代理的系统提示词文件路径
-PROMPT_PATH = Path(__file__).resolve().parent / "prompt" / "writing_system_prompt.txt"
+# 写作子代理的系统提示词文件路径（统一存放在 writer/prompt/ 目录）
+PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompt" / "writing_system_prompt.md"
 
 
-def _append_style(system_prompt: str, style_text: str | None) -> str:
-    """将写作风格文本追加到系统提示词末尾。"""
-    if not style_text:
+def _apply_style_suffix(system_prompt: str, style_suffix: str | None) -> str:
+    """将写作风格文本作为 SUFFIX 追加到系统提示词末尾。"""
+    if not style_suffix:
         return system_prompt
-    return f"{system_prompt}\n\n---\n{style_text}\n---"
+    return f"{system_prompt}\n\n{style_suffix}"
 
 
 class _RunnableSubAgentSpec(TypedDict):
@@ -65,7 +66,7 @@ class _RunnableSubAgentSpec(TypedDict):
     response_format: NotRequired[object]
 
 
-def build_writing_subagent(middleware: list[AgentMiddleware] | None = None, style_text: str | None = None) -> _RunnableSubAgentSpec:
+def build_writing_subagent(middleware: list[AgentMiddleware] | None = None, style_suffix: str | None = None) -> _RunnableSubAgentSpec:
     """构建单独的 writing 子代理规格（不含审查管道）。
 
     权限配置：
@@ -74,13 +75,13 @@ def build_writing_subagent(middleware: list[AgentMiddleware] | None = None, styl
     - 拒绝：禁止写入其他所有文件
 
     Args:
-        middleware:  额外中间件列表（可选）
-        style_text:  写作风格文本（可选，追加到系统提示词末尾）
+        middleware:     额外中间件列表（可选）
+        style_suffix:  写作风格 SUFFIX 文本（可选，追加到系统提示词末尾）
 
     Returns:
         子代理规格字典
     """
-    system_prompt = _append_style(PROMPT_PATH.read_text(encoding="utf-8").strip(), style_text)
+    system_prompt = _apply_style_suffix(PROMPT_PATH.read_text(encoding="utf-8").strip(), style_suffix)
     permissions = [
         FilesystemPermission(
             operations=["read"],
@@ -114,8 +115,9 @@ def build_writing_pipeline_subagent(
     model: BaseChatModel,
     backend: BackendProtocol,
     middleware_factory: MiddlewareFactory,
-    style_text: str | None = None,
+    style_suffix: str | None = None,
     context_file_paths: list[str] | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledSubAgent:
     """构建带审查循环的 writing 管道子代理。
 
@@ -133,7 +135,7 @@ def build_writing_pipeline_subagent(
         model:               聊天模型
         backend:             DeepAgents 后端（文件系统）
         middleware_factory:   中间件工厂函数
-        style_text:          写作风格文本（可选）
+        style_suffix:        写作风格 SUFFIX 文本（可选）
         context_file_paths:  上下文文件路径列表（相对于工作区根目录），
                              由主代理控制；新阶段时读取这些文件并注入上下文
 
@@ -150,7 +152,7 @@ def build_writing_pipeline_subagent(
     ))
 
     writing_agent = _agent_from_subagent_spec(
-        build_writing_subagent(writing_middleware, style_text),
+        build_writing_subagent(writing_middleware, style_suffix),
         model,
         backend,
     )
@@ -192,6 +194,7 @@ def build_writing_pipeline_subagent(
         max_revision_count=3,
         secondary_result_parser=_parse_review_result,
         revision_instruction_builder=_build_revision_instruction,
+        checkpointer=checkpointer,
     )
 
 

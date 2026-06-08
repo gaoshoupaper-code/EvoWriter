@@ -50,7 +50,10 @@ from deepagents import CompiledSubAgent
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
-from deepagents.middleware.summarization import create_summarization_middleware
+from deepagents.middleware.summarization import (
+    SummarizationMiddleware,
+    compute_summarization_defaults,
+)
 from langchain.agents import create_agent
 from langchain.agents.middleware import TodoListMiddleware
 from langchain.agents.middleware.types import AgentMiddleware
@@ -58,24 +61,28 @@ from langchain_anthropic.middleware import AnthropicPromptCachingMiddleware
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 
 from app.writer.middleware.context_assembler_middleware import ContextAssemblerMiddleware
-from app.writer.subagents.evaluation import EvaluationType, build_evaluation_subagent
+from app.writer.subagents.evaluation_subagent import EvaluationType, build_evaluation_subagent
 
-# 大纲子代理的系统提示词文件路径
-PROMPT_PATH = Path(__file__).resolve().parent / "prompt" / "outline_system_prompt.txt"
+# 大纲子代理的系统提示词文件路径（统一存放在 writer/prompt/ 目录）
+PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompt" / "outline_system_prompt.md"
 
 
-def _append_style(system_prompt: str, style_text: str | None) -> str:
-    """将写作风格文本追加到系统提示词末尾。
+def _apply_style_suffix(system_prompt: str, style_suffix: str | None) -> str:
+    """将写作风格文本作为 SUFFIX 追加到系统提示词末尾。
 
-    如果 style_text 为空则不做任何修改。
-    风格文本用 --- 分隔线包裹，与原始提示词区分。
+    风格注入遵循 DeepAgent 的 SUFFIX 槽位语义：
+    系统提示词（USER）在前，风格指导（SUFFIX）在后。
+    风格文本紧贴对话历史，模型遵从度最高。
+
+    如果 style_suffix 为空则不做任何修改。
     """
-    if not style_text:
+    if not style_suffix:
         return system_prompt
-    return f"{system_prompt}\n\n---\n{style_text}\n---"
+    return f"{system_prompt}\n\n{style_suffix}"
 
 
 def _evaluation_decision_to_secondary(decision: dict) -> SecondaryDecision:
@@ -248,7 +255,6 @@ class _PipelineState(TypedDict):
         primary_result:     主代理（outline）的文本输出
         secondary_result:   次代理（evaluation）的文本输出
         primary_messages:   主代理的消息累积（用于修订时延续上下文）
-        secondary_messages: 次代理的消息累积（用于修订时延续上下文）
         revision_count:     当前修订轮次计数
         max_revision_count: 最大修订轮次
         revision_instruction: 当前修订指令
@@ -259,7 +265,6 @@ class _PipelineState(TypedDict):
     primary_result: NotRequired[str]
     secondary_result: NotRequired[str]
     primary_messages: NotRequired[list[AnyMessage]]
-    secondary_messages: NotRequired[list[AnyMessage]]
     revision_count: NotRequired[int]
     max_revision_count: NotRequired[int]
     revision_instruction: NotRequired[str]
@@ -293,7 +298,7 @@ class _RunnableSubAgentSpec(TypedDict):
 # 子代理构建函数
 # ======================================================================
 
-def build_outline_subagent(middleware: list[AgentMiddleware] | None = None, style_text: str | None = None) -> _RunnableSubAgentSpec:
+def build_outline_subagent(middleware: list[AgentMiddleware] | None = None, style_suffix: str | None = None) -> _RunnableSubAgentSpec:
     """构建单独的 outline 子代理规格（不含评估管道）。
 
     权限配置：
@@ -302,13 +307,13 @@ def build_outline_subagent(middleware: list[AgentMiddleware] | None = None, styl
     - 拒绝：禁止写入其他所有文件
 
     Args:
-        middleware:  额外中间件列表（可选）
-        style_text:  写作风格文本（可选，追加到系统提示词末尾）
+        middleware:     额外中间件列表（可选）
+        style_suffix:  大纲风格 SUFFIX 文本（可选，追加到系统提示词末尾）
 
     Returns:
         子代理规格字典，供 _agent_from_subagent_spec 使用
     """
-    system_prompt = _append_style(PROMPT_PATH.read_text(encoding="utf-8").strip(), style_text)
+    system_prompt = _apply_style_suffix(PROMPT_PATH.read_text(encoding="utf-8").strip(), style_suffix)
 
     permissions = [
         FilesystemPermission(
@@ -343,8 +348,9 @@ def build_outline_pipeline_subagent(
     model: BaseChatModel,
     backend: BackendProtocol,
     middleware_factory: MiddlewareFactory,
-    style_text: str | None = None,
+    style_suffix: str | None = None,
     context_file_paths: list[str] | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledSubAgent:
     """构建带评估循环的 outline 管道子代理。
 
@@ -359,7 +365,7 @@ def build_outline_pipeline_subagent(
         model:               聊天模型
         backend:             DeepAgents 后端（文件系统）
         middleware_factory:   中间件工厂函数
-        style_text:          写作风格文本（可选）
+        style_suffix:        大纲风格 SUFFIX 文本（可选）
         context_file_paths:  上下文文件路径列表（相对于工作区根目录），
                              由主代理控制；新阶段时读取这些文件并注入上下文
 
@@ -374,7 +380,7 @@ def build_outline_pipeline_subagent(
         file_paths=context_file_paths or [],
     ))
     outline_agent = _agent_from_subagent_spec(
-        build_outline_subagent(outline_middleware, style_text),
+        build_outline_subagent(outline_middleware, style_suffix),
         model,
         backend,
     )
@@ -412,12 +418,40 @@ def build_outline_pipeline_subagent(
         max_revision_count=2,
         secondary_result_parser=_parse_evaluation_result,
         revision_instruction_builder=_build_outline_revision_instruction,
+        checkpointer=checkpointer,
     )
 
 
 # ======================================================================
 # 通用代理构建器
 # ======================================================================
+
+
+def _build_summarization_middleware(
+    model: BaseChatModel,
+    backend: BackendProtocol,
+) -> SummarizationMiddleware:
+    """构建 SummarizationMiddleware，固定消息数策略。
+
+    触发阈值由模型 profile 决定（有 profile 用 85% 分数，无 profile 用 170K tokens）。
+    保留策略固定为消息数：
+    - 摘要保留：最后 10 条消息
+    - 参数截断触发：>25 条消息
+    - 参数截断保留：最后 25 条消息
+    """
+    defaults = compute_summarization_defaults(model)
+    return SummarizationMiddleware(
+        model=model,
+        backend=backend,
+        trigger=defaults["trigger"],
+        keep=("messages", 10),
+        truncate_args_settings={
+            "trigger": ("messages", 25),
+            "keep": ("messages", 25),
+            "max_length": 3000,
+        },
+    )
+
 
 def _agent_from_subagent_spec(
     spec: _RunnableSubAgentSpec,
@@ -445,7 +479,7 @@ def _agent_from_subagent_spec(
     middleware: list[AgentMiddleware] = [
         TodoListMiddleware(),
         FilesystemMiddleware(backend=backend, _permissions=spec.get("permissions")),
-        create_summarization_middleware(model, backend),
+        _build_summarization_middleware(model, backend),
         PatchToolCallsMiddleware(),
     ]
     # 追加项目自定义中间件
@@ -484,6 +518,7 @@ def _build_compiled_pipeline_subagent(
     max_revision_count: int = 0,
     secondary_result_parser: SecondaryResultParser | None = None,
     revision_instruction_builder: RevisionInstructionBuilder | None = None,
+    checkpointer: BaseCheckpointSaver | None = None,
 ) -> CompiledSubAgent:
     """构建通用的"主代理 + 评估代理"管道 StateGraph。
 
@@ -599,7 +634,7 @@ def _build_compiled_pipeline_subagent(
         result = secondary_agent.invoke(_agent_input(input_messages), _child_config(config))
         updates: dict[str, str | list[AnyMessage] | dict | None] = {
             "secondary_result": _extract_text(result),
-            "secondary_messages": _accumulated_messages(input_messages, result),
+            "evaluation_decision": None,
         }
         # 从 agent 输出中提取结构化评估决策（如果 middleware 提供了的话）
         if isinstance(result, Mapping):
@@ -614,7 +649,7 @@ def _build_compiled_pipeline_subagent(
         result = await secondary_agent.ainvoke(_agent_input(input_messages), _child_config(config))
         updates: dict[str, str | list[AnyMessage] | dict | None] = {
             "secondary_result": _extract_text(result),
-            "secondary_messages": _accumulated_messages(input_messages, result),
+            "evaluation_decision": None,
         }
         if isinstance(result, Mapping):
             eval_decision = result.get("evaluation_decision")
@@ -747,7 +782,7 @@ def _build_compiled_pipeline_subagent(
         graph.add_edge("validate_secondary", "final")
     graph.add_edge("final", END)
 
-    return {"name": name, "description": description, "runnable": graph.compile()}
+    return {"name": name, "description": description, "runnable": graph.compile(checkpointer=checkpointer)}
 
 
 # ======================================================================
@@ -834,22 +869,9 @@ def _get_secondary_input_messages(
 ) -> list[AnyMessage]:
     """构建评估代理的输入消息。
 
-    如果状态中有 secondary_messages（表示非首次评估），在之前消息基础上
-    追加修订后的重新评估指令。
-    否则使用 _secondary_messages 构建首次评估输入。
+    评估代理每次调用都重新构建输入，避免把上轮对话历史带入下一轮，
+    从而让 ContextAssemblerMiddleware 始终基于当前文件重建上下文。
     """
-    previous = state.get("secondary_messages")
-    if previous:
-        # 修订后的重新评估：延续之前的对话 + 新的评估指令
-        return list(previous) + [
-            HumanMessage(
-                content=(
-                    f"上游子代理已根据上轮评估完成修订。\n\n"
-                    f"上游子代理返回摘要：\n{_required_result(state, 'primary_result')}\n\n"
-                    f"请重新评估。后置任务：\n{instruction}"
-                )
-            )
-        ]
     return _secondary_messages(state, instruction, context_loader)
 
 

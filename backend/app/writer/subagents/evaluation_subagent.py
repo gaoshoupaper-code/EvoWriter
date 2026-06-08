@@ -12,9 +12,9 @@
   不直接由主代理委托。
 
 类型映射：
-  EvaluationType.OUTLINE        → outline_evaluation.txt,  写入 /evaluation.md
-  EvaluationType.DETAIL_OUTLINE → detail_outline_evaluation.txt, 写入 /detail/evaluation.md
-  EvaluationType.WRITING        → review_evaluation.txt,   写入 /review/*.md
+  EvaluationType.OUTLINE        → outline_evaluation.md,  写入 /evaluation.md
+  EvaluationType.DETAIL_OUTLINE → detail_outline_evaluation.md, 写入 /detail/evaluation.md
+  EvaluationType.WRITING        → review_evaluation.md,   写入 /review/*.md
 
 调用对应关系：
   outline 管道        → build_evaluation_subagent(EvaluationType.OUTLINE, ...)
@@ -32,8 +32,8 @@ from langchain.agents.middleware.types import AgentMiddleware
 
 from app.writer.middleware.context_assembler_middleware import ContextAssemblerMiddleware
 
-# 模块根目录
-_MODULE_ROOT = Path(__file__).resolve().parent
+# 提示词统一目录（writer/prompt/）
+_PROMPT_DIR = Path(__file__).resolve().parent.parent / "prompt"
 
 
 # ---------- 评估类型枚举 ----------
@@ -66,9 +66,9 @@ class _SubAgentSpec(TypedDict):
 
 # 提示词路径映射
 _PROMPT_PATHS: dict[EvaluationType, Path] = {
-    EvaluationType.OUTLINE: _MODULE_ROOT / "prompt" / "outline_evaluation.txt",
-    EvaluationType.DETAIL_OUTLINE: _MODULE_ROOT / "prompt" / "detail_outline_evaluation.txt",
-    EvaluationType.WRITING: _MODULE_ROOT / "prompt" / "review_evaluation.txt",
+    EvaluationType.OUTLINE: _PROMPT_DIR / "outline_evaluation.md",
+    EvaluationType.DETAIL_OUTLINE: _PROMPT_DIR / "detail_outline_evaluation.md",
+    EvaluationType.WRITING: _PROMPT_DIR / "review_evaluation.md",
 }
 
 # 写入权限映射：每种类型只能写入对应的报告文件

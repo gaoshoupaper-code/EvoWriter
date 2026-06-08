@@ -24,14 +24,14 @@
 
 from __future__ import annotations
 
-from functools import cached_property
+
 from pathlib import Path
 
 from deepagents import SubAgent, create_deep_agent
 from deepagents.backends import FilesystemBackend
 from deepagents.middleware.filesystem import FilesystemPermission
 from langchain.agents.middleware.types import AgentMiddleware
-from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from app.writer.middleware import FilesystemPathGuardMiddleware, TraceCallbackHandler, TraceMiddleware
 from app.writer.models import build_writer_model
@@ -44,29 +44,29 @@ from app.schemas.character import (
 )
 from app.schemas.screenplay import ThreadSummary
 
-# 角色子代理的系统提示词文件路径
-PROMPT_PATH = Path(__file__).resolve().parent / "prompt" / "character_system_prompt.txt"
+# 角色子代理的系统提示词文件路径（统一存放在 writer/prompt/ 目录）
+PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompt" / "character_system_prompt.md"
 
 
-def _append_style(system_prompt: str, style_text: str | None) -> str:
-    """将写作风格文本追加到系统提示词末尾。"""
-    if not style_text:
+def _apply_style_suffix(system_prompt: str, style_suffix: str | None) -> str:
+    """将写作风格文本作为 SUFFIX 追加到系统提示词末尾。"""
+    if not style_suffix:
         return system_prompt
-    return f"{system_prompt}\n\n---\n{style_text}\n---"
+    return f"{system_prompt}\n\n{style_suffix}"
 
 
-def build_character_subagent(workspace_root: Path, middleware: list[AgentMiddleware] | None = None, style_text: str | None = None) -> SubAgent:
+def build_character_subagent(workspace_root: Path, middleware: list[AgentMiddleware] | None = None, style_suffix: str | None = None) -> SubAgent:
     """构建角色生成子代理规格。
 
     Args:
         workspace_root: 工作区根目录（当前未直接使用，保留扩展）
         middleware:     额外中间件列表（可选）
-        style_text:     写作风格文本（可选）
+        style_suffix:   角色风格 SUFFIX 文本（可选）
 
     Returns:
         角色子代理规格字典
     """
-    system_prompt = _append_style(PROMPT_PATH.read_text(encoding="utf-8").strip(), style_text)
+    system_prompt = _apply_style_suffix(PROMPT_PATH.read_text(encoding="utf-8").strip(), style_suffix)
     permissions = [
         FilesystemPermission(
             operations=["read"],
@@ -112,27 +112,20 @@ class CharacterService:
     支持 live 模式（真实代理调用）和 mock 模式（模拟返回，用于测试）。
     """
 
-    def __init__(self, settings: Settings, workspace_root: Path, trace_recorder: TraceRecorder, style_store: CreateTypeStore) -> None:
+    def __init__(self, settings: Settings, workspace_root: Path, trace_recorder: TraceRecorder, style_store: CreateTypeStore, checkpointer: BaseCheckpointSaver) -> None:
         """
         Args:
             settings:       应用配置（包含模型、模式等设置）
             workspace_root: 工作区根目录
             trace_recorder: 追踪记录器
             style_store:    写作风格存储
+            checkpointer:   检查点存储器（由外部注入，支持持久化）
         """
         self.settings = settings
         self.workspace_root = workspace_root
         self.trace_recorder = trace_recorder
         self.style_store = style_store
-
-    @cached_property
-    def checkpointer(self) -> InMemorySaver:
-        """内存检查点存储器，用于维护代理的对话状态。
-
-        使用 cached_property 确保全局只创建一个实例，
-        所有线程共享同一个检查点存储。
-        """
-        return InMemorySaver()
+        self.checkpointer = checkpointer
 
     def _backend_for_workspace(self, workspace_path: Path) -> FilesystemBackend:
         """为指定工作区创建文件系统后端。
@@ -166,7 +159,7 @@ class CharacterService:
             middleware.insert(1, TraceMiddleware(self.trace_recorder, trace_id, agent_name))
         return middleware
 
-    def _agent_for_workspace(self, workspace_path: Path, trace_id: str | None = None, style_text: str | None = None):
+    def _agent_for_workspace(self, workspace_path: Path, trace_id: str | None = None, style_suffix: str | None = None):
         """为指定工作区构建完整的代理。
 
         组装：模型 + 系统提示词 + 后端 + 检查点 + 中间件。
@@ -174,7 +167,7 @@ class CharacterService:
         Args:
             workspace_path: 工作区路径
             trace_id:       追踪 ID（可选）
-            style_text:     写作风格文本（可选）
+            style_suffix:   角色风格 SUFFIX 文本（可选）
 
         Returns:
             可调用的代理实例
@@ -184,24 +177,24 @@ class CharacterService:
         return create_deep_agent(
             model=model,
             tools=[],
-            system_prompt=self._load_system_prompt(style_text),
+            system_prompt=self._load_system_prompt(style_suffix),
             backend=self._backend_for_workspace(workspace_path),
             checkpointer=self.checkpointer,
             middleware=middleware,
         )
 
-    def _load_system_prompt(self, style_text: str | None = None) -> str:
-        """加载系统提示词，可选追加写作风格。"""
-        return _append_style(PROMPT_PATH.read_text(encoding="utf-8").strip(), style_text)
+    def _load_system_prompt(self, style_suffix: str | None = None) -> str:
+        """加载系统提示词，可选追加写作风格 SUFFIX。"""
+        return _apply_style_suffix(PROMPT_PATH.read_text(encoding="utf-8").strip(), style_suffix)
 
-    def _resolve_style_text(self, workspace_id: str) -> str | None:
-        """从风格存储中获取当前工作区的激活风格文本。
+    def _resolve_style_suffix(self, workspace_id: str) -> str | None:
+        """从风格存储中获取当前工作区的激活角色风格 SUFFIX。
 
         Args:
             workspace_id: 工作区 ID
 
         Returns:
-            风格文本（格式：【写作风格：名称】\n描述），无激活风格时返回 None
+            角色风格文本，无激活风格或该字段为空时返回 None
         """
         style_id = self.style_store.get_active_style_id(workspace_id)
         if not style_id:
@@ -209,7 +202,8 @@ class CharacterService:
         style = self.style_store.get_style(style_id)
         if not style:
             return None
-        return f"【写作风格：{style['name']}】\n{style['description']}"
+        text = style.get("character_style", "")
+        return text.strip() if text else None
 
     def delete_thread_checkpoint(self, thread_id: str) -> None:
         """删除指定线程的检查点数据。
@@ -251,8 +245,8 @@ class CharacterService:
         trace = self.trace_recorder.create_run(thread, "character.generate")
         try:
             prompt = self._build_user_prompt(payload, thread)
-            style_text = self._resolve_style_text(thread.workspace_id)
-            agent = self._agent_for_workspace(Path(thread.workspace_path), trace.trace_id, style_text)
+            style_suffix = self._resolve_style_suffix(thread.workspace_id)
+            agent = self._agent_for_workspace(Path(thread.workspace_path), trace.trace_id, style_suffix)
             result = agent.invoke(
                 {"messages": [{"role": "user", "content": prompt}]},
                 config={

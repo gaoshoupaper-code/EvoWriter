@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "production": 3,
+  "versions": [
+    {
+      "version": 1,
+      "commit": "43df348",
+      "parent_version": null,
+      "change_summary": "初始包（从 current/ 迁移建立独立仓库，源码为迁移时 current/ 最终态）",
+      "eval_score": null,
+      "eval_status": "pending",
+      "created_at": "2026-06-27T03:09:22.471310+00:00",
+      "source_session": null,
+      "migrated": true,
+      "migrated_note": "从旧 DB harness_snapshots v1 迁移。旧 commit 2782f1c 属于已废弃的整个项目仓库，新仓库无对应历史。"
+    },
+    {
+      "version": 2,
+      "parent_version": 1,
+      "change_summary": "adapt 首次启动：bootstrap v1（旧仓库历史版本）",
+      "eval_score": null,
+      "eval_status": "pending",
+      "created_at": "2026-07-06T02:53:50.077611+00:00",
+      "source_session": null,
+      "migrated": true,
+      "migrated_note": "从旧 DB 迁移。旧 commit 98fc128 属于已废弃仓库，源码不可在新仓库精确重建。config 与 v1 完全相同。"
+    },
+    {
+      "version": 3,
+      "parent_version": 2,
+      "change_summary": "进化 session f87dbcd6acd4 产出的改动（旧仓库历史版本）",
+      "eval_score": null,
+      "eval_status": "pending",
+      "created_at": "2026-07-06T12:54:28.607763+00:00",
+      "source_session": "f87dbcd6acd4",
+      "migrated": true,
+      "migrated_note": "从旧 DB 迁移。旧 commit b8a171d 属于已废弃仓库。源码改动已包含在迁移时 current/ 最终态中（新仓库 v1 commit 43df348 即此状态）。"
+    }
+  ],
+  "rollback_log": []
+}

@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
+from typing import Any, Callable
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import HumanMessage
@@ -64,12 +64,16 @@ class MemoryRecallMiddleware(AgentMiddleware):
         workspace_path: Any = None,
         budget_chars: int = 12000,
         num_results: int = 10,
+        quality_callback: Callable[[dict], None] | None = None,
     ) -> None:
         self._backend = backend
         self._group_id = group_id
         self._workspace_path = workspace_path
         self._budget_chars = budget_chars
         self._num_results = num_results
+        # P4 进化闭环：检索质量埋点回调。executor 侧传入（写 trace run_meta 事件）。
+        # None 时不埋点（向后兼容）。回调接收一个 dict（TraceMemoryQuality 字段）。
+        self._quality_callback = quality_callback
 
     # ------------------------------------------------------------------
     # before_model：核心检索 + 注入
@@ -123,8 +127,13 @@ class MemoryRecallMiddleware(AgentMiddleware):
                 num_results=self._num_results,
             )
         except Exception as e:
+            # P4 埋点：检索失败
+            self._record_quality(chapter_num, query, packet=None, ok=False, error=str(e))
             logger.error("记忆检索失败，中断写作：%s", e)
             raise RuntimeError(f"记忆检索失败：{e}") from e
+
+        # P4 埋点：检索成功
+        self._record_quality(chapter_num, query, packet, ok=True)
 
         if not packet:
             # 图谱为空（还没入图）或无相关记忆——注入空提示，不阻断
@@ -173,6 +182,36 @@ class MemoryRecallMiddleware(AgentMiddleware):
             f"请在写作时参考这些信息，保持与前文的一致性：\n\n"
         )
         return header + packet.formatted
+
+    # ------------------------------------------------------------------
+    # P4 进化闭环：检索质量埋点
+    # ------------------------------------------------------------------
+
+    def _record_quality(
+        self,
+        chapter_num: int | None,
+        query: str,
+        packet: Any | None,
+        ok: bool,
+        error: str | None = None,
+    ) -> None:
+        """记录记忆检索质量（P4 进化闭环信号）。
+
+        通过 quality_callback 回调上报给 executor（写 trace run_meta 事件）。
+        callback 为 None 时跳过（向后兼容）。
+        """
+        if self._quality_callback is None:
+            return
+
+        self._quality_callback({
+            "chapter_num": chapter_num,
+            "query": query[:200],
+            "evidence_packet_tokens": getattr(packet, "token_estimate", 0) if packet else 0,
+            "evidence_nodes_count": len(getattr(packet, "nodes", [])) if packet else 0,
+            "evidence_edges_count": len(getattr(packet, "edges", [])) if packet else 0,
+            "retrieval_ok": ok,
+            "error": error,
+        })
 
     # ------------------------------------------------------------------
     # 辅助方法

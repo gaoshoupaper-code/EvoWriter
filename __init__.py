@@ -61,6 +61,9 @@ def _build_memory_recall_middleware(ctx: RuntimeContext):
     复用 T2 注入模式：ctx.memory_backend（实例）+ ctx.memory_recall_middleware_cls（类）
     都非 None 时，在包内实例化 middleware。group_id 从 owner_id + workspace 名算出。
     None 时返回 None → writing 子代理走 ContextAssembler 全量注入（向后兼容）。
+
+    P4 进化闭环：构造 quality_callback 闭包，把检索质量写到 trace run_meta 事件。
+    trace_recorder 或 trace_id 为 None 时不埋点（向后兼容）。
     """
     if ctx.memory_backend is None or ctx.memory_recall_middleware_cls is None:
         return None
@@ -69,11 +72,43 @@ def _build_memory_recall_middleware(ctx: RuntimeContext):
     ws_name = ctx.workspace_path.name
     group_id = f"{ctx.owner_id}:{ws_name}" if ctx.owner_id else ws_name
 
+    # P4：构造检索质量埋点回调（写 trace run_meta 事件）
+    quality_callback = _make_quality_callback(ctx)
+
     return ctx.memory_recall_middleware_cls(
         backend=ctx.memory_backend,
         group_id=group_id,
         workspace_path=ctx.workspace_path,
+        quality_callback=quality_callback,
     )
+
+
+def _make_quality_callback(ctx: RuntimeContext):
+    """构造记忆检索质量埋点回调。
+
+    middleware 每次检索后调用此回调，传入 TraceMemoryQuality 字段 dict。
+    回调用 trace_recorder.append_event 写一条 run_meta 事件到 trace。
+
+    trace_recorder 或 trace_id 为 None 时返回 None（不埋点）。
+    """
+    recorder = ctx.trace_recorder
+    trace_id = ctx.trace_id
+    if recorder is None or not trace_id:
+        return None
+
+    def _callback(quality_data: dict) -> None:
+        try:
+            recorder.append_event(trace_id, {
+                "type": "run_meta",
+                "source": "middleware",
+                "agent_name": "writing",
+                "input": {"memory_quality": quality_data},
+            })
+        except Exception:
+            # 埋点失败不影响写作流程（静默吞掉）
+            pass
+
+    return _callback
 
 
 def assemble(ctx: RuntimeContext):

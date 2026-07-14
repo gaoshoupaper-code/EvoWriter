@@ -55,6 +55,27 @@ def _skill_abs_paths(scope: str) -> list[str]:
     return []
 
 
+def _build_memory_recall_middleware(ctx: RuntimeContext):
+    """根据 ctx 条件构建 MemoryRecallMiddleware（记忆系统未启用时返回 None）。
+
+    复用 T2 注入模式：ctx.memory_backend（实例）+ ctx.memory_recall_middleware_cls（类）
+    都非 None 时，在包内实例化 middleware。group_id 从 owner_id + workspace 名算出。
+    None 时返回 None → writing 子代理走 ContextAssembler 全量注入（向后兼容）。
+    """
+    if ctx.memory_backend is None or ctx.memory_recall_middleware_cls is None:
+        return None
+
+    # group_id 构成：owner_id:workspace_name（需求决策 8）
+    ws_name = ctx.workspace_path.name
+    group_id = f"{ctx.owner_id}:{ws_name}" if ctx.owner_id else ws_name
+
+    return ctx.memory_recall_middleware_cls(
+        backend=ctx.memory_backend,
+        group_id=group_id,
+        workspace_path=ctx.workspace_path,
+    )
+
+
 def assemble(ctx: RuntimeContext):
     """装配完整创作 Agent（meta + 4 个 subagent）。
 
@@ -175,6 +196,7 @@ def assemble(ctx: RuntimeContext):
         workspace_path, ctx.model, ctx.backend, middleware_factory,
         style_suffix=styles.get("writing"),
         context_file_paths=["outline.md", "storyline.md", "storyline/*.md", "character/*.md"],
+        memory_recall_middleware=_build_memory_recall_middleware(ctx),
     ))
 
     # ── 装配 meta agent ──

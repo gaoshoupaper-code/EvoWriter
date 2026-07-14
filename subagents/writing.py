@@ -78,6 +78,7 @@ def build_writing_deep_subagent(
     middleware_factory: MiddlewareFactory,
     style_suffix: str | None = None,
     context_file_paths: list[str] | None = None,
+    memory_recall_middleware: AgentMiddleware | None = None,
 ) -> CompiledSubAgent:
     """构建基于 DeepAgent 的 writing 子代理（内含 review 审查循环）。
 
@@ -89,18 +90,27 @@ def build_writing_deep_subagent(
         backend:             DeepAgents 后端（文件系统）
         middleware_factory:   中间件工厂函数
         style_suffix:        写作风格 SUFFIX 文本（可选）
-        context_file_paths:  上下文文件路径列表（相对于工作区根目录）
+        context_file_paths:  上下文文件路径列表（相对于工作区根目录）。
+                             memory_recall_middleware 为 None 时用此参数做全量注入。
+        memory_recall_middleware: 记忆召回中间件（可选）。
+                             非 None 时替代 ContextAssemblerMiddleware 的全量注入，
+                             改为从图谱按需检索。None 则用 ContextAssembler 全量注入。
 
     Returns:
         编译后的子代理字典 {name, description, runnable}
     """
     # ---- 主代理 system prompt + middleware ----
     writing_middleware = list(middleware_factory("writing-subagent"))
-    writing_middleware.append(ContextAssemblerMiddleware(
-        workspace_root,
-        file_paths=context_file_paths or [],
-        context_label="写作前置上下文",
-    ))
+    if memory_recall_middleware is not None:
+        # 记忆系统已启用：用图谱检索替代全量文件注入
+        writing_middleware.append(memory_recall_middleware)
+    else:
+        # 向后兼容：无记忆系统时走全量文件注入
+        writing_middleware.append(ContextAssemblerMiddleware(
+            workspace_root,
+            file_paths=context_file_paths or [],
+            context_label="写作前置上下文",
+        ))
     primary_spec = build_writing_subagent(writing_middleware, style_suffix)
 
     # ---- review 子代理规格 ----

@@ -89,6 +89,11 @@ class WriteResultInspectorMiddleware(AgentMiddleware):
         if getattr(result, "status", None) != "error":
             return
 
+        # 业务约束拦截（如单线生成上限）：非写失败，不重试，透传给 LLM。
+        meta = getattr(result, "response_metadata", None) or {}
+        if isinstance(meta, dict) and meta.get("business_intercept"):
+            return
+
         tool_call = getattr(request, "tool_call", {})
         tool_name = _mapping_value(tool_call, "name") or "write_tool"
         content = result.content if isinstance(result.content, str) else str(result.content)

@@ -142,6 +142,7 @@ class StorylineSingleLineLimitMiddleware(AgentMiddleware):
             name="write_file",
             tool_call_id=str(tool_call_id or ""),
             status="error",
+            response_metadata={"business_intercept": True},
         )
 
 

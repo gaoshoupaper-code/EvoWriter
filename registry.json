@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "production": 7,
+  "production": 8,
   "versions": [
     {
       "version": 6,
@@ -26,7 +26,7 @@
       "source_session": "d5072446e3c5",
       "commit_hash": "4871c6c21a265f6fa1454351d60762a982f28417",
       "executable": true,
-      "promotion_status": "production",
+      "promotion_status": "retired",
       "probe_identity": {
         "executor_code_digest": "62a6613993b124cd1924af2a2a3c345887cc543e8ed7472a6de60423ffae0e01",
         "executor_image_id": null,
@@ -67,6 +67,59 @@
         "artifact_snapshot_middleware": true,
         "platform_artifact_capture": true,
         "identity_digest": "743a06a03e2fc68799a435c87f2940a95161410a3ad03b96dc0a67ca7e262974"
+      }
+    },
+    {
+      "version": 8,
+      "parent_version": 7,
+      "change_summary": "修复 StorylineSingleLineLimit 拦截引发 EvidenceCaptureError（A/B 单次测试上下文暴跌）",
+      "eval_score": null,
+      "eval_status": "passed",
+      "created_at": "2026-08-02T08:34:42.619653+00:00",
+      "source_session": "hotfix-evidence-capture",
+      "commit_hash": "0263026d09ba4b1be95c9c0a8c54638ed6e68e95",
+      "executable": true,
+      "promotion_status": "production",
+      "probe_identity": {
+        "executor_code_digest": "1cee25db0ede206b5b75be66dfb28f951caf3ee65f323a32d7399fcb994e0c02",
+        "executor_image_id": null,
+        "dependency_lock_digest": "0efdd447e3d05d9cd899482c1628c0df77ae776491e8028a36e702b77c3bdb82",
+        "dependencies": {
+          "deepagents": "0.7.1",
+          "langchain": "1.3.14",
+          "langchain-core": "1.5.3",
+          "langchain-openai": "1.4.1",
+          "langgraph": "1.2.10",
+          "langgraph-checkpoint": "4.1.1",
+          "langgraph-checkpoint-sqlite": "3.1.1",
+          "openai": "2.52.0"
+        },
+        "harness_commit": "0263026d09ba4b1be95c9c0a8c54638ed6e68e95",
+        "harness_dirty": false,
+        "artifact_snapshot_middleware": true,
+        "platform_artifact_capture": true,
+        "identity_digest": "d0f1ae1e46376d144a24d42ab59f7956b1c3519e4521f4285c79f93b675e40d4"
+      },
+      "snapshot_trace_id": null,
+      "runtime_identity": {
+        "executor_code_digest": "1cee25db0ede206b5b75be66dfb28f951caf3ee65f323a32d7399fcb994e0c02",
+        "executor_image_id": null,
+        "dependency_lock_digest": "0efdd447e3d05d9cd899482c1628c0df77ae776491e8028a36e702b77c3bdb82",
+        "dependencies": {
+          "deepagents": "0.7.1",
+          "langchain": "1.3.14",
+          "langchain-core": "1.5.3",
+          "langchain-openai": "1.4.1",
+          "langgraph": "1.2.10",
+          "langgraph-checkpoint": "4.1.1",
+          "langgraph-checkpoint-sqlite": "3.1.1",
+          "openai": "2.52.0"
+        },
+        "harness_commit": "0263026d09ba4b1be95c9c0a8c54638ed6e68e95",
+        "harness_dirty": false,
+        "artifact_snapshot_middleware": true,
+        "platform_artifact_capture": true,
+        "identity_digest": "d0f1ae1e46376d144a24d42ab59f7956b1c3519e4521f4285c79f93b675e40d4"
       }
     }
   ],

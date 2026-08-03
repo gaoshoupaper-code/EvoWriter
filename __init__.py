@@ -65,7 +65,13 @@ def _build_memory_recall_middleware(ctx: RuntimeContext):
     NWM 重构（Phase 5）：harness 可进化要素注入——
       - query_builder：harness tools/query_builder.py（task→writer query）
       - join_rules + packet_formatter：注入 MemoryRetriever（覆盖 executor 默认）
-    注入用 executor 的 set_memory_retriever 全局单例。
+    注入用 executor 的 set_memory_retriever 进程单例。
+
+    FR-003（DEC-003）：每次 assemble 都注入**本包**的检索要素，不再用进程级
+    "只注入一次"保护。同进程热加载多版本（v6→v7）时，每个版本装配自身 join_rules/
+    packet_formatter，杜绝首版本锁死后续版本（CON-002 版本隔离）。要素加载用本包的
+    PACKAGE_DIR（而非 load_current_package 的生产缓存包），保证 A/B 候选包注入的是
+    候选版本的要素。
 
     P4 进化闭环：构造 quality_callback 闭包，把检索质量写到 trace run_meta 事件。
     trace_recorder 或 trace_id 为 None 时不埋点（向后兼容）。
@@ -79,7 +85,7 @@ def _build_memory_recall_middleware(ctx: RuntimeContext):
     # group_id 兼容旧签名（backend 内部用 workspace_id，group_id 仅日志/兼容）
     group_id = workspace_id
 
-    # ── Phase 5：注入 harness 可进化检索要素 ──
+    # ── Phase 5 / FR-003：每次注入本包 harness 可进化检索要素（去单例保护）──
     _inject_harness_retriever()
 
     # P4：构造检索质量埋点回调（写 trace run_meta 事件）
@@ -97,32 +103,41 @@ def _build_memory_recall_middleware(ctx: RuntimeContext):
     )
 
 
-_harness_retriever_injected = False
+# FR-003：注入锁——保证并发 assemble 时 set_memory_retriever 不撕裂。
+# A/B 后台任务并发跑不同 harness 版本时（EDGE-004），若两个 assemble 同时
+# set_memory_retriever，可能造成短暂的全局 retriever 指向错版本。用锁串行化
+# 注入动作，每次 assemble 都重新设当前版本（要素是无状态的，retrieve 时从参数
+# 取 store，重设只影响下一次检索用哪个 join_rules/formatter）。
+import threading as _threading
+_harness_retriever_lock = _threading.Lock()
 
 
 def _inject_harness_retriever() -> None:
-    """把 harness 的 join_rules + packet_formatter 注入 executor MemoryRetriever。
+    """把本包的 join_rules + packet_formatter 注入 executor MemoryRetriever。
 
-    进程级单例注入（set_memory_retriever），只注入一次。harness 要素加载失败时
-    静默回退到 executor 默认（不影响功能）。
+    FR-003（DEC-003）：移除"只注入一次"进程级单例保护，每次 assemble 重新注入当前
+    harness 包版本的检索要素。同进程热加载 v6→v7 时 v7 注入自身要素，不被 v6 锁死。
+    要素加载用本包 PACKAGE_DIR（importlib 按 __name__ 定位），不依赖 load_current_package
+    的生产缓存包——保证 A/B 候选包注入候选版本要素（CON-002 版本隔离）。
+
+    要素加载失败时静默回退到 executor 默认 retriever（降级语义不变）。注入用锁串行化，
+    防并发 assemble 时全局 retriever 撕裂（EDGE-004）。
     """
-    global _harness_retriever_injected
-    if _harness_retriever_injected:
-        return
-    _harness_retriever_injected = True
     try:
         from app.platform.memory.retriever import MemoryRetriever, set_memory_retriever
         join_rules = _load_harness_callable("join_rules", "join_rules")
         packet_formatter = _load_harness_callable("packet_formatter", "packet_formatter")
-        if join_rules is not None or packet_formatter is not None:
-            set_memory_retriever(MemoryRetriever(
-                join_rules=join_rules,
-                packet_formatter=packet_formatter,
-            ))
+        if join_rules is None and packet_formatter is None:
+            return  # 本包无 harness 要素覆盖，保留 executor 默认 retriever
+        retriever = MemoryRetriever(
+            join_rules=join_rules,
+            packet_formatter=packet_formatter,
+        )
+        with _harness_retriever_lock:
+            set_memory_retriever(retriever)
     except Exception as e:
         # harness 要素注入失败不阻断——executor 默认 retriever 仍可用
-        import logging
-        logging.getLogger(__name__).debug("harness retriever 注入失败，用 executor 默认：%s", e)
+        logger.debug("harness retriever 注入失败，用 executor 默认：%s", e)
 
 
 def _load_harness_query_builder():
@@ -131,12 +146,15 @@ def _load_harness_query_builder():
 
 
 def _load_harness_callable(module_name: str, func_name: str):
-    """从 harness tools 子包加载可调用对象（失败返回 None，降级到 executor 默认）。"""
+    """从**本包** tools 子包加载可调用对象（失败返回 None，降级到 executor 默认）。
+
+    FR-003：用 importlib 按 __name__（当前包名）加载，而非 load_current_package 的
+    生产缓存包。这样 A/B 候选包（harness_current_ab）加载自身 tools，生产包
+    （harness_current）加载生产 tools，版本隔离正确。
+    """
     try:
         import importlib
-        from app.platform.agent.loader import load_current_package
-        pkg = load_current_package()
-        mod = importlib.import_module(f"{pkg.__name__}.tools.{module_name}")
+        mod = importlib.import_module(f"{__name__}.tools.{module_name}")
         return getattr(mod, func_name, None)
     except Exception:
         return None
@@ -156,18 +174,93 @@ def _make_quality_callback(ctx: RuntimeContext):
         return None
 
     def _callback(quality_data: dict) -> None:
+        # CON-001：status 是 TraceLogEvent 的必填采集状态字段（contracts/trace/__init__.py），
+        # append_event 在 recorder.py:351 硬读 values["status"]。漏传会导致每次召回
+        # 抛 KeyError 并被下面的 except 吞掉——埋点永远写不进 trace（EVD-001 根因）。
+        # 这里显式传 "running"（与同代码库其余 run_meta 写入一致，EVD-002）。
         try:
             recorder.append_event(trace_id, {
                 "type": "run_meta",
+                "status": "running",
                 "source": "middleware",
                 "agent_name": "writing",
                 "input": {"memory_quality": quality_data},
             })
+        except Exception as e:
+            # FR-003/CON-002：埋点失败仍不阻断写作（降级语义不变），但改为可观测 warning
+            # ——不再静默吞掉，便于定位 recorder 不可用/序列化失败等真实失败路径（EDGE-003）。
+            logger.warning(
+                "memory_quality 埋点写入失败，trace_id=%s 原因=%s", trace_id, e,
+            )
+
+    return _callback
+
+
+def _make_artifact_snapshot_callback(ctx: RuntimeContext):
+    """构造不可变 ArtifactRevision 回调。"""
+    if ctx.artifact_snapshot_callback is not None:
+        return ctx.artifact_snapshot_callback
+
+    recorder = ctx.trace_recorder
+    trace_id = ctx.trace_id
+    if recorder is None or not trace_id:
+        return None
+    record_revision = getattr(recorder, "record_artifact_revision", None)
+    if not callable(record_revision):
+        return None
+
+    def _callback(snapshot_data: dict) -> None:
+        try:
+            record_revision(
+                trace_id,
+                snapshot_data.get("agent_name", "unknown"),
+                file_path=snapshot_data["file_path"],
+                content=snapshot_data.get("content", ""),
+                tool_name=snapshot_data.get("tool"),
+                tool_call_id=snapshot_data.get("tool_call_id"),
+                content_hash=snapshot_data.get("fingerprint"),
+            )
         except Exception:
-            # 埋点失败不影响写作流程（静默吞掉）
             pass
 
     return _callback
+
+
+def _make_intervention_callback(ctx: RuntimeContext, agent_name: str):
+    recorder = ctx.trace_recorder
+    trace_id = ctx.trace_id
+    if recorder is None or not trace_id:
+        return None
+
+    def _callback(
+        *, action: str, hook: str, affected_fields: list[str], reason: str | None = None,
+        before: Any | None = None, after: Any | None = None,
+    ) -> None:
+        try:
+            recorder.record_intervention(
+                trace_id,
+                agent_name,
+                action=action,
+                hook=hook,
+                affected_fields=affected_fields,
+                reason=reason,
+                before=before,
+                after=after,
+            )
+        except Exception:
+            pass
+
+    return _callback
+
+
+def _retry_runner_for(ctx: RuntimeContext):
+    """从 ctx 构造模型重试运行器（FR-003/EVD-006 可观测）。
+
+    writer_retry_runner_factory 是 RuntimeContext 声明字段（默认 None）；None 时返回 None，
+    TraceMiddleware 走原"只看外边界"行为（向后兼容）。meta 与各子代理装配共用此构造。
+    """
+    factory = ctx.writer_retry_runner_factory
+    return factory() if factory is not None else None
 
 
 def assemble(ctx: RuntimeContext):
@@ -196,6 +289,7 @@ def assemble(ctx: RuntimeContext):
     from .middleware.encoding_guard import EncodingGuardMiddleware
     from .middleware.file_state_tracker import FileStateTrackerMiddleware
     from .middleware.write_result_inspector import WriteResultInspectorMiddleware
+    from .middleware.artifact_snapshot import ArtifactSnapshotMiddleware
     from .subagents.interview import build_interview_deep_subagent
     from .subagents.types import apply_style_suffix
     # runtime 是 DeepAgents SDK 隔离层（执行端平台能力，包依赖它如同依赖 deepagents）
@@ -218,13 +312,19 @@ def assemble(ctx: RuntimeContext):
     #   → WriteResultInspector（在串行化内、ErrorRecovery 内，转抛 WriteFailedError）
     #   → GoalMiddleware（最内层）
     meta_middleware = [
-        ErrorRecoveryMiddleware(),
-        MetaReadOnlyMiddleware(),
-        ReadCacheMiddleware(),
-        FilesystemPathGuardMiddleware(workspace_path),
+        ErrorRecoveryMiddleware(
+            intervention_callback=_make_intervention_callback(ctx, "meta-agent"),
+            tool_replay_policy=ctx.tool_replay_policy,  # CON-005 task 防重放
+        ),
+        MetaReadOnlyMiddleware(intervention_callback=_make_intervention_callback(ctx, "meta-agent")),
+        ReadCacheMiddleware(intervention_callback=_make_intervention_callback(ctx, "meta-agent")),
+        FilesystemPathGuardMiddleware(
+            workspace_path,
+            intervention_callback=_make_intervention_callback(ctx, "meta-agent"),
+        ),
         EncodingGuardMiddleware(),
         FileStateTrackerMiddleware(),
-        FileWriteSerializeMiddleware(),
+        FileWriteSerializeMiddleware(intervention_callback=_make_intervention_callback(ctx, "meta-agent")),
         WriteResultInspectorMiddleware(),
         GoalMiddleware(),
     ]
@@ -232,9 +332,11 @@ def assemble(ctx: RuntimeContext):
     meta_skills = _skill_abs_paths("meta")
 
     # TraceMiddleware 挂载（T2：类由 ctx 注入，包内实例化）
+    # FR-003/EVD-006：写作路径注入重试运行器时，TraceMiddleware 用它包裹模型调用，
+    # 让传输层 attempt/退避在 Trace 可见。运行器由领域层提供（平台层不 import domains）。
     if ctx.trace_recorder is not None and ctx.trace_id and ctx.trace_middleware_cls:
         meta_middleware.insert(1, ctx.trace_middleware_cls(
-            ctx.trace_recorder, ctx.trace_id, "meta-agent",
+            ctx.trace_recorder, ctx.trace_id, "meta-agent", retry_runner=_retry_runner_for(ctx),
         ))
 
     # CreditsMiddleware 挂载（AD2/AD6：积分制，类由 ctx 注入，包内实例化）
@@ -252,6 +354,16 @@ def assemble(ctx: RuntimeContext):
     # ── meta skills backend 组合 ──
     effective_backend, skill_sources = compose_skills_backend(ctx.backend, meta_skills)
 
+    # Trace V2：在装配事实发生点冻结可用 Skill catalog 与最终 middleware 顺序。
+    # 运行时实际激活仍由 TraceMiddleware 在成功解析注册 Skill 后单独记录。
+    if ctx.trace_recorder is not None and ctx.trace_id:
+        record_catalog = getattr(ctx.trace_recorder, "record_skill_catalog", None)
+        record_stack = getattr(ctx.trace_recorder, "record_middleware_assembly", None)
+        if callable(record_catalog):
+            record_catalog(ctx.trace_id, "meta-agent", meta_skills, skill_sources)
+        if callable(record_stack):
+            record_stack(ctx.trace_id, "meta-agent", meta_middleware)
+
     # ── subagent middleware 工厂 ──
     # A2 重构后装配顺序（与 meta 一致，去掉 MetaReadOnly 和 Goal）：
     #   ErrorRecovery（最外层）
@@ -262,18 +374,25 @@ def assemble(ctx: RuntimeContext):
     #   → FileWriteSerialize（写串行化）
     #   → WriteResultInspector（最内层，转抛 WriteFailedError）
     def middleware_factory(agent_name: str) -> list:
+        intervention_callback = _make_intervention_callback(ctx, agent_name)
         mw = [
-            ErrorRecoveryMiddleware(),
-            ReadCacheMiddleware(),
-            FilesystemPathGuardMiddleware(workspace_path),
+            ErrorRecoveryMiddleware(
+                intervention_callback=intervention_callback,
+                tool_replay_policy=ctx.tool_replay_policy,  # CON-005 task 防重放
+            ),
+            ReadCacheMiddleware(intervention_callback=intervention_callback),
+            FilesystemPathGuardMiddleware(
+                workspace_path,
+                intervention_callback=intervention_callback,
+            ),
             EncodingGuardMiddleware(),
             FileStateTrackerMiddleware(),
-            FileWriteSerializeMiddleware(),
+            FileWriteSerializeMiddleware(intervention_callback=intervention_callback),
             WriteResultInspectorMiddleware(),
         ]
         if ctx.trace_recorder is not None and ctx.trace_id and ctx.trace_middleware_cls:
             mw.insert(1, ctx.trace_middleware_cls(
-                ctx.trace_recorder, ctx.trace_id, agent_name,
+                ctx.trace_recorder, ctx.trace_id, agent_name, retry_runner=_retry_runner_for(ctx),
             ))
         # CreditsMiddleware 挂载到创作类子代理（AD6），不挂 interview（访谈免费）。
         if (
@@ -286,6 +405,27 @@ def assemble(ctx: RuntimeContext):
                 ctx.credits_service, ctx.trace_id, ctx.owner_id,
                 ctx.workspace_path, agent_name,
             ))
+        # ArtifactSnapshotMiddleware 挂载到所有子代理（第二期证据采集，2026-07）。
+        # 装在 WriteResultInspector 之后（最内层），只有写盘成功的才快照。
+        artifact_cb = _make_artifact_snapshot_callback(ctx)
+        if artifact_cb is not None:
+            mw.append(ArtifactSnapshotMiddleware(artifact_cb, workspace_path, agent_name))
+        if ctx.trace_recorder is not None and ctx.trace_id:
+            catalog_scopes = {
+                "storybuilding-subagent": "storybuilding",
+                "detail-outline-subagent": "detail-outline",
+                "writing-subagent": "writing",
+            }
+            scope = catalog_scopes.get(agent_name)
+            if scope:
+                paths = _skill_abs_paths(scope)
+                _, runtime_sources = compose_skills_backend(ctx.backend, paths)
+                record_catalog = getattr(ctx.trace_recorder, "record_skill_catalog", None)
+                if callable(record_catalog):
+                    record_catalog(ctx.trace_id, agent_name, paths, runtime_sources)
+            record_stack = getattr(ctx.trace_recorder, "record_middleware_assembly", None)
+            if callable(record_stack) and agent_name not in catalog_scopes:
+                record_stack(ctx.trace_id, agent_name, mw)
         return mw
 
     # ── subagent 装配 ──

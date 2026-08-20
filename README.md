@@ -9,7 +9,13 @@
 
 以长篇小说为首个垂直领域：创作 Agent 在真实写作中沉淀 trace，评估定位弱点，人机共创改进配置，经门禁发版回灌生产——**形成越用越强的数据飞轮**。
 
-> **规模速览**：Python 9.0 万行 · 812 个测试函数 · 28 个可组合中间件 · 2 个月 45 个版本迭代（执行端零重部署）
+> **规模速览**：全栈 11.9 万行（Python 9.0 万 = 源码 7.2 万 + 测试 1.9 万 · Tauri/Rust 桌面端 2.9 万）· 812 个测试函数 · 26 个可组合中间件 · 11 周 45 个版本 tag · 单人开发，AI 辅助 + 人定架构（见[开发方法论](#开发方法论ai-辅助--人定架构))
+
+## 30 秒了解
+
+**EvoWriter 是一个会自我改进的 AI 写作系统**：多智能体帮作者写长篇小说，系统记录每次创作的完整 trace；离线的进化端从真实数据定位弱点，与人对话式共创改进方案，逐条人工拍板后经真实装配门禁发版，热加载回灌生产——**写作越久，系统越强**。
+
+它由独立部署的三部分组成：**executor**（Agent 运行时）、**evolution**（进化引擎）、双 **Tauri 2 桌面端**（创作工作台 + 进化控制台）。两端只通过 canonical trace（事实）与 harness git 仓库（版本）单向耦合。
 
 ## 为什么做
 
@@ -55,27 +61,27 @@ flowchart LR
 
 ### 🧬 自进化引擎
 
-- **Agent-as-Code，git 即版本库**。prompt、行为护栏、记忆检索策略等 9 类要素资产化为 git 版本化制品；发版 = 冻结 candidate commit → executor 在该 commit 上干净 checkout 做**真实装配 probe** → registry 指针晋升 production，reload 返回身份与 probe 不符即自动恢复原版本。版本 = commit、生产 = 指针、回滚 = 记账，45 个版本迭代执行端零重部署。
-- **判评分离防 reward hacking**。评估模型与创作/进化模型异家族；确定性契约覆盖矩阵（0-LLM 求值，抓"本该参与的机制没出现"类结构性缺失）与 28 维内容评分双轨出报告。实测同源评估曾**静默放过 18-29% 的结构性缺陷**。
+- **Agent-as-Code，git 即版本库**。prompt、行为护栏、记忆检索策略等 9 类可进化要素（其中 7 类为 git 版本化制品）资产化为 harness 仓库的版本化制品；发版 = 冻结 candidate commit → executor 在该 commit 上干净 checkout 做**真实装配 probe** → registry 指针晋升 production，reload 返回身份与 probe 不符即自动恢复原版本。版本 = commit、生产 = 指针、回滚 = 记账；门禁单阶段化后曾 **2 天连发 4 版**，executor 经 harness 热加载全程零重部署。
+- **判评分离防 reward hacking**。评估模型默认与创作/进化模型异家族（同家族配置告警 + 降级共用）；确定性契约覆盖矩阵（0-LLM 求值，抓"本该参与的机制没出现"类结构性缺失）与 28 维内容评分双轨出报告——外部研究（arXiv:2502.01534）显示同源评估会漏掉 18-29% 的结构性缺陷，凡是"自己给自己打分"的系统都需要这道隔离。
 - **不可变制品单向加工链**。trace → 证据卷宗 → 评估卷宗逐级 seal（单事务原子写入，此后不可变），下游只消费 sealed 制品、成功只以制品存在性判定；跨服务异步因果用 Span Link + 制品版本双向还原，**绝不伪造跨服务父子 Span**。
 
 ### 🔭 Agent 观测底座
 
-- **受治理的 canonical trace**。事件只存 PayloadRef，语义正文先过 PayloadGate（定向剥离推理字段、fail-closed 整包拒绝凭据/密钥）再 sha256 内容寻址落盘——事件不内联正文，单条 trace 实测从 39MB 膨胀治理到正文内联仅 0.5%；同一事件 schema 可投影 **OTLP** 对接标准追踪生态。
+- **受治理的 canonical trace**。事件只存 PayloadRef，语义正文先过 PayloadGate（定向剥离推理字段、fail-closed 整包拒绝凭据/密钥）再 sha256 内容寻址落盘——治理前单条 trace 实测膨胀至 39MB（llm_start 重复输入内联占 90%）；治理后事件不内联正文，保留的交付物正文仅占 trace 的 0.5%。同一事件 schema 可投影 **OTLP** 对接标准追踪生态。
 - **四维正交状态机**。业务状态 / trace 阶段 / 完整性 / 取消时间线拆为四个独立维度，`lifecycle_revision` 单调递增拒绝旧快照覆盖；`pending` 是中性态不误报损坏，只有 `verified` 放行下游消费——"完整性"不是一个 bool。
-- **写盘与崩溃恢复工程**。事件写入内存队列、后台协程批量落盘（同步 IO 不碰事件循环），终态写 manifest（事件哈希清单）封存；进程崩溃由 `recover_pending` 按 sealed 制品收敛分裂态，跨进程强杀由父进程幂等接管 trace 收尾——超时不谎报 cancelled。
+- **写盘与崩溃恢复工程**。事件写入内存队列、后台协程批量落盘（同步 IO 不碰事件循环），终态写 manifest（事件哈希清单）封存；进程崩溃后由启动期 reconcile 按 sealed 制品收敛分裂态（recover_pending 处理自观测中断态），跨进程强杀由父进程 `seal_external_cancel` 幂等接管 trace 收尾——超时不谎报 cancelled。
 
 ### 🧠 类型化长期记忆
 
-- **8 类叙事学 typed records**（角色状态/关系/物品/伏笔承诺/叙事功能/场景/世界设定/章节摘要）替代 Graphiti 类通用图 schema——"谁知道什么""坑填没填"在 generic entity/edge 图里没有位置放。每条记忆带 `source_chapter` 因果锚点与原文引用，写第 N+1 章时一条 `WHERE` 杜绝未来章节泄漏。
+- **8 类叙事学 typed records**（角色状态/关系/物品/伏笔承诺/叙事功能/场景/世界设定/章节摘要）替代 Graphiti 类通用图 schema——"谁知道什么""坑填没填"在 generic entity/edge 图里没有位置放。每条记忆带 `source_chapter` 因果锚点与原文引用；写第 N+1 章时以章节号为因果边界（causal cutoff），写作只能看见过去，杜绝未来章节泄漏。
 - **四阶段检索管线**：causal cutoff → FTS5(BM25) + sqlite-vec 双路召回 RRF(k=60) 融合 → one-hop SQL JOIN 图扩展 → 12k 字符有界证据包注入 prompt。检索失败降级到静态蓝图兜底，**writing 永不零上下文**。
 - **零图数据库依赖**：typed records 本身就是图的节点和边——要的是图的语义，不是图的数据库。一作品一库、三写一体单事务（主表+FTS+向量）、窗口函数取"最新有效切片"免 UPDATE 竞争。
 
 ### ⚙️ 多智能体运行时
 
-- **28 个可组合中间件，洋葱模型按 Agent 角色动态组装**。meta、writing、interview 各自的中间件链不同：故障自愈、路径防护、按文件粒度的并发写串行化（根治 asyncio 并发编辑同文件的字节流交叉截断）、修订硬上限、写后回读取证——四类 hook（`wrap_tool_call` / `before_model` / `after_model` / `before_agent`）在 graph 不同节点生效，不是单一管道。
-- **主控自主委托 + HITL**。meta agent 按 goal 自主调度 5 个专家子代理（访谈 → 蓝图 → 细纲 → 逐章创作，涌现行为而非硬编码编排），每个子代理内嵌 review-revise 循环（修订次数硬上限防不收敛）；LangGraph interrupt/`Command(resume)` 断点续跑，取消语义三路分流（用户停止 / 等待输入保持可恢复 / 断连）不混淆。
-- **进程级失败隔离域**。A/B 候选在独立进程执行（POSIX `setsid` 独立进程组 / Windows `taskkill`），停止 = 协作式取消 → `join(10s)` → 强杀，P100 ≤ 10s；子进程被强杀后由父进程 `seal_external_cancel` 幂等接管 trace 收尾——实验故障永不波及生产。
+- **26 个可组合中间件，洋葱模型按 Agent 角色动态组装**（harness 19 + executor 平台/领域 13 + evolution 4，同名对应件去重）。meta、writing、interview 各自的中间件链不同：故障自愈、路径防护、按文件粒度的并发写串行化（根治 asyncio 并发编辑同文件的字节流交叉截断）、修订硬上限、写后回读取证——五类 hook（`wrap_tool_call` / `wrap_model_call` / `before_model` / `after_model` / `before_agent`）在 graph 不同节点生效，不是单一管道。
+- **主控自主委托 + HITL**。meta agent 按 goal 调度 5 个子代理（访谈/蓝图/细纲/创作四专家 + 通用兜底），无代码编排——调度由 prompt 指导与产出前置门控约束，不靠硬编码流水线；每个子代理内嵌 review-revise 循环（修订次数硬上限防不收敛）；LangGraph interrupt/`Command(resume)` 断点续跑，取消语义三路分流（用户停止 / 等待输入保持可恢复 / 断连）不混淆。
+- **进程级失败隔离域**。A/B 候选在独立进程执行（POSIX `setsid` 独立进程组 / Windows `taskkill`），停止 = 协作式取消 → `join(10s)` → 强杀，超时硬上限 10s；子进程被强杀后由父进程 `seal_external_cancel` 幂等接管 trace 收尾——实验故障永不波及生产。
 
 ## 关键设计决策
 
@@ -86,9 +92,18 @@ flowchart LR
 | 自研 canonical trace（事件 schema + PayloadGate + 内容寻址 + manifest） | Langfuse / LangSmith 等观测平台 | 进化闭环要的不是看板，是**下游可消费的可信事实**：receipt 按连续 sequence 幂等校验、终态事件哈希清单、不可变 ArtifactRevision、血缘 DAG。观测平台的定位止于"给人看"，这里的 trace 是评估与进化的**证据链**，载荷必须先治理（剥离推理字段/拒绝凭据）才配作证据 |
 | SQLite + sqlite-vec + FTS5，8 类 typed records | Graphiti/Neo4j 图数据库、独立向量库 | 叙事状态是强类型关系表形状，generic entity/edge 抽不出"信息差""伏笔状态机"这类结构；一作品一库文件即隔离、零部署依赖，全程 SQL 可审计。要图的语义，不要图的数据库 |
 | harness 以 git 仓库为单一真源，registry 只存指针 | 数据库存版本 | commit 天然不可变且可精确 checkout——"线上任意一次生成行为可精确复现"由此免费获得；回滚 = 指针回退 + 记账，不删谱系。GitOps 范式的轻量落地 |
-| 判评分离：评估用异家族模型 | 同一模型自评 / 同源评估 | 实测同源评估静默放过 18-29% 结构性缺陷。凡是"自己给自己打分"的系统都需要这道隔离，再叠加 0-LLM 的确定性契约矩阵兜底 |
+| 判评分离：评估用异家族模型 | 同一模型自评 / 同源评估 | 外部研究（arXiv:2502.01534）显示同源评估会漏掉 18-29% 结构性缺陷。凡是"自己给自己打分"的系统都需要这道隔离，再叠加 0-LLM 的确定性契约矩阵兜底 |
 | 进化点逐条人工拍板 + probe 单阶段门禁 | 全自动进化、全自动发布 | "怎么改"必须人拍板（对话式共创，未拍板前硬拦截落地工具）；门禁的**可通过性是门禁的生死线**——旧三件套门禁在正常路径上从未通过过、流水线永久卡死，教训换来"真实装配 probe 一道门" |
 | 四维正交状态机 + 中性中间态 | 单一 status 字段 | 状态混在一个字段里必然互相污染：`pending` 被误报为损坏、`cancel_timeout` 被谎报为 `cancelled`。拆成正交维度后每个维度可独立单调化，下游按维度判定而非猜 |
+
+## 开发方法论：AI 辅助 + 人定架构
+
+本项目单人 11 周完成 11.9 万行，开发方式是 **AI 辅助编码 + 人握架构与质量门禁**：架构决策、机制设计、取舍拍板与验收由作者负责，coding agent（Claude Code / ZCode 等）执行实现。让 AI 大量写代码而不失控，靠的是把质量控制做成**机器可执行的约束**，而不是人肉 review 意志：
+
+- **812 个测试函数 / 100 个测试文件**——机制先可测，再谈实现
+- **AST 分层 linter**（`scripts/check_layering.py`）——6 条分层铁律由静态分析强制，CI 拦截新增违规（baseline 模式：存量 6 条违规逐步清零，只拦新增）
+- **conventional commits + feature branch**——全程 300+ 个提交带 scope 与根因说明，不写"fix bug"式的无信息提交
+- **不可变制品 + probe 门禁**——连"进化系统自己"的改动都要过真实装配门禁才能上线；治理生产系统的机制，同样治理开发过程
 
 ## 快速开始
 

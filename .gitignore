@@ -151,3 +151,6 @@ package-lock.json
 # 深读文档本地产物（验收报告与旧版备份）
 deep-dives/.acceptance/
 deep-dives/_旧版备份_*/
+
+# 深读文档（个人研究资料，仅本地保留，不上库）
+/deep-dives/

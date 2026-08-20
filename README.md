@@ -101,7 +101,7 @@ flowchart LR
 本项目单人 11 周完成 11.9 万行，开发方式是 **AI 辅助编码 + 人握架构与质量门禁**：架构决策、机制设计、取舍拍板与验收由作者负责，coding agent（Claude Code / ZCode 等）执行实现。让 AI 大量写代码而不失控，靠的是把质量控制做成**机器可执行的约束**，而不是人肉 review 意志：
 
 - **812 个测试函数 / 100 个测试文件**——机制先可测，再谈实现
-- **AST 分层 linter**（`scripts/check_layering.py`）——6 条分层铁律由静态分析强制，CI 拦截新增违规（baseline 模式：存量 6 条违规逐步清零，只拦新增）
+- **AST 分层 linter**（`scripts/check_layering.py`）——6 条分层铁律由静态分析强制，CI 拦截新增违规（ratchet 模式：存量违规登记于 baseline 逐步清零，只拦新增）
 - **conventional commits + feature branch**——全程 300+ 个提交带 scope 与根因说明，不写"fix bug"式的无信息提交
 - **不可变制品 + probe 门禁**——连"进化系统自己"的改动都要过真实装配门禁才能上线；治理生产系统的机制，同样治理开发过程
 

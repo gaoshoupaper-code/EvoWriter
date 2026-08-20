@@ -110,7 +110,7 @@ website/  = 官网（Astro 静态站）—— 项目介绍 + 桌面端下载页
   - `app/core/` = 公共底座（数据库、配置、LLM 调用）
 - **与 executor 的关系**：通过 HTTP 双向联动（不读对方文件系统）——
   executor 通知 evolution 有新 trace，evolution 拉取内容；evolution 优化完通知 executor 刷新。
-- **状态**：✅ 已详写（见文件大地图）。
+- **状态**：✅ 已详写（见[系统心智模型](系统心智模型.md)图 3）。
 
 ### 4. contracts/ — 共享契约（两端的数据格式协议）
 - **是什么**：一个独立的 Python 包，定义 executor 和 evolution **共同遵守的数据格式**。

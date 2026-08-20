@@ -119,3 +119,35 @@ desktop/src-tauri/gen/
 # 这些目录是需求文档 related: 引用的研究底料，本地保留即可，commit 会污染仓库。
 agent_evo_research/
 agent_evaluation_mechanisms/
+
+# ══ 仓库对外整改（2026-08-20）：以下内容仅本地保留，不上 GitHub ══
+# AI 工作流指令（含部署流程与内部约定）
+AGENTS.md
+CLAUDE.md
+.claude/
+.agents/
+.zcode/
+.codegraph/
+.pytest_cache/
+
+# 部署/发版脚本与运维文档（含服务器信息，本地与服务器家目录另有备份）
+scripts/deploy-prod.sh
+scripts/publish.sh
+docs/deployment.md
+
+# 个人笔记与本地调研产物
+qd
+writer_trace_industrial_fit/
+package-lock.json
+
+# 求职材料（严禁上库）
+*.docx
+/简历/
+~$*
+
+# 渲染临时目录
+.resume_render/
+
+# 深读文档本地产物（验收报告与旧版备份）
+deep-dives/.acceptance/
+deep-dives/_旧版备份_*/

@@ -36,24 +36,24 @@ EvoWriter 的答案是：把进化做成一条**每级只消费上级封存制�
 
 ```mermaid
 flowchart TD
-    W["📝 创作运行<br/>executor 多智能体写作"]
-    ING["📦 trace 摄入<br/>receipt 幂等 + 完整性判定"]
-    DOS["🗂️ 证据卷宗编译<br/>契约覆盖矩阵 · 0-LLM"]
-    EV["⚖️ 独立评估<br/>异家族模型 · 判评分离<br/>结构性 finding"]
-    KB[("📚 错题库<br/>不可变问题实例 + 标准问题")]
-    EVO["💡 人机共创进化 · 人工决策点<br/>相似问题轨迹注入 · 逐条人工拍板"]
-    PROBE["🚪 真实装配 probe · 门禁验证<br/>干净 checkout · 真实调 assemble"]
-    RL["🔄 热加载回生产<br/>身份比对 · 失败自动回滚"]
+    W[创作运行]
+    ING[trace摄入]
+    DOS[证据卷宗编译]
+    EV[独立评估<br/>判评分离]
+    KB[(错题库)]
+    EVO[人机共创进化<br/>人工决策点]
+    PROBE[真实装配probe<br/>门禁验证]
+    RL[热加载回生产]
 
-    W -->|"canonical trace (受治理事实)"| ING
-    ING -->|"只消费verified制品"| DOS
+    W -->|canonical trace| ING
+    ING -->|verified制品| DOS
     DOS --> EV
-    EV -->|"findings同事务收录"| KB
+    EV -->|findings| KB
     EV --> EVO
-    KB -.->|"相似历史事实轨迹"| EVO
-    EVO -->|"冻结candidate commit"| PROBE
-    PROBE -->|"通过即指针晋升"| RL
-    RL -.->|"写作越久，系统越强"| W
+    KB -.->|历史轨迹| EVO
+    EVO -->|candidate commit| PROBE
+    PROBE -->|指针晋升| RL
+    RL -.->|写作越久系统越强| W
 ```
 
 **实证数据**：门禁单阶段化后曾 **2 天连发 4 版**，executor 全程零重部署；发版链路迭代全程 **12 次激活失败全部自动补偿恢复**、**2 次真实回滚**，生产侧始终保有可用版本。
@@ -62,32 +62,32 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    Author(["👤 作者"])
+    Author([作者])
 
-    subgraph Clients["客户端"]
-        Desk["🖥️ 创作桌面端<br/>Tauri 2 · Rust + React 19<br/>HTTP/SSE 中继"]
-        EvoDesk["🧭 进化控制台<br/>Tauri 2 · Rust + React 19"]
+    subgraph Clients[客户端]
+        Desk[创作桌面端<br/>Tauri2 Rust React19]
+        EvoDesk[进化控制台<br/>Tauri2]
     end
 
-    subgraph EX["⚙️ executor 执行端"]
-        EX1["meta agent + 5 专家子代理<br/>FastAPI · LangGraph · DeepAgents<br/>SSE 流式 · HITL 暂停恢复<br/>NWM 记忆回填"]
+    subgraph EX[executor执行端]
+        EX1[meta agent + 5专家子代理<br/>FastAPI LangGraph DeepAgents]
     end
 
-    subgraph EV["🔬 evolution 进化端"]
-        EV1["trace 摄入 → 证据卷宗 → 评估<br/>Python · Pydantic v2 · OTLP<br/>→ 人机共创进化 → 门禁发版"]
+    subgraph EV[evolution进化端]
+        EV1[trace摄入 评估 进化 门禁发版<br/>Python Pydantic OTLP]
     end
 
-    Harness["📦 harness git 仓库<br/>9 类可进化要素<br/>(prompt/中间件/检索策略…)"]
-    LLM(["🤖 LLM"])
-    Mem[("🗄️ NWM 叙事记忆<br/>SQLite + sqlite-vec + FTS5")]
+    Harness[harness git仓库<br/>9类可进化要素]
+    LLM([LLM])
+    Mem[(NWM叙事记忆<br/>SQLite sqlite-vec FTS5)]
 
     Author ==> Desk ==> EX1
     EvoDesk --> EV1
     EX1 --> LLM
     EX1 <--> Mem
-    EX1 == "canonical trace (终态通知→增量拉取)" ==> EV1
-    EV1 == "probe装配门禁 · registry指针晋升" ==> Harness
-    Harness -.-> "exact commit干净checkout热加载" .-> EX1
+    EX1 ==>|canonical trace| EV1
+    EV1 ==>|probe装配门禁| Harness
+    Harness -.->|热加载| EX1
 ```
 
 执行端与进化端**独立部署、独立演进**。执行端是领域无关的 Agent 运行时，四层架构（`routers → domains → platform` + 运行时动态加载的 harness 包），分层依赖由 AST 静态分析强制；进化端是离线质量与改进引擎。两端只通过两样东西单向耦合：**canonical trace**（事实）与 **harness git 仓库**（版本）。

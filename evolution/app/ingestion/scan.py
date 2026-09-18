@@ -137,16 +137,30 @@ def _associated_business_terminal(trace_id: str) -> bool:
 
 
 def _fetch_and_ingest(trace_id: str, workspace_hint: str | None) -> str | None:
-    """拉取单个 trace 内容并摄入（兜底扫描专用）。"""
+    """拉取单个 trace 内容并摄入（兜底扫描专用，带摄取指标，FR-001 L4）。"""
+    import time
+
+    from app.core import telemetry
+    from contracts import metrics as cm
     from app.ingestion.ingestion import _fetch_trace_content
     from app.ingestion import importer
 
-    fetched = _fetch_trace_content(trace_id)
-    if fetched is None:
-        return None
-    events, run_summary, payload_values = fetched
-    # 优先用列表端点返回的 workspace_id；run summary 保持 V2 manifest 与完整性语义。
-    return importer.ingest_events(
-        events, workspace_hint or run_summary.workspace_id, run_status_hint=run_summary.status,
-        run_summary_hint=run_summary, payload_values=payload_values,
-    )
+    started = time.perf_counter()
+    try:
+        fetched = _fetch_trace_content(trace_id)
+        if fetched is None:
+            telemetry.record_ingestion(cm.STATUS_NO_CONTENT, time.perf_counter() - started)
+            return None
+        events, run_summary, payload_values = fetched
+        # 优先用列表端点返回的 workspace_id；run summary 保持 V2 manifest 与完整性语义。
+        tid = importer.ingest_events(
+            events, workspace_hint or run_summary.workspace_id, run_status_hint=run_summary.status,
+            run_summary_hint=run_summary, payload_values=payload_values,
+        )
+        telemetry.record_ingestion(
+            cm.STATUS_OK if tid else cm.STATUS_REJECTED, time.perf_counter() - started
+        )
+        return tid
+    except Exception:
+        telemetry.record_ingestion(cm.STATUS_ERROR, time.perf_counter() - started)
+        raise

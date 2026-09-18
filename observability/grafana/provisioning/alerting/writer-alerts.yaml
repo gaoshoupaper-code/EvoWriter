@@ -1,0 +1,193 @@
+# ─────────────────────────────────────────────────────────────
+# Grafana 内置告警（REQ-20260918-144856 DEC-010 / FR-007）
+# 首批规则：
+#   ① 服务存活 ×2 —— collector 抓取 up + blackbox 探针（executor/evolution /health）
+#   ② HTTP 5xx 比例 —— 5 分钟窗口超 5%
+#   ③ 摄取断供 —— 最近一次成功摄取距今超 30 分钟（顺带覆盖整条指标管线死亡）
+# 通知渠道：notify-channel 为占位 webhook，部署时在 Grafana UI
+#   Alerting → Contact points 改成真实渠道（邮件/飞书），见 docs/deployment.md。
+# 指标名已按 Collector→Prometheus 转换规则（点→下划线 + 单位后缀）书写。
+# ─────────────────────────────────────────────────────────────
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: notify-channel
+    receivers:
+      - uid: notify-webhook-placeholder
+        type: webhook
+        settings:
+          url: http://placeholder.invalid/replace-me
+        disableResolveMessage: false
+
+policies:
+  - orgId: 1
+    receiver: notify-channel
+    group_by: [grafana_folder, alertname]
+    group_wait: 30s
+    group_interval: 5m
+
+groups:
+  - orgId: 1
+    name: writer-infra
+    folder: Writer 观测
+    interval: 1m
+    rules:
+      - uid: writer-collector-down
+        title: 观测链路掉线（otel-collector 抓取失败）
+        condition: B
+        for: 1m
+        annotations:
+          summary: collector 或抓取链路故障超过 1 分钟——指标断供，业务不受影响但观测失明
+        labels:
+          severity: critical
+        data:
+          - refId: A
+            relativeTimeRange: { from: 120, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: min(up{job="otel-collector"})
+              instant: true
+              intervalMs: 1000
+              legendFormat: collector_up
+              maxDataPoints: 43200
+              range: false
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [1], type: lt }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              settings: { mode: dropNN }
+              type: threshold
+
+      - uid: writer-service-down
+        title: 业务服务掉线（executor / evolution /health 探测失败）
+        condition: B
+        for: 1m
+        annotations:
+          summary: "{{ $labels.instance }} 健康探测连续 1 分钟失败"
+        labels:
+          severity: critical
+        data:
+          - refId: A
+            relativeTimeRange: { from: 120, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: min by (instance) (probe_success{job="blackbox"})
+              instant: true
+              intervalMs: 1000
+              legendFormat: services_probe
+              maxDataPoints: 43200
+              range: false
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [1], type: lt }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              settings: { mode: dropNN }
+              type: threshold
+
+      - uid: writer-http-5xx
+        title: HTTP 5xx 比例突增（5 分钟窗口超 5%）
+        condition: B
+        for: 1m
+        annotations:
+          summary: 全部服务 5xx 占比超 5% 持续超过 1 分钟
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            relativeTimeRange: { from: 300, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: >-
+                100 * sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m]))
+                / clamp_min(sum(rate(http_server_request_duration_seconds_count[5m])), 0.000001)
+              instant: true
+              intervalMs: 1000
+              legendFormat: http_5xx_pct
+              maxDataPoints: 43200
+              range: false
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [5], type: gt }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              settings: { mode: dropNN }
+              type: threshold
+
+      - uid: writer-ingestion-stale
+        title: 进化摄取断供（有拉取活动但 30 分钟无成功）
+        condition: B
+        for: 1m
+        noDataState: OK
+        annotations:
+          summary: >-
+            摄取管线在有拉取活动（notify/兜底扫描）的情况下超 30 分钟无成功记录——
+            通知断链或摄取持续失败。空闲期（无写作 → 无拉取）不触发，避免误报；
+            冷启动（序列不存在）保持正常态；进程死亡由探活规则覆盖；
+            状态同步路径（纯 UI 刷新）不刷新 last_success，不会掩盖断供。
+        labels:
+          severity: warning
+        data:
+          - refId: A
+            relativeTimeRange: { from: 600, to: 0 }
+            datasourceUid: prometheus
+            model:
+              datasource: { type: prometheus, uid: prometheus }
+              editorMode: code
+              expr: (time() - max(writer_run_last_success_seconds{workload="ingestion"}) > 1800) and (sum(increase(writer_ingestion_pull_total[40m])) > 0)
+              instant: true
+              intervalMs: 1000
+              legendFormat: ingestion_stale_seconds
+              maxDataPoints: 43200
+              range: false
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator: { params: [1800], type: gt }
+                  operator: { type: and }
+                  query: { params: [B] }
+                  reducer: { params: [], type: last }
+                  type: query
+              datasource: { type: __expr__, uid: __expr__ }
+              expression: A
+              intervalMs: 1000
+              maxDataPoints: 43200
+              reducer: last
+              settings: { mode: dropNN }
+              type: threshold

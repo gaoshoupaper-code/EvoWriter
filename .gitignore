@@ -25,6 +25,9 @@ executor/.env*联调*
 !executor/.env.production.example
 !executor/.env.example
 
+# 根 .env（compose 变量插值用：GRAFANA_ADMIN_PASSWORD 等，观测栈 2026-09-18）
+/.env
+
 # 运行时数据
 executor/workspace/
 executor/checkpoints.db*

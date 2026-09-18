@@ -36,6 +36,7 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 import app.core.db as db
+from app.core import telemetry
 from app.core.models import (
     TraceContextRange,
     TraceDetail,
@@ -46,6 +47,7 @@ from app.core.models import (
 from app.trace.increment import IncrementState, compute_increment
 from app.trace.summary_export import export_trace_summary
 from app.core.settings import settings
+from contracts import metrics as cm
 from contracts.trace import (
     TraceManifest,
     TraceSpanLink,
@@ -86,6 +88,58 @@ _CANCEL_REASON_MESSAGES: dict[str, str] = {
 
 # interrupted 来源（trace 稳定性重构）：仅 interrupted 状态下写入 runs.interrupted_reason。
 InterruptedReason = Literal["process_restart", "heartbeat_timeout", "user_marked"]
+
+
+def _emit_metrics(event: TraceLogEvent, workload: str) -> None:
+    """FR-001 L3：从 trace 事件流派生基建指标（与执行端 recorder 同一埋点
+    管线移植）。未启用埋点时整体短路；启用后任何失败静默——观测绝不打断
+    业务主流程（FR-006）。
+    """
+    if not telemetry.is_enabled():
+        return
+    try:
+        event_type = event.type
+        if event_type == "llm_end":
+            telemetry.record_llm_call(
+                event.model_name, event.agent_name,
+                event.status or cm.STATUS_COMPLETED,
+                (event.duration_ms or 0) / 1000, event.usage,
+            )
+        elif event_type == "llm_error":
+            telemetry.record_llm_call(
+                event.model_name, event.agent_name,
+                cm.STATUS_FAILED, (event.duration_ms or 0) / 1000, None,
+            )
+        elif event_type == "tool_end":
+            telemetry.record_tool_call(
+                event.tool_name, event.status or cm.STATUS_COMPLETED,
+                (event.duration_ms or 0) / 1000,
+            )
+        elif event_type == "tool_error":
+            telemetry.record_tool_call(
+                event.tool_name, cm.STATUS_FAILED,
+                (event.duration_ms or 0) / 1000,
+            )
+        elif event_type == "middleware_intervention":
+            intervention = event.intervention if isinstance(event.intervention, Mapping) else {}
+            action = str(intervention.get("action") or "unknown")
+            telemetry.record_intervention(action)
+            if action == "model_attempt_failed":
+                telemetry.record_llm_attempt_failed(
+                    event.model_name,
+                    cm.error_class_from_reason(str(intervention.get("reason") or "")),
+                )
+        elif event_type == "run_start":
+            telemetry.record_run_start(workload, event.trace_id)
+        elif event_type in cm.TERMINAL_RUN_EVENTS:
+            telemetry.record_run_terminal(
+                workload,
+                event.status or cm.terminal_run_status(event_type) or "unknown",
+                (event.duration_ms or 0) / 1000,
+                event.trace_id,
+            )
+    except Exception:
+        pass  # noqa: BLE001 —— 指标派生失败不得影响 trace 主流程（FR-006）
 
 
 @dataclass
@@ -150,6 +204,11 @@ class EvolutionTraceRecorder:
                 await self._scanner_task
             self._scanner_task = None
         self._flush_all_sync()
+
+    def pending_writes_depth(self) -> int:
+        """drain 缓冲区当前深度（供指标采集回调读取，FR-001 L4 观测自身健康）。"""
+        with self._pending_lock:
+            return len(self._pending_writes)
 
     # ── run 生命周期 ──────────────────────────────────────────
 
@@ -562,7 +621,11 @@ class EvolutionTraceRecorder:
             if queue is not None:
                 queue.put_nowait(event)
 
-            return event
+            workload = self._run_workloads.get(trace_id) or "unknown"
+
+        # 指标派生移出 per-trace 锁：OTel 聚合自带锁，不占 recorder 临界区。
+        _emit_metrics(event, workload)
+        return event
 
     def _externalize_payloads(
         self,
@@ -1043,6 +1106,12 @@ class EvolutionTraceRecorder:
                 WHERE trace_id IN ({placeholders}) AND status='running'""",
             (now_iso, *trace_ids),
         )
+        # 观测收敛：此路径不经事件流（无 run 终态事件），在途配对需显式回收，
+        # 否则 run_active 永久 +1 且 _active_trace_ids 无界增长（review 整改）。
+        for trace_id in trace_ids:
+            telemetry.forget_run(
+                self._run_workloads.get(trace_id) or "unknown", trace_id
+            )
 
     def _take_pending_batch(self) -> list[tuple[str, str]]:
         """从缓冲区取出一批待写行（最多 _FLUSH_BATCH_MAX 条）。"""

@@ -19,10 +19,12 @@ from typing import Any, Literal
 from uuid import UUID, uuid4
 
 from app.schemas.screenplay import ThreadSummary
+from app.platform import telemetry
 from app.platform.trace.increment import IncrementState, compute_increment
 from app.platform.trace.projector import TraceProjector
 from app.platform.trace.schemas import TraceDetail, TraceLogEvent, TraceRunSummary
 from app.platform.trace.summary_export import export_trace_summary
+from contracts import metrics as cm
 from contracts.trace import TraceManifest, compute_trace_events_hash
 from contracts.trace import CancelAudit, MiddlewareDescriptor, SkillCatalogEntry
 from contracts.trace.payload import (
@@ -63,6 +65,58 @@ _ZOMBIE_SCAN_INTERVAL = 5 * 60     # 5min
 _TRACE_OBSERVER_ACTIVE: ContextVar[bool] = ContextVar(
     "writer_trace_observer_active", default=False
 )
+
+
+def _emit_metrics(event: TraceLogEvent, workload: str) -> None:
+    """FR-001 L3：从 trace 事件流派生基建指标（与 trace 同一埋点管线，复用
+    已算好的 duration_ms/usage，不重复计时）。未启用埋点时整体短路；启用后
+    任何失败静默——观测绝不打断业务主流程（FR-006）。
+    """
+    if not telemetry.is_enabled():
+        return
+    try:
+        event_type = event.type
+        if event_type == "llm_end":
+            telemetry.record_llm_call(
+                event.model_name, event.agent_name,
+                event.status or cm.STATUS_COMPLETED,
+                (event.duration_ms or 0) / 1000, event.usage,
+            )
+        elif event_type == "llm_error":
+            telemetry.record_llm_call(
+                event.model_name, event.agent_name,
+                cm.STATUS_FAILED, (event.duration_ms or 0) / 1000, None,
+            )
+        elif event_type == "tool_end":
+            telemetry.record_tool_call(
+                event.tool_name, event.status or cm.STATUS_COMPLETED,
+                (event.duration_ms or 0) / 1000,
+            )
+        elif event_type == "tool_error":
+            telemetry.record_tool_call(
+                event.tool_name, cm.STATUS_FAILED,
+                (event.duration_ms or 0) / 1000,
+            )
+        elif event_type == "middleware_intervention":
+            intervention = event.intervention if isinstance(event.intervention, Mapping) else {}
+            action = str(intervention.get("action") or "unknown")
+            telemetry.record_intervention(action)
+            if action == "model_attempt_failed":
+                telemetry.record_llm_attempt_failed(
+                    event.model_name,
+                    cm.error_class_from_reason(str(intervention.get("reason") or "")),
+                )
+        elif event_type == "run_start":
+            telemetry.record_run_start(workload, event.trace_id)
+        elif event_type in cm.TERMINAL_RUN_EVENTS:
+            telemetry.record_run_terminal(
+                workload,
+                event.status or cm.terminal_run_status(event_type) or "unknown",
+                (event.duration_ms or 0) / 1000,
+                event.trace_id,
+            )
+    except Exception:
+        pass  # noqa: BLE001 —— 指标派生失败不得影响 trace 主流程（FR-006）
 
 
 @dataclass
@@ -403,7 +457,10 @@ class TraceRecorder:
             queue = self._queues.get(trace_id)
             if queue is not None:
                 queue.put_nowait(event)
-            return event
+
+        # 指标派生移出 per-trace 锁：OTel 聚合自带锁，不占 recorder 临界区。
+        _emit_metrics(event, cm.WORKLOAD_CREATION)
+        return event
 
     def _externalize_payloads(
         self,
@@ -454,6 +511,11 @@ class TraceRecorder:
     def _drain_active(self) -> bool:
         """drain 协程是否在运行（用于 append_event 选择异步/同步写盘路径）。"""
         return self._drain_task is not None and not self._drain_task.done()
+
+    def pending_writes_depth(self) -> int:
+        """drain 缓冲区当前深度（供指标采集回调读取，FR-001 L4 观测自身健康）。"""
+        with self._pending_lock:
+            return len(self._pending_writes)
 
     # ── HITL：awaiting_input 状态 + 停止标记 ──────────────────────
 

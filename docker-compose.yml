@@ -44,6 +44,10 @@ services:
       # 记忆系统（NWM 重构，2026-07-17）：去 Graphiti/FalkorDB，改 SQLite + sqlite-vec。
       # 配置项（MEMORY_EXTRACT_*/MEMORY_EMBED_*）走 executor/.env，不在此硬编码。
       # memory.db 落在 executor_data 卷内（DB_PATH 同目录的 memory/ 子目录）。
+      # 基建指标埋点（REQ-20260918-144856）：OTLP 推送 collector；SEMCONV 固定
+      # 新语义约定（http.server.request.duration + http.response.status_code）。
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_SEMCONV_STABILITY_OPT_IN=http
     volumes:
       # 持久化：用户库 + workspace + checkpoints（用户数据，不可丢）
       # 源码不挂卷——留在镜像里，rebuild 自动更新（根治旧方案源码被 volume 覆盖的问题）。
@@ -90,6 +94,10 @@ services:
       # - ALLOWED_USER_IDS=<你的 executor user_id>
       # - NOTIFY_TOKEN=<强随机 token>
       # - EVOLUTION_MASTER_KEY=<hex 64 字符>
+      # 基建指标埋点（REQ-20260918-144856）：OTLP 推送 collector；SEMCONV 固定
+      # 新语义约定（http.server.request.duration + http.response.status_code）。
+      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      - OTEL_SEMCONV_STABILITY_OPT_IN=http
     volumes:
       # 持久化：evolution.db（监测数据 + llm_configs 加密 key，不可丢）
       # 只挂 data/ 子目录（2026-07-08）：源码不挂卷，增量更新 build+up 即生效，
@@ -123,6 +131,79 @@ services:
     container_name: writer-website
     expose:
       - "80"
+    restart: always
+    security_opt:
+      - no-new-privileges:true
+
+  # ═══════════ 观测栈（REQ-20260918-144856，DEC-006/007/009）═══════════
+  # 数据路径：executor/evolution OTel SDK --OTLP/HTTP--> otel-collector
+  #           <--30s 抓取-- prometheus <--查询-- grafana(nginx /grafana 反代)
+  # 内存预算（DEC-009，服务器 2核4G）：四容器合计硬顶 608M ≤ 640M 预算。
+  # 业务不依赖观测栈（FR-006）：观测容器全挂不影响写作/进化。
+  otel-collector:
+    image: otel/opentelemetry-collector:0.104.0
+    container_name: writer-otel-collector
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./observability/otelcol.yaml:/etc/otelcol/config.yaml:ro
+    expose:
+      - "4318"   # OTLP/HTTP 接收（executor/evolution 推送，仅内网）
+      - "8889"   # Prometheus exporter（prometheus 抓取，仅内网）
+    mem_limit: 128m
+    restart: always
+    security_opt:
+      - no-new-privileges:true
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    container_name: writer-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=15d   # DEC-009：保留 15 天
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    expose:
+      - "9090"
+    mem_limit: 256m
+    restart: always
+    security_opt:
+      - no-new-privileges:true
+
+  grafana:
+    # 12.4.x = 在维护安全线（12.4.11 补丁 2026-09-15；11.x 已 EOL 且 11.1/11.6.0
+    # 含 CVE-2024-9264 / CVE-2025-4123 公网利用链，review 两轮整改）。
+    # 升级前核对 https://endoflife.date/grafana 的在维护线与最新补丁号。
+    image: grafana/grafana:12.4.11
+    container_name: writer-grafana
+    environment:
+      # 管理员密码：根 .env 设置 GRAFANA_ADMIN_PASSWORD（DEC-008 修订：自带登录）
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?请在项目根 .env 设置 GRAFANA_ADMIN_PASSWORD}
+      # 子路径部署（nginx 反代 /grafana，DEC-008）
+      - GF_SERVER_ROOT_URL=https://siyen.site/grafana/
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_ANALYTICS_REPORTING=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    expose:
+      - "3000"
+    mem_limit: 192m
+    restart: always
+    security_opt:
+      - no-new-privileges:true
+
+  # 服务探活（FR-007 规则①）：blackbox 探 executor/evolution /health。
+  # 不用 prometheus 直接抓 /health：JSON 非 Prometheus 格式会判抓取失败误报 up=0。
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.25.0
+    container_name: writer-blackbox
+    expose:
+      - "9115"
+    mem_limit: 32m
     restart: always
     security_opt:
       - no-new-privileges:true
@@ -162,3 +243,5 @@ volumes:
   evolution_data:   # evolution 的 evolution.db 在此卷内
   harness_data:     # evolution/harnesses/ 共享（executor + evolution 双向读写）
   harness_git:      # evolution/harness.git/ 共享 bare repo
+  prometheus_data:  # 观测栈：15 天指标（REQ-20260918-144856）
+  grafana_data:     # 观测栈：Grafana 配置/面板状态

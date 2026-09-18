@@ -108,6 +108,12 @@ async def lifespan(app: FastAPI):
     recorder.start_drain()
     app.state.trace_recorder = recorder
 
+    # 基建指标埋点（REQ-20260918-144856 FR-001）：OTel → Collector → Prometheus。
+    # OTEL_EXPORTER_OTLP_ENDPOINT 未配置（本地开发）时静默关闭，零开销直通。
+    from app.core import telemetry
+    telemetry.setup_telemetry("evolution", app=app)
+    telemetry.register_drain_depth_gauge("evolution", recorder.pending_writes_depth)
+
     # Phase 2A：初始化进化对话 checkpointer 池（决策 T5）。
     # 每 session 一个 SQLite 文件，LangGraph 通过 thread_id 自动恢复对话史。
     from app.evolve.agent.checkpoint_pool import (
@@ -121,6 +127,8 @@ async def lifespan(app: FastAPI):
 
     # 关闭：停 recorder drain + flush 残余事件落盘（D5）+ 关闭所有 checkpoint saver。
     await recorder.aclose()
+    # 观测收尾：flush 余量指标（每进程代最后一个 ≤30s 导出批次，review 整改）。
+    telemetry.shutdown()
     await checkpoint_pool.aclose_all()
 
 

@@ -1,0 +1,39 @@
+# ─────────────────────────────────────────────────────────────
+# OTel Collector 配置（REQ-20260918-144856 DEC-007）
+# 数据路径：executor/evolution OTLP/HTTP 推送 → 本 collector
+#           → Prometheus exporter 暴露 :8889 → prometheus 30s 抓取
+# 失败保护（FR-006）：memory_limiter 硬顶（容器 mem_limit 128M），
+#           业务侧只管推送，collector 抖动不影响业务。
+# ─────────────────────────────────────────────────────────────
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # 内存硬顶：limit 96M + spike 24M < 容器 mem_limit 128M（DEC-009）
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 96
+    spike_limit_mib: 24
+  batch:
+    timeout: 10s
+    send_batch_size: 512
+
+exporters:
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    # service.name 资源属性转成指标标签（区分 executor / evolution 同名指标）
+    resource_to_telemetry_conversion:
+      enabled: true
+
+service:
+  telemetry:
+    logs:
+      level: warn
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheus]

@@ -29,6 +29,7 @@ from app.platform.core.db import Database, UserRepository, get_database, init_da
 from app.platform.core.security import load_master_key
 from app.platform.core.settings import get_settings
 from app.platform.state.thread_store import ThreadStore
+from app.platform import telemetry
 from app.platform.trace import TraceRecorder
 from app.schemas.screenplay import InitResponse
 from reportlab.pdfbase import pdfmetrics
@@ -111,6 +112,10 @@ async def _lifespan(application: FastAPI):
     )
     # 多用户：引导管理员账号（幂等）
     bootstrap_admin()
+    # 基建指标埋点（REQ-20260918-144856 FR-001）：OTel → Collector → Prometheus。
+    # OTEL_EXPORTER_OTLP_ENDPOINT 未配置（本地开发）时静默关闭，零开销直通。
+    telemetry.setup_telemetry("executor", app=application)
+    telemetry.register_drain_depth_gauge("executor", trace_recorder.pending_writes_depth)
     # 启动 trace 写盘 drain 协程：append_event 不再同步写盘，改入内存缓冲，
     # 由此后台协程成批落盘（to_thread，不占事件循环）。
     trace_recorder.start_drain()
@@ -128,6 +133,8 @@ async def _lifespan(application: FastAPI):
     await aclose_reconcile()
     from app.platform.trace.outcomes import stop_outcome_delivery
     await stop_outcome_delivery()
+    # 观测收尾：flush 余量指标（每进程代最后一个 ≤30s 导出批次，review 整改）
+    telemetry.shutdown()
     # 关闭 drain 并刷掉残余事件，保证进程退出前 trace 数据完整。
     await trace_recorder.aclose()
     await _checkpointer_cm.__aexit__(None, None, None)
@@ -180,13 +187,20 @@ async def _log_http(request: Request, call_next):
     """
     start = time.perf_counter()
     status_code = 0
+    response = None
     try:
         response = await call_next(request)
         status_code = response.status_code
         return response
     finally:
+        elapsed = time.perf_counter() - start
+        # SSE 首字节指标（FR-008）：中间件耗时 ≈ 首字节时间（见上）。
+        # 路由标签用模板路径（如 /api/threads/{id}/events），不用原始 URL（FR-003 基数红线）。
+        if telemetry.is_enabled() and telemetry.is_sse_response(response):
+            route = getattr(request.scope.get("route"), "path", None) or "unmatched"
+            telemetry.record_sse_ttfb(route, elapsed)
         _log("http", method=request.method, path=request.url.path,
-             status=status_code, ms=int((time.perf_counter() - start) * 1000))
+             status=status_code, ms=int(elapsed * 1000))
 
 
 @app.get("/health")

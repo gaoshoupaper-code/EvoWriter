@@ -24,6 +24,13 @@ dependencies = [
   # ── NWM 记忆系统（去 Graphiti，自研叙事学类型化记忆）──
   "sqlite-vec>=0.1.6",          # 向量检索 SQLite 扩展（vec0 虚拟表）
   "pysqlite3-binary>=0.5.4",    # 带扩展加载能力的 SQLite（标准库 sqlite3 默认禁用 load_extension）
+  # ── 基建指标埋点（REQ-20260918-144856：OTel → Collector → Prometheus）──
+  # 本地开发不设 OTEL_EXPORTER_OTLP_ENDPOINT 时全部埋点零开销直通（FR-001）。
+  "opentelemetry-api>=1.44.0",  # 下限=已验证解析线，防旧线 instrument_app 走 add_middleware 在已启动 app 上抛错（review 二轮）
+  "opentelemetry-sdk>=1.44.0",
+  "opentelemetry-exporter-otlp-proto-http>=1.44.0",
+  "opentelemetry-instrumentation-fastapi>=0.65b0",        # L1 http.server.* 自动埋点
+  "opentelemetry-instrumentation-system-metrics>=0.65b0", # L2 进程/运行时指标
 ]
 
 [build-system]

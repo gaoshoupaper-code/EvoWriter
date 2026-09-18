@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
@@ -177,14 +178,36 @@ async def _ingest_async(trace_id: str, traceparent: str | None = None) -> None:
 
 
 def ingest_trace_now(trace_id: str, traceparent: str | None = None) -> str | None:
-    """立即从 executor 增量拉取并摄入一条 trace。
+    """立即从 executor 增量拉取并摄入一条 trace（外层带摄取异常指标，FR-001 L4）。
 
     终态通知和详情页按需刷新共用这条同步路径，避免两套摄入逻辑在高水位、
     状态同步和手动测试终态上产生分歧。调用方应在线程池或同步 FastAPI 路由中执行。
+    指标口径（状态记录在 impl 各出口）：成功摄入（有新事件）→ ok（刷新
+    last_success）；状态同步（无新事件，含手动刷新）→ ok（不刷新 last_success，
+    纯 UI 刷新不得掩盖死掉的摄取管线，FR-007 告警③语义）；拉不到内容 →
+    no_content；内容被导入器拒绝 → rejected；异常 → error。
     """
+    from app.core import telemetry
+    from contracts import metrics as cm
+
+    started = time.perf_counter()
+    try:
+        return _ingest_trace_now_impl(trace_id, traceparent)
+    except Exception:
+        telemetry.record_ingestion(cm.STATUS_ERROR, time.perf_counter() - started)
+        raise
+
+
+def _ingest_trace_now_impl(trace_id: str, traceparent: str | None = None) -> str | None:
+    """ingest_trace_now 的实现体（摄取指标在各出口记录，见外层 docstring 口径）。"""
+    from app.core import telemetry
+    from contracts import metrics as cm
+
+    started = time.perf_counter()
     prior_events, since_seq = _load_prior_events(trace_id)
     fetched = _fetch_trace_content(trace_id, since_seq, traceparent)
     if fetched is None:
+        telemetry.record_ingestion(cm.STATUS_NO_CONTENT, time.perf_counter() - started)
         return None
     events, run_summary, payload_values = fetched
     # 增量场景：本次无新事件（since_seq 已是最新）。
@@ -192,6 +215,9 @@ def ingest_trace_now(trace_id: str, traceparent: str | None = None) -> str | Non
     # 故不直接 return：用执行端 run 摘要的 status 覆盖本地，保持状态最终一致。
     if since_seq > 0 and not events:
         _sync_status_only(trace_id, traceparent)
+        telemetry.record_ingestion(
+            cm.STATUS_OK, time.perf_counter() - started, touch_last_success=False
+        )
         return trace_id
     tid = importer.ingest_events(
         events,
@@ -202,6 +228,7 @@ def ingest_trace_now(trace_id: str, traceparent: str | None = None) -> str | Non
         payload_values=payload_values,
     )
     if tid is None:
+        telemetry.record_ingestion(cm.STATUS_REJECTED, time.perf_counter() - started)
         return None
     # 评估已从摄入链路解耦（决策 S6）：不再摄入时自动评估，
     # 评估统一由 eval_agent 手动触发（POST /eval-agent/start）。
@@ -212,6 +239,9 @@ def ingest_trace_now(trace_id: str, traceparent: str | None = None) -> str | Non
         if run_row["status"] in {"completed", "failed", "cancelled", "interrupted"}:
             from app.trace.otlp import schedule_otlp_export
             schedule_otlp_export(tid)
+    # OK 记在尾部工作之后：尾部（query_one 等）抛异常时由外层记 error，
+    # 一次调用至多记一个状态（review 整改：防 ok+error 双计）。
+    telemetry.record_ingestion(cm.STATUS_OK, time.perf_counter() - started)
     return tid
 
 

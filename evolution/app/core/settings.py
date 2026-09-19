@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     # 桌面化后双重用途：内网 trace 拉取 + SSO 回调 /api/auth/me 验证。
     executor_url: str = "http://localhost:7788"
 
+    # Platform 控制面服务地址（Phase A，REQ-20260919-202344）。
+    # 发版编排调 Platform 原语的唯一目标：门禁 probe + 晋升 promote。
+    # 容器部署时用 docker 服务名（如 http://platform:7790）。
+    platform_url: str = "http://localhost:7790"
+
     # ── 大模型 API 配置（桌面化改造，2026-07-07）──
     # LLM key/base_url/model 不再从 env 读（删 judge_* 字段），改从 llm_config 表读
     # （桌面端填 → HTTP → evolution 加密存）。见 app/core/security.py + db.py。

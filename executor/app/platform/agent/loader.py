@@ -1,4 +1,4 @@
-"""Agent 包加载器（Phase 7 T3.1 + Phase 8 compose 热加载升级）。
+"""Agent 包加载器（Phase 7 T3.1 + Phase 8 compose 热加载 + Phase A 去 git 化）。
 
 执行端通过 importlib 加载 harness 包目录作为 Python package，
 调用方取 mod.assemble(ctx) 装配完整 agent（单参数契约）。
@@ -8,13 +8,15 @@
   submodule_search_locations 是让包内相对 import（from .middleware import X）生效的
   关键——没有它，包被当作普通模块加载，相对 import 会失败。
 
-Phase 8 变更（compose 配置化 + 热加载，决策 D10b/#16）：
-  - 生产路径从"直读 evolution/harnesses/current/"改为"git pull bare repo → 加载 checkout 目录"
-  - 新增 load_package(path) 通用函数：加载任意路径的包（候选 A/B 用）
-  - 新增 reload_current()：清缓存 + git pull + 重新加载（不重启进程，决策 #16）
-  - 候选路径：load_package(checkout_commit 返回的临时目录)
+Phase A 变更（REQ-20260919-202344，DEC-012 去 git 化）：
+  - 生产/候选包来源从「git pull bare repo」改为「Platform artifact 下载 + digest
+    校验 + 本地缓存解包」（artifact_client），本模块不再有任何 git 操作。
+  - load_current_package()：Platform 查生产 commit → ensure_artifact → 加载。
+  - reload_current(commit, digest)：热重载指定/当前生产版本（晋升通知触发）。
+  - production_commit()/production_checkout()：记忆最近一次加载的 commit/解包目录，
+    供 Run 绑定与 runtime_identity 使用（不再读 git 元数据——artifact 目录无 .git）。
 
-设计依据：设计文档 D8=X + D10b + #16 + D9a。
+设计依据：设计文档 D8=X + D10b + #16 + D9a + REQ-20260919-202344 DEC-012。
 """
 from __future__ import annotations
 
@@ -24,12 +26,20 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
-from app.platform.core.settings import get_settings
-
 logger = logging.getLogger("writer.package_loader")
 
 # 模块级缓存：生产包加载一次后复用（热加载时清缓存重建，决策 #16）
 _loaded_package: ModuleType | None = None
+# 最近一次加载的生产 commit（未加载时为空串）——Run 绑定 / trace 快照用
+_current_commit: str = ""
+# 最近一次加载的 artifact 解包目录——runtime_identity / 身份指纹用
+_current_checkout: Path | None = None
+
+
+def _artifact_client():
+    from app.platform.agent.artifact_client import get_artifact_client
+
+    return get_artifact_client()
 
 
 def load_package(pkg_path: Path, mod_name: str = "harness_current") -> ModuleType:
@@ -74,41 +84,105 @@ def load_package(pkg_path: Path, mod_name: str = "harness_current") -> ModuleTyp
 
 
 def load_current_package() -> ModuleType:
-    """加载生产 Agent 包（current），返回包模块。
+    """加载生产 Agent 包，返回包模块。
 
-    Phase 8：从 git pull 的生产 checkout 目录加载（非直读 evolution 工作目录）。
-    幂等：首次加载后缓存，reload_current() 后重新加载。
+    Phase A：从 Platform 查生产 commit → artifact_client 下载校验解包 →
+    importlib 加载解包目录。幂等：首次加载后缓存，reload_current() 后重新加载。
 
-    Returns: 包模块对象。
+    冷启动 fail-static（DEC-008）：Platform 不可达时回退本地
+    known_production.json 记录的 commit + 本地 artifact 缓存装配（缓存命中
+    零 HTTP），并 warning 标记降级；known/缓存都没有则抛原异常。
+
+    Raises:
+        RuntimeError: Platform 不可达（且无本地回退）/ 无生产版本 /
+                      artifact 校验失败（调用方决定是否降级）。
     """
-    global _loaded_package
+    global _loaded_package, _current_commit, _current_checkout
     if _loaded_package is not None:
         return _loaded_package
 
-    # Phase 8：git pull 生产 checkout（决策 D10b）
-    from app.platform.agent.git_sync import pull_production
-    checkout = pull_production()
+    client = _artifact_client()
+    try:
+        status = client.current_production()
+    except Exception as exc:
+        _load_from_known_production(client, exc)
+        return _loaded_package
+    checkout = client.ensure_artifact(status.commit)
     _loaded_package = load_package(checkout, "harness_current")
+    _current_commit = status.commit
+    _current_checkout = checkout
+    logger.info("生产包已就绪: commit=%s version=%s", status.commit, status.version)
     return _loaded_package
 
 
-def reload_current() -> ModuleType:
-    """热加载：清缓存 + git pull + 重新加载生产包（决策 #16，不重启进程）。
+def _load_from_known_production(client, exc: Exception) -> None:
+    """Platform 不可达时的冷启动回退：known_production commit + 本地缓存装配。
 
-    evolution ship 后调 executor /reload 端点触发本函数。
+    成功则填好模块级缓存（_loaded_package/_current_commit/_current_checkout）
+    并 warning 标记降级；known_production 或本地缓存不可用则抛回原异常
+    （exc）——根因是 Platform 不可达，回退失败的细节只进日志。
+    """
+    global _loaded_package, _current_commit, _current_checkout
+    from app.platform.agent.binding_client import get_binding_client
+
+    known = get_binding_client().get_known_production()
+    fallback_commit = str((known or {}).get("commit") or "")
+    if not fallback_commit:
+        raise exc
+    try:
+        checkout = client.ensure_artifact(fallback_commit)
+    except Exception:
+        logger.warning(
+            "冷启动回退失败（本地缓存无 commit=%s）", fallback_commit, exc_info=True,
+        )
+        raise exc from None
+    logger.warning(
+        "冷启动降级：Platform 不可达，用本地缓存装配已知生产 commit=%s（err=%s）",
+        fallback_commit, exc,
+    )
+    _loaded_package = load_package(checkout, "harness_current")
+    _current_commit = fallback_commit
+    _current_checkout = checkout
+
+
+def reload_current(commit: str | None = None, digest: str | None = None) -> ModuleType:
+    """热加载：清缓存 + 拉取 artifact + 重新加载生产包（决策 #16，不重启进程）。
+
+    有 commit（晋升 reload 通知携带）用之；无 commit 向 Platform 对账取当前
+    生产版本。digest 非空时 ensure_artifact 会比对 Platform meta，不符拒绝装配。
 
     Returns: 重新加载后的包模块。
     """
-    global _loaded_package
+    global _loaded_package, _current_commit, _current_checkout
     # 清缓存：pop sys.modules 里包及其子模块（middleware.* 等）
     _purge_package_modules("harness_current")
     _loaded_package = None
 
-    from app.platform.agent.git_sync import pull_production
-    checkout = pull_production()
+    client = _artifact_client()
+    if commit is None:
+        commit = client.current_production().commit
+    checkout = client.ensure_artifact(commit, expected_digest=digest)
     _loaded_package = load_package(checkout, "harness_current")
-    logger.info("生产包热加载完成: %s", checkout)
+    _current_commit = commit
+    _current_checkout = checkout
+    logger.info("生产包热加载完成: commit=%s", commit)
     return _loaded_package
+
+
+def production_commit() -> str:
+    """最近一次加载的生产 commit（str；尚未加载时为空串，不触发加载/HTTP）。"""
+    return _current_commit
+
+
+def production_checkout() -> Path:
+    """当前生产 artifact 解包目录（runtime_identity / 身份指纹用）。
+
+    Raises:
+        RuntimeError: 尚未加载生产包（先 load_current_package / reload_current）。
+    """
+    if _current_checkout is None:
+        raise RuntimeError("生产 artifact 尚未加载（先 load_current_package）")
+    return _current_checkout
 
 
 def _purge_package_modules(prefix: str) -> None:
@@ -120,7 +194,9 @@ def _purge_package_modules(prefix: str) -> None:
 
 def reset_cache() -> None:
     """清除包缓存（测试用，或手动重载）。生产路径用 reload_current()。"""
-    global _loaded_package
+    global _loaded_package, _current_commit, _current_checkout
     if _loaded_package is not None:
         _purge_package_modules("harness_current")
         _loaded_package = None
+    _current_commit = ""
+    _current_checkout = None

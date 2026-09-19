@@ -7,9 +7,15 @@
   GET  /snapshots                 列版本（按版本倒序，含 status）
   GET  /snapshots/production      当前 production 版本
   GET  /snapshots/{version}       指定版本元数据
+  POST /snapshots/rollback        回滚（Phase A：重新晋升旧 commit，走 Platform）
 
 版本内容（源码文件）不在本端点返回——通过 /snapshots/{version}/elements 取
 （elements_api 从 git 读取真实源文件）。
+
+Phase A（REQ-20260919-202344）：registry.json 只读（Platform 账本是仲裁源）。
+rollback = 查本地 registry（只读）拿目标 version 的 commit → POST Platform
+/api/release/promote 重新晋升旧 commit，不再移动本地 production 指针、不再
+直连 executor reload（Platform 全包）。
 
 设计依据：设计文档 20260713_003000（去 DB 轻量化重构）。
 """
@@ -32,33 +38,6 @@ class RollbackRequest(BaseModel):
     reason: str = ""
 
 
-def _compensate_failed_rollback(
-    current: dict[str, Any], failed_target_version: int
-) -> str | None:
-    """恢复 registry 与 executor；返回 None 表示补偿已确认。"""
-    from app.core import git_ops
-    from app.versioning.snapshot_publisher import reload_executor
-
-    try:
-        registry_repo.restore_failed_rollback(current["version"], failed_target_version)
-        git_ops.commit_registry_and_push(
-            f"恢复 Harness production v{current['version']}: rollback 激活失败"
-        )
-        restored = reload_executor(current["version"])
-        if restored.get("commit") != current.get("commit_hash"):
-            raise RuntimeError("executor 未恢复到原 production commit")
-        expected_identity = current.get("runtime_identity") or {}
-        actual_identity = restored.get("runtime_identity") or {}
-        if expected_identity and (
-            actual_identity.get("identity_digest")
-            != expected_identity.get("identity_digest")
-        ):
-            raise RuntimeError("executor 未恢复到原 production runtime identity")
-        return None
-    except Exception as exc:
-        return str(exc)
-
-
 @router.get("")
 def list_snapshots(status: str | None = None) -> list[dict[str, Any]]:
     """列版本（按版本倒序）。可按 status 过滤（production/retired）。"""
@@ -79,7 +58,11 @@ def get_production_snapshot() -> dict[str, Any]:
 
 @router.post("/rollback")
 def rollback_snapshot(body: RollbackRequest, request: Request) -> dict[str, Any]:
-    """移动 production 指针并 reload executor；确认后记录 rollback_activated。"""
+    """回滚 = 重新晋升旧 commit（Phase A）：registry 只读查目标 commit → Platform promote。
+
+    旧写线（移动本地 production 指针 + git 提交 + 直连 executor reload）已退役。
+    Platform promote 原子：失败时账本未动，无需旧线的恢复补偿。
+    """
     current = registry_repo.get_production_version()
     if current is None:
         raise HTTPException(status_code=409, detail="无 production 版本可回滚")
@@ -94,44 +77,29 @@ def rollback_snapshot(body: RollbackRequest, request: Request) -> dict[str, Any]
         (source_candidate_id,),
     )
 
-    from app.core import git_ops
-    from app.versioning.snapshot_publisher import reload_executor
+    from app.versioning.release_gate import ReleasePromoteError, promote_release
 
     try:
-        target = registry_repo.rollback(body.to_version, reason=body.reason or None)
-        try:
-            registry_commit = git_ops.commit_registry_and_push(
-                f"回滚 production v{current['version']} -> v{body.to_version}"
+        # 只读校验目标版本可执行（校验口径与旧 registry_repo.rollback 一致）
+        target = registry_repo.get_version(body.to_version)
+        if target is None:
+            raise ValueError(f"版本 v{body.to_version} 不存在于 registry")
+        if target.get("promotion_status") == "candidate":
+            raise ValueError(
+                f"candidate v{body.to_version} 未经发布门禁，不可直接回滚为 production"
             )
-        except Exception as exc:
-            restore_error = _compensate_failed_rollback(current, body.to_version)
-            raise HTTPException(
-                status_code=502,
-                detail={
-                    "message": f"rollback registry 提交失败：{exc}",
-                    "executor_restore_error": restore_error,
-                },
-            ) from exc
-        try:
-            activated = reload_executor(body.to_version)
-            activated_identity = activated.get("runtime_identity") or {}
-            expected_identity = target.get("runtime_identity") or {}
-            if activated.get("commit") != target.get("commit_hash"):
-                raise RuntimeError("executor 未加载目标 production commit")
-            if expected_identity and (
-                activated_identity.get("identity_digest")
-                != expected_identity.get("identity_digest")
-            ):
-                raise RuntimeError("executor runtime identity 与目标版本不一致")
-        except Exception as exc:
-            restore_error = _compensate_failed_rollback(current, body.to_version)
-            raise HTTPException(
-                status_code=502,
-                detail={
-                    "message": f"rollback 激活失败，已恢复原 production：{exc}",
-                    "executor_restore_error": restore_error,
-                },
-            ) from exc
+        target_commit = target.get("commit_hash")
+        if not target_commit:
+            raise ValueError(f"版本 v{body.to_version} 缺少不可变 commit 绑定，不可回滚")
+
+        note = f"rollback v{current['version']} -> v{body.to_version}"
+        if body.reason:
+            note = f"{note}: {body.reason}"
+        promoted = promote_release(target_commit, version_note=note)
+        if promoted.commit != target_commit:
+            raise RuntimeError(
+                f"platform promote commit mismatch: {promoted.commit} != {target_commit}"
+            )
         if release:
             append_release_event(
                 release_id=release["release_id"],
@@ -143,8 +111,8 @@ def rollback_snapshot(body: RollbackRequest, request: Request) -> dict[str, Any]
             "status": "rollback_activated",
             "from_version": current["version"],
             "to_version": target["version"],
-            "source_commit": target["commit_hash"],
-            "registry_commit": registry_commit,
+            "source_commit": target_commit,
+            "platform_version": promoted.version,
             "release_id": release["release_id"] if release else None,
             "release_tracking": "v2" if release else "legacy",
         }
@@ -152,6 +120,15 @@ def rollback_snapshot(body: RollbackRequest, request: Request) -> dict[str, Any]
         raise
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ReleasePromoteError, RuntimeError) as exc:
+        # Platform promote 原子：失败时账本未动，无需旧线的恢复补偿
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "message": f"rollback 激活失败（Platform promote）：{exc}",
+                "executor_restore_error": None,
+            },
+        ) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"回滚失败：{exc}") from exc
 

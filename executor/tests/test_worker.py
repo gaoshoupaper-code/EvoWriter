@@ -1,14 +1,13 @@
-"""Phase 2 T2.1：worker 服务测试（重点测 harness 动态加载）。
+"""worker 服务测试（Phase 7 包化后的 worker/server）。
 
-动态加载（load_harness_instance）是 D4 proposer 代码进生产的关键路径——
-proposer 生成的 harness.py 要能被 worker 正确加载为 WriterHarness 实例。
+动态加载（load_package_at）是 A/B 变体执行的关键路径——任意路径的 harness
+包要能被 worker 正确加载（含 assemble 函数）。
 
 覆盖：
-- 正常加载（合法 harness.py → 实例）
-- 文件不存在 → HarnessLoadError
-- 语法错 → HarnessLoadError
-- 无 WriterHarness 子类 → HarnessLoadError
-- health 端点返回 harness_id
+- 正常加载（合法包目录 → 模块含 assemble）
+- 包入口不存在 → FileNotFoundError
+- 包无 assemble → RuntimeError
+- worker app 骨架：health 返回状态与包路径；未注入 generate_fn 时 /generate/stream 501
 """
 from __future__ import annotations
 
@@ -18,85 +17,52 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.worker.server import (
-    HarnessLoadError,
     create_worker_app,
-    load_harness_instance,
+    load_package_at,
 )
+
+
+_VALID_PACKAGE_INIT = '''
+ASSEMBLE_CALLED = False
+
+
+def assemble(ctx):
+    raise NotImplementedError("仅验证可装配性，测试不真正调用")
+'''
+
+
+def _make_package(root: Path, init_code: str = _VALID_PACKAGE_INIT) -> Path:
+    """构造一个最小合法 harness 包目录（含 __init__.py）。"""
+    pkg = root / "fake_harness"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text(init_code, encoding="utf-8")
+    return pkg
 
 
 # ── 动态加载测试 ────────────────────────────────────────────
 
 
-_VALID_HARNESS_CODE = '''
-from app.platform.harness import WriterHarness, HarnessContext
+class TestLoadPackageAt:
+    def test_load_valid_package(self, tmp_path) -> None:
+        """合法包目录 → 加载成功，模块含 assemble。"""
+        pkg_dir = _make_package(tmp_path)
+        mod = load_package_at(pkg_dir)
+        assert callable(mod.assemble)
 
-
-class MyTestHarness(WriterHarness):
-    def build_system_prompt(self, ctx):
-        return "test prompt"
-    def build_skills(self, ctx):
-        return []
-    def build_middleware(self, ctx):
-        return []
-    def build_subagents(self, ctx):
-        return []
-'''
-
-
-class TestLoadHarnessInstance:
-    def test_load_valid_harness(self, tmp_path) -> None:
-        """合法 harness.py → 加载成功，返回 WriterHarness 实例。"""
-        version_dir = tmp_path / "1"
-        version_dir.mkdir()
-        code_path = version_dir / "harness.py"
-        code_path.write_text(_VALID_HARNESS_CODE, encoding="utf-8")
-
-        instance = load_harness_instance(code_path)
-        from app.platform.harness import WriterHarness
-        assert isinstance(instance, WriterHarness)
-        assert instance.harness_id() == "MyTestHarness"
-
-    def test_load_missing_file_raises(self, tmp_path) -> None:
-        with pytest.raises(HarnessLoadError, match="不存在"):
-            load_harness_instance(tmp_path / "nonexistent.py")
+    def test_load_missing_package_raises(self, tmp_path) -> None:
+        with pytest.raises(FileNotFoundError, match="不存在"):
+            load_package_at(tmp_path / "nonexistent")
 
     def test_load_syntax_error_raises(self, tmp_path) -> None:
-        version_dir = tmp_path / "2"
-        version_dir.mkdir()
-        code_path = version_dir / "harness.py"
-        code_path.write_text("def broken(:\n", encoding="utf-8")  # 语法错
+        pkg_dir = _make_package(tmp_path, init_code="def broken(:\n")
+        with pytest.raises(SyntaxError):
+            load_package_at(pkg_dir)
 
-        with pytest.raises(HarnessLoadError, match="执行失败"):
-            load_harness_instance(code_path)
-
-    def test_load_no_harness_subclass_raises(self, tmp_path) -> None:
-        """文件无 WriterHarness 子类 → HarnessLoadError。"""
-        version_dir = tmp_path / "3"
-        version_dir.mkdir()
-        code_path = version_dir / "harness.py"
-        code_path.write_text(
-            "class NotAHarness:\n    pass\n", encoding="utf-8"
-        )
-
-        with pytest.raises(HarnessLoadError, match="未定义 WriterHarness 子类"):
-            load_harness_instance(code_path)
-
-    def test_load_multiple_subclasses_takes_last(self, tmp_path) -> None:
-        """多个子类时取最后定义的。"""
-        version_dir = tmp_path / "4"
-        version_dir.mkdir()
-        code_path = version_dir / "harness.py"
-        code_path.write_text(
-            _VALID_HARNESS_CODE.replace("MyTestHarness", "FirstHarness")
-            + "\n\nclass SecondHarness(WriterHarness):\n"
-            "    def build_system_prompt(self, ctx): return ''\n"
-            "    def build_skills(self, ctx): return []\n"
-            "    def build_middleware(self, ctx): return []\n"
-            "    def build_subagents(self, ctx): return []\n",
-            encoding="utf-8",
-        )
-        instance = load_harness_instance(code_path)
-        assert instance.harness_id() == "SecondHarness"
+    def test_load_package_without_assemble(self, tmp_path) -> None:
+        """包能 import 但无 assemble：加载本身成功（run_worker 才校验 assemble）。"""
+        pkg_dir = _make_package(tmp_path, init_code="X = 1\n")
+        mod = load_package_at(pkg_dir)
+        assert not hasattr(mod, "assemble")
 
 
 # ── worker app 测试 ─────────────────────────────────────────
@@ -104,32 +70,24 @@ class TestLoadHarnessInstance:
 
 class TestWorkerApp:
     def test_health_endpoint(self, tmp_path) -> None:
-        """health 端点返回 harness_id。"""
-        # 先加载一个合法 harness
-        version_dir = tmp_path / "1"
-        version_dir.mkdir()
-        (version_dir / "harness.py").write_text(_VALID_HARNESS_CODE, encoding="utf-8")
-        instance = load_harness_instance(version_dir / "harness.py")
-
-        app = create_worker_app(instance)
+        """health 端点返回状态/包路径/注入标记。"""
+        pkg_dir = _make_package(tmp_path)
+        app = create_worker_app(generate_fn=None, package_path=str(pkg_dir))
         client = TestClient(app)
         resp = client.get("/health")
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
-        assert data["harness_id"] == "MyTestHarness"
+        assert data["package_path"] == str(pkg_dir)
+        assert data["generate_ready"] is False
 
-    def test_generate_stream_returns_501_pending(self, tmp_path) -> None:
-        """生成端点待接入（T2.2），返回 501。"""
-        version_dir = tmp_path / "1"
-        version_dir.mkdir()
-        (version_dir / "harness.py").write_text(_VALID_HARNESS_CODE, encoding="utf-8")
-        instance = load_harness_instance(version_dir / "harness.py")
-
-        app = create_worker_app(instance)
+    def test_generate_stream_returns_501_without_generate_fn(self, tmp_path) -> None:
+        """未注入 generate_fn（测试/骨架环境）→ /generate/stream 返回 501。"""
+        pkg_dir = _make_package(tmp_path)
+        app = create_worker_app(generate_fn=None, package_path=str(pkg_dir))
         client = TestClient(app)
         resp = client.post("/generate/stream", json={
-            "workspace_path": "/tmp/ws",
+            "workspace_path": str(tmp_path / "ws"),
             "payload": {"premise": "test"},
         })
         assert resp.status_code == 501

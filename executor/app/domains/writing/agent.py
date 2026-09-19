@@ -11,6 +11,8 @@ from typing import Any, AsyncIterator
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command
 
+from contracts.platform import BindingRecord
+
 from app.platform.agent.base_service import BaseAgentService
 from app.platform.streaming import ExtraTask, run_agent_stream
 from app.domains.writing.events import WritingEventSink
@@ -331,15 +333,18 @@ class MetaAgentService(BaseAgentService):
             return None
         return style.get("meta_style") or None
 
-    def _agent_for_workspace(self, workspace_path: Path, trace_id: str | None = None, workspace_id: str | None = None, *, model=None, checkpointer=None, owner_id: str | None = None, strict_evidence: bool = False):
+    def _agent_for_workspace(self, workspace_path: Path, trace_id: str | None = None, workspace_id: str | None = None, *, model=None, checkpointer=None, owner_id: str | None = None, strict_evidence: bool = False, llm_override=None, binding: BindingRecord | None = None):
         # 多用户隔离（T2.4/T2.5）：model 用用户解密 key 构建，
         # checkpointer 用用户的分库 saver。两者外部注入，缺省回退全局（管理员兜底）。
         # Phase 7 包化重构：装配逻辑从 evolution 拉 manifest 改为同进程 import Agent 包。
         # 包自带 assemble(ctx)，执行端只构建 RuntimeContext 传入（D1=B / D8=X）。
+        # Phase A（FR-004）：llm_override/binding 由 generate_stream 的 Run 绑定链路
+        # 传入——Run 级模型锁定 + 绑定摘要进 trace 快照。
         return self._assemble_via_package(
             workspace_path, trace_id, workspace_id,
             model=model, checkpointer=checkpointer, owner_id=owner_id,
             strict_evidence=strict_evidence,
+            llm_override=llm_override, binding=binding,
         )
 
     def _assemble_via_package(
@@ -352,6 +357,8 @@ class MetaAgentService(BaseAgentService):
         checkpointer=None,
         owner_id: str | None = None,
         strict_evidence: bool = False,
+        llm_override=None,
+        binding: BindingRecord | None = None,
     ):
         """Phase 7：经 Agent 包装配（替代 _assemble_via_manifest）。
 
@@ -363,6 +370,12 @@ class MetaAgentService(BaseAgentService):
         scope→字段名映射就地处写（D4 决策）：
           meta → meta_style, storybuilding → storybuilding_style,
           detail-outline → detail_outline_style, writing → writing_style。
+
+        Phase A（FR-004）：
+          - llm_override：Run 绑定的 LLM 快照——有值时 model 构建优先用快照的
+            model/base_url（key 仍走受控通道现取，快照本身不含明文 key）。
+          - binding：Run 绑定记录摘要，写进 run_snapshot（字段 binding），
+            供事后追溯「这条 trace 当时装配的 harness commit 与 LLM 配置」。
         """
         from contracts.runtime_context import RuntimeContext
         from app.platform.agent.loader import load_current_package
@@ -380,14 +393,14 @@ class MetaAgentService(BaseAgentService):
             pass
 
         if model is None:
-            model = build_writer_model(self.settings)
+            model = build_writer_model(self.settings, llm_override=llm_override)
         if checkpointer is None:
             checkpointer = self.checkpointer
         pkg = load_current_package()
 
         if trace_id:
             try:
-                from app.platform.agent.git_sync import production_checkout, production_commit
+                from app.platform.agent.loader import production_checkout, production_commit
                 from app.platform.agent.runtime_identity import build_runtime_identity
 
                 harness_commit = production_commit()
@@ -413,6 +426,9 @@ class MetaAgentService(BaseAgentService):
                         "langchain_openai_version": _safe_version("langchain_openai"),
                     },
                 })
+                # FR-004：Run 绑定摘要并进快照（bound commit/degraded/manifest 级联可追溯）
+                if binding is not None:
+                    run_snapshot["binding"] = binding.model_dump(mode="json")
                 self.trace_recorder.set_run_snapshot(trace_id, run_snapshot)
             except Exception as exc:
                 self.trace_recorder._mark_capture_degraded(
@@ -483,6 +499,133 @@ class MetaAgentService(BaseAgentService):
     # 含 _normalize_message 规范化）。本地重复的 override + _normalize_message
     # / _map_role 已删除，消除与 base_service.py 的重复定义。
 
+    # ── Phase A（FR-004/FR-005）：Run 绑定签发 + resume 兼容门禁 ──────
+
+    def _build_llm_snapshot(self):
+        """从 llm_config loader 构造脱敏 LLM 快照（contracts 红线：不含明文 key）。
+
+        loader 未配置/降级返回 None（快照缺省，绑定照签——llm_config 非必填）。
+        """
+        from app.platform.llm_config.loader import get_active_llm_config
+        from contracts.platform import LlmConfigSnapshot
+
+        cfg = get_active_llm_config()
+        if cfg is None:
+            return None
+        return LlmConfigSnapshot(
+            model=cfg.model, base_url=cfg.base_url,
+            api_key_ref=None,  # Phase A：无凭据引用体系，明文 key 绝不进快照
+            source="evolution",
+        )
+
+    def _resolve_binding_commit(self) -> str:
+        """解析 Run 绑定用的 harness commit（绑定必须指向明确的装配版本）。
+
+        优先取已加载的生产包 commit（进程内多数 Run 命中）；进程刚启动、包尚未
+        加载时调 load_current_package()（下载+装配+缓存 _current_commit）——
+        同一 Run 内后续 _assemble_via_package 的 load_current_package 直接命中
+        缓存，不再多一次 HTTP。都拿不到返回空串（跳过签发）。
+        """
+        from app.platform.agent.loader import load_current_package, production_commit
+
+        commit = production_commit()
+        if commit:
+            return commit
+        try:
+            load_current_package()
+            return production_commit()
+        except Exception:  # noqa: BLE001 —— 查不到不签发，不阻塞生成
+            logger.warning("Run 绑定跳过：无法确定生产 commit", exc_info=True)
+            return ""
+
+    def _issue_run_binding(self, trace_id: str, run_purpose: str):
+        """create_run 成功后签发 Run 绑定（fail-static，绝不阻塞生成）。
+
+        Returns: (llm_snapshot | None, BindingRecord | None)。
+        快照同时用于本 Run 的模型锁定（generate_stream 消费）；绑定记录
+        （含 degraded 本地降级记录）写进 trace run_snapshot 的 binding 字段。
+        """
+        snapshot = self._build_llm_snapshot()
+        try:
+            commit = self._resolve_binding_commit()
+            if not commit:
+                return snapshot, None
+            from app.platform.agent.binding_client import get_binding_client
+
+            record, _created = get_binding_client().bind(
+                trace_id=trace_id,
+                harness_commit=commit,
+                llm_snapshot=snapshot,
+                run_purpose=run_purpose,
+            )
+            return snapshot, record
+        except Exception:  # noqa: BLE001 —— 绑定是观测/门禁辅助，失败不影响写作
+            logger.warning("Run 绑定签发异常（跳过）: trace=%s", trace_id, exc_info=True)
+            return snapshot, None
+
+    def _resume_binding_snapshot(self, trace_id: str):
+        """resume 续跑的 Run 从绑定记录取 LLM 快照（FR-004 版本一致续跑）。
+
+        无绑定记录/查询失败返回 None（降级走现有 loader 链，legacy Run 兼容）。
+
+        防投毒校验（LLM 凭据红线）：快照 base_url 与当前受控配置
+        （llm_config loader）一致才可用——快照本身不含 key，key 由受控通道
+        现取，若快照 base_url 指向他人端点，真实 key 就会发往该端点（内网
+        抢注绑定即可窃取）。受控配置为 None（未配置 LLM）时同样弃用快照：
+        无从证明快照端点可信，model 锁定随之放弃——安全优先。
+        """
+        try:
+            from app.platform.agent.binding_client import get_binding_client
+
+            record = get_binding_client().get_binding(trace_id)
+            if record is None or record.llm_config is None:
+                return None
+            snapshot = record.llm_config
+
+            from app.platform.llm_config.loader import get_active_llm_config
+
+            controlled = get_active_llm_config()
+            if controlled is None or controlled.base_url != snapshot.base_url:
+                logger.warning(
+                    "resume 绑定快照 base_url 与受控配置不一致，弃用快照（退回 loader 链）"
+                    ": trace=%s snapshot_base=%r controlled_base=%r",
+                    trace_id, snapshot.base_url,
+                    None if controlled is None else controlled.base_url,
+                )
+                return None
+            return snapshot
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _gate_resume(self, trace_id: str):
+        """resume 兼容门禁（FR-005）：decision=incompatible 时恢复被拒。
+
+        Returns: ResumeCheck | None。None（无绑定记录，如迁移前 legacy Run）或
+        decision=compatible → 照旧恢复。
+        """
+        from app.platform.agent.binding_client import get_binding_client
+
+        return get_binding_client().resume_check(trace_id)
+
+    def _reject_resume(self, thread: ThreadSummary, trace_id: str, reason: str) -> None:
+        """恢复被拒后把 run 收敛为终态（cancel reason=incompatible_resume）。
+
+        收敛逻辑封装在 recorder.cancel_awaiting_run（内存活跃态直接 cancel；
+        重启后内存丢失先按 index 重建再 cancel；非 awaiting 不动账面）。
+        收敛失败只记日志：门禁本身已拒绝续跑，终态收敛是尽力而为的账面清理。
+        """
+        try:
+            self.trace_recorder.cancel_awaiting_run(
+                thread, trace_id, reason="incompatible_resume",
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "incompatible_resume 终态收敛失败: trace=%s reason=%s",
+                trace_id, reason, exc_info=True,
+            )
+
+    # ── 生成主链路 ─────────────────────────────────────────────────
+
     def generate(
         self,
         payload: ScreenplayGenerateRequest,
@@ -547,16 +690,36 @@ class MetaAgentService(BaseAgentService):
             yield _sse("final", response.model_dump())
             return
 
-        # 多用户：解析当前用户的 model 与分库 checkpointer
-        model = self._resolve_model(owner_id)
+        # 多用户：分库 checkpointer 先解析；model 构建推迟到 Run 绑定之后
+        # （FR-004 Run 级模型锁定：绑定快照有值时 model/base_url 锁定为快照值）。
         checkpointer = await self._resolve_checkpointer(owner_id)
 
         # HITL resume：带 resume + trace_id 时复用活跃 trace（不发 run_start），
         # 否则 create_run 新开。内存丢失（服务重启）时 resume_run 会降级 create_run（D2=A）。
         resume_value = getattr(payload, "resume", None)
         trace_id_in = getattr(payload, "trace_id", None)
+        llm_override = None
+        binding = None
         if resume_value is not None and trace_id_in:
+            # FR-005 resume 兼容门禁 + FR-004 绑定快照：两次网络往返并行发出
+            # （同步 HTTP，各自 to_thread 放线程池，不阻塞事件循环）。
+            # incompatible 分支行为不变：仍拒绝恢复、不进 resume 流程。
+            check, bound_snapshot = await asyncio.gather(
+                asyncio.to_thread(self._gate_resume, trace_id_in),
+                asyncio.to_thread(self._resume_binding_snapshot, trace_id_in),
+            )
+            if check is not None and check.decision == "incompatible":
+                self._reject_resume(thread, trace_id_in, check.reason)
+                yield _sse("status", {
+                    "status": "resume_rejected",
+                    "trace_id": trace_id_in,
+                    "reason": f"恢复被拒:版本不兼容（{check.reason}）",
+                })
+                return
             trace, is_new = self.trace_recorder.resume_run(thread, trace_id_in)
+            if not is_new:
+                # FR-004：续跑 Run 的模型配置用绑定快照（无绑定/查询失败降级现有链）
+                llm_override = bound_snapshot
         else:
             trace = self.trace_recorder.create_run(
                 thread,
@@ -570,6 +733,17 @@ class MetaAgentService(BaseAgentService):
             # 第二期证据采集（2026-07）：新 trace 启动时冻结任务契约快照。
             # resume 分支不 emit（契约在初始 run 已冻结）。
             _emit_contract_snapshot(self.trace_recorder, trace.trace_id, payload, thread, run_purpose)
+            # FR-004：新 Run 签发绑定（fail-static：Platform 不可达时 degraded 本地
+            # 记录 + spool 补账，绝不阻塞生成）。快照同时锁定本 Run 的模型配置。
+            # 同步 HTTP（bind 一次往返）放线程池，不阻塞事件循环。
+            llm_override, binding = await asyncio.to_thread(
+                self._issue_run_binding, trace.trace_id, run_purpose
+            )
+        model = (
+            build_writer_model(self.settings, llm_override=llm_override)
+            if llm_override is not None
+            else self._resolve_model(owner_id)
+        )
         trace_queue = self.trace_recorder.get_active_queue(trace.trace_id)
         if trace_queue is None:
             raise RuntimeError(f"Trace queue was not created: {trace.trace_id}")
@@ -584,6 +758,7 @@ class MetaAgentService(BaseAgentService):
             Path(thread.workspace_path), trace.trace_id, thread.workspace_id,
             model=model, checkpointer=checkpointer, owner_id=owner_id,
             strict_evidence=run_purpose != "user_generation",
+            llm_override=llm_override, binding=binding,
         )
 
         # resume 分支已在上方判定，据此构造 agent 输入

@@ -57,11 +57,19 @@ def test_baseline_mode_passes(linter):
 def test_strict_mode_passes_when_clean(linter):
     """strict 模式：无存量违规时应 exit 0。
 
-    surface 体系接管后 v1 包删除，baseline 归零，strict 模式下无违规可报。
+    现状：writing/meta 对 harnesses 的过渡期违规已登记 baseline（commit 76a43d8），
+    登记期间 strict 模式应 exit 1；待过渡期违规消除、baseline 归零后本测试回归 exit 0。
     """
+    baseline = Path(__file__).resolve().parents[1] / "layering_baseline.txt"
+    violation_lines = [
+        line for line in baseline.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    ]
     rc = linter.main(["--strict"])
-    # baseline 为空（存量违规已消除），strict 模式应通过
-    assert rc == 0, "strict 模式下无存量违规应通过"
+    if violation_lines:
+        assert rc == 1, "存在登记的存量违规时 strict 模式应 fail"
+    else:
+        assert rc == 0, "strict 模式下无存量违规应通过"
 
 
 def test_linter_detects_new_violation(linter, tmp_path, monkeypatch):
@@ -111,10 +119,11 @@ def test_same_domain_internal_import_not_flagged(linter, tmp_path, monkeypatch):
 
 
 def test_baseline_file_exists_and_tracks_transitions():
-    """baseline 文件应存在。
+    """baseline 文件应存在，且每行都对应 scan() 仍能检出的真实存量违规。
 
-    self-harness 阶段曾登记 1 条 harness 依赖（meta/agent.py → app.harnesses.v1），
-    surface 体系接管后 v1 包删除，存量违规全部消除，baseline 归零。
+    self-harness 阶段曾登记 1 条 harness 依赖（meta/agent.py → app.harnesses.v1）。
+    该违规是 writing/meta 的过渡期状态（commit 76a43d8 登记），待消除后 baseline
+    应归零——归零前允许恰好这一条，不允许悄悄新增其他条目。
     """
     baseline = Path(__file__).resolve().parents[1] / "layering_baseline.txt"
     assert baseline.exists(), "executor/layering_baseline.txt 应存在"
@@ -123,6 +132,7 @@ def test_baseline_file_exists_and_tracks_transitions():
         line for line in content.splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
-    # surface 体系接管后无存量违规
-    assert len(violation_lines) == 0, \
-        f"baseline 应为空（存量违规已消除），实际含 {len(violation_lines)} 条：{violation_lines}"
+    allowed = ["R3|domains/writing/meta/agent.py|app.harnesses.v1"]
+    assert violation_lines == allowed, (
+        f"baseline 只允许登记 writing/meta 过渡期违规，实际：{violation_lines}"
+    )

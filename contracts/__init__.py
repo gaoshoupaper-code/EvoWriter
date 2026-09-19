@@ -5,6 +5,7 @@
 - contracts/api/   跨端 API 请求/响应模型（D3 trace 拉取、D7 prompt 更新通知等）
 - contracts/surface_types  surface 体系类型契约（A/B/C 三层 + scope + REGISTRY）
 - contracts/manifest_schema  manifest wire-format 契约（entries 结构 TypedDict）
+- contracts/platform  平台控制面契约（账本实体 / 绑定 / artifact / 门禁 API 模型）
 
 铁律：本包不依赖 executor 也不依赖 evolution，只依赖 pydantic（trace/api 子包用）。
 surface_types/manifest_schema 零三方依赖（纯类型/枚举/TypedDict）。

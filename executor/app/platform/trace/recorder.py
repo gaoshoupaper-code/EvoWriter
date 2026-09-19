@@ -50,12 +50,14 @@ _EVOLUTION_NOTIFY_TIMEOUT = 2.0
 
 # HITL cancelled 收尾的来源类型（D5：状态统一 cancelled，error 字段区分来源）。
 # cancel_timeout 是"10s 内无法确认收敛"的诚实告警态（EDGE-004/007），不当 cancelled。
-CancelReason = Literal["user_stop", "client_disconnect", "timeout", "cancel_timeout"]
+CancelReason = Literal["user_stop", "client_disconnect", "timeout", "cancel_timeout", "incompatible_resume"]
 _CANCEL_REASON_MESSAGES: dict[str, str] = {
     "user_stop": "User stopped",
     "client_disconnect": "Stream cancelled (client disconnected)",
     "timeout": "Awaiting input timeout (2h)",
     "cancel_timeout": "Cancel did not converge within deadline (process unconfirmed)",
+    # FR-005（Phase A）：resume 兼容门禁拒绝后把 trace 收敛为终态，避免永久 awaiting_input
+    "incompatible_resume": "Resume rejected: incompatible harness version (binding vs production)",
 }
 
 # 僵尸清理：awaiting_input 超 2h 未 resume → cancelled（需求决策）。
@@ -687,6 +689,26 @@ class TraceRecorder:
         )
         self._finalize_run(thread, trace_id, "failed", duration_ms, error_message)
         return event
+
+    def cancel_awaiting_run(
+        self,
+        thread: ThreadSummary,
+        trace_id: str,
+        reason: CancelReason = "client_disconnect",
+    ) -> None:
+        """把一条 awaiting_input 的 trace 收敛为 cancelled 终态（resume 门禁拒绝用）。
+
+        内存活跃态在则直接 cancel；重启后内存丢失（_queues 无此 trace）先按
+        index 重建最小活跃态再 cancel（否则 append_event 因无活跃态抛 KeyError）。
+        index 里 run 不存在或已非 awaiting_input → 不动账面直接返回——终态收敛
+        只针对确实在等输入的 run（调用方：门禁拒绝已是事实，账面清理尽力而为）。
+        """
+        if trace_id not in self._queues:
+            run = self.find_run_by_trace_id(trace_id)
+            if run is None or run.status != "awaiting_input":
+                return
+            self._rebuild_active_state(thread, run)
+        self.cancel_run(thread, trace_id, reason=reason)
 
     # ── 取消身份与父进程接管收尾（FR-006, FR-002, DEC-008 维度4）────────────────
 

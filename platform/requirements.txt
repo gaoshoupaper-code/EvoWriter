@@ -1,0 +1,23 @@
+# platform 控制面运行时依赖。
+# 版本下限对齐 executor/pyproject.toml 的同名依赖（防「probe 环境漂移」：
+# probe 用 FakeListChatModel 装配候选包，langchain-core 版本必须与执行端同基线）。
+#
+# contracts 共享契约包不在本列表：按 Dockerfile.executor 的既有模式，
+# 镜像内先对仓库根执行 `pip install -e .`（装 writer-contracts），再装本文件。
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+pydantic>=2.6.0
+pydantic-settings>=2.6.0
+httpx>=0.27.0
+langchain-core>=0.3.0
+# ── probe 装配链（子进程真实装配薄包装 harness，依赖与 executor 同基线）──
+# harness 的 assemble import deepagents/langchain/langchain-openai 等；
+# 版本低于执行端会造成「门禁通过但生产装配失败」（需求风险：probe 环境漂移）。
+deepagents>=0.5.0
+langchain>=0.3.0
+langchain-openai>=0.3.0
+langgraph>=0.2.0
+langgraph-checkpoint-sqlite>=2.0.0
+openai>=1.50.0
+python-dotenv>=1.0.1
+cryptography>=43.0.0

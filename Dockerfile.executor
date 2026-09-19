@@ -7,7 +7,8 @@
 #   2. executor/pyproject.toml 未声明 [tool.setuptools.packages.find]，
 #      `pip install .` 装不上 app 包；故采用 COPY 源码 + 工作目录依赖运行的方式
 #      （与现有 start-all.ps1 的 `cd executor && uvicorn app.main:app` 一致）。
-#   3. 运行时依赖 git（harness bare repo pull），需装系统包。
+#   3. 去 git 化（REQ-20260919-202344/DEC-012）：harness 改经 Platform artifact
+#      分发，进程与镜像均不依赖 git。
 # ─────────────────────────────────────────────────────────────
 
 FROM python:3.12-slim AS base
@@ -17,19 +18,11 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors
     || sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null \
     || true
 
-# 系统依赖：git（harness pull）、curl（healthcheck）
-# ttf 字体供 reportlab 导出 PDF 用
+# 系统依赖：curl（healthcheck）；ttf 字体供 reportlab 导出 PDF 用
+# git 已移除（去 git 化，DEC-012）：harness 经 Platform artifact 分发
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git \
         curl \
     && rm -rf /var/lib/apt/lists/*
-
-# git 配置：harness 卷挂载触发 dubious ownership，预先放行（pull_production 需要）
-# repo/ = 独立 harness 仓库（去 DB 重构）；current/ = 旧目录（过渡期保留）
-RUN git config --global --add safe.directory /app/evolution/harnesses/repo \
-    && git config --global --add safe.directory /app/evolution/harnesses/current \
-    && git config --global --add safe.directory /app/evolution/harness.git \
-    && git config --global --add safe.directory /app/executor/.harness_checkout/production
 
 WORKDIR /app
 

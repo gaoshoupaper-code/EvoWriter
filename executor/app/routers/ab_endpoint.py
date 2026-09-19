@@ -118,6 +118,7 @@ def run_ab_generation(
     traceparent: str | None = None,
     test_id: str | None = None,
     task_id: str | None = None,
+    harness_commit: str | None = None,
 ) -> str:
     """跑一次候选生成（同步，非 SSE），返回 trace_id。
 
@@ -136,6 +137,9 @@ def run_ab_generation(
                      缺失/非法时由 create_run 生成有效新 context，不阻断运行。
         test_id: 可选 evolution 单次测试 ID（FR-004）。写入 external_refs 供跨服务追溯。
         task_id: 可选 executor 任务 ID（FR-004）。写入 external_refs 供跨服务追溯。
+        harness_commit: 快照运行的 harness commit（FR-007）。artifact 目录无 .git，
+                        runtime_identity 的 harness_commit 只能由调用方显式传入；
+                        缺省时身份的 commit 字段退化为空串，实验指纹不可精确复现。
 
     Returns:
         trace_id
@@ -198,7 +202,11 @@ def run_ab_generation(
 
     trace_recorder.set_run_snapshot(
         trace_id,
-        build_runtime_identity(harness_root=source_root),
+        # FR-007：快照运行的 commit 由调用方透传（artifact 目录无 .git，
+        # build_runtime_identity 自查 git 拿不到）——同 commit 复现依赖它
+        build_runtime_identity(
+            harness_root=source_root, harness_commit=harness_commit,
+        ),
     )
     trace_recorder.append_event(trace_id, {
         "type": "run_meta",

@@ -77,12 +77,18 @@ class Settings(BaseSettings):
     # 相对路径基于项目根 Writer/。
     harness_package_path: str = "evolution/harnesses/repo"
 
-    # ── compose Git 传输层（Phase 8，决策 D10b）──
-    # harness bare repo 路径/URL。executor 从此 pull/clone 源码。
-    # 同机阶段本地路径，异机时改 URL（如 git@host:harness.git）。
-    harness_bare_repo: str = "evolution/harness.git"
-    # harness 源码 clone 缓存目录（executor 本地，pull/clone 到此）。
-    harness_clone_dir: str = ".harness_checkout"
+    # ── Platform 控制面（REQ-20260919-202344 Phase A，DEC-012 去 git 化）──
+    # harness 分发从「bare repo pull/clone」改为「Platform artifact 下载 + digest 校验」。
+    # platform_url：Platform 服务基址（生产状态/artifact/绑定/resume 门禁都在这里）。
+    platform_url: str = "http://localhost:7790"
+    # artifact 解包缓存目录（{commit}/ 一目录一版本，LRU 保留最近若干个）。
+    # 相对路径基于项目根 Writer/ 解析（口径同旧 harness clone 目录）。
+    artifact_cache_dir: str = ".artifact_cache"
+    # fail-static 补账 spool：bind 失败时 BindingCreate JSON 落这里，后台 30s 重放。
+    # 相对路径基于 executor 根解析（与 data/trace_outcomes.db 同口径）。
+    binding_spool_dir: str = "data/binding_spool"
+    # 本地 fail-static 缓存：最近一次成功绑定对应的生产版本摘要（启动对账用）。
+    known_production_path: str = "data/known_production.json"
 
     # ── NWM 记忆系统（去 Graphiti 重构，2026-07-17）──
     # 记忆系统是可选组件：以下配置缺失时 get_memory_backend() 返回 None，

@@ -1,0 +1,58 @@
+# ─────────────────────────────────────────────────────────────
+# Dockerfile.platform —— 平台控制面（REQ-20260919-202344 Phase A）
+# 端口：7790（内网信任域，不经 nginx 暴露公网）
+# ─────────────────────────────────────────────────────────────
+# 职责：版本账本 / 发版门禁装配 / artifact 打包分发 / Run 绑定 / resume 兼容判定。
+# 设计要点：
+#   1. 同 executor 模式：先装 contracts 共享契约包，再装自身依赖。
+#   2. 发版门禁在子进程里真实装配「薄包装」harness（assemble 链 import
+#      executor 的 app.platform.*，Phase 7 迁移中间态）——镜像必须带上
+#      executor 源码，probe_worker 经 PYTHONPATH 解析（与 Runtime 同一份
+#      装配代码，防「门禁通过但生产装配失败」）。Phase B 下沉共享装配
+#      构件到 contracts 后，此处可去掉 executor 源码。
+#   3. 需要 git：从 bare repo clone/checkout 候选 commit。
+# ─────────────────────────────────────────────────────────────
+
+FROM python:3.12-slim AS base
+
+# 国内镜像加速：换阿里云 Debian 源（默认 deb.debian.org 国内极慢/超时）
+RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null \
+    || sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null \
+    || true
+
+# 系统依赖：git（候选 checkout）、curl（healthcheck）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        git \
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# bare repo 是卷挂载（uid 与容器不同会触发 dubious ownership），预先放行
+RUN git config --global --add safe.directory /app/evolution/harness.git
+
+WORKDIR /app
+
+# ── 第一层：先装依赖（利用 Docker 层缓存）──
+RUN pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/ \
+    && pip config set global.trusted-host mirrors.aliyun.com
+
+# 装 contracts 共享契约包（根 pyproject.toml 声明了 packages.find）
+COPY pyproject.toml ./
+COPY contracts/ ./contracts/
+RUN pip install --no-cache-dir -e .
+
+# 装 platform 依赖（版本下限对齐 executor/pyproject.toml 同名依赖）
+COPY platform/requirements.txt ./platform/
+RUN pip install --no-cache-dir -r platform/requirements.txt && rm -rf /app/platform
+
+# ── 第二层：COPY 业务源码 ──
+# executor 源码仅供 probe_worker 装配薄包装 harness 用（见顶部设计要点 2）
+COPY platform/ ./platform/
+COPY executor/ ./executor/
+
+# 容器内工作目录：platform/（uvicorn app.main:app 定位 platform/app）
+WORKDIR /app/platform
+
+EXPOSE 7790
+
+# 单进程：账本 SQLite 单写者 + 门禁子进程由请求路径按需起
+CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "7790"]

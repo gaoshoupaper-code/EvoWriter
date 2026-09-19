@@ -20,9 +20,12 @@ class TestApplyStyleSuffix(unittest.TestCase):
     """验证 apply_style_suffix 注入逻辑（包内 subagents/types.py）。"""
 
     def setUp(self):
-        # 直接 import 包内模块（load_current_package 机制同进程可用）
-        from app.platform.agent.loader import load_current_package
-        pkg = load_current_package()
+        # 直接加载 harness 工作目录（与生产 artifact 同源）；生产拉取链路属于
+        # artifact_client/loader 的测试，这里只消费包内容。
+        from pathlib import Path
+        from app.platform.agent.loader import load_package
+        harness_dir = Path(__file__).resolve().parents[2] / "evolution" / "harnesses" / "repo"
+        load_package(harness_dir)
         # apply_style_suffix 在 subagents.types，通过包内 import 取
         from harness_current.subagents.types import apply_style_suffix
         self.apply_style_suffix = apply_style_suffix

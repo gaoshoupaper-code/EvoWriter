@@ -281,6 +281,20 @@ def create_experiment(
     return stable_id
 
 
+def latest_release_status(release_id: str) -> str | None:
+    """查该 release 最新事件的状态（无事件返回 None）。
+
+    事件链兼容判定共用：append_release_event 的迁移校验与 evolve api 的
+    「按最新状态只补发合法后缀」都基于同一查询。
+    """
+    prior = db.query_one(
+        """SELECT status FROM release_events_v2 WHERE release_id=?
+           ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+        (release_id,),
+    )
+    return prior.get("status") if prior else None
+
+
 def append_release_event(
     *,
     release_id: str,
@@ -289,12 +303,7 @@ def append_release_event(
     actor_user_id: str | None,
     release_event_id: str | None = None,
 ) -> str:
-    prior = db.query_one(
-        """SELECT status FROM release_events_v2 WHERE release_id=?
-           ORDER BY created_at DESC, rowid DESC LIMIT 1""",
-        (release_id,),
-    )
-    previous_status = prior.get("status") if prior else None
+    previous_status = latest_release_status(release_id)
     if status not in _RELEASE_TRANSITIONS.get(previous_status, set()):
         raise ValueError(f"invalid release transition: {previous_status} -> {status}")
     stable_id = release_event_id or f"release-event-{uuid4().hex}"

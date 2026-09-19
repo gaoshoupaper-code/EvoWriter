@@ -216,5 +216,36 @@ class CrossProcessTraceDiscoveryTest(unittest.TestCase):
         self.assertEqual(run.external_refs["test_id"], "real-test")
 
 
+class HarnessCommitPassthroughTest(unittest.TestCase):
+    """A/B 身份透传（FR-007，review #9）：source_commit 必须进隔离子进程。
+
+    artifact 目录无 .git，runtime_identity 的 harness_commit 只能由
+    _execute_ab → worker → _worker_main → run_ab_generation 显式传递；
+    断链则 A/B 快照 run 的实验指纹静默为空、不可复现。
+    """
+
+    def test_worker_receives_harness_commit(self) -> None:
+        from unittest.mock import patch
+
+        from app.platform.isolation.worker_process import IsolatedGenerationWorker
+
+        commit = "a" * 40
+        worker = IsolatedGenerationWorker(
+            source_root=Path("pkg"), demand_md="d", workspace_root=Path("ws"),
+            harness_commit=commit,
+        )
+        with patch("app.platform.isolation.worker_process.mp.Process") as fake_proc:
+            worker.start()
+        # harness_commit 在传给子进程入口的 args 末位
+        args = fake_proc.call_args.kwargs["args"]
+        self.assertEqual(args[-1], commit)
+
+    def test_worker_harness_commit_defaults_none(self) -> None:
+        from app.platform.isolation.worker_process import IsolatedGenerationWorker
+
+        worker = IsolatedGenerationWorker(Path("p"), "d", Path("w"))
+        self.assertIsNone(worker._harness_commit)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3,6 +3,13 @@
 替代 snapshot_repo 的所有 DB 查询功能。数据源从 SQLite harness_snapshots 表
 换成 harness 独立仓库内的 registry.json 文件。
 
+Phase A（REQ-20260919-202344）起发版写线退役：registry.json 只读
+（Platform 账本是仲裁源）。发版路径不再调用本模块的写入方法
+（create_candidate / promote_candidate / rollback / restore_* / publish_version /
+bind_version_commit / update_version_meta 等），只保留查询方法
+（get_version / list_versions / get_production_version* / get_version_commit /
+get_version_by_session 等）供只读消费。写方法代码保留到 Phase B 统一清理。
+
 设计依据：设计文档 20260713_003000（去 DB 轻量化重构）。
 
 registry.json 结构（快照式：versions 数组 + production 指针 + rollback_log）：

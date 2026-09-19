@@ -123,14 +123,21 @@ async def _lifespan(application: FastAPI):
     trace_recorder.start_zombie_scanner()
     from app.platform.trace.outcomes import start_outcome_delivery
     start_outcome_delivery()
-    # 启动 harness reconcile：防 push 通知丢失，10分钟周期自愈（去 DB 重构）
-    from app.platform.agent.reconcile import start_reconcile
-    start_reconcile()
+    # Phase A（FR-004 fail-static）：绑定补账重放——Platform 不可达期间 spool 的
+    # 绑定请求，后台每 30s 重发（Platform 按 trace_id 幂等）。
+    from app.platform.agent.binding_client import get_binding_client
+    get_binding_client().start_replay_loop()
+    # Phase A（FR-003）：生产版本周期对账——reload 通知丢失（通知失败/网络分区）
+    # 时的兜底通道，避免 executor 长期跑旧生产版本。
+    from app.platform.agent.reconcile import start_production_reconcile_loop
+    start_production_reconcile_loop()
     pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
     yield
-    # 关闭 reconcile 协程
-    from app.platform.agent.reconcile import aclose_reconcile
-    await aclose_reconcile()
+    # 关闭绑定补账协程
+    from app.platform.agent.binding_client import get_binding_client
+    await get_binding_client().aclose_replay_loop()
+    from app.platform.agent.reconcile import aclose_production_reconcile_loop
+    await aclose_production_reconcile_loop()
     from app.platform.trace.outcomes import stop_outcome_delivery
     await stop_outcome_delivery()
     # 观测收尾：flush 余量指标（每进程代最后一个 ≤30s 导出批次，review 整改）

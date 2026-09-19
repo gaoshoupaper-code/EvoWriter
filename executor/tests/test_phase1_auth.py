@@ -239,7 +239,12 @@ class TestAdminBootstrap:
             admin_password = "boot-pw123"
             default_workspace_quota = 5
 
-        monkeypatch.setattr(settings_mod, "get_settings", lambda: FakeSettings())
+        # 补丁打在 bootstrap 模块持有的引用上，而非 settings 模块属性——
+        # 若只换 settings.get_settings 属性，首次 import bootstrap 时其模块级
+        # ``from ... import get_settings`` 会把 FakeSettings lambda 永久捕获进
+        # sys.modules，污染后续所有测试（phase4_admin 登录 401 的根因）。
+        import app.auth.bootstrap as bootstrap_mod
+        monkeypatch.setattr(bootstrap_mod, "get_settings", lambda: FakeSettings())
         from app.auth.bootstrap import bootstrap_admin
         result = bootstrap_admin()
 
@@ -262,7 +267,12 @@ class TestAdminBootstrap:
             admin_password = "boot-pw123"
             default_workspace_quota = 5
 
-        monkeypatch.setattr(settings_mod, "get_settings", lambda: FakeSettings())
+        # 补丁打在 bootstrap 模块持有的引用上，而非 settings 模块属性——
+        # 若只换 settings.get_settings 属性，首次 import bootstrap 时其模块级
+        # ``from ... import get_settings`` 会把 FakeSettings lambda 永久捕获进
+        # sys.modules，污染后续所有测试（phase4_admin 登录 401 的根因）。
+        import app.auth.bootstrap as bootstrap_mod
+        monkeypatch.setattr(bootstrap_mod, "get_settings", lambda: FakeSettings())
         from app.auth.bootstrap import bootstrap_admin
         assert bootstrap_admin() is None  # 已有管理员，跳过
 

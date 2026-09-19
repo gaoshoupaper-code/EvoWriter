@@ -2,6 +2,7 @@ from langchain_openai import ChatOpenAI
 
 from app.platform.core.settings import Settings
 from app.domains.writing.deepseek_thinking import DeepSeekThinkingChatModel
+from contracts.platform import LlmConfigSnapshot
 
 DEEPSEEK_PROVIDER = "deepseek"
 
@@ -24,14 +25,17 @@ def build_writer_model(
     api_key: str | None = None,
     base_url: str | None = None,
     model_name_override: str | None = None,
+    llm_override: LlmConfigSnapshot | None = None,
 ) -> ChatOpenAI:
     """构建写作模型。
 
     LLM 配置来源优先级（key/base_url/model 三者同源，避免混用）：
       1. 显式参数（api_key/base_url/model_name_override，测试/旧路径用）
-      2. evolution 激活配置（桌面端「LLM 配置」页，通过 llm_config_loader 拉取）
-      3. 环境变量 PLATFORM_API_KEY / OPENAI_API_KEY（历史兼容，可能为空）
-      4. 占位 key（启动安全，让 ChatOpenAI 构造不崩）
+      2. llm_override：Run 绑定的 LLM 快照（FR-004 Run 级模型锁定，
+         model/base_url 用快照值——快照脱敏无 key，key 仍走下方受控通道）
+      3. evolution 激活配置（桌面端「LLM 配置」页，通过 llm_config_loader 拉取）
+      4. 环境变量 PLATFORM_API_KEY / OPENAI_API_KEY（历史兼容，可能为空）
+      5. 占位 key（启动安全，让 ChatOpenAI 构造不崩）
 
     生产写作和 A/B 测试共用此函数，因此两者都受益于 evolution 配置打通。
     """
@@ -40,9 +44,10 @@ def build_writer_model(
     # evolution 激活配置（拉取失败/未配置时为 None，降级到环境变量）
     evo_config = get_active_llm_config()
 
-    # model：显式 override > evolution > settings.writer_model
+    # model：显式 override > 绑定快照 > evolution > settings.writer_model
     effective_model = (
         model_name_override
+        or (llm_override.model if llm_override is not None else None)
         or (evo_config.model if evo_config and evo_config.model else None)
         or settings.writer_model
     )
@@ -63,6 +68,7 @@ def build_writer_model(
     # AD9：平台代付——优先用 PLATFORM_API_KEY（积分制专用），其次兼容旧 OPENAI_API_KEY。
     # api_key 参数仅为测试/旧路径保留，生产路径不再传用户 key（D22 一刀切）。
     # evolution 配置插入中间：环境变量空时由 evolution 的 key 兜底（桌面化打通）。
+    # 绑定快照不参与 key 解析（脱敏无 key，DEC-011——凭据永远走受控通道现取）。
     effective_key = (
         api_key
         or (evo_config.api_key if evo_config and evo_config.api_key else None)
@@ -71,6 +77,7 @@ def build_writer_model(
     )
     effective_base = (
         base_url
+        or (llm_override.base_url if llm_override is not None else None)
         or (evo_config.base_url if evo_config and evo_config.base_url else None)
         or getattr(settings, "platform_base_url", "")
         or settings.openai_base_url

@@ -21,6 +21,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from pydantic import BaseModel
 
 from contracts.api import TraceContentResponse, TraceListItem, TraceListResponse, PromptRefreshNotice
+from contracts.platform import HarnessReloadNotice
 from app.routers.context import get_agent_service, get_thread_store, get_trace_recorder
 
 logger = logging.getLogger("writer.internal")
@@ -239,7 +240,6 @@ def snapshot_refreshed(body: "SnapshotRefreshNotice") -> dict[str, Any]:
     """evolution 通知执行端「有新 production 快照发布」（Phase 7 T5.4）。
 
     evolution 发布新快照后（snapshot_publisher.notify_executor），发此通知。
-
     Phase 7 语义：执行端的 Agent 包是进程级缓存（package_loader._loaded_package），
     换版本需重启进程（D11 设计）。本端点只记录日志——真正生效靠下次进程重启
     重新 load_current_package 加载新包内容。
@@ -259,110 +259,59 @@ class SnapshotRefreshNotice(BaseModel):
     snapshot_version: int
 
 
-class HarnessProbeRequest(BaseModel):
-    source_commit: str
+# ── Phase 8 compose 热加载 + Phase A 去 git 化（决策 #16/D7a/DEC-012）──
 
 
-# ── Phase 8 compose：热加载 + 候选执行端点（决策 #16/D7a/E5a）──
+def _reload_and_report(
+    commit: str | None = None, *, expected_digest: str | None = None
+) -> dict[str, Any]:
+    """两个 reload 端点的公共尾段：ensure（可选）→ reload → 读回生产身份。
+
+    带 commit（晋升通知路径）先 ensure_artifact（digest 校验在下载时比对），
+    reload_current 命中缓存不再二次下载；不带 commit 由 reload_current 向
+    Platform 对账取当前生产版本。响应体两端点一致：{status, commit,
+    runtime_identity}。
+    """
+    from app.platform.agent.loader import production_checkout, production_commit, reload_current
+    from app.platform.agent.runtime_identity import build_runtime_identity
+
+    if commit is not None:
+        from app.platform.agent.artifact_client import get_artifact_client
+
+        get_artifact_client().ensure_artifact(commit, expected_digest=expected_digest)
+    reload_current(commit=commit)
+    current = production_commit()
+    runtime_identity = build_runtime_identity(
+        harness_root=production_checkout(), harness_commit=current
+    )
+    return {"status": "reloaded", "commit": current, "runtime_identity": runtime_identity}
 
 
 @router.post("/reload")
 def reload_harness() -> dict[str, Any]:
-    """热加载：git pull + 重新加载生产包（决策 #16，不重启进程）。
+    """热加载：向 Platform 对账拉最新生产包并重新加载（决策 #16，不重启进程）。
 
-    evolution ship 新 config + commit 后调此端点。
-    executor git pull 最新 main → reload_current() 重新加载包。
-
-    注意：本端点只重新加载「包模块」。assemble 需要新 config 才会用配置驱动——
-    生产路径的 config 由调用方（agent_service）从 evolution 拉 production config 提供。
-    本端点确保包源码是最新的（git pull），config 由生成请求时获取。
+    Phase A 过渡端点：evolution snapshot_publisher 还在调（Phase A 后期迁到
+    Platform → /internal/platform/reload 带精确 commit）。内部等价于
+    「current_production → ensure_artifact → reload_current」，无任何 git 操作。
     """
-    from app.platform.agent.loader import reload_current
+    result = _reload_and_report()
+    logger.info("harness 热加载完成: commit=%s", result["commit"])
+    return result
 
-    pkg = reload_current()
-    from app.platform.agent.git_sync import production_commit
-    commit = production_commit()
-    from app.platform.agent.runtime_identity import build_runtime_identity
-    from app.platform.agent.git_sync import production_checkout
 
-    runtime_identity = build_runtime_identity(
-        harness_root=production_checkout(), harness_commit=commit
+@router.post("/platform/reload")
+def platform_reload(notice: HarnessReloadNotice) -> dict[str, Any]:
+    """Platform 晋升通知：下载该 commit 的 artifact（digest 校验）并热重载。
+
+    替代旧 git pull 链路（DEC-012）：Platform promote 后携带 version/commit/
+    artifact_digest 调此端点，executor 校验 digest 与 Platform 账本一致后装配。
+    """
+    result = _reload_and_report(
+        notice.commit, expected_digest=notice.artifact_digest,
     )
-    logger.info("harness 热加载完成: commit=%s", commit)
-    return {"status": "reloaded", "commit": commit, "runtime_identity": runtime_identity}
-
-
-@router.post("/harness/probe")
-def probe_harness(body: HarnessProbeRequest) -> dict[str, Any]:
-    """从 candidate 干净 checkout 导入并真实编译最小 DeepAgent 图。"""
-    import sys
-    import tempfile
-    import uuid
-    from pathlib import Path
-
-    from contracts.runtime_context import RuntimeContext
-    from langchain_core.language_models.fake_chat_models import FakeListChatModel
-
-    from app.platform.agent.git_sync import checkout_commit, cleanup_checkout
-    from app.platform.agent.loader import load_package
-    from app.platform.agent.runtime import FilesystemBackend, artifact_capture_scope
-    from app.platform.agent.runtime_identity import build_runtime_identity
-
-    class _ProbeRecorder:
-        def record_artifact_revision(self, *_args, **_kwargs):
-            return None
-
-        def record_middleware_assembly(self, *_args, **_kwargs):
-            return None
-
-        def record_skill_catalog(self, *_args, **_kwargs):
-            return None
-
-    checkout = checkout_commit(body.source_commit)
-    module_name = f"harness_probe_{uuid.uuid4().hex}"
-    try:
-        middleware_path = checkout / "middleware" / "artifact_snapshot.py"
-        if not middleware_path.is_file():
-            raise RuntimeError(
-                f"candidate {body.source_commit} 缺少 middleware/artifact_snapshot.py"
-            )
-        package = load_package(checkout, module_name)
-        recorder = _ProbeRecorder()
-        with tempfile.TemporaryDirectory(prefix="harness_probe_workspace_") as tmp:
-            workspace = Path(tmp)
-            context = RuntimeContext(
-                model=FakeListChatModel(responses=["ok"]),
-                backend=FilesystemBackend(root_dir=workspace, virtual_mode=True),
-                checkpointer=None,
-                workspace_path=workspace,
-                trace_id="harness-probe",
-                trace_recorder=recorder,
-                artifact_snapshot_callback=lambda _data: None,
-            )
-            with artifact_capture_scope(
-                recorder=recorder,
-                trace_id="harness-probe",
-                workspace_root=workspace,
-                strict=True,
-            ):
-                graph = package.assemble(context)
-        identity = build_runtime_identity(
-            harness_root=checkout, harness_commit=body.source_commit
-        )
-        if identity["harness_dirty"]:
-            raise RuntimeError(f"candidate {body.source_commit} checkout 不干净")
-        return {
-            "status": "ready",
-            "assembled": graph is not None,
-            "harness_commit": body.source_commit,
-            "artifact_snapshot_middleware": True,
-            "runtime_identity": identity,
-        }
-    finally:
-        for name in list(sys.modules):
-            if name == module_name or name.startswith(module_name + "."):
-                sys.modules.pop(name, None)
-        cleanup_checkout(checkout)
+    logger.info("platform reload 完成: version=%s commit=%s", notice.version, result["commit"])
+    return result
 
 
 class ABRunRequest(BaseModel):
@@ -434,8 +383,7 @@ def _execute_ab(task_id: str, req: "ABRunRequest") -> None:
     共享 workspace，通过 Queue 回传 trace_id。
     """
     task_state = _ab_tasks.get(task_id) or {}
-    # source_root：快照版本按 source_commit checkout；working 包用 harnesses/repo
-    checked_out: Path | None = None
+    # source_root：快照版本从 Platform 拉 artifact 到本地缓存；working 包用 harnesses/repo
     worker = None
     try:
         from app.platform.core.settings import get_settings as _get_writer_settings
@@ -443,11 +391,11 @@ def _execute_ab(task_id: str, req: "ABRunRequest") -> None:
 
         writer_settings = _get_writer_settings()
         if req.source_commit:
-            # 快照版本：clone bare repo + checkout 指定 commit 到临时目录
-            from app.platform.agent.git_sync import checkout_commit
+            # 快照版本：Platform artifact 下载（digest 校验 + LRU 缓存，见 artifact_client）。
+            # 缓存目录由 LRU 统一管理，用完不删（替代旧的临时 checkout + cleanup）。
+            from app.platform.agent.artifact_client import get_artifact_client
 
-            source_root = checkout_commit(req.source_commit)
-            checked_out = source_root
+            source_root = get_artifact_client().ensure_artifact(req.source_commit)
             logger.info("快照执行: task=%s commit=%s → %s", task_id, req.source_commit, source_root)
         else:
             # working 包：harness 工作目录（harnesses/repo，与生产同源）
@@ -466,6 +414,9 @@ def _execute_ab(task_id: str, req: "ABRunRequest") -> None:
             traceparent=req.traceparent,
             test_id=req.test_id,
             task_id=task_id,
+            # FR-007：快照运行的 commit 透传进子进程——artifact 目录无 .git，
+            # runtime_identity 不显式传则 harness_commit 静默为空，实验指纹不可复现
+            harness_commit=req.source_commit,
         )
         # 登记 worker 到 task 表（ab_stop 用它做硬终止）。
         _ab_tasks[task_id]["worker"] = worker
@@ -519,11 +470,6 @@ def _execute_ab(task_id: str, req: "ABRunRequest") -> None:
         _ab_tasks[task_id]["trace_ids"] = prior_trace_ids
         _ab_tasks[task_id]["error"] = str(exc)
         _notify_evolution_task_failed(task_id, str(exc))
-    finally:
-        if checked_out is not None:
-            from app.platform.agent.git_sync import cleanup_checkout
-
-            cleanup_checkout(checked_out)
 
 
 def _notify_evolution_task_failed(task_id: str, error: str) -> None:

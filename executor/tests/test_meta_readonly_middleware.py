@@ -8,7 +8,7 @@ from typing import Any
 
 from langchain_core.messages import ToolMessage
 
-# Load the source harness directly; production checkout tests belong to git_sync.
+# Load the source harness directly; 生产 artifact 拉取链路属于 artifact_client/loader 的测试。
 from app.platform.agent.loader import load_package
 
 _HARNESS_DIR = Path(__file__).resolve().parents[2] / "evolution" / "harnesses" / "repo"

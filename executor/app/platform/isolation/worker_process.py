@@ -49,11 +49,15 @@ def _worker_main(
     traceparent: str | None,
     test_id: str | None,
     task_id: str | None,
+    harness_commit: str | None = None,
 ) -> None:
     """子进程入口：构建独立 recorder + 跑 run_ab_generation。
 
     必须是模块级函数（multiprocessing spawn 可 pickle），不能是闭包或 lambda。
     子进程内重建全部依赖（recorder / settings / drain），不继承父进程内存状态。
+    harness_commit（FR-007）：A/B 快照运行的 commit——artifact 目录无 .git，
+    runtime_identity 的 harness_commit 必须由父进程显式透传，否则实验指纹
+    静默为空、不可复现。
     """
     # CON-008/EVD-019：在 POSIX 上让子进程成为独立会话/进程组组长。
     # spawn 默认继承父进程进程组，_force_terminate 的 killpg 会误杀父进程和同组任务。
@@ -107,6 +111,7 @@ def _worker_main(
             traceparent=traceparent,
             test_id=test_id,
             task_id=task_id,
+            harness_commit=harness_commit,
         )
 
         # 判定终态（与 _execute_ab 逻辑一致）。终态也带 workspace_path。
@@ -156,6 +161,7 @@ class IsolatedGenerationWorker:
         traceparent: str | None = None,
         test_id: str | None = None,
         task_id: str | None = None,
+        harness_commit: str | None = None,
     ) -> None:
         self._source_root = source_root
         self._demand_md = demand_md
@@ -164,6 +170,8 @@ class IsolatedGenerationWorker:
         self._traceparent = traceparent
         self._test_id = test_id
         self._task_id = task_id
+        # FR-007：快照运行的 harness commit（artifact 目录无 .git，身份靠透传）
+        self._harness_commit = harness_commit
         # multiprocessing 原语（跨进程安全）。
         ctx = mp.get_context("spawn")  # spawn 最干净，不继承父进程状态
         self._cancel_event = ctx.Event()
@@ -204,6 +212,7 @@ class IsolatedGenerationWorker:
                 self._traceparent,
                 self._test_id,
                 self._task_id,
+                self._harness_commit,
             ),
             daemon=True,  # 父进程退出时子进程也退出，防孤儿
         )

@@ -26,15 +26,18 @@ services:
       # 容器内 evolution 通知地址（用 docker 服务名，非 localhost）
       - EVOLUTION_NOTIFY_URL=http://evolution:7789/api/ingestion/notify
       - EVOLUTION_URL=http://evolution:7789
-      # harness 共享路径（容器内绝对路径，与下方 volumes 挂载点一致）
-      # repo/ = 独立 harness 仓库（去 DB 重构），替代旧的 current/
+      # 平台控制面（REQ-20260919-202344 Phase A）：artifact 拉取 / Run 绑定 / resume 门禁
+      - PLATFORM_URL=http://platform:7790
+      # working harness 包（A/B 无 commit 时的本地直读源；生产版本走 Platform artifact）
       - HARNESS_PACKAGE_PATH=/app/evolution/harnesses/repo
-      - HARNESS_BARE_REPO=/app/evolution/harness.git
-      - HARNESS_CLONE_DIR=/app/executor/.harness_checkout
       - TZ=Asia/Shanghai
       # 数据目录指向 volume 挂载点（源码不挂卷，根治旧方案源码被覆盖问题）
       - DB_PATH=/app/executor/data/app.platform.core.db
       - WORKSPACE_ROOT=/app/executor/data/workspace
+      # artifact 缓存与绑定 spool 落 executor_data 卷（重建容器不重下）
+      - ARTIFACT_CACHE_DIR=/app/executor/data/artifact_cache
+      - BINDING_SPOOL_DIR=/app/executor/data/binding_spool
+      - KNOWN_PRODUCTION_PATH=/app/executor/data/known_production.json
       # 桌面化改造（2026-07-07）：内网通知 token，与 evolution NOTIFY_TOKEN 一致。
       # 部署时在 executor/.env 里设 EVOLUTION_NOTIFY_TOKEN=<同 evolution 的 NOTIFY_TOKEN>。
       # - EVOLUTION_NOTIFY_TOKEN=<强随机 token>
@@ -70,6 +73,39 @@ services:
       retries: 3
       start_period: 30s
 
+  # ── 平台控制面（REQ-20260919-202344 Phase A）──
+  # 版本账本 / 发版门禁（子进程真实装配候选）/ artifact 打包分发 / Run 绑定 / resume 兼容判定。
+  # 内网信任域：不经 nginx 暴露，只被 executor 与 evolution 经 docker 网络访问。
+  platform:
+    build:
+      context: .
+      dockerfile: Dockerfile.platform
+    container_name: writer-platform
+    environment:
+      - TZ=Asia/Shanghai
+      # 容器内服务地址（docker 服务名）
+      - PLATFORM_EXECUTOR_URL=http://executor:7788
+      # harness bare repo（evolution push → platform checkout 门禁/打包）
+      - PLATFORM_BARE_REPO=/app/evolution/harness.git
+      # 账本与 artifact 落 platform_data 卷（版本历史不可丢）
+      - PLATFORM_DB_PATH=/app/platform/data/platform.db
+      - PLATFORM_ARTIFACT_DIR=/app/platform/data/artifacts
+    volumes:
+      - platform_data:/app/platform/data
+      # bare repo 只读：platform 只 clone 读，push 方仍是 evolution
+      - harness_git:/app/evolution/harness.git:ro
+    expose:
+      - "7790"
+    restart: always
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7790/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
   # ── 进化/监测后端（桌面化改造，2026-07-07：挂公网，nginx 反代 + SSO 鉴权）──
   evolution:
     build:
@@ -81,6 +117,8 @@ services:
     environment:
       # 容器内 executor 地址（用 docker 服务名）：trace 拉取 + SSO 回调 /api/auth/me
       - EXECUTOR_URL=http://executor:7788
+      # 平台控制面（Phase A）：发版门禁 probe 与晋升 promote 改调 Platform
+      - PLATFORM_URL=http://platform:7790
       - TZ=Asia/Shanghai
       # 数据库路径指向 volume（data/evolution.db），否则默认 evolution.db 解析到
       # 工作目录（非 volume），每次重建镜像就丢 llm_configs 等数据。
@@ -246,9 +284,10 @@ services:
       - /tmp
 
 volumes:
-  executor_data:    # executor/.env 的 db_path / workspace_root / checkpoints / memory 都在此卷内
+  executor_data:    # executor/.env 的 db_path / workspace_root / checkpoints / memory / artifact 缓存都在此卷内
   evolution_data:   # evolution 的 evolution.db 在此卷内
-  harness_data:     # evolution/harnesses/ 共享（executor + evolution 双向读写）
-  harness_git:      # evolution/harness.git/ 共享 bare repo
+  platform_data:    # 平台控制面：版本账本 platform.db + artifact 库（REQ-20260919-202344）
+  harness_data:     # evolution/harnesses/ 共享（executor working 包 + evolution 编辑）
+  harness_git:      # evolution/harness.git/ 共享 bare repo（evolution push → platform checkout）
   prometheus_data:  # 观测栈：15 天指标（REQ-20260918-144856）
   grafana_data:     # 观测栈：Grafana 配置/面板状态

@@ -82,9 +82,15 @@ def _tree_digest(executor_root: Path) -> str:
 
 
 def _git_value(root: Path, args: list[str]) -> str:
-    result = subprocess.run(
-        ["git", *args], cwd=root, capture_output=True, text=True, timeout=15
-    )
+    # 无 git 容器（FR-003：executor 镜像已移除 git 二进制）里 subprocess 抛
+    # FileNotFoundError——与 returncode!=0 同语义返回空串：harness_commit/
+    # dirty 退化为「未知/干净」，身份构建不崩（reload 端点与 A/B worker 依赖）。
+    try:
+        result = subprocess.run(
+            ["git", *args], cwd=root, capture_output=True, text=True, timeout=15
+        )
+    except (FileNotFoundError, OSError):
+        return ""
     if result.returncode != 0:
         return ""
     return result.stdout.strip()

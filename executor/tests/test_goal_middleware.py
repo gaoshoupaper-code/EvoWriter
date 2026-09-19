@@ -8,8 +8,11 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain.tools import ToolRuntime
 
 # GoalMiddleware + goal tool 已迁进 harness 包（Phase 7），通过包加载后 import
-from app.platform.agent.loader import load_current_package
-load_current_package()
+from pathlib import Path as _Path
+from app.platform.agent.loader import load_package
+# 直读 harness 工作目录（与生产 artifact 同源）；生产拉取链路属于 artifact_client/loader 的测试
+_HARNESS_DIR = _Path(__file__).resolve().parents[2] / "evolution" / "harnesses" / "repo"
+load_package(_HARNESS_DIR)
 from harness_current.middleware.goal import GoalMiddleware
 from harness_current.tools.goal import GoalState, aset_goal, set_goal
 

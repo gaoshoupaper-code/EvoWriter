@@ -185,7 +185,11 @@ services:
       - GF_SERVER_SERVE_FROM_SUB_PATH=true
       # Grafana 12 对 API POST（面板查询等）强制来源白名单校验，root_url 不再
       # 隐式放行——不配则面板全部 "origin not allowed"（部署实测 2026-09-19）。
+      # 生效键为 security.csrf_trusted_origins（GF_SECURITY_CSRF_TRUSTED_ORIGINS）；
+      # Live WebSocket 另走 live.allowed_origins。
+      - GF_SECURITY_CSRF_TRUSTED_ORIGINS=https://siyen.site,https://www.siyen.site
       - GF_SECURITY_TRUSTED_ORIGINS=https://siyen.site,https://www.siyen.site
+      - GF_LIVE_ALLOWED_ORIGINS=https://siyen.site,https://www.siyen.site
       - GF_USERS_ALLOW_SIGN_UP=false
       - GF_ANALYTICS_REPORTING=false
     volumes:

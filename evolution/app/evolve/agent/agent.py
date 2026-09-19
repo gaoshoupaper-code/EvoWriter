@@ -527,8 +527,22 @@ async def run_inspect_round(ctx: EvolveContext, trace_id: str) -> dict[str, Any]
     ctx.emit_log("进化 Agent 启动探查阶段...")
     logger.info("session %s: inspect round 启动 trace=%s", ctx.session_id, trace_id)
 
+    # FR-006（REQ-20260919-172934）：附带评测批次时注入全局弱点视图（降级不阻断）
+    benchmark_section = ""
+    benchmark_report = (ctx.eval_snapshot or {}).get("benchmark_report")
+    if benchmark_report:
+        import json as _json
+        benchmark_section = (
+            "本次会话附带数据集评测全局弱点视图（多 case 聚合，来源评测批次 "
+            f"{benchmark_report.get('batch_id')}，校准状态 {benchmark_report.get('calibration')}）：\n"
+            f"{_json.dumps(benchmark_report.get('weakest_dimensions', []), ensure_ascii=False, indent=1)}\n"
+            f"高频缺陷标签：{_json.dumps(benchmark_report.get('top_tags', []), ensure_ascii=False)}\n"
+            "请把该全局视图与单 trace 评估诊断相互印证——全局弱在哪维、单 trace 是否同样暴露。\n\n"
+        )
+
     user_input = (
         f"请开始进化流程的探查阶段。trace_id={trace_id}，case_id={ctx.case_id}。\n"
+        f"{benchmark_section}"
         f"本阶段任务：\n"
         f"1. 调 read_eval_report 读取评估诊断，理解主要问题\n"
         f"2. 调 read_trace 看实际执行流程（对诊断里提到的关键节点）\n"

@@ -222,6 +222,7 @@ def init_db() -> None:
                 change_log_path    TEXT,                    -- 执行改动记录路径
                 candidate_eval_path TEXT,                   -- candidate 评估诊断文档路径
                 report_json        TEXT,                    -- 对比报告 JSON
+                benchmark_batch_id TEXT,                    -- 会话消费的评测批次（FR-006，REQ-20260919-172934）
                 created_at         TEXT NOT NULL,
                 updated_at         TEXT
             );
@@ -320,7 +321,13 @@ def init_db() -> None:
                 retries         INTEGER DEFAULT 0,
                 error           TEXT,
                 ran_at          TEXT NOT NULL,             -- 批次触发时间
-                finished_at     TEXT
+                finished_at     TEXT,
+                seed            INTEGER NOT NULL DEFAULT 1, -- 同 case 独立重复序号（DEC-013）
+                rubric_version  TEXT,                      -- 评分标准版本（DEC-015 指纹绑定）
+                judge_fp        TEXT,                      -- judge 模型指纹（DEC-012/015）
+                model_fp        TEXT,                      -- 被测模型指纹（跑完从 trace 回填，DEC-015）
+                manifest_fp     TEXT,                      -- Manifest 指纹 = harness commit + model_fp（DEC-015）
+                harness_commit  TEXT                       -- 本行实际 checkout 的 harness commit
             );
             CREATE INDEX IF NOT EXISTS idx_br_batch ON benchmark_runs(batch_id);
             CREATE INDEX IF NOT EXISTS idx_br_version ON benchmark_runs(harness_version);
@@ -1392,6 +1399,26 @@ def _init_trace_v2_tables(conn: sqlite3.Connection) -> None:
         ):
             if column not in revision_columns:
                 conn.execute(f"ALTER TABLE artifact_revisions ADD COLUMN {column} {ddl}")
+        # benchmark_runs 评测指纹列（REQ-20260919-172934 / DEC-013/015）
+        bench_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(benchmark_runs)").fetchall()
+        }
+        for column, ddl in (
+            ("seed", "INTEGER NOT NULL DEFAULT 1"),
+            ("rubric_version", "TEXT"),
+            ("judge_fp", "TEXT"),
+            ("model_fp", "TEXT"),
+            ("manifest_fp", "TEXT"),
+            ("harness_commit", "TEXT"),
+        ):
+            if column not in bench_columns:
+                conn.execute(f"ALTER TABLE benchmark_runs ADD COLUMN {column} {ddl}")
+        # evolve_sessions 评测批次标注列（FR-006）
+        es_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(evolve_sessions)").fetchall()
+        }
+        if "benchmark_batch_id" not in es_columns:
+            conn.execute("ALTER TABLE evolve_sessions ADD COLUMN benchmark_batch_id TEXT")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_event_trace_id ON event_payloads(trace_id, event_id) WHERE event_id IS NOT NULL")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_event_trace_sequence ON event_payloads(trace_id, sequence)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_workload_started ON runs(workload, started_at DESC)")

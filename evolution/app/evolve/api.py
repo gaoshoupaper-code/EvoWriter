@@ -88,6 +88,9 @@ class EvolveStartRequest(BaseModel):
     # CON-010 / DEC-012 / AC-015：来源评估运行已取消的 sealed 卷宗，必须由授权用户
     # 显式确认才能人工提交。系统永不自动调度取消来源卷宗。
     confirmed_cancel_origin: bool = False
+    # FR-006（REQ-20260919-172934）：可选附带评测批次 id，inspect round 注入全局弱点视图。
+    # 未附带或批次无数据 → 会话正常启动（降级不阻断）。
+    benchmark_batch_id: str | None = None
 
 
 class EvolveStartResponse(BaseModel):
@@ -160,14 +163,31 @@ async def evolve_start_converse(req: EvolveStartRequest) -> EvolveStartResponse:
 
     session_id, ctx = _prepare_evolve_session(req.eval_dossier_id, eval_dossier)
 
+    # FR-006：附带评测批次时注入全局弱点视图（降级不阻断）
+    if req.benchmark_batch_id:
+        from app.benchmark import report as bench_report
+        summary = bench_report.build_summary_for_evolve(req.benchmark_batch_id)
+        if summary is not None:
+            ctx.eval_snapshot["benchmark_report"] = summary
+            ev_db.update_session(session_id, benchmark_batch_id=req.benchmark_batch_id)
+            logger.info(
+                "进化 session %s 附带评测批次 %s 弱点视图（维度 %d 个）",
+                session_id, req.benchmark_batch_id, len(summary.get("weakest_dimensions", [])),
+            )
+        else:
+            logger.warning(
+                "评测批次 %s 无可聚合数据，进化会话正常启动（无全局视图）",
+                req.benchmark_batch_id,
+            )
+
     # 后台跑 inspect round（探查 + 开场白 → 转 conversing）
     from app.evolve.agent.agent import run_inspect_round
     task = asyncio.create_task(_run_round_bg(ctx, run_inspect_round, eval_dossier["trace_id"]))
     _running_tasks[session_id] = task
 
     logger.info(
-        "进化 session 启动（对话式）: session=%s evd=%s trace=%s",
-        session_id, req.eval_dossier_id, eval_dossier["trace_id"],
+        "进化 session 启动（对话式）: session=%s evd=%s trace=%s benchmark_batch=%s",
+        session_id, req.eval_dossier_id, eval_dossier["trace_id"], req.benchmark_batch_id,
     )
     return EvolveStartResponse(
         session_id=session_id, trace_id=eval_dossier["trace_id"],

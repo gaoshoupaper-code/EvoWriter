@@ -2,6 +2,8 @@
 元信息（评估集预置，程序可解析）：
 - mode: auto
 - status: confirmed
+- genre: 玄幻
+- subtype: 轻松治愈
 - title: 灵膳小厨娘（玄幻·轻松治愈流）
 - updated: 2026-07-10T12:40:00Z
 - note: 评估集 case-003，轻松治愈流·低冲突·日常向。与 case-001（热血升级快爽）和 case-002（凡人流沉郁谨慎）形成强烈反差，考验 writing 非爽点叙事能力。

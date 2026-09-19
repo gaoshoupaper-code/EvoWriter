@@ -31,6 +31,7 @@ def update_session(
     change_log_path: str | None = None,
     eval_ref: str | None = None,
     bound_eval_dossier_id: str | None = None,
+    benchmark_batch_id: str | None = None,
 ) -> None:
     """更新 session 字段（只更新非 None 的字段）。
 
@@ -58,6 +59,9 @@ def update_session(
     if bound_eval_dossier_id is not None:
         sets.append("bound_eval_dossier_id = ?")
         params.append(bound_eval_dossier_id)
+    if benchmark_batch_id is not None:
+        sets.append("benchmark_batch_id = ?")
+        params.append(benchmark_batch_id)
 
     if not sets:
         return

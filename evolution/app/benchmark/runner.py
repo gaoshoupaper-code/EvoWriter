@@ -1,10 +1,10 @@
-"""Benchmark Runner — 后台矩阵执行（数据闭环设计 C2/D12）。
+"""Benchmark Runner — 后台矩阵执行（评测主链路，REQ-20260919-172934）。
 
-对 case × 版本 笛卡尔积逐个执行：
-  1. 调 executor /internal/ab/run（传 demand_md + 版本配置）
+对 case × 版本 × seed 笛卡尔积逐个执行：
+  1. 调 executor /internal/ab/run（传 demand_md + source_commit）
   2. 轮询 /internal/ab/status 直到 done/failed
-  3. 调 eval_agent/scoring 评估
-  4. 写 benchmark_runs
+  3. 评测评分（scorer：直读 ArtifactRevision + rubric v3 judge，不走卷宗/eval_agent）
+  4. 写 benchmark_runs（含四类指纹绑定，DEC-015）
 
 后台异步（asyncio.create_task），不阻塞触发 API。
 失败自动重试（MAX_RETRIES=3），超过转 failed。
@@ -27,6 +27,9 @@ from app.common import evalset
 from app.dataset import repo as dataset_repo
 from app.dataset import revision
 from app.benchmark import repo as bench_repo
+from app.benchmark import manifest as bench_manifest
+from app.benchmark import rubric_v3
+from app.benchmark import scorer
 
 logger = logging.getLogger("evolution.benchmark.runner")
 
@@ -34,6 +37,12 @@ logger = logging.getLogger("evolution.benchmark.runner")
 _EXEC_TIMEOUT = 30.0
 _POLL_TIMEOUT = 600.0   # 单 case 10 分钟
 _POLL_INTERVAL = 5.0
+
+# 每 case 独立重复次数（DEC-013 固定 3 seed）
+DEFAULT_SEEDS = 3
+
+# 评分失败重试次数（FR-002 失败语义：重试 1 次）
+_SCORE_MAX_ATTEMPTS = 2
 
 
 def _executor_url(path: str) -> str:
@@ -47,12 +56,14 @@ def trigger_run(
     *,
     versions: list[int] | None = None,
     case_ids: list[str] | None = None,
+    seeds: int = DEFAULT_SEEDS,
 ) -> str:
-    """触发一个 benchmark 批次（同步建表，异步执行）。返回 batch_id。
+    """触发一个评测批次（同步建表，异步执行）。返回 batch_id。
 
     Args:
         versions: 要跑的版本号列表；None=当前 production 版本
         case_ids: 要跑的 case；None=golden 全 case
+        seeds: 每 case 独立重复次数（DEC-013 默认 3）
     """
     # 默认：当前 production 版本
     if versions is None:
@@ -75,15 +86,30 @@ def trigger_run(
     if locked and not revision.verify_golden_intact(locked):
         logger.warning("golden 内容与锁定 revision 不一致（可能被篡改），仍用锁定值跑")
 
+    # 评分配置指纹（DEC-012/015：建批时采集 judge 指纹 + rubric 版本）
+    judge_cfg = bench_manifest.resolve_judge_config()
+    if judge_cfg["fingerprint"] == "unconfigured":
+        raise ValueError(
+            "评测 judge LLM 未配置：请在桌面端「进化端模型」页配置（eval 或 evolution scope）"
+        )
+    if judge_cfg.get("degraded"):
+        logger.warning("eval scope 未配置，judge 降级使用 evolution scope 配置")
+    family_warning = bench_manifest.judge_same_family_warning()
+    if family_warning:
+        logger.warning(family_warning)
+
     batch_id = bench_repo.create_batch(
         case_ids=case_ids,
         versions=versions,
         golden_revision=golden_revision,
+        seeds=seeds,
+        rubric_version=rubric_v3.RUBRIC_VERSION,
+        judge_fp=judge_cfg["fingerprint"],
     )
 
     # 后台异步执行（不阻塞）
     asyncio.create_task(_run_batch_async(batch_id))
-    logger.info("benchmark 批次 %s 已触发，后台执行", batch_id)
+    logger.info("评测批次 %s 已触发，后台执行", batch_id)
     return batch_id
 
 
@@ -120,13 +146,13 @@ def _run_batch_sync(batch_id: str) -> None:
 
 
 def _execute_one(row: dict[str, Any]) -> None:
-    """执行单行：调 executor → 轮询 → 评估 → 写结果。"""
+    """执行单行：调 executor → 轮询 → 评测评分 → 回填指纹 → 写结果。"""
     run_id = row["id"]
     case_id = row["case_id"]
     version = row["harness_version"]
 
     bench_repo.mark_running(run_id)
-    logger.info("benchmark [%d] case=%s version=%s", run_id, case_id, version)
+    logger.info("评测 [%d] case=%s version=%s seed=%s", run_id, case_id, version, row.get("seed"))
 
     # 1. 取 demand_md + 版本快照
     demand_md = evalset.load_case_demand(case_id, layer="golden")
@@ -134,7 +160,9 @@ def _execute_one(row: dict[str, Any]) -> None:
     if snapshot is None:
         raise RuntimeError(f"harness v{version} 快照不存在")
 
-    # 2. 调 executor
+    # 2. 调 executor（记录实际 checkout 的 commit，Manifest 组成之一）
+    from app.versioning.registry_repo import get_version_commit
+    harness_commit = get_version_commit(version) or ""
     task_id = _trigger_executor(demand_md, snapshot)
 
     # 3. 轮询完成
@@ -144,16 +172,22 @@ def _execute_one(row: dict[str, Any]) -> None:
 
     bench_repo.set_trace(run_id, trace_id)
 
-    # 4. 评估（等 trace 摄入完成后再评）
-    scores = _evaluate(trace_id)
+    # 4. 回填指纹（被测模型从 trace 实际 llm 调用提取，DEC-015）
+    model_fp = bench_manifest.tested_model_fingerprint(trace_id)
+    manifest_fp = bench_manifest.manifest_fingerprint(harness_commit, model_fp)
+    bench_repo.set_fingerprints(
+        run_id, harness_commit=harness_commit, model_fp=model_fp, manifest_fp=manifest_fp,
+    )
+
+    # 5. 评测评分（等 trace 摄入完成后再评）
+    scores = _score_with_retry(demand_md, trace_id)
     bench_repo.set_result(
         run_id,
-        eval_id=scores.get("eval_id"),
+        eval_id=None,
         scores_json=json.dumps(scores, ensure_ascii=False) if scores else None,
     )
-    logger.info("benchmark [%d] 完成: case=%s v=%s score=%s",
-                run_id, case_id, version,
-                scores.get("content_overall") if scores else "N/A")
+    logger.info("评测 [%d] 完成: case=%s v=%s overall=%s",
+                run_id, case_id, version, scores.get("overall") if scores else "N/A")
 
 
 # ── executor 调用（与 tests/api 平行，复用端点契约）─────────
@@ -210,10 +244,11 @@ def _poll_until_done(task_id: str, run_id: int) -> str | None:
     raise RuntimeError(f"轮询超时（{_POLL_TIMEOUT}s 无结果）")
 
 
-def _evaluate(trace_id: str) -> dict[str, Any]:
-    """调 eval_agent/scoring 评估，返回分数摘要。
+def _score_with_retry(demand_md: str, trace_id: str) -> dict[str, Any] | None:
+    """评测评分：直读 ArtifactRevision 三件套 + rubric v3 judge（FR-002/003）。
 
-    等 trace 摄入完成（runs 表有该 trace）后再评。
+    解析/校验失败重试 1 次（FR-002 失败语义）；仍失败返回 None（该行转 failed）。
+    先等 trace 摄入完成（runs 表出现终态），与旧评估路径同语义。
     """
     # 等 trace 入库（executor done 后 ingestion 异步拉取，可能稍慢）
     for _ in range(20):  # 最多等 60s
@@ -222,26 +257,18 @@ def _evaluate(trace_id: str) -> dict[str, Any]:
             break
         time.sleep(3.0)
 
-    from app.eval_agent import scoring
-    result = scoring.evaluate_trace(trace_id)
-    if result is None:
-        return {"eval_id": None, "content_overall": None, "skipped": True}
+    deliveries = scorer.load_outline_deliveries(trace_id)
+    if not deliveries:
+        raise RuntimeError(f"trace {trace_id} 无大纲三件套产物（ArtifactRevision）")
 
-    # 提取摘要
-    content = result.get("content", {})
-    overall = float(content.get("overall", 0)) if not content.get("skipped") else None
-
-    # 查 eval session
-    eval_row = db.query_one(
-        "SELECT eval_id FROM evaluation_sessions WHERE trace_id=? AND status='done' ORDER BY updated_at DESC LIMIT 1",
-        (trace_id,),
-    )
-    return {
-        "eval_id": eval_row["eval_id"] if eval_row else None,
-        "content_overall": overall,
-        "content_scores": content.get("scores", {}),
-        "is_badcase": result.get("badcase", {}).get("is_badcase", False),
-    }
+    last_error: Exception | None = None
+    for attempt in range(1, _SCORE_MAX_ATTEMPTS + 1):
+        try:
+            return scorer.score_case(demand_md, deliveries)
+        except Exception as exc:
+            last_error = exc
+            logger.warning("评分第 %d 次失败 trace=%s: %s", attempt, trace_id, exc)
+    raise RuntimeError(f"评分重试用尽（{_SCORE_MAX_ATTEMPTS} 次）: {last_error}")
 
 
 __all__ = [

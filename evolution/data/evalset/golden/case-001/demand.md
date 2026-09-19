@@ -2,6 +2,8 @@
 元信息（评估集预置，程序可解析）：
 - mode: auto
 - status: confirmed
+- genre: 玄幻
+- subtype: 热血升级
 - title: 万器图录（玄幻·热血升级流）
 - updated: 2026-06-27T13:50:00Z
 - note: 评估集 case-001，用于进化端自动评估。完整四层 12 维，驱动 interview 直通后的完整创作流程。

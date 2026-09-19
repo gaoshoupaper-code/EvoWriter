@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any, Callable, Protocol, runtime_checkable
 
@@ -47,12 +48,21 @@ def judge_enabled() -> bool:
     return db.LlmConfigsRepository.get_active("evolution") is not None
 
 
-def _get_config() -> tuple[str, str, str]:
-    """读取当前 LLM 配置（evolution scope，api_key, base_url, model）。未配置抛 RuntimeError。"""
-    config = db.LlmConfigsRepository.get_active("evolution")
+def _get_config(scope: str = "evolution") -> tuple[str, str, str]:
+    """读取指定 scope 的 LLM 配置 (api_key, base_url, model)。未配置抛 RuntimeError。
+
+    scope 扩展（REQ-20260919-172934 / DEC-012）：'eval'（评测 judge）未配置时
+    降级 evolution scope 并告警——判评分离的降级路径，与 model_factory 同语义。
+    """
+    config = db.LlmConfigsRepository.get_active(scope)
+    if config is None and scope != "evolution":
+        logging.getLogger("evolution.core.llm").warning(
+            "scope=%s 未配置 LLM，降级使用 evolution scope 配置", scope
+        )
+        config = db.LlmConfigsRepository.get_active("evolution")
     if config is None:
         raise RuntimeError(
-            "LLM 未配置。请在桌面端「进化端模型」页填写大模型 API（base_url / api_key / model）。"
+            "LLM 未配置。请在桌面端「进化端模型」页填写大模型 API（base_url / api_key / model）。",
         )
     return config
 
@@ -64,6 +74,7 @@ def chat(
     timeout: float = 60.0,
     trace: LlmCallObserver | None = None,
     phase: str = "llm",
+    scope: str = "evolution",
 ) -> str:
     """调一次 chat completion，返回 assistant 文本。
 
@@ -72,8 +83,9 @@ def chat(
 
     trace/phase（DEC-001）：确定性流水线（证据编纂、内容评分）通过 trace 传入观测者，
     chat 回调它把本次调用记录为 llm span。Agent 路径不传 trace，仍由 TraceMiddleware 覆盖。
+    scope（DEC-012）：默认 evolution；评测 judge 传 'eval'（未配置降级 evolution）。
     """
-    api_key, base_url_raw, model_raw = _get_config()
+    api_key, base_url_raw, model_raw = _get_config(scope)
     base_url = base_url_raw.rstrip("/")
     url = f"{base_url}/chat/completions"
     # model 可能是 "openai:gpt-4o-mini" 或 "gpt-4o-mini"，去掉 provider 前缀

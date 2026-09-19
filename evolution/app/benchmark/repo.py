@@ -39,10 +39,15 @@ def create_batch(
     case_ids: list[str],
     versions: list[int],
     golden_revision: str,
+    seeds: int = 3,
+    rubric_version: str | None = None,
+    judge_fp: str | None = None,
 ) -> str:
-    """创建一个 benchmark 批次（case × 版本 的笛卡尔积），返回 batch_id。
+    """创建一个 benchmark 批次（case × 版本 × seed 的笛卡尔积），返回 batch_id。
 
-    每个组合创建一行 benchmark_runs（pending 状态）。
+    每个组合创建一行 benchmark_runs（pending 状态）。seeds = 每 case 独立
+    重复次数（DEC-013 固定 3）。rubric_version / judge_fp 建批时采集（DEC-015）；
+    model_fp / manifest_fp / harness_commit 由 runner 跑完后逐行回填。
     """
     batch_id = _new_batch_id()
     now = _now()
@@ -50,26 +55,45 @@ def create_batch(
     rows = []
     for version in versions:
         for case_id in case_ids:
-            rows.append((
-                batch_id, case_id, version, golden_revision,
-                None, None, None, STATUS_PENDING, 0, None, now, None,
-            ))
+            for seed in range(1, max(1, seeds) + 1):
+                rows.append((
+                    batch_id, case_id, version, golden_revision,
+                    None, None, None, STATUS_PENDING, 0, None, now, None,
+                    seed, rubric_version, judge_fp, None, None, None,
+                ))
 
     if rows:
         db.executemany(
             """INSERT INTO benchmark_runs
                (batch_id, case_id, harness_version, golden_revision,
                 trace_id, eval_id, scores_json, status, retries, error,
-                ran_at, finished_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ran_at, finished_at,
+                seed, rubric_version, judge_fp, model_fp, manifest_fp, harness_commit)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
     logger = _get_logger()
     logger.info(
-        "创建 benchmark 批次 %s: %d case × %d 版本 = %d 行 (golden_revision=%s)",
-        batch_id, len(case_ids), len(versions), len(rows), golden_revision,
+        "创建 benchmark 批次 %s: %d case × %d 版本 × %d seed = %d 行 (golden_revision=%s rubric=%s judge=%s)",
+        batch_id, len(case_ids), len(versions), max(1, seeds), len(rows),
+        golden_revision, rubric_version, judge_fp,
     )
     return batch_id
+
+
+def set_fingerprints(
+    run_id: int,
+    *,
+    harness_commit: str | None,
+    model_fp: str | None,
+    manifest_fp: str | None,
+) -> None:
+    """单行跑完后回填指纹（被测模型从 trace 提取，只能事后采集，DEC-015）。"""
+    db.execute(
+        """UPDATE benchmark_runs
+           SET harness_commit=?, model_fp=?, manifest_fp=? WHERE id=?""",
+        (harness_commit, model_fp, manifest_fp, run_id),
+    )
 
 
 # ── 行状态流转 ──────────────────────────────────────────────
@@ -215,7 +239,7 @@ def _row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
     if row.get("scores_json"):
         try:
             scores = json.loads(row["scores_json"])
-            scores_avg = scores.get("content_overall")
+            scores_avg = scores.get("overall")
         except (json.JSONDecodeError, TypeError):
             pass
     return {
@@ -232,6 +256,12 @@ def _row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
         "scores_avg": scores_avg,
         "ran_at": row["ran_at"],
         "finished_at": row["finished_at"],
+        "seed": row.get("seed"),
+        "rubric_version": row.get("rubric_version"),
+        "judge_fp": row.get("judge_fp"),
+        "model_fp": row.get("model_fp"),
+        "manifest_fp": row.get("manifest_fp"),
+        "harness_commit": row.get("harness_commit"),
     }
 
 
@@ -243,7 +273,7 @@ def _get_logger():
 __all__ = [
     "STATUS_PENDING", "STATUS_RUNNING", "STATUS_EVALUATING",
     "STATUS_DONE", "STATUS_FAILED", "MAX_RETRIES",
-    "create_batch", "get_pending", "mark_running", "set_trace",
+    "create_batch", "set_fingerprints", "get_pending", "mark_running", "set_trace",
     "set_result", "mark_failed",
     "get_batch", "get_leaderboard", "get_recent_versions",
 ]

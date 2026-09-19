@@ -2,6 +2,8 @@
 元信息（评估集预置，程序可解析）：
 - mode: auto
 - status: confirmed
+- genre: 玄幻
+- subtype: 凡人流
 - title: 灵材鉴微录（玄幻·凡人流）
 - updated: 2026-07-10T12:40:00Z
 - note: 评估集 case-002，凡人流·弱金手指·慢热张弛交替。与 case-001（热血升级快爽）形成节奏反差，考验 writing 节奏控制与 detail-outline 伏笔回收能力。

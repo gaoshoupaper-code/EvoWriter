@@ -426,6 +426,7 @@ def _execute_ab(task_id: str, req: "ABRunRequest") -> None:
         trace_id = worker.wait_for_trace_id(timeout=300)
         if trace_id:
             _ab_tasks[task_id]["trace_ids"] = [trace_id]
+            _bind_ab_run(trace_id, req)
             # FR-001 根因修复：把子进程 trace 的 workspace_path 登记进主 recorder，
             # 否则 GET /internal/traces/{trace_id} 会在主进程内存索引查无 → 稳定 404
             # （EVD-002/003）。子进程产物已落盘，主进程只需拿到定位信息即可读取。
@@ -470,6 +471,34 @@ def _execute_ab(task_id: str, req: "ABRunRequest") -> None:
         _ab_tasks[task_id]["trace_ids"] = prior_trace_ids
         _ab_tasks[task_id]["error"] = str(exc)
         _notify_evolution_task_failed(task_id, str(exc))
+
+
+def _bind_ab_run(trace_id: str, req: "ABRunRequest") -> None:
+    """A/B Run 绑定签发（FR-007：实验 Run 与生产 Run 在账本中同构可查）。
+
+    主链绑定在 generate_stream（create_run 后）；ab_run 走隔离子进程不经该链，
+    故在父进程拿到 trace_id 后补签。commit 解析与主链同语义：快照版本用
+    source_commit；working 包（无 commit）解析当前生产 commit，解析不到跳过
+    （绑定必须指向明确版本）。fail-static：bind 失败不阻塞实验。
+    """
+    from app.platform.agent.binding_client import get_binding_client
+    from app.platform.agent.loader import production_commit
+
+    commit = req.source_commit or production_commit()
+    if not commit:
+        logger.warning("A/B 绑定跳过：无法确定装配 commit（working 包且生产未加载）")
+        return
+    try:
+        from app.domains.writing.agent import build_llm_snapshot
+
+        get_binding_client().bind(
+            trace_id=trace_id,
+            harness_commit=commit,
+            llm_snapshot=build_llm_snapshot(),
+            run_purpose="optimization",
+        )
+    except Exception:  # noqa: BLE001 —— 绑定是观测辅助，失败不影响实验执行
+        logger.warning("A/B 绑定签发失败（跳过）: trace=%s", trace_id, exc_info=True)
 
 
 def _notify_evolution_task_failed(task_id: str, error: str) -> None:

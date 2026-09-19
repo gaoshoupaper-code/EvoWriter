@@ -287,6 +287,26 @@ def _emit_contract_snapshot(recorder, trace_id: str, payload, thread, run_purpos
     return _callback
 
 
+def build_llm_snapshot():
+    """从 llm_config loader 构造脱敏 LLM 快照（contracts 红线：不含明文 key）。
+
+    模块级函数：generate_stream 主链与 A/B 子进程任务的绑定签发共用同一构造，
+    保证两类 Run 在 Platform 账本中同构（FR-007）。
+    loader 未配置/降级返回 None（快照缺省，绑定照签——llm_config 非必填）。
+    """
+    from app.platform.llm_config.loader import get_active_llm_config
+    from contracts.platform import LlmConfigSnapshot
+
+    cfg = get_active_llm_config()
+    if cfg is None:
+        return None
+    return LlmConfigSnapshot(
+        model=cfg.model, base_url=cfg.base_url,
+        api_key_ref=None,  # Phase A：无凭据引用体系，明文 key 绝不进快照
+        source="evolution",
+    )
+
+
 class MetaAgentService(BaseAgentService):
     def __init__(self, settings: Settings, workspace_root: Path, trace_recorder: TraceRecorder, style_store: CreateTypeStore, checkpointer: BaseCheckpointSaver) -> None:
         # 复用 BaseAgentService 的通用初始化（settings/workspace_root/trace_recorder/checkpointer）
@@ -506,17 +526,7 @@ class MetaAgentService(BaseAgentService):
 
         loader 未配置/降级返回 None（快照缺省，绑定照签——llm_config 非必填）。
         """
-        from app.platform.llm_config.loader import get_active_llm_config
-        from contracts.platform import LlmConfigSnapshot
-
-        cfg = get_active_llm_config()
-        if cfg is None:
-            return None
-        return LlmConfigSnapshot(
-            model=cfg.model, base_url=cfg.base_url,
-            api_key_ref=None,  # Phase A：无凭据引用体系，明文 key 绝不进快照
-            source="evolution",
-        )
+        return build_llm_snapshot()
 
     def _resolve_binding_commit(self) -> str:
         """解析 Run 绑定用的 harness commit（绑定必须指向明确的装配版本）。

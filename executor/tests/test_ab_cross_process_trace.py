@@ -249,3 +249,56 @@ class HarnessCommitPassthroughTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestABRunBinding:
+    """FR-007：A/B Run 与生产 Run 在 Platform 账本同构可查。"""
+
+    def test_bind_ab_run_issues_optimization_binding(self, monkeypatch):
+        from types import SimpleNamespace as NS
+
+        from app.routers import internal as mod
+
+        fake_client = NS(bind=staticmethod(
+            lambda **kw: calls.append(kw) or (NS(llm_config=None), True)))
+        calls: list = []
+        monkeypatch.setattr(
+            "app.platform.agent.binding_client.get_binding_client",
+            lambda: fake_client,
+        )
+        monkeypatch.setattr(
+            "app.platform.llm_config.loader.get_active_llm_config",
+            lambda: None,
+        )
+        req = mod.ABRunRequest(demand_md="d", source_commit="abc123")
+        mod._bind_ab_run("trace-1", req)
+        assert len(calls) == 1
+        assert calls[0]["run_purpose"] == "optimization"
+        assert calls[0]["harness_commit"] == "abc123"
+        assert calls[0]["trace_id"] == "trace-1"
+
+    def test_bind_ab_run_skips_without_commit(self, monkeypatch):
+        from types import SimpleNamespace as NS
+
+        from app.routers import internal as mod
+
+        called: list = []
+        monkeypatch.setattr(
+            "app.platform.agent.binding_client.get_binding_client",
+            lambda: NS(bind=staticmethod(lambda **kw: called.append(kw))),
+        )
+        monkeypatch.setattr("app.platform.agent.loader.production_commit", lambda: "")
+        mod._bind_ab_run("trace-2", mod.ABRunRequest(demand_md="d"))
+        assert called == []
+
+    def test_bind_ab_run_fail_static(self, monkeypatch):
+        from app.routers import internal as mod
+
+        def _boom():
+            raise RuntimeError("platform down")
+
+        monkeypatch.setattr(
+            "app.platform.agent.binding_client.get_binding_client", _boom,
+        )
+        # 不抛异常：A/B 绑定失败不影响实验执行
+        mod._bind_ab_run("trace-3", mod.ABRunRequest(demand_md="d", source_commit="c"))

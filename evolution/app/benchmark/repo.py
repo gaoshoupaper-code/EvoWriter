@@ -150,6 +150,48 @@ def mark_failed(run_id: int, error: str) -> None:
 # ── 查询 ────────────────────────────────────────────────────
 
 
+def get_recent_batches(limit: int = 20) -> list[dict[str, Any]]:
+    """最近批次摘要列表（桌面端评测页用，FR-008 增量）。
+
+    按 batch 聚合：进度计数 + 批次级指纹（取首行）+ harness 版本。
+    """
+    rows = db.query_all(
+        """SELECT batch_id, COUNT(*) AS total,
+                  SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) AS done,
+                  SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+                  MAX(ran_at) AS ran_at, MIN(ran_at) AS trigger_at,
+                  MAX(harness_version) AS harness_version,
+                  MAX(golden_revision) AS golden_revision,
+                  MAX(rubric_version) AS rubric_version,
+                  MAX(judge_fp) AS judge_fp
+           FROM benchmark_runs
+           GROUP BY batch_id
+           ORDER BY trigger_at DESC
+           LIMIT ?""",
+        (limit,),
+    )
+    batches: list[dict[str, Any]] = []
+    for row in rows:
+        active = row["total"] - row["done"] - row["failed"]
+        if active > 0:
+            status = "running"
+        elif row["failed"] > 0:
+            status = "partial" if row["done"] > 0 else "failed"
+        else:
+            status = "done"
+        batches.append({
+            "batch_id": row["batch_id"],
+            "status": status,
+            "progress": {"total": row["total"], "done": row["done"], "failed": row["failed"], "active": active},
+            "harness_version": row["harness_version"],
+            "golden_revision": row["golden_revision"],
+            "rubric_version": row["rubric_version"],
+            "judge_fp": row["judge_fp"],
+            "triggered_at": row["trigger_at"],
+        })
+    return batches
+
+
 def get_batch(batch_id: str) -> dict[str, Any]:
     """查批次状态 + 进度。"""
     rows = db.query_all(
@@ -275,5 +317,5 @@ __all__ = [
     "STATUS_DONE", "STATUS_FAILED", "MAX_RETRIES",
     "create_batch", "set_fingerprints", "get_pending", "mark_running", "set_trace",
     "set_result", "mark_failed",
-    "get_batch", "get_leaderboard", "get_recent_versions",
+    "get_batch", "get_recent_batches", "get_leaderboard", "get_recent_versions",
 ]

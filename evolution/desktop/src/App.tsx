@@ -14,6 +14,7 @@ import Harness from "@/pages/harness";
 import Versions from "@/pages/versions";
 import Dataset from "@/pages/dataset";
 import Tests from "@/pages/tests";
+import Benchmark from "@/pages/benchmark";
 import TraceDetail from "@/pages/trace-detail";
 import AdminUsers from "@/pages/admin/users";
 import AdminInviteCodes from "@/pages/admin/invite-codes";
@@ -60,6 +61,7 @@ function App() {
           <Route path="/versions" element={<Versions />} />
           <Route path="/dataset" element={<Dataset />} />
           <Route path="/tests" element={<Tests />} />
+          <Route path="/benchmark" element={<Benchmark />} />
           <Route path="/history" element={<Navigate to="/" replace />} />
 
           {/* 配置拆两个（D17），老 /config 重定向到 /config/evolution 保兼容 */}

@@ -83,6 +83,12 @@ def get_leaderboard(
     return repo.get_leaderboard(golden_revision)
 
 
+@router.get("/batches")
+def list_batches(limit: int = Query(20, ge=1, le=100)) -> dict[str, Any]:
+    """最近批次摘要列表（桌面端评测页）。"""
+    return {"batches": repo.get_recent_batches(limit)}
+
+
 @router.get("/batches/{batch_id}")
 def get_batch(batch_id: str) -> dict[str, Any]:
     """查批次状态。"""

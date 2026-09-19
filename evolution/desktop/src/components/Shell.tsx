@@ -9,6 +9,7 @@ import {
   Dna,
   FileArchive,
   FlaskConical,
+  Gauge,
   GitFork,
   LogOut,
   Package,
@@ -47,6 +48,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: "质量闭环",
     items: [
       { to: "/tests", label: "单次测试", end: false, icon: FlaskConical },
+      { to: "/benchmark", label: "评测", end: false, icon: Gauge },
       { to: "/dossiers", label: "证据卷宗", end: false, icon: Package },
       { to: "/evaluation", label: "评估", end: false, icon: ClipboardCheck },
       { to: "/evolve", label: "进化", end: false, icon: Dna },

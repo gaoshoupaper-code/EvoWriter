@@ -1635,3 +1635,97 @@ export async function updateCreditsConfig(
     body: JSON.stringify({ value }),
   });
 }
+
+// ════════════════════════════════════════════════════════════
+//  评测（benchmark v3，REQ-20260919-172934）
+// ════════════════════════════════════════════════════════════
+
+/** 批次摘要（列表项）。 */
+export interface BenchmarkBatchSummary {
+  batch_id: string;
+  status: string; // running | done | partial | failed
+  progress: { total: number; done: number; failed: number; active: number };
+  harness_version: number | null;
+  golden_revision: string | null;
+  rubric_version: string | null;
+  judge_fp: string | null;
+  triggered_at: string | null;
+}
+
+/** 弱点报告（FR-005）。 */
+export interface BenchmarkReport {
+  batch_id: string;
+  status: string; // ok | not_found | no_scored_data
+  message?: string;
+  progress?: { total: number; done: number; failed: number; active: number };
+  fingerprints?: Record<string, string | number | null>;
+  calibration: string;
+  anchor_status: string;
+  dimensions?: { dimension: string; mean: number | null; n: number }[];
+  tag_hits?: { tag: string; hits: number }[];
+  rule_delivery_failed?: number;
+  low_cases?: {
+    case_id: string;
+    seed: number | null;
+    overall: number | null;
+    scores: Record<string, number>;
+    tags: Record<string, string[]>;
+    rule_delivery_passed: boolean | null;
+  }[];
+  failed_rows?: { case_id: string; seed: number | null; error: string | null }[];
+}
+
+/** 版本对比（FR-004，CI 三态）。 */
+export interface BenchmarkCompare {
+  comparable: boolean;
+  problems?: string[];
+  batch_a?: string;
+  batch_b?: string;
+  manifest_fp_a?: string | null;
+  manifest_fp_b?: string | null;
+  total?: {
+    verdict: string; // win | tie | lose | insufficient
+    reason?: string;
+    n_candidate: number;
+    n_production: number;
+    mean_candidate: number;
+    mean_production: number;
+    ci_95_low: number;
+    ci_95_high: number;
+    delta_mean: number;
+    sufficient_power: boolean;
+  };
+  dimensions?: Record<string, Record<string, { mean: number | null; n: number }>>;
+}
+
+/** 触发评测批次（FR-003）。 */
+export async function runBenchmark(payload: {
+  version?: number;
+  versions?: number[];
+  seeds?: number;
+}): Promise<{ batch_id: string; status: string; progress: Record<string, number>; golden_revision: string }> {
+  return evoJson("/api/benchmark/run", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+/** 最近批次列表。 */
+export async function listBenchmarkBatches(limit = 20): Promise<{ batches: BenchmarkBatchSummary[] }> {
+  return evoJson(`/api/benchmark/batches?limit=${limit}`, { method: "GET" });
+}
+
+/** 弱点报告。 */
+export async function getBenchmarkReport(batchId: string): Promise<BenchmarkReport> {
+  return evoJson(`/api/benchmark/batches/${batchId}/report`, { method: "GET" });
+}
+
+/** 两批次 CI 三态对比。 */
+export async function compareBatches(batchA: string, batchB: string): Promise<BenchmarkCompare> {
+  return evoJson("/api/benchmark/compare", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ batch_a: batchA, batch_b: batchB }),
+  });
+}

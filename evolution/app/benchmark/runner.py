@@ -9,12 +9,17 @@
 后台线程执行（daemon thread），不阻塞触发 API。
 失败自动重试（MAX_RETRIES=3），超过转 failed。
 
-调用 executor 的逻辑与 tests/api 平行（不依赖其私有函数），复用相同的端点契约。
+批次可控性（REQ-20260920-192126）：
+- 手动停止：request_stop 设批次取消事件（worker 在轮询/评分等待点感知，
+  中断手中行并尽力叫停 executor 任务）+ repo 清 pending 行，不依赖 worker 存活
+- 自动止损：连续 ≥FAIL_STREAK_LIMIT 次尝试失败且涉及 ≥2 个不同行 → 停批
+  （单 case 系统性失败仍走行级隔离重试，不误伤整批）
 """
 from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from typing import Any
 
@@ -46,6 +51,58 @@ DEFAULT_CONCURRENCY = 3
 
 # 评分失败重试次数（FR-002 失败语义：重试 1 次）
 _SCORE_MAX_ATTEMPTS = 2
+
+# 行失败回退 pending 后的 worker 退避（FR-004：避免零间隔立即重抢）
+_RETRY_BACKOFF_S = 10.0
+
+# 自动止损阈值（FR-002/DEC-002）：连续失败达此数且涉及 ≥2 个不同行才停批。
+# 「≥2 行」限定防单 case 系统性失败误伤整批（与既有「单行失败不传染」语义兼容）。
+_FAIL_STREAK_LIMIT = 3
+
+
+class _BatchCancelled(Exception):
+    """worker 感知到批次停止的信号；task_id 携带生成中任务号供 executor 叫停。"""
+
+    def __init__(self, task_id: str | None = None):
+        super().__init__("batch cancelled")
+        self.task_id = task_id
+
+
+# 批次取消事件注册表（本进程 worker 的停止通知；API 与 runner 同进程）。
+# 僵尸批次（服务重启残留）无注册事件，停止只走 repo 层清理。
+_cancel_events: dict[str, threading.Event] = {}
+_cancel_lock = threading.Lock()
+
+
+class _FailStreak:
+    """连续失败计数（FR-002）：任一次尝试成功清零；跨行累计。
+
+    触发条件 = 连续失败次数 ≥ FAIL_STREAK_LIMIT 且失败涉及 ≥2 个不同行
+    （并发池下系统性故障 3 次连败即触发；串行下首行重试耗尽 + 次行首败触发）。
+    仅 runner 进程内使用，不持久化——进程消亡后批次即僵尸，由停止清理。
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._streak = 0
+        self._rows: set[int] = set()
+
+    def record_success(self) -> None:
+        with self._lock:
+            self._streak = 0
+            self._rows.clear()
+
+    def record_failure(self, run_id: int) -> bool:
+        """记一次失败，返回是否应触发止损。"""
+        with self._lock:
+            self._streak += 1
+            self._rows.add(run_id)
+            return self._streak >= _FAIL_STREAK_LIMIT and len(self._rows) >= 2
+
+
+def _check_cancel(cancel_event: threading.Event | None, task_id: str | None = None) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise _BatchCancelled(task_id=task_id)
 
 
 def _executor_url(path: str) -> str:
@@ -164,40 +221,112 @@ def _run_batch_sync(
     抢占经 claim_next_pending（单条 UPDATE...RETURNING，锁内原子），多 worker
     不会取到同一行；单行失败由 _worker_loop 记 failed/退回重试，不传染其他行。
     judge_config_id 为全批次统一 judge（FR-003），None=评分走默认 scope 解析。
+    批次级取消事件与连续失败计数随批次生命周期创建/清理。
     """
-    import threading
-
+    cancel_event = threading.Event()
+    with _cancel_lock:
+        _cancel_events[batch_id] = cancel_event
+    streak = _FailStreak()
     workers = max(1, concurrency)
     logger.info("开始执行 benchmark 批次 %s（并发 %d）", batch_id, workers)
     threads = [
         threading.Thread(
-            target=_worker_loop, args=(batch_id, judge_config_id),
+            target=_worker_loop,
+            args=(batch_id, judge_config_id, cancel_event, streak),
             daemon=True, name=f"bench-{batch_id[:8]}-{i}",
         )
         for i in range(workers)
     ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
+    try:
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+    finally:
+        with _cancel_lock:
+            if _cancel_events.get(batch_id) is cancel_event:
+                del _cancel_events[batch_id]
     logger.info("benchmark 批次 %s 执行完毕", batch_id)
 
 
-def _worker_loop(batch_id: str, judge_config_id: int | None = None) -> None:
-    """单 worker 主循环：抢占 → 执行 → 失败记账，直到本批次无 pending。"""
+def _worker_loop(
+    batch_id: str,
+    judge_config_id: int | None = None,
+    cancel_event: threading.Event | None = None,
+    streak: _FailStreak | None = None,
+) -> None:
+    """单 worker 主循环：抢占 → 执行 → 失败记账，直到本批次无 pending 或被停止。"""
+    streak = streak if streak is not None else _FailStreak()
     while True:
+        if cancel_event is not None and cancel_event.is_set():
+            return
         row = bench_repo.claim_next_pending(batch_id)
         if row is None:
             return
         try:
-            _execute_one(row, judge_config_id)
+            _execute_one(row, judge_config_id, cancel_event=cancel_event)
+            streak.record_success()
+        except _BatchCancelled as exc:
+            # 批次停止：尽力叫停 executor 侧生成任务，手中行转 cancelled 后退出
+            if exc.task_id:
+                _stop_executor_task(exc.task_id)
+            bench_repo.mark_cancelled(row["id"])
+            logger.info("benchmark 行 %d 因批次停止转 cancelled", row["id"])
+            return
         except Exception as exc:
             logger.exception("benchmark 行 %d 执行异常", row["id"])
             bench_repo.mark_failed(row["id"], str(exc))
+            if streak.record_failure(row["id"]):
+                logger.warning(
+                    "批次 %s 连续 %d 次失败（涉及 ≥2 行），触发自动止损",
+                    batch_id, _FAIL_STREAK_LIMIT,
+                )
+                _halt_batch(batch_id, cancel_event)
+                return
+            time.sleep(_RETRY_BACKOFF_S)
 
 
-def _execute_one(row: dict[str, Any], judge_config_id: int | None = None) -> None:
-    """执行单行：调 executor → 轮询 → 评测评分 → 回填指纹 → 写结果。"""
+def _halt_batch(batch_id: str, cancel_event: threading.Event | None) -> None:
+    """停批（止损路径）：清 pending 行 + 落终止原因 + 通知全部 worker。"""
+    if cancel_event is not None:
+        cancel_event.set()
+    bench_repo.stop_batch(batch_id, reason=bench_repo.STOP_AUTO_FAIL)
+
+
+def request_stop(batch_id: str) -> dict[str, Any]:
+    """停止批次（API 入口，FR-001）：先通知存活 worker，再清 pending 行。
+
+    顺序保证竞态安全：事件先 set，worker 迟到的状态写入被 repo 终态守卫拦下。
+    幂等：重复调用返回当前批次状态；僵尸批次（无注册事件）只走 repo 清理。
+    """
+    with _cancel_lock:
+        event = _cancel_events.get(batch_id)
+    if event is not None:
+        event.set()
+    result = bench_repo.stop_batch(batch_id, reason=bench_repo.STOP_USER)
+    logger.info("批次 %s 收到停止请求（user_stop）", batch_id)
+    return result
+
+
+def _stop_executor_task(task_id: str) -> None:
+    """尽力叫停 executor 侧生成任务（FR-001 失败语义：调用失败不阻塞行取消）。"""
+    try:
+        httpx.post(_executor_url(f"/internal/ab/stop/{task_id}"), timeout=10.0)
+    except Exception:
+        logger.warning("executor stop 调用失败（task=%s），生成侧任务将自行结束", task_id)
+
+
+def _execute_one(
+    row: dict[str, Any],
+    judge_config_id: int | None = None,
+    *,
+    cancel_event: threading.Event | None = None,
+) -> None:
+    """执行单行：调 executor → 轮询 → 评测评分 → 回填指纹 → 写结果。
+
+    轮询与评分等待点检查批次取消（_BatchCancelled 上抛由 worker 收尾）；
+    行状态写入均有终态守卫，取消后迟到写入不会覆盖 cancelled。
+    """
     run_id = row["id"]
     case_id = row["case_id"]
     version = row["harness_version"]
@@ -215,7 +344,8 @@ def _execute_one(row: dict[str, Any], judge_config_id: int | None = None) -> Non
     task_id = _trigger_executor(demand_md, snapshot)
 
     # 3. 轮询完成
-    trace_id = _poll_until_done(task_id, run_id)
+    _check_cancel(cancel_event, task_id=task_id)
+    trace_id = _poll_until_done(task_id, run_id, cancel_event=cancel_event)
     if not trace_id:
         raise RuntimeError(f"executor task {task_id} 无 trace_id")
 
@@ -240,7 +370,8 @@ def _execute_one(row: dict[str, Any], judge_config_id: int | None = None) -> Non
         logger.warning("评测行 %d trace=%s 无 Platform 绑定，manifest 记 unbound", run_id, trace_id)
 
     # 5. 评测评分（等 trace 摄入完成后再评；judge_config_id 为本批次统一 judge，FR-003）
-    scores = _score_with_retry(demand_md, trace_id, judge_config_id)
+    _check_cancel(cancel_event)
+    scores = _score_with_retry(demand_md, trace_id, judge_config_id, cancel_event=cancel_event)
     bench_repo.set_result(
         run_id,
         eval_id=None,
@@ -278,15 +409,28 @@ def _trigger_executor(demand_md: str, snapshot: dict[str, Any]) -> str:
     return resp.json()["task_id"]
 
 
-def _poll_until_done(task_id: str, run_id: int) -> str | None:
-    """轮询 executor task 直到完成，返回 trace_id。"""
+def _poll_until_done(
+    task_id: str,
+    run_id: int,
+    cancel_event: threading.Event | None = None,
+) -> str | None:
+    """轮询 executor task 直到完成，返回 trace_id。
+
+    4xx 快速失败（FR-004：任务不存在/无效秒级判败，不等满超时）；
+    5xx 与网络错误维持退避重试。每轮检查批次取消（FR-001）。
+    """
     deadline = time.time() + _POLL_TIMEOUT
     while time.time() < deadline:
         time.sleep(_POLL_INTERVAL)
+        _check_cancel(cancel_event, task_id=task_id)
         try:
             resp = httpx.get(_executor_url(f"/internal/ab/status/{task_id}"), timeout=10.0)
         except Exception:
             continue
+        if 400 <= resp.status_code < 500:
+            raise RuntimeError(
+                f"executor task {task_id} 轮询收到 {resp.status_code}（任务缺失或无效），快速失败"
+            )
         if resp.status_code != 200:
             continue
         data = resp.json()
@@ -306,17 +450,20 @@ def _poll_until_done(task_id: str, run_id: int) -> str | None:
 
 def _score_with_retry(
     demand_md: str, trace_id: str, judge_config_id: int | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any] | None:
     """评测评分：直读 ArtifactRevision 三件套 + rubric v3 judge（FR-002/003）。
 
     解析/校验失败重试 1 次（FR-002 失败语义）；仍失败返回 None（该行转 failed）。
-    先等 trace 摄入完成（runs 表出现终态），与旧评估路径同语义。
+    先等 trace 摄入完成（runs 表出现终态），与旧评估路径同语义；
+    等待与每次尝试前检查批次取消（FR-001 硬停语义：评分结果不再等待/写回）。
     """
     # 等 trace 入库（executor done 后 ingestion 异步拉取，可能稍慢）
     for _ in range(20):  # 最多等 60s
         row = db.query_one("SELECT status FROM runs WHERE trace_id=?", (trace_id,))
         if row and row["status"] in ("completed", "failed"):
             break
+        _check_cancel(cancel_event)
         time.sleep(3.0)
 
     deliveries = scorer.load_outline_deliveries(trace_id)
@@ -325,6 +472,7 @@ def _score_with_retry(
 
     last_error: Exception | None = None
     for attempt in range(1, _SCORE_MAX_ATTEMPTS + 1):
+        _check_cancel(cancel_event)
         try:
             return scorer.score_case(demand_md, deliveries, judge_config_id=judge_config_id)
         except Exception as exc:
@@ -336,4 +484,5 @@ def _score_with_retry(
 __all__ = [
     "trigger_run",
     "trigger_golden_upgrade_rerun",
+    "request_stop",
 ]

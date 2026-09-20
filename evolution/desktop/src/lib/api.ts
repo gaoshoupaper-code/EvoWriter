@@ -1643,14 +1643,15 @@ export async function updateCreditsConfig(
 /** 批次摘要（列表项）。 */
 export interface BenchmarkBatchSummary {
   batch_id: string;
-  status: string; // running | done | partial | failed
-  progress: { total: number; done: number; failed: number; active: number };
+  status: string; // running | done | partial | failed | cancelled
+  progress: { total: number; done: number; failed: number; cancelled?: number; active: number };
   harness_version: number | null;
   golden_revision: string | null;
   rubric_version: string | null;
   judge_fp: string | null;
   concurrency: number | null;
   triggered_at: string | null;
+  stop_reason?: "user_stop" | "auto_fail" | null;
 }
 
 /** 弱点报告（FR-005）。 */
@@ -1723,6 +1724,13 @@ export async function rerunGolden(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ k }),
   });
+}
+
+/** 停止批次（REQ-20260920-192126/FR-001：立即停 + 幂等，僵尸批次同样可清）。 */
+export async function stopBenchmark(
+  batchId: string,
+): Promise<{ batch_id: string; status: string; stop_reason: string | null; progress: Record<string, number> }> {
+  return evoJson(`/api/benchmark/batches/${batchId}/stop`, { method: "POST" });
 }
 
 /** 评分标准全文（只读展示，FR-002；结构对齐后端 rubric_v3 常量）。 */

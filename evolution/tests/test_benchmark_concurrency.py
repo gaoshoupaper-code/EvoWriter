@@ -105,7 +105,7 @@ class ConcurrencyCapTest(ConcurrencyTestBase):
         max_active = 0
         guard = threading.Lock()
 
-        def fake_execute(row, judge_config_id=None):
+        def fake_execute(row, judge_config_id=None, **_):
             nonlocal active, max_active
             with guard:
                 active += 1
@@ -139,7 +139,7 @@ class ConcurrencyCapTest(ConcurrencyTestBase):
         max_active = 0
         guard = threading.Lock()
 
-        def fake_execute(row, judge_config_id=None):
+        def fake_execute(row, judge_config_id=None, **_):
             nonlocal active, max_active
             with guard:
                 active += 1
@@ -159,14 +159,18 @@ class ConcurrencyCapTest(ConcurrencyTestBase):
 
 class FailureIsolationTest(ConcurrencyTestBase):
     def test_single_row_failure_does_not_block_others(self):
-        """case-b 每次执行都失败（重试用尽转 failed），其余行照常完成（AC-002）。"""
+        """case-b 每次执行都失败（重试用尽转 failed），其余行照常完成（AC-002）。
+
+        单 case 系统性失败不触发止损（REQ-20260920-192126：连续失败需涉及
+        ≥2 个不同行），与「单行失败不传染」语义兼容。
+        """
         from unittest.mock import patch
 
         from app.benchmark import runner
 
         batch_id = _make_batch(self.db, case_ids=["case-a", "case-b", "case-c"], seeds=1)
 
-        def fake_execute(row, judge_config_id=None):
+        def fake_execute(row, judge_config_id=None, **_):
             if row["case_id"] == "case-b":
                 raise RuntimeError("评分重试用尽")
             self.db.execute(
@@ -174,7 +178,8 @@ class FailureIsolationTest(ConcurrencyTestBase):
                 ("2026-09-20T00:00:00Z", row["id"]),
             )
 
-        with patch.object(runner, "_execute_one", fake_execute):
+        with patch.object(runner, "_execute_one", fake_execute), \
+             patch.object(runner, "_RETRY_BACKOFF_S", 0.0):
             runner._run_batch_sync(batch_id, concurrency=3)
 
         rows = self.db.query_all(
@@ -184,6 +189,7 @@ class FailureIsolationTest(ConcurrencyTestBase):
         self.assertEqual(by_case["case-a"], "done")
         self.assertEqual(by_case["case-c"], "done")
         self.assertEqual(by_case["case-b"], "failed", "重试用尽（3 次）后应转 failed")
+        self.assertNotIn("cancelled", by_case.values(), "单行失败不得触发整批止损")
 
         from app.benchmark import repo as bench_repo
         batch = bench_repo.get_batch(batch_id)

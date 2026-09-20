@@ -317,7 +317,7 @@ def init_db() -> None:
                 trace_id        TEXT,                      -- 跑出来的 trace（NULL=未完成/失败）
                 eval_id         TEXT,                      -- 关联评估 session（NULL=未评估）
                 scores_json     TEXT,                      -- 评估分数快照（JSON）
-                status          TEXT NOT NULL DEFAULT 'pending',  -- pending|running|evaluating|done|failed
+                status          TEXT NOT NULL DEFAULT 'pending',  -- pending|running|evaluating|done|failed|cancelled
                 retries         INTEGER DEFAULT 0,
                 error           TEXT,
                 ran_at          TEXT NOT NULL,             -- 批次触发时间
@@ -334,6 +334,15 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_br_batch ON benchmark_runs(batch_id);
             CREATE INDEX IF NOT EXISTS idx_br_version ON benchmark_runs(harness_version);
             CREATE INDEX IF NOT EXISTS idx_br_golden_rev ON benchmark_runs(golden_revision);
+
+            -- benchmark_batch_meta：批次级终止记录（REQ-20260920-192126/FR-001/002）。
+            -- 行状态分布无法区分「用户停止」与「连续失败自动止损」，批次级落 stop_reason。
+            -- 新表靠 CREATE IF NOT EXISTS 自补，历史批次无记录 = 未被终止。
+            CREATE TABLE IF NOT EXISTS benchmark_batch_meta (
+                batch_id    TEXT PRIMARY KEY,
+                stop_reason TEXT NOT NULL,               -- user_stop | auto_fail
+                stopped_at  TEXT NOT NULL
+            );
 
             -- reflection_library：失败 trace 自动归纳的反思库（决策 A8/D19，Reflexion/ExpeL 式）。
             -- eval_agent 完成后若 badcase → 归纳失败模式 → 写本表。

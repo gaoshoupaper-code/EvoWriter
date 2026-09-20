@@ -19,6 +19,11 @@ STATUS_RUNNING = "running"
 STATUS_EVALUATING = "evaluating"
 STATUS_DONE = "done"
 STATUS_FAILED = "failed"
+STATUS_CANCELLED = "cancelled"   # 终态：批次停止（用户/止损）后未完成或被中断的行
+
+# 批次终止原因（benchmark_batch_meta.stop_reason，REQ-20260920-192126/DEC-007）
+STOP_USER = "user_stop"
+STOP_AUTO_FAIL = "auto_fail"
 
 MAX_RETRIES = 3
 
@@ -141,25 +146,31 @@ def mark_running(run_id: int) -> None:
 
 
 def set_trace(run_id: int, trace_id: str) -> None:
-    """跑出 trace 后回填，转 evaluating。"""
+    """跑出 trace 后回填，转 evaluating。
+
+    WHERE 限定非终态：批次停止把行转 cancelled 后，迟到写入不得复活该行。
+    """
     db.execute(
-        "UPDATE benchmark_runs SET status=?, trace_id=? WHERE id=?",
-        (STATUS_EVALUATING, trace_id, run_id),
+        "UPDATE benchmark_runs SET status=?, trace_id=? WHERE id=? AND status IN (?, ?)",
+        (STATUS_EVALUATING, trace_id, run_id, STATUS_PENDING, STATUS_RUNNING),
     )
 
 
 def set_result(run_id: int, *, eval_id: str | None, scores_json: str | None) -> None:
-    """评估完成，写分数，转 done。"""
+    """评估完成，写分数，转 done（同样不得覆盖终态行，竞态见 set_trace）。"""
     db.execute(
         """UPDATE benchmark_runs
            SET status=?, eval_id=?, scores_json=?, finished_at=?
-           WHERE id=?""",
-        (STATUS_DONE, eval_id, scores_json, _now(), run_id),
+           WHERE id=? AND status=?""",
+        (STATUS_DONE, eval_id, scores_json, _now(), run_id, STATUS_EVALUATING),
     )
 
 
 def mark_failed(run_id: int, error: str) -> None:
-    """失败：增加 retries，未超 MAX_RETRIES 则回退 pending（可重试）。"""
+    """失败：增加 retries，未超 MAX_RETRIES 则回退 pending（可重试）。
+
+    WHERE 限定 running/evaluating：行已被取消时丢弃迟到失败写入。
+    """
     row = db.query_one("SELECT retries FROM benchmark_runs WHERE id=?", (run_id,))
     retries = (row["retries"] if row else 0) + 1
     if retries >= MAX_RETRIES:
@@ -167,60 +178,148 @@ def mark_failed(run_id: int, error: str) -> None:
     else:
         status = STATUS_PENDING  # 回退待重试
     db.execute(
-        "UPDATE benchmark_runs SET status=?, retries=?, error=? WHERE id=?",
-        (status, retries, error[:500], run_id),
+        "UPDATE benchmark_runs SET status=?, retries=?, error=? WHERE id=? AND status IN (?, ?)",
+        (status, retries, error[:500], run_id, STATUS_RUNNING, STATUS_EVALUATING),
     )
+
+
+def mark_cancelled(run_id: int) -> None:
+    """批次停止时 worker 把手中行转 cancelled（行已终态则不覆盖）。"""
+    db.execute(
+        "UPDATE benchmark_runs SET status=?, finished_at=? WHERE id=? AND status IN (?, ?, ?)",
+        (STATUS_CANCELLED, _now(), run_id, STATUS_PENDING, STATUS_RUNNING, STATUS_EVALUATING),
+    )
+
+
+# ── 批次终止（REQ-20260920-192126 FR-001/FR-002）─────────────
+
+
+def stop_batch(batch_id: str, *, reason: str) -> dict[str, Any]:
+    """终止批次：全部非终态行转 cancelled + 落批次终止原因（幂等）。
+
+    不依赖存活 worker（僵尸批次同样可清：running/evaluating 一并转终态）。
+    存活 worker 感知取消事件后自行叫停 executor 任务（task_id 只在 worker
+    手里）；其迟到的行状态写入被终态守卫拦截，不会复活 cancelled 行。
+    重复调用返回当前状态不报错。
+    """
+    now = _now()
+    with db.transaction() as conn:
+        # 从未尝试 / 正在执行的行 → cancelled；失败过（retries>0，含待重试回退）
+        # 的行 → failed，保留失败痕迹与 error 供报告归因
+        cur = conn.execute(
+            """UPDATE benchmark_runs SET status=?, finished_at=?
+               WHERE batch_id=? AND status IN (?, ?, ?) AND retries=0""",
+            (STATUS_CANCELLED, now, batch_id,
+             STATUS_PENDING, STATUS_RUNNING, STATUS_EVALUATING),
+        )
+        cur.fetchall()
+        conn.execute(
+            """UPDATE benchmark_runs SET status=?, finished_at=?
+               WHERE batch_id=? AND status IN (?, ?, ?) AND retries>0""",
+            (STATUS_FAILED, now, batch_id,
+             STATUS_PENDING, STATUS_RUNNING, STATUS_EVALUATING),
+        ).fetchall()
+        conn.execute(
+            "INSERT OR IGNORE INTO benchmark_batch_meta (batch_id, stop_reason, stopped_at) VALUES (?, ?, ?)",
+            (batch_id, reason, now),
+        )
+    logger = _get_logger()
+    logger.info("批次 %s 终止（%s）：非终态行转 cancelled", batch_id, reason)
+    return get_batch(batch_id)
+
+
+def get_stop_reason(batch_id: str) -> str | None:
+    """批次终止原因（user_stop / auto_fail）；无记录 = 未被终止。"""
+    return _get_stop_reason(db.get_conn(), batch_id)
+
+
+def _get_stop_reason(conn: Any, batch_id: str) -> str | None:
+    row = conn.execute(
+        "SELECT stop_reason FROM benchmark_batch_meta WHERE batch_id=?", (batch_id,)
+    ).fetchone()
+    return row["stop_reason"] if row else None
 
 
 # ── 查询 ────────────────────────────────────────────────────
 
 
+def _derive_batch_status(
+    *, total: int, done: int, failed: int, cancelled: int, stop_reason: str | None,
+) -> str:
+    """批次状态推导（REQ-20260920-192126/DEC-007）。
+
+    active>0 → running；有终止记录按原因分（user_stop=cancelled，
+    auto_fail=failed/partial）；无终止记录时 cancelled 行兜底推导为
+    cancelled；否则按 done/failed 组合。历史批次（无 cancelled、无 meta）
+    与旧规则完全兼容。
+    """
+    active = total - done - failed - cancelled
+    if active > 0:
+        return "running"
+    if stop_reason == STOP_USER:
+        return "cancelled"
+    if stop_reason == STOP_AUTO_FAIL:
+        return "partial" if done > 0 else "failed"
+    if cancelled > 0:
+        return "cancelled"
+    if failed > 0:
+        return "partial" if done > 0 else "failed"
+    return "done"
+
+
 def get_recent_batches(limit: int = 20) -> list[dict[str, Any]]:
     """最近批次摘要列表（桌面端评测页用，FR-008 增量）。
 
-    按 batch 聚合：进度计数 + 批次级指纹（取首行）+ harness 版本。
+    按 batch 聚合：进度计数（含 cancelled）+ 批次级指纹（取首行）+
+    harness 版本 + 终止原因。
     """
     rows = db.query_all(
-        """SELECT batch_id, COUNT(*) AS total,
-                  SUM(CASE WHEN status='done' THEN 1 ELSE 0 END) AS done,
-                  SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+        """SELECT r.batch_id, COUNT(*) AS total,
+                  SUM(CASE WHEN r.status='done' THEN 1 ELSE 0 END) AS done,
+                  SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END) AS failed,
+                  SUM(CASE WHEN r.status='cancelled' THEN 1 ELSE 0 END) AS cancelled,
                   MAX(ran_at) AS ran_at, MIN(ran_at) AS trigger_at,
-                  MAX(harness_version) AS harness_version,
-                  MAX(golden_revision) AS golden_revision,
-                  MAX(rubric_version) AS rubric_version,
-                  MAX(judge_fp) AS judge_fp,
-                  MAX(concurrency) AS concurrency
-           FROM benchmark_runs
-           GROUP BY batch_id
+                  MAX(r.harness_version) AS harness_version,
+                  MAX(r.golden_revision) AS golden_revision,
+                  MAX(r.rubric_version) AS rubric_version,
+                  MAX(r.judge_fp) AS judge_fp,
+                  MAX(r.concurrency) AS concurrency,
+                  m.stop_reason AS stop_reason
+           FROM benchmark_runs r
+           LEFT JOIN benchmark_batch_meta m ON m.batch_id = r.batch_id
+           GROUP BY r.batch_id
            ORDER BY trigger_at DESC
            LIMIT ?""",
         (limit,),
     )
     batches: list[dict[str, Any]] = []
     for row in rows:
-        active = row["total"] - row["done"] - row["failed"]
-        if active > 0:
-            status = "running"
-        elif row["failed"] > 0:
-            status = "partial" if row["done"] > 0 else "failed"
-        else:
-            status = "done"
+        done, failed, cancelled = row["done"], row["failed"], row["cancelled"]
+        total = row["total"]
+        status = _derive_batch_status(
+            total=total, done=done, failed=failed, cancelled=cancelled,
+            stop_reason=row["stop_reason"],
+        )
         batches.append({
             "batch_id": row["batch_id"],
             "status": status,
-            "progress": {"total": row["total"], "done": row["done"], "failed": row["failed"], "active": active},
+            "progress": {
+                "total": total, "done": done, "failed": failed,
+                "cancelled": cancelled, "active": total - done - failed - cancelled,
+            },
             "harness_version": row["harness_version"],
             "golden_revision": row["golden_revision"],
             "rubric_version": row["rubric_version"],
             "judge_fp": row["judge_fp"],
             "concurrency": row["concurrency"],
             "triggered_at": row["trigger_at"],
+            "stop_reason": row["stop_reason"],
         })
     return batches
 
 
 def get_batch(batch_id: str) -> dict[str, Any]:
-    """查批次状态 + 进度。"""
+    """查批次状态 + 进度（含 cancelled 计数与终止原因）。"""
     rows = db.query_all(
         "SELECT * FROM benchmark_runs WHERE batch_id=? ORDER BY harness_version, case_id",
         (batch_id,),
@@ -231,21 +330,20 @@ def get_batch(batch_id: str) -> dict[str, Any]:
     total = len(rows)
     done = sum(1 for r in rows if r["status"] == STATUS_DONE)
     failed = sum(1 for r in rows if r["status"] == STATUS_FAILED)
-    active = total - done - failed
-
-    if active > 0:
-        status = "running"
-    elif failed > 0:
-        status = "partial" if done > 0 else "failed"
-    else:
-        status = "done"
+    cancelled = sum(1 for r in rows if r["status"] == STATUS_CANCELLED)
+    stop_reason = get_stop_reason(batch_id)
+    status = _derive_batch_status(
+        total=total, done=done, failed=failed, cancelled=cancelled,
+        stop_reason=stop_reason,
+    )
 
     return {
         "batch_id": batch_id,
         "status": status,
-        "progress": {"total": total, "done": done, "failed": failed, "active": active},
+        "progress": {"total": total, "done": done, "failed": failed, "cancelled": cancelled, "active": total - done - failed - cancelled},
         "golden_revision": rows[0]["golden_revision"],
         "concurrency": rows[0].get("concurrency", 1) if "concurrency" in rows[0].keys() else 1,
+        "stop_reason": stop_reason,
         "results": [_row_to_dict(r) for r in rows],
     }
 
@@ -344,9 +442,11 @@ def _get_logger():
 
 __all__ = [
     "STATUS_PENDING", "STATUS_RUNNING", "STATUS_EVALUATING",
-    "STATUS_DONE", "STATUS_FAILED", "MAX_RETRIES",
+    "STATUS_DONE", "STATUS_FAILED", "STATUS_CANCELLED", "MAX_RETRIES",
+    "STOP_USER", "STOP_AUTO_FAIL",
     "create_batch", "set_fingerprints", "claim_next_pending",
     "mark_running", "set_trace",
-    "set_result", "mark_failed",
+    "set_result", "mark_failed", "mark_cancelled",
+    "stop_batch", "get_stop_reason",
     "get_batch", "get_recent_batches", "get_leaderboard", "get_recent_versions",
 ]

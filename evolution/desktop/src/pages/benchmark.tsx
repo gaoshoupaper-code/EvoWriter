@@ -12,6 +12,8 @@ import {
   getDatasetCases,
   getCaseContent,
   getGoldenRevision,
+  getVersions,
+  stopBenchmark,
   type BenchmarkBatchSummary,
   type BenchmarkReport,
   type BenchmarkCompare,
@@ -20,6 +22,7 @@ import {
   type JudgeDefault,
   type DatasetCase,
   type GoldenRevision,
+  type VersionListItem,
 } from "@/lib/api";
 
 /**
@@ -38,11 +41,16 @@ export default function BenchmarkPage() {
   const [batches, setBatches] = useState<BenchmarkBatchSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
+  const [stoppingId, setStoppingId] = useState<string | null>(null);
 
   // 触发表单
   const [versionInput, setVersionInput] = useState("");
   const [seeds, setSeeds] = useState(3);
   const [concurrency, setConcurrency] = useState<1 | 3 | 5>(3);
+
+  // harness 版本谱系（下拉数据源，REQ-20260920-192126/FR-003；加载失败退化为仅「跟随」）
+  const [versions, setVersions] = useState<VersionListItem[]>([]);
+  const [productionVersion, setProductionVersion] = useState<number | null>(null);
 
   // judge 候选（FR-003）
   const [judges, setJudges] = useState<JudgeCandidate[]>([]);
@@ -68,6 +76,14 @@ export default function BenchmarkPage() {
       })
       .catch(() => {
         // 候选加载失败不阻塞页面：judge 下拉退化为「默认」一项
+      });
+    getVersions()
+      .then((resp) => {
+        setVersions(resp.items);
+        setProductionVersion(resp.production_version);
+      })
+      .catch(() => {
+        // 版本谱系加载失败不阻塞触发：下拉退化为仅「跟随 production」（不带版本号）
       });
   }, []);
 
@@ -111,6 +127,20 @@ export default function BenchmarkPage() {
       toast.error(err instanceof Error ? err.message : "触发评测失败");
     } finally {
       setStarting(false);
+    }
+  }
+
+  async function handleStop(batchId: string) {
+    if (!window.confirm("确定停止该评测批次？生成中的任务将被叫停，未开始的行转已取消。")) return;
+    setStoppingId(batchId);
+    try {
+      const resp = await stopBenchmark(batchId);
+      toast.success(`批次 ${batchId.slice(0, 8)} 已停止（取消 ${resp.progress.cancelled ?? 0} 行）`);
+      refresh();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "停止失败");
+    } finally {
+      setStoppingId(null);
     }
   }
 
@@ -171,14 +201,23 @@ export default function BenchmarkPage() {
         <h3>触发评测</h3>
         <div className="test-form">
           <label className="test-field">
-            <span>Harness 版本（空 = 当前 production）</span>
-            <input
-              className="config-input"
+            <span>Harness 版本</span>
+            <select
+              className="evolve-select"
               value={versionInput}
               onChange={(e) => setVersionInput(e.target.value)}
-              placeholder="如 12"
               disabled={starting}
-            />
+            >
+              <option value="">
+                跟随当前 production{productionVersion != null ? `（v${productionVersion}）` : ""}
+              </option>
+              {versions.map((v) => (
+                <option key={v.version} value={String(v.version)}>
+                  v{v.version} · {v.status === "production" ? "★ production" : v.status}
+                  {v.change_summary ? ` · ${v.change_summary.slice(0, 30)}` : ""}
+                </option>
+              ))}
+            </select>
           </label>
           <label className="test-field">
             <span>每 case 重复（seed）</span>
@@ -269,7 +308,13 @@ export default function BenchmarkPage() {
                     </span>{" "}
                     {b.progress.done}/{b.progress.total}
                     {b.progress.failed > 0 && (
-                      <span className="bench-fail-count">（失败 {b.progress.failed}）</span>
+                      <span className="bench-fail-count">
+                        （失败 {b.progress.failed}
+                        {b.stop_reason === "auto_fail" ? " · 连续 3 次失败自动止损" : ""}）
+                      </span>
+                    )}
+                    {(b.progress.cancelled ?? 0) > 0 && (
+                      <span className="bench-fail-count">（取消 {b.progress.cancelled}）</span>
                     )}
                   </td>
                   <td>{b.harness_version != null ? `v${b.harness_version}` : "—"}</td>
@@ -277,9 +322,19 @@ export default function BenchmarkPage() {
                   <td>{b.concurrency != null ? `×${b.concurrency}` : "—"}</td>
                   <td>{b.triggered_at?.slice(0, 19).replace("T", " ") ?? "—"}</td>
                   <td>
-                    <button className="action-link" onClick={() => loadReport(b.batch_id)}>
-                      报告
-                    </button>
+                    {b.status === "running" ? (
+                      <button
+                        className="action-link bench-stop-link"
+                        onClick={() => handleStop(b.batch_id)}
+                        disabled={stoppingId === b.batch_id}
+                      >
+                        {stoppingId === b.batch_id ? "停止中…" : "停止"}
+                      </button>
+                    ) : (
+                      <button className="action-link" onClick={() => loadReport(b.batch_id)}>
+                        报告
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
@@ -703,12 +758,13 @@ function GoldenSection() {
 function batchStatusLabel(s: string): string {
   const map: Record<string, string> = {
     running: "运行中", done: "完成", partial: "部分完成", failed: "失败",
+    cancelled: "已停止",
   };
   return map[s] ?? s;
 }
 
 function batchStatusClass(s: string): string {
-  // 复用 session-status 的语义色（done/failed 现成；running/partial 就近映射）
+  // 复用 session-status 的语义色（done/failed 现成；running/partial/cancelled 就近映射）
   if (s === "done") return "done";
   if (s === "failed") return "failed";
   if (s === "running") return "running";

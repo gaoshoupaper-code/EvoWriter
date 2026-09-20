@@ -8,6 +8,7 @@
   GET  /api/benchmark/leaderboard      跨版本对比（按 golden_revision）
   GET  /api/benchmark/batches/{id}     查批次状态
   GET  /api/benchmark/batches/{id}/report   弱点报告（FR-005）
+  POST /api/benchmark/batches/{id}/stop     停止批次（REQ-20260920-192126/FR-001）
   POST /api/benchmark/compare          两批次 CI 三态对比（FR-004）
 """
 from __future__ import annotations
@@ -165,6 +166,15 @@ def get_batch_report(batch_id: str) -> dict[str, Any]:
     """弱点报告（FR-005：维度均分 + 标签命中 + 低分 case）。"""
     result = report.build_report(batch_id)
     if result.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="batch not found")
+    return result
+
+
+@router.post("/batches/{batch_id}/stop")
+def stop_batch(batch_id: str) -> dict[str, Any]:
+    """停止批次（FR-001：立即停 + 幂等清理，僵尸批次同样可清）。"""
+    result = runner.request_stop(batch_id)
+    if result["status"] == "not_found":
         raise HTTPException(status_code=404, detail="batch not found")
     return result
 

@@ -62,27 +62,15 @@ def _cached_build(
 router = APIRouter(prefix="/snapshots", tags=["snapshots"])
 
 # subagent 机器名 → 中文角色名。
-# harness 包里 subagents/ 的 build_* 一一对应（与 assemble 装配顺序一致）。
+# v7 单故事专家架构（REQ-20260920-150149 FR-103）：两泳道——
+# 故事专家（storybuilding，顶层）+ 审查器（storybuilding_review）。
 _AGENT_SPECS = [
-    ("meta", "meta", "meta_system.md"),
-    ("general_purpose", "subagent", None),
-    ("interview", "subagent", "interview_system.md"),
-    ("storybuilding", "subagent", "storybuilding_system.md"),
+    ("storybuilding", "story_expert", "storybuilding_system.md"),
     ("storybuilding_review", "reviewer", "storybuilding_review.md"),
-    ("detail_outline", "subagent", "detail_outline_system.md"),
-    ("detail_outline_review", "reviewer", "detail_outline_review.md"),
-    ("writing", "subagent", "writing_system.md"),
-    ("writing_review", "reviewer", "writing_review.md"),
 ]
 _SUBAGENT_ROLE_MAP: dict[str, str] = {
-    "general_purpose": "通用助手",
-    "interview": "需求访谈",
-    "storybuilding": "故事构建",
+    "storybuilding": "故事专家（剧情大纲设计）",
     "storybuilding_review": "故事审查",
-    "detail_outline": "细纲生成",
-    "detail_outline_review": "细纲审查",
-    "writing": "正文写作",
-    "writing_review": "正文审查",
 }
 
 
@@ -160,14 +148,9 @@ def _build_skill_infos(commit: str | None) -> list[dict[str, Any]]:
 
 _ASSEMBLY_SOURCE_PATHS = (
     "__init__.py",
-    "subagents/interview.py",
     "subagents/storybuilding.py",
-    "subagents/detail_outline.py",
-    "subagents/writing.py",
     "subagents/factory.py",
     "subagents/reviewers/storybuilding.py",
-    "subagents/reviewers/detail_outline.py",
-    "subagents/reviewers/writing.py",
 )
 
 
@@ -269,12 +252,9 @@ def build_elements_view(version: int) -> dict[str, Any]:
         for name, kind, prompt_file in _AGENT_SPECS
     ]
 
+    # v7 唯一委托关系：故事专家 → 审查器（无 meta 编排）
     relations = [
-        {"from": "meta", "to": name, "role": _SUBAGENT_ROLE_MAP[name]}
-        for name in ("general_purpose", "interview", "storybuilding", "detail_outline", "writing")
-    ] + [
-        {"from": parent, "to": f"{parent}_review", "role": _SUBAGENT_ROLE_MAP[f"{parent}_review"]}
-        for parent in ("storybuilding", "detail_outline", "writing")
+        {"from": "storybuilding", "to": "storybuilding_review", "role": _SUBAGENT_ROLE_MAP["storybuilding_review"]},
     ]
 
     return {

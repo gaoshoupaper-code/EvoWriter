@@ -16,14 +16,9 @@ class MiddlewareProjectionTest(unittest.TestCase):
         cls.package_root = Path(__file__).resolve().parents[1] / "harnesses" / "repo"
         paths = [
             "__init__.py",
-            "subagents/interview.py",
             "subagents/storybuilding.py",
-            "subagents/detail_outline.py",
-            "subagents/writing.py",
             "subagents/factory.py",
             "subagents/reviewers/storybuilding.py",
-            "subagents/reviewers/detail_outline.py",
-            "subagents/reviewers/writing.py",
         ]
         paths.extend(
             path.relative_to(cls.package_root).as_posix()
@@ -36,61 +31,38 @@ class MiddlewareProjectionTest(unittest.TestCase):
             }
         )
 
-    def test_projects_all_direct_and_review_agents(self) -> None:
-        self.assertEqual(
-            set(self.stacks),
-            {
-                "meta",
-                "general_purpose",
-                "interview",
-                "storybuilding",
-                "storybuilding_review",
-                "detail_outline",
-                "detail_outline_review",
-                "writing",
-                "writing_review",
-            },
-        )
+    def test_projects_two_v7_lanes(self) -> None:
+        """v7 两泳道：故事专家（顶层）+ 审查器，无 meta/多代理泳道。"""
+        self.assertEqual(set(self.stacks), {"storybuilding", "storybuilding_review"})
 
     def test_projects_real_class_names_and_hooks(self) -> None:
         story = {item["class_name"]: item for item in self.stacks["storybuilding"]}
         self.assertEqual(
-            story["StorybuildingIterationLimitMiddleware"]["hooks"],
-            ["before_agent", "before_model"],
-        )
-        self.assertEqual(
-            story["StorybuildingIterationLimitMiddleware"]["hook"],
-            "before_agent",
-        )
-        self.assertEqual(
             story["StorylineSingleLineLimitMiddleware"]["hooks"],
             ["before_agent", "wrap_tool_call"],
         )
-        self.assertNotIn("ContextAssemblerMiddleware", story)
+        # v7：__init__.assemble 传 context_file_paths=["demand.md"] → ContextAssembler 实挂
+        self.assertIn("ContextAssemblerMiddleware", story)
         self.assertFalse(story["ArtifactValidationMiddleware"]["optional"])
         self.assertTrue(
             all(item["hooks"] for stack in self.stacks.values() for item in stack)
         )
 
-    def test_projects_agent_specific_conditions(self) -> None:
-        interview = {item["class_name"] for item in self.stacks["interview"]}
-        self.assertNotIn("ErrorRecoveryMiddleware", interview)
-        self.assertNotIn("CreditsMiddleware", interview)
-        self.assertIn("FilesystemPathGuardMiddleware", interview)
-
-        detail = {item["class_name"] for item in self.stacks["detail_outline"]}
-        writing = {item["class_name"]: item for item in self.stacks["writing"]}
-        self.assertNotIn("ArtifactValidationMiddleware", detail)
-        self.assertNotIn("ArtifactValidationMiddleware", writing)
-        self.assertTrue(writing["MemoryRecallMiddleware"]["optional"])
-
-        for reviewer in ("detail_outline_review", "writing_review"):
-            context = next(
-                item
-                for item in self.stacks[reviewer]
-                if item["class_name"] == "ContextAssemblerMiddleware"
-            )
-            self.assertFalse(context["optional"])
+    def test_story_expert_stack_has_guards_and_limits(self) -> None:
+        """故事专家栈含护栏 + 修订上限 + 产物校验（v7 顶层装配语义）。"""
+        story = {item["class_name"] for item in self.stacks["storybuilding"]}
+        for required in (
+            "ErrorRecoveryMiddleware",
+            "FilesystemPathGuardMiddleware",
+            "WriteResultInspectorMiddleware",
+            "RevisionLimitMiddleware",
+            "ArtifactValidationMiddleware",
+            "StorylineSingleLineLimitMiddleware",
+        ):
+            self.assertIn(required, story)
+        # meta 层概念随 v7 退役
+        self.assertNotIn("MetaReadOnlyMiddleware", story)
+        self.assertNotIn("GoalMiddleware", story)
 
 
 class RegistryCleanupTest(unittest.TestCase):

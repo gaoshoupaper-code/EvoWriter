@@ -4,7 +4,7 @@
 铁律：每条语义结论必须引用至少一个证据 ID（从事实层拿），无引用的事实性断言被丢弃。
 
 prompt 分两类：
-  - 阶段归纳：对单个阶段（interview/storybuilding/detail-outline/writing）的产物+事件做摘要
+  - 阶段归纳：对单阶段（v7：storybuilding 故事专家）的产物+事件做摘要
   - 全局归纳：对全 trace 做重点候选分级（P0/P1/P2）
 """
 from __future__ import annotations
@@ -19,7 +19,7 @@ STAGE_SUMMARY_SYSTEM = """你是轨迹证据编译器的语义归纳模块。你
 3. 如果证据不足以支撑某个判断，明确标"证据不足"，不要猜测。
 
 输入你会收到：
-- 阶段名（interview/storybuilding/detail-outline/writing）
+- 阶段名（v7：storybuilding）
 - 该阶段的产物内容（markdown）
 - 该阶段的关键事件摘要（含 evidence_id）
 - 该阶段的流程指标（token/耗时/错误）
@@ -181,7 +181,7 @@ CONTRACT_PARSE_SYSTEM = """你是轨迹证据编译器的任务契约提取模�
   "input_references": [
     {"ref": "参考素材/输入", "type": "文件/链接/对话"}
   ],
-  "applicable_stages": ["interview", "storybuilding", "detail-outline", "writing"],
+  "applicable_stages": ["storybuilding"],
   "structural_expectations": {
     "memory_required": "true|false|null。demand.md 是否涉及需要记忆系统参与的场景（如：长篇连载的跨章人物/世界观一致性、续写既有故事、明确要求复用前文设定）。null=无法判定，留 missing 说明",
     "review_required": "true|false|null。demand.md 是否明确要求对产出做 review（如：自审/校对/多轮打磨）。null=无法判定",

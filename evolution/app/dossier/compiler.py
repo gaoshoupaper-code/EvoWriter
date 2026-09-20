@@ -36,7 +36,9 @@ logger = logging.getLogger("evolution.dossier.compiler")
 MAX_LLM_CALLS = 20
 
 # 四个阶段名（对应 primary subagent 产物）
-_STAGES = ["interview", "storybuilding", "detail-outline", "writing"]
+# v7 单故事专家架构（REQ-20260920-150149 FR-103）：唯一创作阶段是故事专家。
+# 旧多代理阶段名仅在兼容历史 trace 叙事时出现，不再参与装配。
+_STAGES = ["storybuilding"]
 
 
 def compile_dossier(
@@ -307,13 +309,11 @@ def _extract_contract_semantic(
 
 
 # 契约字段 → 产物 kind 的映射（判断"承诺产物是否已交付"）
+# v7：demand 是表单输入而非 agent 交付物；detail/chapter 随多代理流水线退役。
 _CONTRACT_KIND_TO_DELIVERY_AGENT = {
-    "demand": "interview",
     "character": "storybuilding",
     "worldview": "storybuilding",
     "storyline": "storybuilding",
-    "detail": "detail-outline",
-    "chapter": "writing",
 }
 
 
@@ -637,7 +637,7 @@ def _compile_semantic_layer(
     """LLM 分段语义归纳。返回 (semantic_dict, llm_call_count)。
 
     分两步：
-      1. 按阶段归纳（interview/storybuilding/detail-outline/writing）
+      1. 按阶段归纳（v7：storybuilding 故事专家）
       2. 全局重点候选分级
 
     每条结论必须引用证据 ID，无引用的被丢弃。

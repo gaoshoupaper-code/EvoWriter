@@ -40,7 +40,8 @@ def build_middleware_projection(
     catalog = _build_catalog(package_sources)
     root = package_sources.get("__init__.py", "")
 
-    meta = _extract_stack(root, "assemble", "meta_middleware", group="meta")
+    # v7 单故事专家架构（REQ-20260920-150149 FR-103）：无 meta 编排，
+    # middleware_factory 产出的 common 栈即故事专家与 reviewer 的共同骨架。
     common = _extract_stack(root, "middleware_factory", "mw", group="base")
 
     storybuilding = _extract_stack(
@@ -50,21 +51,6 @@ def build_middleware_projection(
         base=common,
         group="agent",
     )
-    detail_outline = _extract_stack(
-        package_sources.get("subagents/detail_outline.py", ""),
-        "build_detail_outline_deep_subagent",
-        "project_middleware",
-        base=common,
-        group="agent",
-    )
-    writing = _extract_stack(
-        package_sources.get("subagents/writing.py", ""),
-        "build_writing_deep_subagent",
-        "writing_middleware",
-        base=common,
-        group="agent",
-    )
-
     storybuilding = _resolve_conditional_mount(
         storybuilding,
         "ContextAssemblerMiddleware",
@@ -75,12 +61,6 @@ def build_middleware_projection(
     storybuilding = _extract_stack(
         factory_source, "build_deep_subagent", "mw", base=storybuilding, group="agent"
     )
-    detail_outline = _extract_stack(
-        factory_source, "build_deep_subagent", "mw", base=detail_outline, group="agent"
-    )
-    writing = _extract_stack(
-        factory_source, "build_deep_subagent", "mw", base=writing, group="agent"
-    )
     storybuilding = _resolve_conditional_mount(
         storybuilding,
         "ArtifactValidationMiddleware",
@@ -90,35 +70,6 @@ def build_middleware_projection(
             "artifact_paths",
         ),
     )
-    detail_outline = _resolve_conditional_mount(
-        detail_outline,
-        "ArtifactValidationMiddleware",
-        _call_supplies_keyword(
-            package_sources.get("subagents/detail_outline.py", ""),
-            "build_deep_subagent",
-            "artifact_paths",
-        ),
-    )
-    writing = _resolve_conditional_mount(
-        writing,
-        "ArtifactValidationMiddleware",
-        _call_supplies_keyword(
-            package_sources.get("subagents/writing.py", ""),
-            "build_deep_subagent",
-            "artifact_paths",
-        ),
-    )
-
-    interview = _extract_stack(
-        package_sources.get("subagents/interview.py", ""),
-        "build_interview_deep_subagent",
-        "middleware",
-        base=common,
-        group="agent",
-    )
-    # Credits is conditionally omitted by middleware_factory for interview.
-    interview = [mw for mw in interview if mw["class_name"] != "CreditsMiddleware"]
-
     review_storybuilding = _extract_stack(
         package_sources.get("subagents/reviewers/storybuilding.py", ""),
         "build_storybuilding_reviewer",
@@ -126,49 +77,10 @@ def build_middleware_projection(
         base=common,
         group="agent",
     )
-    review_detail_outline = _extract_stack(
-        package_sources.get("subagents/reviewers/detail_outline.py", ""),
-        "build_detail_outline_reviewer",
-        "review_middleware",
-        base=common,
-        group="agent",
-    )
-    review_writing = _extract_stack(
-        package_sources.get("subagents/reviewers/writing.py", ""),
-        "build_writing_reviewer",
-        "review_middleware",
-        base=common,
-        group="agent",
-    )
-    review_detail_outline = _resolve_conditional_mount(
-        review_detail_outline,
-        "ContextAssemblerMiddleware",
-        _call_supplies_keyword(
-            package_sources.get("subagents/detail_outline.py", ""),
-            "build_detail_outline_reviewer",
-            "context_file_paths",
-        ),
-    )
-    review_writing = _resolve_conditional_mount(
-        review_writing,
-        "ContextAssemblerMiddleware",
-        _call_supplies_keyword(
-            package_sources.get("subagents/writing.py", ""),
-            "build_writing_reviewer",
-            "context_file_paths",
-        ),
-    )
-
+    # v7 两泳道：故事专家（storybuilding，顶层）+ 审查器（storybuilding_review）
     stacks = {
-        "meta": meta,
-        "general_purpose": [dict(mw) for mw in common],
-        "interview": interview,
         "storybuilding": storybuilding,
         "storybuilding_review": review_storybuilding,
-        "detail_outline": detail_outline,
-        "detail_outline_review": review_detail_outline,
-        "writing": writing,
-        "writing_review": review_writing,
     }
     return {
         agent: [_enrich_mount(mount, catalog) for mount in mounts]

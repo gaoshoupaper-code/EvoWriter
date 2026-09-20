@@ -130,7 +130,16 @@ class StorylineSingleLineLimitMiddleware(AgentMiddleware):
         return self._limit_message(tool_call)
 
     def _limit_message(self, tool_call: Any) -> ToolMessage:
-        """构造达上限的拦截消息：停止新增 + 指示子代理在返回摘要中转述（解读A 可见性）。"""
+        """构造达上限的拦截消息：停止新增 + 指示子代理在返回摘要中转述（解读A 可见性）。
+
+        - status="error"：拦截 = write_file 未执行、未落盘任何文件。下游
+          ``PlatformArtifactCaptureMiddleware`` 据 status 判定写入成功会回读不存在的
+          文件，strict 路径(A/B)抛 EvidenceCaptureError 导致 task 崩溃重启
+          （上下文暴跌根因）。标 error 让其跳过。
+        - response_metadata["business_intercept"]=True：区分「业务约束拦截」与
+          「基础设施写失败」。``WriteResultInspectorMiddleware`` 见此标记跳过
+          （不转抛 WriteFailedError 触发重试）——业务拦截是正常流程，不该重试。
+        """
         tool_call_id = _mapping_value(tool_call, "id")
         return ToolMessage(
             content=(

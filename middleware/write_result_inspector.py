@@ -83,6 +83,10 @@ class WriteResultInspectorMiddleware(AgentMiddleware):
 
         只对 ToolMessage 且 status == "error" 触发；其他结果（正常 ToolMessage、
         字符串、其他类型）完全透传，不误报。
+
+        例外：``response_metadata["business_intercept"]=True`` 的 error 是业务约束
+        拦截（如 StorylineSingleLineLimit 达上限），非基础设施写失败——它是正常业务
+        流程，转抛重试会浪费 token 且无意义。识别此标记后透传，不转抛。
         """
         if not isinstance(result, ToolMessage):
             return

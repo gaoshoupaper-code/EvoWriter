@@ -37,6 +37,7 @@ def build_deep_subagent(
     artifact_paths: list[Path] | None = None,
     max_revisions: int = 1,
     skills: list[str] | None = None,
+    checkpointer: object | None = None,
 ) -> CompiledSubAgent:
     """将创作型子代理构建为 DeepAgent（内含 review 审查子代理）。
 
@@ -66,6 +67,9 @@ def build_deep_subagent(
         artifact_paths:      期望的产物文件路径列表（用于 ArtifactValidationMiddleware）
         max_revisions:       最大修订（review 调用）次数，默认 1
         skills:              DeepAgent Skill 目录路径列表（可选）
+        checkpointer:        checkpoint saver（v7：故事专家提升为顶层装配时由
+                             assemble 透传，P2 修订对话的线程持久化依赖；子代理
+                             场景保持默认 None）
 
     Returns:
         编译后的子代理字典 {name, description, runnable}，可直接注册到父代理
@@ -109,9 +113,9 @@ def build_deep_subagent(
         subagents=[review_spec],
         middleware=mw,
         backend=effective_backend,
-        # checkpointer=None: 子代理在父代理的 task 工具调用内执行，
-        # 父代理的 checkpointer 已捕获完整对话历史，无需独立持久化
-        checkpointer=None,
+        # checkpointer：v7 顶层装配（故事专家）传入线程持久化；子代理场景 None——
+        # 子代理在父代理的 task 工具调用内执行，父 checkpointer 已捕获完整对话历史
+        checkpointer=checkpointer,
         skills=skill_sources,
     )
 

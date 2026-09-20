@@ -31,9 +31,6 @@ from .types import apply_style_suffix
 from ..middleware.storyline_single_line_limit import (
     StorylineSingleLineLimitMiddleware,
 )
-from ..middleware.storybuilding_iteration_limit import (
-    StorybuildingIterationLimitMiddleware,
-)
 from app.platform.agent.middleware import ContextAssemblerMiddleware
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "storybuilding_system.md"
@@ -98,8 +95,13 @@ def build_storybuilding_deep_subagent(
     middleware_factory: Callable[[str], list[AgentMiddleware]],
     style_suffix: str | None = None,
     context_file_paths: list[str] | None = None,
+    checkpointer: object | None = None,
 ) -> CompiledSubAgent:
     """构建基于 DeepAgent 的 storybuilding 子代理（含统一审查循环）。
+
+    v7（REQ-20260920-150149 FR-001）：本装配即「单故事专家 Agent」——原 v6 中
+    storybuilding 是 meta 编排下的子代理，v7 删除多 Agent 编排后将其提升为
+    顶层装配（assemble 直接返回本装配的 runnable），行为与产物契约不变。
 
     子代理自主决策：产出/扩展各维度 → 调用 review 统一审查 → 根据反馈修订。
     默认不使用 ContextAssemblerMiddleware——agent 根据任务自主读取所需文件。
@@ -112,17 +114,17 @@ def build_storybuilding_deep_subagent(
         middleware_factory:  中间件工厂函数，按 agent_name 生成对应中间件列表
         style_suffix:        风格 SUFFIX 文本（可选）
         context_file_paths:  需要通过中间件自动注入的文件路径列表（可选）
+        checkpointer:        checkpoint saver（顶层装配时传入；子代理场景 None）
 
     Returns:
         编译后的子代理字典 {name, description, runnable}
     """
     # ---- 主代理 middleware ----
     storybuilding_middleware = list(middleware_factory("storybuilding-subagent"))
-    # 全局迭代上限：storybuilding 子代理最多被 meta-agent 委托 max_iterations 次
-    # （跨多次 task 调用累计，不重置）。超过后注入终止指令迫使 meta 推进到 detail-outline。
-    # 注意：ReadCache 已由 middleware_factory 全 agent 装配（A2-D2），此处不重复装配。
-    storybuilding_middleware.append(StorybuildingIterationLimitMiddleware(max_iterations=5))
     # 单次单线硬约束：每次 storybuilding 运行最多新增 1 条 storyline（见需求 B1/B4）
+    # 注意：ReadCache 已由 middleware_factory 全 agent 装配（A2-D2），此处不重复装配。
+    # v7 删除 StorybuildingIterationLimitMiddleware——其语义是"跨 meta 委托的迭代
+    # 上限、超限迫使 meta 推进到 detail-outline"，属多 Agent 编排护栏，随 meta 一起退役。
     storybuilding_middleware.append(StorylineSingleLineLimitMiddleware(workspace_root, max_new_lines=1))
     if context_file_paths:
         storybuilding_middleware.append(ContextAssemblerMiddleware(
@@ -181,4 +183,5 @@ def build_storybuilding_deep_subagent(
         artifact_paths=[workspace_root / "storyline.md", workspace_root / "storyline", workspace_root / "storyline" / "timeline.md"],
         max_revisions=2,
         skills=skills,
+        checkpointer=checkpointer,
     )

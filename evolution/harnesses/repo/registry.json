@@ -15,6 +15,15 @@
       "commit_hash": null,
       "executable": false,
       "migration_reason": "bind_current_head_on_startup"
+    },
+    {
+      "version": 7,
+      "parent_version": 6,
+      "change_summary": "架构切换：单故事专家 Agent（剧情大纲设计）+ reviewer——删除多 Agent 编排（meta/interview/detail_outline/writing 及配套 prompts/skills/审查器/meta 层护栏），故事专家复用 storybuilding 方法论资产提升为顶层装配，demand.md 表单直入注入；记忆要素按 DEC-003 冻结保留不挂载（REQ-20260920-150149 FR-101）",
+      "eval_score": null,
+      "eval_status": "pending",
+      "created_at": "2026-09-20T16:20:00+00:00",
+      "source_session": null
     }
   ],
   "rollback_log": []

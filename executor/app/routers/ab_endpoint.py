@@ -301,6 +301,13 @@ def run_ab_generation(
         # 与生产路径复用同一 trigger_chapter_ingestion（DEC-002 抽触发器方案），不破坏
         # 逐 super-step 取消能力（CON-001：抽取在 super-step 边界同步执行，取消时已完成的
         # 章节已抽取、未完成的不触发——EDGE-001）。
+        #
+        # FR-005 流式化：stream_mode 追加 "messages" 不为消费分片，只为给模型调用挂上
+        # 流式 callback——langchain 工厂的模型调用恒为 invoke，但 invoke 在 config 带
+        # 流式 handler 时内部走 _stream 逐 chunk 聚合，读超时按 chunk 重置。A/B 原先
+        # 仅 updates 模式下模型走非流式 HTTP，单次读等待=整篇生成时长，GLM-5.3 长文
+        # 必撞 request_timeout（benchmark 批次 OpenAITimeoutError 连环失败根因）。
+        # 边界逻辑（章节扫描/取消检查）仍只挂在 updates 分片上，super-step 语义不变。
         from app.domains.writing.events import (
             _make_ingestion_publish_callback,
             scan_extracted_chapters,
@@ -314,7 +321,11 @@ def run_ab_generation(
 
         extracted_chapters: set[int] = set()
         cancelled = False
-        for _chunk in agent.stream(agent_input, config=run_config):
+        for _mode, _chunk in agent.stream(
+            agent_input, config=run_config, stream_mode=["updates", "messages"],
+        ):
+            if _mode != "updates":
+                continue  # messages 分片只是流式 tick，边界逻辑只在 super-step 上
             # FR-002：检测本次 super-step 新写盘的章节，触发逐章抽取入库（Causal Publish Flow）。
             for ch_idx in sorted(scan_extracted_chapters(workspace_path, extracted_chapters)):
                 trigger_chapter_ingestion(

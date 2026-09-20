@@ -92,7 +92,11 @@ def build_writer_model(
         model=model_name,
         api_key=effective_key,
         base_url=effective_base,
-        request_timeout=120,
+        # 非流式调用的读超时=等待整篇生成完成（首字节前）。GLM-5.3 长文单次
+        # 生成常态超 120s（benchmark 批次 OpenAITimeoutError 连环失败根因），
+        # 与 evolution 侧 model_factory 的 300s 先例对齐。流式调用按 chunk
+        # 重置读超时，不受此上限约束。
+        request_timeout=300,
         # CON-003/DEC-003：显式关闭 SDK 内部隐藏重试。重试预算由 WriterRetryController
         # 统一持有（最多 2 次传输尝试），行为不再随 openai/langchain-openai 默认值漂移。
         # 线上 18 分钟等待的根因之一正是此处未显式设置，SDK 默认 max_retries=2 与

@@ -55,8 +55,9 @@ _SCORE_MAX_ATTEMPTS = 2
 # 行失败回退 pending 后的 worker 退避（FR-004：避免零间隔立即重抢）
 _RETRY_BACKOFF_S = 10.0
 
-# 自动止损阈值（FR-002/DEC-002）：连续失败达此数且涉及 ≥2 个不同行才停批。
-# 「≥2 行」限定防单 case 系统性失败误伤整批（与既有「单行失败不传染」语义兼容）。
+# 自动止损阈值（FR-002/DEC-002）：连续失败达此数且涉及 ≥2 个不同 case 才停批。
+# 按 case（而非 run 行）去重——同 case 的 3 个 seed 是同一失败模式的三次重复，
+# 按 run 计数会让单 case 系统性失败（如 case-001 持续超时）在 seed 期就误停整批。
 _FAIL_STREAK_LIMIT = 3
 
 
@@ -77,27 +78,28 @@ _cancel_lock = threading.Lock()
 class _FailStreak:
     """连续失败计数（FR-002）：任一次尝试成功清零；跨行累计。
 
-    触发条件 = 连续失败次数 ≥ FAIL_STREAK_LIMIT 且失败涉及 ≥2 个不同行
-    （并发池下系统性故障 3 次连败即触发；串行下首行重试耗尽 + 次行首败触发）。
+    触发条件 = 连续失败次数 ≥ FAIL_STREAK_LIMIT 且失败涉及 ≥2 个不同 case
+    （同 case 的多 seed 连败只计 1 个 case，单 case 系统性失败走行级隔离
+    重试，不误伤整批；跨 case 连败才视为系统性故障停批）。
     仅 runner 进程内使用，不持久化——进程消亡后批次即僵尸，由停止清理。
     """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._streak = 0
-        self._rows: set[int] = set()
+        self._cases: set[str] = set()
 
     def record_success(self) -> None:
         with self._lock:
             self._streak = 0
-            self._rows.clear()
+            self._cases.clear()
 
-    def record_failure(self, run_id: int) -> bool:
+    def record_failure(self, case_id: str) -> bool:
         """记一次失败，返回是否应触发止损。"""
         with self._lock:
             self._streak += 1
-            self._rows.add(run_id)
-            return self._streak >= _FAIL_STREAK_LIMIT and len(self._rows) >= 2
+            self._cases.add(case_id)
+            return self._streak >= _FAIL_STREAK_LIMIT and len(self._cases) >= 2
 
 
 def _check_cancel(cancel_event: threading.Event | None, task_id: str | None = None) -> None:
@@ -276,7 +278,7 @@ def _worker_loop(
         except Exception as exc:
             logger.exception("benchmark 行 %d 执行异常", row["id"])
             bench_repo.mark_failed(row["id"], str(exc))
-            if streak.record_failure(row["id"]):
+            if streak.record_failure(row["case_id"]):
                 logger.warning(
                     "批次 %s 连续 %d 次失败（涉及 ≥2 行），触发自动止损",
                     batch_id, _FAIL_STREAK_LIMIT,

@@ -77,7 +77,9 @@ class WriterModelTest(unittest.TestCase):
             )
         )
         self.assertEqual(model.max_retries, 0)
-        self.assertEqual(model.request_timeout, 120)
+        # 300s：非流式调用首字节=整篇生成完成，GLM-5.3 长文单次常超 120s
+        # （benchmark OpenAITimeoutError 连环失败根因），与 evolution 侧先例对齐。
+        self.assertEqual(model.request_timeout, 300)
 
 
 class DeepSeekThinkingModelTest(unittest.TestCase):

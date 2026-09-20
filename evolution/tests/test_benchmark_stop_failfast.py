@@ -3,7 +3,7 @@
 覆盖：
 - AC-001 手动停止：非终态行转 cancelled、worker 叫停 executor 任务、重复调用幂等
 - AC-002 僵尸批次：无存活 worker 时停止端点同样清干净（running/evaluating 不残留）
-- AC-003 系统性失败自动止损：连续 3 次失败（≥2 行）停批，无第 4 次尝试
+- AC-003 系统性失败自动止损：连续 3 次失败（涉及 ≥2 个不同 case）停批，无第 4 次尝试
 - AC-004 偶发失败不误伤：失败-成功交错序列不触发止损
 - AC-006 轮询 4xx 快速失败：404 秒级判败；503 维持退避重试
 """
@@ -180,12 +180,12 @@ class AutoFailFastTest(StopFailFastTestBase):
     """AC-003 / AC-004：连续失败自动止损与偶发失败不误伤。"""
 
     def test_systematic_failure_halts_after_three_attempts(self):
-        """executor 全挂：并发 3 下恰好 3 次尝试失败即停批，无第 4 次（AC-003）。"""
+        """executor 全挂：3 个不同 case 并发失败即停批，无第 4 次尝试（AC-003）。"""
         from app.benchmark import runner
         from app.benchmark import repo as bench_repo
 
         batch_id = self._make_batch(
-            case_ids=["case-a", "case-b", "case-c"], seeds=3, concurrency=3
+            case_ids=["case-a", "case-b", "case-c"], seeds=1, concurrency=3
         )
         attempts: list[int] = []
         lock = threading.Lock()
@@ -201,13 +201,43 @@ class AutoFailFastTest(StopFailFastTestBase):
              patch.object(runner, "_RETRY_BACKOFF_S", 0.5):
             runner._run_batch_sync(batch_id, concurrency=3)
 
-        self.assertEqual(len(attempts), 3, "连续 3 次失败即停批，不得有第 4 次尝试")
+        self.assertEqual(len(attempts), 3, "跨 case 连续 3 次失败即停批，不得有第 4 次尝试")
 
         batch = bench_repo.get_batch(batch_id)
         self.assertEqual(batch["status"], "failed", "止损批次终态为 failed")
         self.assertEqual(batch["stop_reason"], "auto_fail")
         self.assertEqual(batch["progress"]["failed"], 3)
-        self.assertEqual(batch["progress"]["cancelled"], 6, "剩余 6 行转 cancelled")
+        self.assertEqual(batch["progress"]["cancelled"], 0, "全部行已失败，无残留待取消")
+
+    def test_same_case_seed_failures_do_not_halt_batch(self):
+        """同 case 系统性失败：3 个 seed 全灭只计 1 个 case，不触发止损（AC-003b）。
+
+        行级隔离重试吃满（3 行 × 3 次尝试 = 9 次）后整批自然结束，
+        无 cancelled 行、无 auto_fail。
+        """
+        from app.benchmark import runner
+        from app.benchmark import repo as bench_repo
+
+        batch_id = self._make_batch(case_ids=["case-a"], seeds=3, concurrency=3)
+        attempts: list[int] = []
+        lock = threading.Lock()
+
+        def fake_execute(row, judge_config_id=None, **_):
+            with lock:
+                attempts.append(row["id"])
+            raise RuntimeError("case-a 系统性超时")
+
+        with patch.object(runner, "_execute_one", fake_execute), \
+             patch.object(runner, "_RETRY_BACKOFF_S", 0.0):
+            runner._run_batch_sync(batch_id, concurrency=3)
+
+        self.assertEqual(len(attempts), 9, "3 行各重试吃满 3 次，共 9 次尝试")
+        statuses = self._row_statuses(batch_id)
+        self.assertEqual(set(statuses.values()), {"failed"}, "各行耗尽重试后转 failed")
+        self.assertNotIn("cancelled", statuses.values(), "单 case 失败不得停批/取消他行")
+
+        batch = bench_repo.get_batch(batch_id)
+        self.assertIsNone(batch["stop_reason"], "同 case 连败不触发 auto_fail")
 
     def test_serial_systematic_failure_halts_after_row_exhaustion(self):
         """串行（并发 1）系统性失败：首行重试耗尽 + 次行首败后止损（4 次尝试）。"""

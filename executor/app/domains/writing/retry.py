@@ -4,7 +4,8 @@
   - SDK 层：``build_writer_model`` 显式 ``max_retries=0``，关闭 SDK 内部隐藏重试，
     让重试预算集中在本控制器，行为不再随第三方默认值漂移（CON-003）。
   - 模型层：本控制器对一次逻辑模型调用最多发起 2 次传输尝试（DEC-003：首次失败后
-    最多自动重试 1 次），并对外产出可观测的 attempt 进展。
+    最多自动重试 1 次），并对外产出可观测的 attempt 进展。限流（rate_limited）例外：
+    账号级窗口限速 1 秒级退避等不到恢复，给 4 次尝试 + 15s→60s→120s 指数退避。
   - task 层：``task``（子 Agent 委派）整任务不进入通用工具恢复重放，由
     ``TaskReplayGuard`` 在 harness ErrorRecovery 处拦截（CON-005）。
 
@@ -34,7 +35,12 @@ from typing import Any
 logger = logging.getLogger("writer.retry")
 
 # DEC-003：首次失败后最多自动重试 1 次 → 总传输尝试数精确为 2。
+# 例外：限流（rate_limited）是账号级窗口限速，1 秒级退避等不到窗口过去，
+# 单独给更高预算 + 指数退避（benchmark 白天叠加使用时 429 连环失败的应对）。
 MAX_TRANSMIT_ATTEMPTS = 2
+RATE_LIMIT_MAX_ATTEMPTS = 4
+RATE_LIMIT_BACKOFF_BASE_S = 15.0
+RATE_LIMIT_BACKOFF_MAX_S = 120.0
 
 
 class WriterRetryError(Exception):
@@ -93,10 +99,31 @@ class RetryBudget:
 
     max_attempts: int = MAX_TRANSMIT_ATTEMPTS
     backoff_seconds: float = 1.0
+    # 限流类独立预算：尝试上限更高 + 指数退避（15s → 60s → 120s 封顶），
+    # 等的是账号级限流窗口，不是秒级抖动。
+    rate_limit_max_attempts: int = RATE_LIMIT_MAX_ATTEMPTS
+    rate_limit_backoff_base_s: float = RATE_LIMIT_BACKOFF_BASE_S
+    rate_limit_backoff_max_s: float = RATE_LIMIT_BACKOFF_MAX_S
     on_attempt_complete: Callable[[AttemptOutcome], None] | None = field(default=None, repr=False)
     on_backoff: Callable[[str, int, float], None] | None = field(default=None, repr=False)
     # 注入可观测时钟/退避，便于虚拟时钟故障注入测试（AC-005/AC-008）。
     sleep: Callable[[float], None] | None = field(default=None, repr=False)
+
+    def max_attempts_for(self, category: str) -> int:
+        """按错误分类取尝试上限：限流走独立预算，其余走默认。"""
+        if category == "rate_limited":
+            return self.rate_limit_max_attempts
+        return self.max_attempts
+
+    def backoff_for(self, category: str, attempt: int) -> float:
+        """按错误分类取退避间隔：限流指数增长（base × 4^(attempt-1)，封顶 max），
+        其余固定 backoff_seconds。"""
+        if category == "rate_limited":
+            return min(
+                self.rate_limit_backoff_base_s * (4.0 ** (attempt - 1)),
+                self.rate_limit_backoff_max_s,
+            )
+        return self.backoff_seconds
     sleep_async: Callable[[float], Awaitable[None]] | None = field(default=None, repr=False)
 
 
@@ -125,8 +152,11 @@ def classify_error(exc: BaseException) -> tuple[str, bool]:
     if name in {"ContentPolicyViolationError", "UnprocessableEntityError"}:
         return "content_policy", False
     # 短暂依赖故障：可重试。
-    if name in {"APIConnectionError", "APITimeoutError"}:
-        return ("no_response", True) if name == "APITimeoutError" else ("connection", True)
+    # OpenAITimeoutError：langchain_openai ≥1.6 抛自家同名类（实测与
+    # openai.APITimeoutError 非同类），按类名匹配须单独补认，否则落入
+    # unknown 不可重试——benchmark 批次 0 重试连环失败的实际根因之一。
+    if name in {"APIConnectionError", "APITimeoutError", "OpenAITimeoutError"}:
+        return ("no_response", True) if name != "APIConnectionError" else ("connection", True)
     if name == "RateLimitError":
         return "rate_limited", True
     if name == "APIStatusError":
@@ -200,7 +230,9 @@ class WriterRetryController:
     ) -> Any:
         attempt_id = uuid.uuid4().hex[:12]
         last_outcome: AttemptOutcome | None = None
-        for attempt in range(1, self.budget.max_attempts + 1):
+        attempt = 1
+        cap = self.budget.max_attempts
+        while True:
             started = time.perf_counter()
             try:
                 response = invoke()
@@ -216,10 +248,12 @@ class WriterRetryController:
                 # 不可重试 / 已部分响应：立即返回结构化失败，不消耗下一次 attempt。
                 if not outcome.is_retryable or outcome.had_partial_response:
                     raise self._to_error(outcome) from exc
-                # 还剩预算才退避；否则进入预算用尽。
-                if attempt >= self.budget.max_attempts:
+                # 尝试上限按分类取：限流等账号级窗口需要更高预算（15s→60s→120s）。
+                cap = self.budget.max_attempts_for(category)
+                if attempt >= cap:
                     break
-                self._do_backoff(attempt_id, attempt, sleep)
+                self._do_backoff(attempt_id, attempt, sleep, category)
+                attempt += 1
                 continue
             outcome = AttemptOutcome(
                 attempt_id=attempt_id,
@@ -244,11 +278,13 @@ class WriterRetryController:
     ) -> Any:
         attempt_id = uuid.uuid4().hex[:12]
         last_outcome: AttemptOutcome | None = None
-        for attempt in range(1, self.budget.max_attempts + 1):
+        attempt = 1
+        cap = self.budget.max_attempts
+        while True:
             started = time.perf_counter()
             try:
                 response = await invoke()
-            except BaseException as exc:  # noqa: BLE001
+            except BaseException as exc:  # noqa: BLE001 —— 需要捕获所有传输异常以分类
                 category, retryable = classify_error(exc)
                 # 不可恢复的控制流（取消/中断）：原样向上抛，绝不吞成结构化重试错误（EDGE-004）。
                 if category in {"cancel", "interrupt"}:
@@ -258,9 +294,12 @@ class WriterRetryController:
                 self._notify(outcome)
                 if not outcome.is_retryable or outcome.had_partial_response:
                     raise self._to_error(outcome) from exc
-                if attempt >= self.budget.max_attempts:
+                # 尝试上限按分类取（与同步路径同语义）。
+                cap = self.budget.max_attempts_for(category)
+                if attempt >= cap:
                     break
-                await self._do_backoff_async(attempt_id, attempt)
+                await self._do_backoff_async(attempt_id, attempt, category)
+                attempt += 1
                 continue
             outcome = AttemptOutcome(
                 attempt_id=attempt_id,
@@ -312,8 +351,10 @@ class WriterRetryController:
             except Exception:  # noqa: BLE001 —— 观测回调失败不得影响重试主流程
                 logger.debug("on_attempt_complete 回调失败", exc_info=True)
 
-    def _do_backoff(self, attempt_id: str, attempt: int, sleep: Callable[[float], None] | None) -> None:
-        delay = self.budget.backoff_seconds
+    def _do_backoff(
+        self, attempt_id: str, attempt: int, sleep: Callable[[float], None] | None, category: str,
+    ) -> None:
+        delay = self.budget.backoff_for(category, attempt)
         if self.budget.on_backoff is not None:
             try:
                 self.budget.on_backoff(attempt_id, attempt, delay)
@@ -327,8 +368,8 @@ class WriterRetryController:
 
             _time.sleep(delay)
 
-    async def _do_backoff_async(self, attempt_id: str, attempt: int) -> None:
-        delay = self.budget.backoff_seconds
+    async def _do_backoff_async(self, attempt_id: str, attempt: int, category: str) -> None:
+        delay = self.budget.backoff_for(category, attempt)
         if self.budget.on_backoff is not None:
             try:
                 self.budget.on_backoff(attempt_id, attempt, delay)
@@ -366,6 +407,7 @@ def _maybe_usage(response: Any) -> dict[str, int | None] | None:
 
 __all__ = [
     "MAX_TRANSMIT_ATTEMPTS",
+    "RATE_LIMIT_MAX_ATTEMPTS",
     "WriterRetryError",
     "AttemptOutcome",
     "RetryBudget",

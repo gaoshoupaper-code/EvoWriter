@@ -38,6 +38,9 @@ class ClassifyErrorTest(unittest.TestCase):
     def test_connection_and_timeout_are_retryable(self) -> None:
         self.assertEqual(classify_error(_err("APIConnectionError")), ("connection", True))
         self.assertEqual(classify_error(_err("APITimeoutError")), ("no_response", True))
+        # langchain_openai ≥1.6 抛自家 OpenAITimeoutError（与 openai.APITimeoutError
+        # 非同类），线上实测 benchmark 批次因落入 unknown 而 0 重试连环失败。
+        self.assertEqual(classify_error(_err("OpenAITimeoutError")), ("no_response", True))
 
     def test_rate_limit_and_5xx_are_retryable(self) -> None:
         self.assertEqual(classify_error(_err("RateLimitError")), ("rate_limited", True))
@@ -163,6 +166,67 @@ class RetryBudgetTest(unittest.TestCase):
         ids = {o.attempt_id for o in outcomes}
         self.assertEqual(len(ids), 1)
         self.assertEqual(len(outcomes), 2)
+
+
+class RateLimitBudgetTest(unittest.TestCase):
+    """限流独立预算：4 次尝试 + 15s→60s→120s 指数退避（bigmodel 429/1302 应对）。"""
+
+    def _budget(self, **overrides) -> tuple[RetryBudget, list[AttemptOutcome], list[float]]:
+        outcomes: list[AttemptOutcome] = []
+        delays: list[float] = []
+        budget = RetryBudget(
+            backoff_seconds=0,
+            on_attempt_complete=outcomes.append,
+            on_backoff=lambda aid, att, delay: delays.append(delay),
+            sleep=lambda _d: None,  # 虚拟时钟：退避 no-op，只记录应睡时长
+            **overrides,
+        )
+        return budget, outcomes, delays
+
+    def test_persistent_rate_limit_gets_four_attempts_with_exponential_backoff(self) -> None:
+        budget, outcomes, delays = self._budget(
+            rate_limit_backoff_base_s=15.0, rate_limit_backoff_max_s=120.0,
+        )
+        calls = []
+
+        def invoke():
+            calls.append(1)
+            raise _err("RateLimitError")
+
+        with self.assertRaises(WriterRetryError) as ctx:
+            WriterRetryController(budget).call(invoke)
+        self.assertEqual(len(calls), 4, "限流预算独立：4 次尝试而非默认 2 次")
+        self.assertEqual(ctx.exception.attempts_made, 4)
+        # 退避序列 15s → 60s → 120s（15×4^(n-1) 封顶 120）。
+        self.assertEqual(delays, [15.0, 60.0, 120.0])
+        self.assertTrue(all(o.error_class == "rate_limited" for o in outcomes))
+
+    def test_rate_limit_recovers_within_budget(self) -> None:
+        budget, _, _ = self._budget(rate_limit_backoff_base_s=0, rate_limit_backoff_max_s=0)
+        calls = []
+
+        def invoke():
+            calls.append(1)
+            if len(calls) < 3:
+                raise _err("RateLimitError")
+            return "ok"
+
+        result = WriterRetryController(budget).call(invoke)
+        self.assertEqual(result, "ok")
+        self.assertEqual(len(calls), 3)
+
+    def test_non_rate_limit_category_keeps_default_budget(self) -> None:
+        budget, _, delays = self._budget()
+        calls = []
+
+        def invoke():
+            calls.append(1)
+            raise _err("APIConnectionError")
+
+        with self.assertRaises(WriterRetryError):
+            WriterRetryController(budget).call(invoke)
+        self.assertEqual(len(calls), 2, "非限流分类仍精确 2 次（DEC-003 不变）")
+        self.assertEqual(delays, [0], "非限流退避仍走固定 backoff_seconds")
 
 
 class AsyncRetryBudgetTest(unittest.TestCase):

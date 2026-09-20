@@ -11,7 +11,7 @@ v7 架构切换（自 v6 多 Agent 流水线）：
   - 输入 = demand.md（表单模板化生成，ContextAssembler 注入；DEC-009 表单直入）
   - 产物 = 大纲三件套 storyline / character / worldview，走 ArtifactRevision 冻结
   - 记忆系统（NWM）按 DEC-003 冻结保留：要素文件在包内，不挂载、不装配
-  - 积分挂载沿用 v6 语义，P2（FR-007 免计费）再移除
+  - 免计费（FR-007）：CreditsMiddleware 不装配，执行端不再注入积分服务
 
 assemble 职责：
   - 实例化故事专家 middleware 栈（ErrorRecovery → ReadCache → PathGuard →
@@ -161,13 +161,8 @@ def assemble(ctx: RuntimeContext):
             mw.insert(1, ctx.trace_middleware_cls(
                 ctx.trace_recorder, ctx.trace_id, agent_name, retry_runner=_retry_runner_for(ctx),
             ))
-        # CreditsMiddleware 挂载（AD2/AD6：积分制，类由 ctx 注入，包内实例化）。
-        # 仅在有 owner_id（用户创作）且有 credits_service 时挂载。P2（FR-007）移除。
-        if ctx.credits_service is not None and ctx.credits_middleware_cls and ctx.owner_id:
-            mw.insert(1, ctx.credits_middleware_cls(
-                ctx.credits_service, ctx.trace_id, ctx.owner_id,
-                ctx.workspace_path, agent_name,
-            ))
+        # FR-007（REQ-20260920-150149）：免计费——CreditsMiddleware 不装配。
+        # 恢复计费 = 执行端重新注入 credits_service/credits_middleware_cls 并还原此块。
         # ArtifactSnapshotMiddleware 挂载（第二期证据采集，2026-07）。
         # 装在 WriteResultInspector 之后（最内层），只有写盘成功的才快照。
         artifact_cb = _make_artifact_snapshot_callback(ctx)

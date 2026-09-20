@@ -162,6 +162,9 @@ class ScreenplayGenerateRequest(BaseModel):
     tone: str | None = None
     audience: str | None = None
     thread_id: str
+    # 表单直入（FR-002/DEC-009）：desktop 表单模板化渲染的 demand.md 全文。
+    # 有值时执行端写入 workspace/demand.md，故事专家据此生成大纲三件套。
+    demand_md: str | None = None
     # resume 回传：复用活跃 trace，把一次提问的多次 HITL 缝合成同一条 trace（点3）
     trace_id: str | None = None
 

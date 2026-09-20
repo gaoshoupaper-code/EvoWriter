@@ -402,16 +402,9 @@ class MetaAgentService(BaseAgentService):
         from app.platform.agent.runtime import artifact_capture_scope
         from app.domains.writing.models import build_writer_model
         from app.platform.agent.middleware import TraceMiddleware
-        from app.platform.credits.middleware import CreditsMiddleware
 
-        # 积分制：尝试取全局 CreditsService（AD2）。失败/A/B 路径传 None（不计费）。
-        credits_service = None
-        try:
-            from app.platform.credits.service import get_credits_service
-            credits_service = get_credits_service()
-        except Exception:
-            pass
-
+        # FR-007（REQ-20260920-150149）：免计费——CreditsService/CreditsMiddleware
+        # 不再注入（关闭不拆：platform/credits 代码与 DB 保留）。
         if model is None:
             model = build_writer_model(self.settings, llm_override=llm_override)
         if checkpointer is None:
@@ -489,8 +482,6 @@ class MetaAgentService(BaseAgentService):
             styles=styles,
             trace_recorder=self.trace_recorder,
             trace_middleware_cls=TraceMiddleware,  # T2：类由执行端注入，包内实例化
-            credits_service=credits_service,  # AD2：积分制服务，None 不计费
-            credits_middleware_cls=CreditsMiddleware,  # AD6：类由执行端注入，包内实例化
             # CON-005/FR-003：注入平台级 task 防重放边界。harness 的 ErrorRecovery
             # 在重试前查 should_retry；task（子 Agent 委派）恒为 False，不得重放。
             tool_replay_policy=_build_tool_replay_policy(self.trace_recorder, trace_id),
@@ -700,6 +691,21 @@ class MetaAgentService(BaseAgentService):
             yield _sse("final", response.model_dump())
             return
 
+        # 表单直入（FR-002/DEC-009）：demand_md 有值时写入 workspace/demand.md，
+        # 故事专家经 ContextAssembler 消费。大纲三件套已存在时拒绝——首次生成
+        # 的唯一入口是表单，产出后的迭代走 ChatPanel 修订对话（FR-004）。
+        demand_md_in = getattr(payload, "demand_md", None)
+        if demand_md_in and demand_md_in.strip():
+            workspace_path = Path(thread.workspace_path)
+            if (workspace_path / "storyline.md").exists():
+                yield _sse("status", {
+                    "status": "demand_rejected",
+                    "reason": "大纲已生成：修订请使用对话入口，表单仅用于首次生成。",
+                })
+                return
+            (workspace_path / "demand.md").write_text(demand_md_in, encoding="utf-8")
+            logger.info("表单 demand.md 已写入: %s（%d 字符）", workspace_path, len(demand_md_in))
+
         # 多用户：分库 checkpointer 先解析；model 构建推迟到 Run 绑定之后
         # （FR-004 Run 级模型锁定：绑定快照有值时 model/base_url 锁定为快照值）。
         checkpointer = await self._resolve_checkpointer(owner_id)
@@ -859,19 +865,7 @@ class MetaAgentService(BaseAgentService):
                 self._settle_credits_if_any(thread.thread_id, force_stopped=False)
             raise
         except Exception as exc:
-            # T6.1/T6.3：CreditExhaustedError 专门处理（D27 强停）
-            from app.platform.credits.exceptions import CreditExhaustedError
-            if isinstance(exc, CreditExhaustedError):
-                self.trace_recorder.cancel_run(thread, trace.trace_id, reason="credit_stop")
-                # T6.2：强停时结算预扣（force_stopped=True）
-                self._settle_credits_if_any(thread.thread_id, force_stopped=True)
-                for trace_update in self._trace_updates(trace_queue):
-                    yield trace_update
-                yield _sse("credit_exhausted", {
-                    "message": str(exc),
-                    "thread_id": thread.thread_id,
-                })
-                return
+            # FR-007：credit_exhausted 强停分流已随免计费移除（原 T6.1/T6.3）
             from app.platform.agent.middleware.artifact_capture import EvidenceCaptureError
 
             if isinstance(exc, EvidenceCaptureError) and run_purpose != "user_generation":

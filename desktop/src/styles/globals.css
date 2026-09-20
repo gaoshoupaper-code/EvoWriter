@@ -5825,3 +5825,62 @@ html[data-theme="dark"] .provider-item {
   flex-direction: column;
   gap: 6px;
 }
+
+/* ── v9 需求表单（FR-002 表单直入，REQ-20260920-150149）── */
+.demand-form-wrap {
+  border-top: 1px solid var(--border-subtle, rgba(15, 23, 42, 0.08));
+  padding: 16px 18px 18px;
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.demand-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.demand-form-heading h3 {
+  margin: 2px 0 4px;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.demand-form-desc {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.6;
+  opacity: 0.72;
+}
+
+.demand-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.demand-field-label {
+  font-size: 12px;
+  font-weight: 700;
+  opacity: 0.85;
+}
+
+.demand-field-required .demand-field-label::after {
+  content: " *";
+  color: var(--coral, #f97316);
+}
+
+.demand-textarea {
+  resize: vertical;
+  min-height: 64px;
+  line-height: 1.55;
+}
+
+.demand-field-error {
+  border-color: #ef4444 !important;
+}
+
+.demand-form-actions {
+  display: flex;
+  justify-content: flex-end;
+}

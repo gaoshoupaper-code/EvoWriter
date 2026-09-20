@@ -7,6 +7,8 @@ import { InterviewOptions } from "./InterviewOptions";
 import { ImageReviewCard } from "./ImageReviewCard";
 import { SessionMenu } from "./SessionMenu";
 import { ExecutionView } from "./ExecutionView";
+import { DemandForm } from "./DemandForm";
+import type { DemandFields } from "../../lib/demand";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -17,7 +19,6 @@ type ChatPanelProps = {
   threads: ThreadSummary[];
   activeThreadId: string;
   hasActiveWorkspace: boolean;
-  activeStyleName: string | null;
   sessionMenuOpen: boolean;
   creatingThread: boolean;
   deleting: boolean;
@@ -31,7 +32,10 @@ type ChatPanelProps = {
   onCreateThread: () => void;
   onSelectThread: (threadId: string) => void;
   onDeleteThread: (threadId: string) => void;
-  onOpenStyleModal: () => void;
+  /** v9 表单直入：写作域 + 大纲未产出时，composer 区渲染需求表单（FR-002） */
+  writingDomain?: boolean;
+  outlineReady?: boolean;
+  onDemandSubmit?: (fields: DemandFields) => Promise<void>;
   stageFlows?: (StageFlow | null)[];
   onRetry?: () => void;
 };
@@ -43,7 +47,6 @@ export function ChatPanel({
   threads,
   activeThreadId,
   hasActiveWorkspace,
-  activeStyleName,
   sessionMenuOpen,
   creatingThread,
   deleting,
@@ -57,7 +60,9 @@ export function ChatPanel({
   onCreateThread,
   onSelectThread,
   onDeleteThread,
-  onOpenStyleModal,
+  writingDomain = false,
+  outlineReady = false,
+  onDemandSubmit,
   stageFlows,
   onRetry,
 }: ChatPanelProps) {
@@ -71,6 +76,8 @@ export function ChatPanel({
   const lastMessage = messages[messages.length - 1];
   const awaitingWithOptions =
     lastMessage?.role === "assistant" && !!lastMessage?.awaitingInput?.options?.length;
+  // 修订门控（FR-004）：写作域大纲未产出时，对话输入不可用（表单是唯一首发入口）
+  const revisionLocked = writingDomain && !outlineReady;
 
   useEffect(() => {
     const input = inputRef.current;
@@ -104,17 +111,7 @@ export function ChatPanel({
           <span className="section-kicker">Dialogue</span>
           <h2>创作对话</h2>
         </div>
-        <div className="style-trigger-wrap">
-          <button
-            className={`style-trigger-button${activeStyleName ? " has-style" : ""}`}
-            type="button"
-            onClick={onOpenStyleModal}
-            disabled={!hasActiveWorkspace}
-          >
-            <span className="style-trigger-icon">&#9998;</span>
-            {activeStyleName ? <span className="style-trigger-label">{activeStyleName}</span> : <span className="style-trigger-label">写作风格</span>}
-          </button>
-        </div>
+        {/* FR-009：StyleModal 移除——风格偏好由需求表单承载（DEC-013） */}
         <div className="session-actions">
           <button
             className="session-create-button"
@@ -207,6 +204,12 @@ export function ChatPanel({
         })}
       </div>
 
+      {/* v9 表单直入（FR-002）：写作域首次生成走需求表单；大纲产出前对话入口不可用（FR-004） */}
+      {writingDomain && !outlineReady && !messages.some((m) => m.role === "user") && onDemandSubmit ? (
+        <div className="demand-form-wrap">
+          <DemandForm onSubmit={onDemandSubmit} disabled={!hasActiveWorkspace} submitting={loading} />
+        </div>
+      ) : (
       <form className="chat-composer" onSubmit={onSubmit}>
         <div className={`chat-input-wrap${expanded ? " expanded" : ""}`}>
           <textarea
@@ -216,8 +219,14 @@ export function ChatPanel({
             rows={1}
             onChange={(event) => onPromptChange(event.target.value)}
             onKeyDown={handleInputKeyDown}
-            disabled={loading || awaitingWithOptions}
-            placeholder={awaitingWithOptions ? "请在上方选项区选择并提交" : undefined}
+            disabled={loading || awaitingWithOptions || revisionLocked}
+            placeholder={
+              awaitingWithOptions
+                ? "请在上方选项区选择并提交"
+                : revisionLocked
+                  ? "大纲生成完成后，可在此对话修订（如：主角动机不合理）"
+                  : undefined
+            }
           />
           {canExpand ? (
             <button
@@ -245,12 +254,13 @@ export function ChatPanel({
           <Button
             className="send-button min-h-[46px] rounded-[14px] px-4 text-sm font-black bg-gradient-to-br from-[var(--coral)] to-[var(--gold)] shadow-lg hover:shadow-xl hover:-translate-y-px transition-all"
             type="submit"
-            disabled={loading || awaitingWithOptions}
+            disabled={loading || awaitingWithOptions || revisionLocked}
           >
             {loading ? "生成中" : "发送"}
           </Button>
         </div>
       </form>
+      )}
     </section>
   );
 }

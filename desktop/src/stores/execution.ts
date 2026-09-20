@@ -305,6 +305,7 @@ interface ExecutionState {
   resetMessages: () => void;
   clearThreadMessages: () => void;
   submit: (promptText: string) => Promise<void>;
+  submitDemand: (fields: import("@/lib/demand").DemandFields) => Promise<void>;
   resume: (resumeText: string) => Promise<void>;
   stop: () => void;
   retry: () => void;
@@ -357,6 +358,18 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   submit: async (promptText) => {
     await performSubmit(set, get, promptText);
   },
+  submitDemand: async (fields) => {
+    // 表单直入（FR-002/DEC-013）：渲染 demand.md，kickoff 指令发给故事专家，
+    // 对话里展示的是需求摘要而不是整个模板。
+    const { renderDemandMd, demandSummary, DEMAND_KICKOFF_PROMPT } = await import("@/lib/demand");
+    const workspaceStore = await import("@/stores/workspace").then((m) => m.useWorkspaceStore.getState());
+    const activeWorkspaceId = workspaceStore.activeWorkspaceId;
+    const title = workspaceStore.workspaces.find((w) => w.workspace_id === activeWorkspaceId)?.title;
+    await performSubmit(set, get, DEMAND_KICKOFF_PROMPT, {
+      demandMd: renderDemandMd(fields, title ?? undefined),
+      userDisplay: demandSummary(fields),
+    });
+  },
 
   resume: async (resumeText) => {
     await performSubmit(set, get, resumeText);
@@ -380,10 +393,18 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
 // streamRequest 返回的 reader 类型
 type StreamReader = { read: () => Promise<{ done: boolean; value: Uint8Array | undefined }>; cancel: () => Promise<void> };
 
+type SubmitOptions = {
+  /** 表单直入：demand.md 全文（执行端写入 workspace，故事专家消费）。 */
+  demandMd?: string;
+  /** 对话气泡里展示的用户消息（默认用 promptText）。 */
+  userDisplay?: string;
+};
+
 async function performSubmit(
   set: (partial: Partial<ExecutionState> | ((s: ExecutionState) => Partial<ExecutionState>)) => void,
   get: () => ExecutionState,
   promptText: string,
+  opts: SubmitOptions = {},
 ) {
   const trimmedPrompt = promptText.trim();
   if (!trimmedPrompt || get().loading) return;
@@ -461,10 +482,11 @@ async function performSubmit(
 
   try {
     let userMessageThreadId = activeThreadId;
+    const displayText = opts.userDisplay ?? trimmedPrompt;
     let shouldNameThread = d.getActiveThreadSessionName().startsWith("会话 ") ?? false;
 
     if (!userMessageThreadId) {
-      const thread = await createThreadRequest(activeWorkspaceId, getSessionTitle(trimmedPrompt));
+      const thread = await createThreadRequest(activeWorkspaceId, getSessionTitle(displayText));
       userMessageThreadId = thread.thread_id;
       shouldNameThread = false;
       get().threadMessages.set(thread.thread_id, get().messages);
@@ -472,7 +494,7 @@ async function performSubmit(
       d.setActiveThreadId(thread.thread_id);
     }
 
-    const nextSessionName = shouldNameThread ? getSessionTitle(trimmedPrompt) : "";
+    const nextSessionName = shouldNameThread ? getSessionTitle(displayText) : "";
     if (nextSessionName) {
       updateThreadRequest(userMessageThreadId, nextSessionName)
         .then((thread) => {
@@ -488,7 +510,7 @@ async function performSubmit(
       headers: { "Content-Type": "application/json" },
       body: isResume
         ? { thread_id: userMessageThreadId, resume: trimmedPrompt, trace_id: resumeTraceId ?? undefined }
-        : { thread_id: userMessageThreadId, prompt: trimmedPrompt },
+        : { thread_id: userMessageThreadId, prompt: trimmedPrompt, demand_md: opts.demandMd ?? undefined },
     })) as StreamReader;
     set({ streamReader: reader });
 

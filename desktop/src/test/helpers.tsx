@@ -158,10 +158,20 @@ export async function resetStores() {
   });
   useContentStore.setState({
     outlineMarkdown: "", outlineLoading: false,
-    detailOutlineChapters: [], detailOutlineLoading: false, activeDetailChapterFilename: "",
-    novelChapters: [], activeNovelFilename: "", novelLoading: false,
     characters: [], charactersLoading: false, activeCharacterFilename: "",
     worldviewMarkdown: "", worldviewLoading: false,
     storylineMarkdown: "", storylineEntries: [], activeStorylineFilename: "",
+  });
+}
+
+/**
+ * v9（FR-004）：ChatPanel 是修订对话入口，大纲产出前不可用——
+ * 既有会话流测试（提交/停止/重试/HITL/切会话）模拟"大纲已产出"状态。
+ */
+export async function resetStoresWithOutline() {
+  await resetStores();
+  const { useContentStore } = await import("@/stores/content");
+  useContentStore.setState({
+    storylineMarkdown: "# 主线\n既有大纲：测试用（模拟已产出）",
   });
 }

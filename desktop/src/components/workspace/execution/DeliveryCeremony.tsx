@@ -30,7 +30,7 @@ export function DeliveryCeremony({ message, stageFlow }: DeliveryCeremonyProps) 
 
   // 从 stageFlow 派生摘要
   const totalDuration = formatDuration(stageFlow?.totalDurationMs);
-  const writingStage = stageFlow?.stages.find((s) => s.type === "writing");
+  const writingStage = stageFlow?.stages.find((s) => s.type === "storybuilding");
   const totalWords = writingStage?.subSteps.reduce((sum, s) => sum + (s.wordCount ?? 0), 0) ?? null;
   const chapterCount = writingStage?.subSteps.length ?? null;
 

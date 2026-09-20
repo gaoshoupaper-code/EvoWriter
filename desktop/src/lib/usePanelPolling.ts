@@ -29,17 +29,11 @@ const NON_POLL_PANELS: ReadonlySet<WorkspacePanel> = new Set(["chat", "storyline
  * 因为选中项保持逻辑需要读取当前值。
  */
 export interface PanelPollingSetters {
-  setNovelChapters: (c: NovelChapter[]) => void;
-  setActiveNovelFilename: (fn: (cur: string) => string) => void;
-  setNovelLoading: (b: boolean) => void;
 
   setStorylineMarkdown: (s: string) => void;
   setStorylineEntries: (e: StorylineEntry[]) => void;
   setActiveStorylineFilename: (fn: (cur: string) => string) => void;
 
-  setDetailOutlineChapters: (c: DetailOutlineChapter[]) => void;
-  setActiveDetailChapterFilename: (fn: (cur: string) => string) => void;
-  setDetailOutlineLoading: (b: boolean) => void;
 
   setCharacters: (c: CharacterMarkdownFile[]) => void;
   setActiveCharacterFilename: (fn: (cur: string) => string) => void;
@@ -101,13 +95,6 @@ export function usePanelPolling({
     const s = settersRef.current;
     try {
       switch (panel) {
-        case "novel": {
-          const data = await fetchWorkspaceNovel(workspaceId);
-          s.setNovelChapters(data.chapters);
-          s.setActiveNovelFilename((cur) => keepActiveFilename(cur, data.chapters.map((c) => c.filename)));
-          s.setNovelLoading(false);
-          break;
-        }
         case "script": {
           // script 面板展示 storyline（markdown），同时顺带更新 outline（chat 辅助显示）。
           const data = await fetchWorkspaceStoryline(workspaceId);
@@ -123,13 +110,6 @@ export function usePanelPolling({
           } catch {
             // outline 顺带拉取失败不影响 script 主面板，吞掉。
           }
-          break;
-        }
-        case "detail_outline": {
-          const data = await fetchWorkspaceDetailOutline(workspaceId);
-          s.setDetailOutlineChapters(data.chapters);
-          s.setActiveDetailChapterFilename((cur) => keepActiveFilename(cur, data.chapters.map((c) => c.filename)));
-          s.setDetailOutlineLoading(false);
           break;
         }
         case "characters": {

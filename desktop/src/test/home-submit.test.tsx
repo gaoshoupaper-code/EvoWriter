@@ -81,7 +81,9 @@ vi.mock("@/lib/api", () => ({
     // session_name 不以 "会话 " 开头，避免触发 updateThread 重命名逻辑
     threads: [{ thread_id: "thread-1", workspace_id: "ws-1", session_name: "测试会话", workspace_path: "/test",
       created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }],
-    outline: null, storyline: null, detail_outline: null, characters: null, novel: null, worldview: null,
+    outline: null, detail_outline: null, characters: null, novel: null, worldview: null,
+    // v9（FR-004）：模拟大纲已产出——ChatPanel 修订入口解锁
+    storyline: { index_markdown: "# 主线\n既有大纲", entries: [] },
   }),
   fetchThreadTraces: vi.fn().mockResolvedValue([]),
   fetchTraceDetail: vi.fn().mockResolvedValue(null),
@@ -126,7 +128,7 @@ describe("T0a: 发消息 → SSE → completed 全流程", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     // 重置 Zustand 全局 store（单例，测试间会残留状态）
-    const { resetStores } = await import("./helpers");
+    const { resetStoresWithOutline: resetStores } = await import("./helpers");
     await resetStores();
   });
 

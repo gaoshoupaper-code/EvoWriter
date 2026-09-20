@@ -62,7 +62,9 @@ vi.mock("@/lib/api", () => ({
   }),
   fetchWorkspaceBootstrap: vi.fn().mockResolvedValue({
     threads: THREADS,
-    outline: null, storyline: null, detail_outline: null, characters: null, novel: null, worldview: null,
+    outline: null, detail_outline: null, characters: null, novel: null, worldview: null,
+    // v9（FR-004）：模拟大纲已产出——ChatPanel 修订入口解锁
+    storyline: { index_markdown: "# 主线\n既有大纲", entries: [] },
   }),
   fetchThreadTraces: vi.fn().mockResolvedValue([]),
   fetchTraceDetail: vi.fn().mockResolvedValue(null),
@@ -110,7 +112,7 @@ const Home = (await import("@/pages/home")).default;
 describe("T0d: 切会话消息保留", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
-    const { resetStores } = await import("./helpers");
+    const { resetStoresWithOutline: resetStores } = await import("./helpers");
     await resetStores();
   });
 

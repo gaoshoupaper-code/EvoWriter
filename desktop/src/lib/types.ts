@@ -1,4 +1,4 @@
-export type WorkspacePanel = "chat" | "characters" | "script" | "detail_outline" | "worldview" | "novel" | "trace" | "storyline";
+export type WorkspacePanel = "chat" | "characters" | "script" | "worldview" | "trace" | "storyline";
 
 export type Style = {
   style_id: string;

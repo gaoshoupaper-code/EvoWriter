@@ -530,13 +530,6 @@ export async function fetchWorkspaceNovel(workspaceId: string) {
   return parseJsonResponse<WorkspaceNovelContent>(response);
 }
 
-export function workspaceNovelPdfUrl(workspaceId: string) {
-  return `${API_BASE_URL}/api/workspaces/${workspaceId}/novel/export.pdf`;
-}
-
-export function workspaceNovelWordUrl(workspaceId: string) {
-  return `${API_BASE_URL}/api/workspaces/${workspaceId}/novel/export-word.zip`;
-}
 
 export async function fetchThreadTraces(threadId: string) {
   const response = await apiFetch(`${API_BASE_URL}/api/threads/${threadId}/traces`);

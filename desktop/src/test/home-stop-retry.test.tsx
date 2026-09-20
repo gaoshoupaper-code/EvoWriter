@@ -96,7 +96,9 @@ vi.mock("@/lib/api", () => ({
   fetchWorkspaceBootstrap: vi.fn().mockResolvedValue({
     threads: [{ thread_id: "thread-1", workspace_id: "ws-1", session_name: "测试会话", workspace_path: "/t",
       created_at: "", updated_at: "" }],
-    outline: null, storyline: null, detail_outline: null, characters: null, novel: null, worldview: null,
+    outline: null, detail_outline: null, characters: null, novel: null, worldview: null,
+    // v9（FR-004）：模拟大纲已产出——ChatPanel 修订入口解锁
+    storyline: { index_markdown: "# 主线\n既有大纲", entries: [] },
   }),
   fetchThreadTraces: vi.fn().mockResolvedValue([]),
   fetchTraceDetail: vi.fn().mockResolvedValue(null),
@@ -135,7 +137,7 @@ describe("T0c: stop → retry", () => {
   beforeEach(async () => {
     mode = "stop";
     vi.clearAllMocks();
-    const { resetStores } = await import("./helpers");
+    const { resetStoresWithOutline: resetStores } = await import("./helpers");
     await resetStores();
   });
 

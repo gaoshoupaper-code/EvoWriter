@@ -4,7 +4,7 @@ import type { TraceDetail, TraceNode, ToolStatus } from "./types";
 // 一次提交 = 一条 assistant message = 一个 trace run。
 // stageFlow 从 traceDetail.nodes（task/agent 节点）+ message.tools（实时章节/字数）派生。
 
-export type StageType = "storybuilding" | "detail-outline" | "writing" | "general";
+export type StageType = "storybuilding" | "review" | "general";
 
 export interface StageSubStep {
   id: string; // task 节点 node_id（稳定唯一 key）
@@ -40,13 +40,12 @@ export interface StageFlow {
 }
 
 const STAGE_LABELS: Record<StageType, string> = {
-  storybuilding: "故事构建",
-  "detail-outline": "细纲规划",
-  writing: "正文写作",
+  storybuilding: "故事专家",
+  review: "审查修订",
   general: "辅助任务",
 };
 
-const STAGE_ORDER: StageType[] = ["storybuilding", "detail-outline", "writing", "general"];
+const STAGE_ORDER: StageType[] = ["storybuilding", "review", "general"];
 
 // 空态：无 trace 或无节点
 const EMPTY_FLOW: StageFlow = { stages: [], currentStageId: null, totalDurationMs: null, status: "completed" };
@@ -158,7 +157,7 @@ function buildStage(
       toolCallId: tt.callId,
       label: subStepLabel(type, idx, chapterIndex),
       status: nodeStatusToStep(tt.node),
-      wordCount: type === "writing" ? (tool?.wordCount ?? null) : undefined,
+      wordCount: undefined,
       summary: tt.node.chain_summary ?? undefined,
       durationMs: tt.node.duration_ms ?? null,
     };
@@ -194,6 +193,7 @@ function buildStage(
 function agentNameToStageType(agentName?: string | null): StageType | null {
   if (!agentName) return null;
   const name = agentName.replace(/-subagent$/, "");
+  if (name.endsWith("-review")) return "review";
   return STAGE_ORDER.includes(name as StageType) ? (name as StageType) : null;
 }
 
@@ -218,7 +218,7 @@ function aggregateStatus(statuses: Array<"running" | "completed" | "failed">): "
 }
 
 function subStepLabel(type: StageType, idx: number, chapterIndex: number | null): string {
-  if (type === "writing") return chapterIndex ? `第 ${chapterIndex} 章` : `任务 ${idx + 1}`;
+  if (type === "review") return `审查 ${idx + 1}`;
   if (type === "storybuilding") return `第 ${idx + 1} 轮`;
   return `任务 ${idx + 1}`;
 }
@@ -237,16 +237,10 @@ function sumDuration(durations: Array<number | null | undefined>): number | null
 
 function buildFocusText(stage: Stage): string | undefined {
   if (stage.status !== "running") return undefined;
-  if (stage.type === "writing") {
-    const step = stage.subSteps.find((s) => s.status === "running") ?? stage.subSteps[stage.subSteps.length - 1];
-    if (!step) return "正在生成正文";
-    const idx = extractChapterFromLabel(step.label) ?? stage.subSteps.indexOf(step) + 1;
-    return step.wordCount ? `正在写第 ${idx} 章·约 ${step.wordCount} 字` : `正在写第 ${idx} 章`;
-  }
   if (stage.type === "storybuilding") {
-    return `正在构建故事（第 ${stage.iteration?.current ?? stage.subSteps.length} 轮）`;
+    return `故事专家正在构建大纲（第 ${stage.iteration?.current ?? stage.subSteps.length} 轮）`;
   }
-  if (stage.type === "detail-outline") return "正在规划章节细纲";
+  if (stage.type === "review") return "正在审查修订大纲";
   return "正在执行辅助任务";
 }
 

@@ -25,7 +25,7 @@ export function HistoryFolded({ stageFlow }: HistoryFoldedProps) {
   if (!stageFlow || stageFlow.stages.length === 0) return null;
 
   const totalDuration = formatDuration(stageFlow.totalDurationMs);
-  const writingStage = stageFlow.stages.find((s) => s.type === "writing");
+  const writingStage = stageFlow.stages.find((s) => s.type === "storybuilding");
   const totalWords = writingStage?.subSteps.reduce((sum, s) => sum + (s.wordCount ?? 0), 0) ?? null;
 
   return (

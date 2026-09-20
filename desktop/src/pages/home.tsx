@@ -5,22 +5,13 @@ import { AppShell } from "@/components/workspace/AppShell";
 import { CharactersPanel } from "@/components/workspace/CharactersPanel";
 import { ChatPanel } from "@/components/workspace/ChatPanel";
 import { ConfirmDialog } from "@/components/workspace/ConfirmDialog";
-import { DetailOutlinePanel } from "@/components/workspace/DetailOutlinePanel";
-import { NovelPanel } from "@/components/workspace/NovelPanel";
 import { ScriptPanel } from "@/components/workspace/ScriptPanel";
 import { StorylinePanel } from "@/components/workspace/StorylinePanel";
 import { Sidebar } from "@/components/workspace/Sidebar";
-import { StyleModal } from "@/components/workspace/StyleModal";
 import { TopBar } from "@/components/workspace/TopBar";
 import { TracePanel } from "@/components/workspace/TracePanel";
 import { WorldviewPanel } from "@/components/workspace/WorldviewPanel";
-import {
-  API_BASE_URL,
-  apiFetch,
-  trackCopy,
-  workspaceNovelPdfUrl,
-  workspaceNovelWordUrl,
-} from "@/lib/api";
+import { API_BASE_URL, apiFetch, trackCopy } from "@/lib/api";
 import { projectStageFlow } from "@/lib/stage";
 import { usePanelPolling } from "@/lib/usePanelPolling";
 import type { StageFlow } from "@/lib/stage";
@@ -59,12 +50,6 @@ export default function Home() {
     () => threads.find((t) => t.thread_id === activeThreadId) ?? null,
     [threads, activeThreadId],
   );
-  const styles = useWorkspaceStore((s) => s.styles);
-  const activeStyleName = useMemo(() => {
-    const activeStyleId = activeWorkspace?.active_style_id;
-    if (!activeStyleId) return null;
-    return styles.find((s) => s.style_id === activeStyleId)?.name ?? null;
-  }, [activeWorkspace?.active_style_id, styles]);
   const bootstrapping = useWorkspaceStore((s) => s.bootstrapping);
   const creatingWorkspace = useWorkspaceStore((s) => s.creatingWorkspace);
   const deletingWorkspace = useWorkspaceStore((s) => s.deletingWorkspace);
@@ -76,8 +61,6 @@ export default function Home() {
   const workspaceDeleteOpen = useWorkspaceStore((s) => s.workspaceDeleteOpen);
   const pendingDeleteWorkspaceId = useWorkspaceStore((s) => s.pendingDeleteWorkspaceId);
   const sessionMenuOpen = useWorkspaceStore((s) => s.sessionMenuOpen);
-  const styleModalOpen = useWorkspaceStore((s) => s.styleModalOpen);
-  const creatingStyle = useWorkspaceStore((s) => s.creatingStyle);
 
   // executionStore
   const messages = useExecutionStore((s) => s.messages);
@@ -97,12 +80,6 @@ export default function Home() {
   // contentStore
   const outlineMarkdown = useContentStore((s) => s.outlineMarkdown);
   const outlineLoading = useContentStore((s) => s.outlineLoading);
-  const detailOutlineChapters = useContentStore((s) => s.detailOutlineChapters);
-  const detailOutlineLoading = useContentStore((s) => s.detailOutlineLoading);
-  const activeDetailChapterFilename = useContentStore((s) => s.activeDetailChapterFilename);
-  const novelChapters = useContentStore((s) => s.novelChapters);
-  const activeNovelFilename = useContentStore((s) => s.activeNovelFilename);
-  const novelLoading = useContentStore((s) => s.novelLoading);
   const characters = useContentStore((s) => s.characters);
   const charactersLoading = useContentStore((s) => s.charactersLoading);
   const activeCharacterFilename = useContentStore((s) => s.activeCharacterFilename);
@@ -113,6 +90,11 @@ export default function Home() {
   const activeStorylineFilename = useContentStore((s) => s.activeStorylineFilename);
 
   const aiDisabled = !hasApiKey;
+  // v9 表单直入/修订门控（FR-002/FR-004）：写作域以三件套内容判定大纲是否产出
+  const outlineReady = Boolean(
+    storylineMarkdown?.trim() || characters.length > 0 || worldviewMarkdown?.trim(),
+  );
+  const writingDomain = activeWorkspace?.domain !== "image";
   const workspacePath = activeWorkspace?.workspace_path ?? activeThread?.workspace_path;
   const result = useExecutionStore((s) => s.result);
   const currentOutlineMarkdown = result?.thread_id === activeThreadId && result.markdown?.trim() ? result.markdown : outlineMarkdown;
@@ -192,8 +174,6 @@ export default function Home() {
     let ignore = false;
     (async () => {
       useContentStore.setState({
-        outlineLoading: true, detailOutlineLoading: true, charactersLoading: true,
-        novelLoading: true, worldviewLoading: true,
       });
       const content = await useWorkspaceStore.getState().switchWorkspace(activeWorkspaceId);
       if (ignore || !content) return;
@@ -258,15 +238,9 @@ export default function Home() {
     loading,
     bootstrapping,
     setters: {
-      setNovelChapters: (v) => useContentStore.getState().setNovelChapters(v),
-      setActiveNovelFilename: (fn) => useContentStore.setState((s) => ({ activeNovelFilename: fn(s.activeNovelFilename) })),
-      setNovelLoading: (v) => useContentStore.getState().setNovelLoading(v),
       setStorylineMarkdown: (v) => useContentStore.getState().setStorylineMarkdown(v),
       setStorylineEntries: (v) => useContentStore.getState().setStorylineEntries(v),
       setActiveStorylineFilename: (fn) => useContentStore.setState((s) => ({ activeStorylineFilename: fn(s.activeStorylineFilename) })),
-      setDetailOutlineChapters: (v) => useContentStore.getState().setDetailOutlineChapters(v),
-      setActiveDetailChapterFilename: (fn) => useContentStore.setState((s) => ({ activeDetailChapterFilename: fn(s.activeDetailChapterFilename) })),
-      setDetailOutlineLoading: (v) => useContentStore.getState().setDetailOutlineLoading(v),
       setCharacters: (v) => useContentStore.getState().setCharacters(v),
       setActiveCharacterFilename: (fn) => useContentStore.setState((s) => ({ activeCharacterFilename: fn(s.activeCharacterFilename) })),
       setCharactersLoading: (v) => useContentStore.getState().setCharactersLoading(v),
@@ -412,7 +386,6 @@ export default function Home() {
             threads={threads}
             activeThreadId={activeThreadId}
             hasActiveWorkspace={Boolean(activeWorkspaceId)}
-            activeStyleName={activeStyleName}
             sessionMenuOpen={sessionMenuOpen}
             creatingThread={creatingThread}
             deleting={deleting}
@@ -432,21 +405,14 @@ export default function Home() {
             onCreateThread={handleCreateThread}
             onSelectThread={handleSelectThread}
             onDeleteThread={handleDeleteThread}
-            onOpenStyleModal={() => useWorkspaceStore.setState({ styleModalOpen: true })}
+            writingDomain={writingDomain}
+            outlineReady={outlineReady}
+            onDemandSubmit={async (fields) => {
+              if (aiDisabled) { toast.error("请先在设置页填写你的 API Key，才能使用 AI 生成。"); return; }
+              await useExecutionStore.getState().submitDemand(fields);
+            }}
             stageFlows={stageFlows}
             onRetry={handleRetry}
-          />
-        ) : null}
-
-        {activePanel === "novel" ? (
-          <NovelPanel
-            chapters={novelChapters}
-            activeFilename={activeNovelFilename}
-            loading={novelLoading}
-            onSelectChapter={(f) => useContentStore.getState().setActiveNovelFilename(f)}
-            exportUrl={activeWorkspaceId ? workspaceNovelPdfUrl(activeWorkspaceId) : undefined}
-            wordExportUrl={activeWorkspaceId ? workspaceNovelWordUrl(activeWorkspaceId) : undefined}
-            onCopyContent={(text) => liveTraceId && trackCopy(liveTraceId, text)}
           />
         ) : null}
 
@@ -457,15 +423,6 @@ export default function Home() {
             activeStorylineFilename={activeStorylineFilename}
             loading={outlineLoading}
             onSelectStoryline={(f) => useContentStore.getState().setActiveStorylineFilename(f)}
-          />
-        ) : null}
-
-        {activePanel === "detail_outline" ? (
-          <DetailOutlinePanel
-            chapters={detailOutlineChapters}
-            activeFilename={activeDetailChapterFilename}
-            loading={detailOutlineLoading}
-            onSelectChapter={(f) => useContentStore.getState().setActiveDetailChapterFilename(f)}
           />
         ) : null}
 
@@ -551,19 +508,6 @@ export default function Home() {
         onCancel={() => useWorkspaceStore.setState({ workspaceDeleteOpen: false, pendingDeleteWorkspaceId: "" })}
       />
 
-      {styleModalOpen ? (
-        <StyleModal
-          styles={styles}
-          activeStyleId={activeWorkspace?.active_style_id ?? null}
-          creating={creatingStyle}
-          onCreateStyle={(name, meta, sb, dlo, w) => useWorkspaceStore.getState().handleCreateStyle(name, meta, sb, dlo, w)}
-          onUpdateStyle={(id, fields) => useWorkspaceStore.getState().handleUpdateStyle(id, fields)}
-          onDeleteStyle={(id) => useWorkspaceStore.getState().handleDeleteStyle(id)}
-          onSelectStyle={(id) => useWorkspaceStore.getState().handleSelectStyle(id)}
-          onOptimizeStyle={(type, content) => useWorkspaceStore.getState().handleOptimizeStyle(type, content)}
-          onClose={() => useWorkspaceStore.setState({ styleModalOpen: false })}
-        />
-      ) : null}
     </>
   );
 }

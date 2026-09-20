@@ -10,7 +10,6 @@ import {
   createProviderConfig,
   deleteProviderConfig,
   fetchMeOrNull,
-  fetchMyCredits,
   fetchMyProfile,
   listProviderConfigs,
   updateProviderConfig,
@@ -26,7 +25,6 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [configs, setConfigs] = useState<ProviderConfig[]>([]);
   const [quota, setQuota] = useState<{ count: number; quota: number } | null>(null);
-  const [credits, setCredits] = useState<number | null>(null);
   const [activeConfigId, setActiveConfigId] = useState<string | null>(null);
   const [mode, setMode] = useState<FormMode>({ kind: "new" });
   const [submitting, setSubmitting] = useState(false);
@@ -52,13 +50,6 @@ export default function SettingsPage() {
       const [profile, list] = await Promise.all([fetchMyProfile(), listProviderConfigs()]);
       setQuota({ count: profile.workspace_count, quota: profile.workspace_quota });
       setConfigs(list);
-      // D11：加载积分余额
-      try {
-        const c = await fetchMyCredits();
-        setCredits(c.balance);
-      } catch {
-        setCredits(null);
-      }
       const active = list.find((c) => c.is_active);
       setActiveConfigId(active?.config_id ?? null);
     } catch (err) {
@@ -267,21 +258,6 @@ export default function SettingsPage() {
           <h1 className="auth-title">API 配置</h1>
           <Link to="/" className="admin-back">← 返回工作区</Link>
         </header>
-
-        {/* D21：workspace_quota 废弃，改为展示积分余额（D11） */}
-        {credits !== null ? (
-          <div className="settings-quota">
-            积分余额：
-            <strong style={{ marginLeft: 6, color: credits <= 0 ? "#ef4444" : "#22c55e" }}>
-              {credits}
-            </strong>
-            {credits <= 0 && (
-              <span style={{ marginLeft: 8, color: "#ef4444", fontSize: 13 }}>
-                （已冻结，请联系管理员补充积分）
-              </span>
-            )}
-          </div>
-        ) : null}
 
         <div className="settings-key-status">
           当前使用：

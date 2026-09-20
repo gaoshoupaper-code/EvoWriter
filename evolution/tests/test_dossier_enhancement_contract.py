@@ -169,38 +169,38 @@ class ContractCoverageMatrixTest(unittest.TestCase):
     def test_matrix_deterministic_overrides_agent_self_report(self):
         """需求 §33：即使 Agent 提取了契约，承诺产物未交付仍判 missing。"""
         from app.dossier import compiler
+        # v7 词表：三件套（storyline/character/worldview）+ storybuilding 单阶段
         contract_parsed = {
             "promised_artifacts": [
-                {"kind": "chapter", "desc": "正文", "required": True},
-                {"kind": "detail", "desc": "大纲", "required": False},
+                {"kind": "storyline", "desc": "故事线", "required": True},
+                {"kind": "character", "desc": "人物", "required": False},
             ],
-            "applicable_stages": ["interview", "writing"],
-            "user_goal": "写小说",
-            "hard_constraints": [{"constraint": "10万字"}],
+            "applicable_stages": ["storybuilding"],
+            "user_goal": "生成玄幻大纲",
+            "hard_constraints": [{"constraint": "三幕式"}],
             "style_preferences": None,
             "scope": "",
         }
-        # writing 有交付，interview 无
-        facts = {"deliveries": {"writing": {"/chapter/1.md": {}}}, "review_chain": []}
+        # storybuilding 有交付
+        facts = {"deliveries": {"storybuilding": {"/storyline.md": {}}}, "review_chain": []}
         m = compiler._compute_contract_coverage_matrix(contract_parsed, facts)
-        # chapter covered（writing 交付）；interview missing；style/scope missing
+        # storyline covered（storybuilding 交付）；style/scope missing
         statuses = {i["key"]: i["status"] for i in m["items"]}
-        self.assertEqual(statuses.get("chapter:正文"), "covered")
-        self.assertEqual(statuses.get("interview"), "missing")
+        self.assertEqual(statuses.get("storyline:故事线"), "covered")
         self.assertEqual(statuses.get("style_preferences"), "missing")
         self.assertFalse(m["complete"])  # 有 missing 项
 
     def test_complete_when_all_applicable_covered(self):
         from app.dossier import compiler
         contract_parsed = {
-            "promised_artifacts": [{"kind": "chapter", "desc": "正文", "required": True}],
-            "applicable_stages": ["writing"],
-            "user_goal": "写小说",
-            "hard_constraints": [{"constraint": "10万字"}],
-            "style_preferences": [{"pref": "严肃"}],
-            "scope": "10万字以内",
+            "promised_artifacts": [{"kind": "storyline", "desc": "故事线", "required": True}],
+            "applicable_stages": ["storybuilding"],
+            "user_goal": "生成玄幻大纲",
+            "hard_constraints": [{"constraint": "三幕式"}],
+            "style_preferences": [{"pref": "热血"}],
+            "scope": "大纲三件套",
         }
-        facts = {"deliveries": {"writing": {"/chapter/1.md": {}}}, "review_chain": []}
+        facts = {"deliveries": {"storybuilding": {"/storyline.md": {}}}, "review_chain": []}
         m = compiler._compute_contract_coverage_matrix(contract_parsed, facts)
         self.assertTrue(m["complete"])
         self.assertEqual(m["missing_count"], 0)

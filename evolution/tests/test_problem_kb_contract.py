@@ -152,39 +152,6 @@ class TestFormalFrequency(unittest.TestCase):
         self.assertEqual(freq2, 2)
 
 
-class TestEvolutionPointOwnership(unittest.TestCase):
-    """AC-33：进化点一对一归属。"""
-
-    def setUp(self):
-        db.execute(
-            "INSERT INTO evolve_sessions(session_id, case_id, status, created_at, updated_at, "
-            "bound_eval_dossier_id) VALUES(?,?,?,?,?,?)",
-            ("sess-own", "", "created", "2026-01-01", "2026-01-01", "d-own"))
-
-    def test_ownership_assigns_from_finding_ref_ac33(self):
-        """propose 引用 f01 → 归属解析到对应实例。"""
-        from app.problem_kb import repo
-        from app.evolve.evolve_repo import _try_assign_point_ownership
-        # 收录实例
-        conn = db.get_conn()
-        repo.create_instance(dossier_id="d-own", trace_id="t-own",
-                             finding_id="f01", severity="high", statement="x", conn=conn)
-        conn.commit()
-        _try_assign_point_ownership("pt-own1", "sess-own",
-                                    "评估 finding f01 指出问题")
-        ownership = repo.get_ownership("pt-own1")
-        self.assertIsNotNone(ownership)
-        self.assertIsNotNone(ownership["source_instance_id"])
-
-    def test_ownership_one_to_one_ac33(self):
-        """一个进化点重复归属不覆盖首次（UNIQUE 强制一对一）。"""
-        from app.problem_kb import repo
-        repo.assign_ownership(point_id="pt-dupe", problem_id="p1", source_instance_id="i1")
-        repo.assign_ownership(point_id="pt-dupe", problem_id="p2", source_instance_id="i2")
-        ownership = repo.get_ownership("pt-dupe")
-        self.assertEqual(ownership["problem_id"], "p1")  # 保持首次
-
-
 class TestCurrentProblemCard(unittest.TestCase):
     """AC-27/28：当前问题卡冻结 + 分组。"""
 
@@ -228,7 +195,7 @@ class TestCurrentProblemCard(unittest.TestCase):
 
 
 class TestRetrievalAndInjection(unittest.TestCase):
-    """AC-06/26/30/31：检索 + 注入。"""
+    """AC-06：检索（注入类用例随 v7 轨迹注入接线拆除退役，REQ-20260920-150149 FR-104）。"""
 
     def test_search_returns_confirmed_status_ac06(self):
         """AC-06：检索结果标注确认状态。"""
@@ -242,43 +209,3 @@ class TestRetrievalAndInjection(unittest.TestCase):
         self.assertEqual(result.hits[0]["confirmation_status"], "已确认标准问题")
         self.assertIn("effect_stage", result.hits[0])
 
-    def test_injection_no_experience_recommendation_ac30(self):
-        """AC-30/31：注入文本不含经验对象/等级/推荐。"""
-        from app.problem_kb import repo
-        from app.problem_kb.retrieval import store
-        from app.evolve.ctx import EvolveContext
-        from app.evolve.agent.agent import _format_similar_trajectories
-        pid = repo.create_problem(title="注入测试", description="验证无经验推荐")
-        store.sync_problem_to_index(pid, "注入测试", "验证无经验推荐", "测试")
-        ctx = EvolveContext(session_id="sess-inj")
-        ctx.eval_dossier = {
-            "dossier_id": "d-inj", "trace_id": "t-inj",
-            "findings": [{"id": "f01", "dimension": "内容质量", "severity": "high",
-                          "finding": "注入测试问题", "evidence": "e",
-                          "evidence_ref": ["e1"], "evidence_type": "实证"}],
-            "frozen_evidence": {"e1": {"agent_name": "w"}},
-        }
-        text = _format_similar_trajectories(ctx)
-        # 不含经验对象/等级/推荐
-        for forbidden in ("经验等级", "建议采用", "经验推荐", "可复用经验"):
-            self.assertNotIn(forbidden, text, f"注入文本不应含 '{forbidden}'")
-
-    def test_degraded_retrieval_does_not_claim_no_history_ac26(self):
-        """AC-26：检索无结果时不表述为'无历史问题'。"""
-        from app.evolve.ctx import EvolveContext
-        from app.evolve.agent.agent import _format_similar_trajectories
-        ctx = EvolveContext(session_id="sess-empty")
-        ctx.eval_dossier = {
-            "dossier_id": "d-empty", "trace_id": "t-empty",
-            "findings": [{"id": "f01", "dimension": "内容质量", "severity": "high",
-                          "finding": "完全无匹配的冷门问题xyz", "evidence": "e",
-                          "evidence_ref": ["e1"], "evidence_type": "实证"}],
-            "frozen_evidence": {"e1": {"agent_name": "w"}},
-        }
-        text = _format_similar_trajectories(ctx)
-        self.assertNotIn("没有历史问题", text)
-        self.assertNotIn("无历史问题", text)
-
-
-if __name__ == "__main__":
-    unittest.main()

@@ -1327,6 +1327,16 @@ class TraceRecorder:
                 "duration_ms": int((now - started) * 1000),
                 "event_count": self._sequences.get(trace_id, 0),
                 "status": status,
+                # FR-003（REQ-20260920-193428）：运行中元数据透传——大盘活跃行
+                # 据此渲染任务名/工作负载，不等 evolution 入库 join；index 读不到
+                # 时降级为空值，调用方（evolution active 富化）自行回退。
+                "session_name": run.session_name if run else "",
+                "workspace_id": run.workspace_id if run else "",
+                "thread_id": run.thread_id if run else "",
+                "started_at": run.started_at if run else None,
+                "workload": run.workload if run else None,
+                "run_purpose": run.purpose if run else None,
+                "service": run.service if run else "executor",
             })
         return result
 

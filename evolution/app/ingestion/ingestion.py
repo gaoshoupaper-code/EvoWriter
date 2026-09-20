@@ -173,8 +173,63 @@ async def _ingest_async(trace_id: str, traceparent: str | None = None) -> None:
     摄入完成后：
     - 旧 LLM-judge：已解除（不再对单条 trace 实时评估）
     - 新双层评估：仅终态触发（completed/cancelled/failed），awaiting_input/running 跳过
+
+    REQ-20260920-193428 FR-002：notify 到达先广播 run_finished（轻量终态摘要，
+    不等全量摄入——摄入含 payload 拉取可能超 5s 预算）。只在此路径发：
+    ingest_trace_now 同时被详情页 refresh 复用，不能每次刷新都广播。
     """
+    await asyncio.to_thread(_emit_finished_event_from_executor, trace_id, traceparent)
     await asyncio.to_thread(ingest_trace_now, trace_id, traceparent)
+
+
+# review R1（P0）：只有终态才广播 run_finished——executor 的 awaiting_input
+# （HITL 等输入）与 resume（running）也走 notify，无条件广播会把仍在运行的
+# 活跃行踢出大盘。interrupted 属终态（进程重启已死），一并收敛。
+_TERMINAL_STATUSES = {"completed", "failed", "cancelled", "cancel_timeout", "interrupted"}
+
+
+def _emit_finished_event_from_executor(
+    trace_id: str, traceparent: str | None = None
+) -> None:
+    """notify 主路径：快速拉终态摘要并广播 run_finished（不等全量摄入）。
+
+    FR-002：结束翻转 ≤5s。用超大 since_seq 只拉 run 摘要（events 为空），
+    驱动大盘即时翻转；近期区完整数据由入库后的列表查询自然补齐。
+    非终态状态（awaiting_input/running）直接返回，不广播也不登记去重；
+    摘要拉取失败（如执行端重启丢索引）：静默返回，靠 poller 兜底 diff。
+    广播与去重登记失败不影响摄入主链路。
+    """
+    try:
+        from app.view.active import _mark_finished_published
+        from app.view.events import get_event_bus
+
+        fetched = _fetch_trace_content(trace_id, since_seq=10**9, traceparent=traceparent)
+        if fetched is None:
+            return
+        _, run, _ = fetched
+        if run.status not in _TERMINAL_STATUSES:
+            return
+        _mark_finished_published(trace_id)
+        get_event_bus().publish(
+            "run_finished",
+            {
+                "trace_id": trace_id,
+                "source": "executor",
+                "run": {
+                    "trace_id": run.trace_id,
+                    "session_name": run.session_name,
+                    "workload": run.workload,
+                    "status": run.status,
+                    "started_at": run.started_at,
+                    "ended_at": run.ended_at,
+                    "duration_ms": run.duration_ms,
+                    "event_count": run.event_count,
+                    "error": run.error,
+                },
+            },
+        )
+    except Exception:
+        logger.warning("run_finished 事件广播失败: trace=%s", trace_id, exc_info=True)
 
 
 def ingest_trace_now(trace_id: str, traceparent: str | None = None) -> str | None:

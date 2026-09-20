@@ -13,7 +13,16 @@ use crate::state::SharedState;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use tauri::{AppHandle, Emitter, State};
+
+/// 活跃 SSE 流的后台任务注册表（stream_id → JoinHandle）。
+/// stream_cancel 据此中止被前端弃掉的流——否则降级/卸载后 Rust 侧连接
+/// 靠服务端心跳存活最长 24h，长驻桌面端会累积僵尸连接（review R4）。
+fn stream_tasks() -> &'static Mutex<HashMap<String, tokio::task::JoinHandle<()>>> {
+    static TASKS: OnceLock<Mutex<HashMap<String, tokio::task::JoinHandle<()>>>> = OnceLock::new();
+    TASKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// 前端 invoke 时的请求参数。
 #[derive(Debug, Deserialize)]
@@ -226,10 +235,14 @@ pub async fn stream_request(
     // 拆成 stream，逐 chunk 推送。
     // spawn 独立 task：让 command 立即返回 Ok(())，流式在后台推 event。
     // 否则 await 整个流会让 invoke 阻塞到生成结束（前端拿不到 Ok）。
+    // 注册到 stream_tasks（stream_cancel 可中止）；任务自然结束时自摘，
+    // abort 时由 stream_cancel 摘除，两条路径都不留残项。
     let app_clone = app.clone();
     let stream_id_task = stream_id.clone();
-    tokio::spawn(async move {
+    let stream_id_self = stream_id.clone();
+    let join = tokio::spawn(async move {
         let mut stream = resp.bytes_stream();
+        let mut error: Option<String> = None;
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
                 Ok(bytes) => {
@@ -246,29 +259,36 @@ pub async fn stream_request(
                     );
                 }
                 Err(e) => {
-                    let _ = app_clone.emit(
-                        "sse_end",
-                        SseEnd {
-                            stream_id: stream_id_task.clone(),
-                            ok: false,
-                            error: Some(format!("流读取错误: {e}")),
-                        },
-                    );
-                    return;
+                    error = Some(format!("流读取错误: {e}"));
+                    break;
                 }
             }
         }
-        // 流正常结束
         let _ = app_clone.emit(
             "sse_end",
             SseEnd {
                 stream_id: stream_id_task,
-                ok: true,
-                error: None,
+                ok: error.is_none(),
+                error,
             },
         );
+        stream_tasks().lock().unwrap().remove(&stream_id_self);
     });
+    stream_tasks()
+        .lock()
+        .unwrap()
+        .insert(stream_id.clone(), join);
 
+    Ok(())
+}
+
+/// 中止一条流式请求（review R4）：前端降级/卸载时调用，
+/// abort 后台读取任务 → reqwest 连接 drop → 服务端连接关闭。
+#[tauri::command]
+pub async fn stream_cancel(stream_id: String) -> Result<(), String> {
+    if let Some(handle) = stream_tasks().lock().unwrap().remove(&stream_id) {
+        handle.abort();
+    }
     Ok(())
 }
 

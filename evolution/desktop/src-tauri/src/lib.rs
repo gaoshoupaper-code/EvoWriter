@@ -6,9 +6,8 @@
 // - config: server_url 读写 command
 // - updater: 自动更新检查 + 安装（2026-07-08 新增，独立 latest-evo.json 发布渠道）
 //
-// trace 稳定性重构（设计 20260720_203000）：stream_request command 已从 invoke_handler
-// 注销（SSE 物理删除）。http.rs/state.rs 的 stream 相关代码保留但不再对外暴露——
-// 大面积 Rust 删除编译风险高，且 dead code 不影响运行。
+// trace 稳定性重构（设计 20260720_203000）：stream_request 曾从 invoke_handler
+// 注销（SSE 物理删除）。观测大盘实时化（REQ-20260920-193428 FR-005）重新注册。
 
 mod config;
 mod http;
@@ -43,6 +42,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             http::http_request,
+            // 观测大盘实时化（REQ-20260920-193428 FR-005）：恢复 SSE 流式 command
+            http::stream_request,
+            // review R4：前端降级/卸载时中止后台流，防僵尸连接累积
+            http::stream_cancel,
             config::get_server_url,
             config::set_server_url,
             config::reset_server_url,

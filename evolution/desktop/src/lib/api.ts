@@ -121,6 +121,14 @@ export async function evoFetch(path: string, init: RequestInit = {}): Promise<Re
 }
 
 /**
+ * SSE 流式 path（stream_request command 用，与 evoFetch 同前缀规则）。
+ * 观测大盘实时化（REQ-20260920-193428 FR-005）。
+ */
+export function evoStreamPath(path: string): string {
+  return path.startsWith("/") ? `${EVO_PREFIX}${path}` : `${EVO_PREFIX}/${path}`;
+}
+
+/**
  * 503（认证服务不可达）静默重试：最多 3 次，指数退避 1s/2s/4s。
  * 重试期间不跳登录、不闪烁，只有重试耗尽才把 503 响应返回给上层。
  */

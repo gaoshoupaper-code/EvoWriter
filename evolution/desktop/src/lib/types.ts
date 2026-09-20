@@ -266,6 +266,8 @@ export type ActiveRun = {
   ingested: boolean;
   /** trace 来源（D9 后端补齐：user_generation / evolution_eval / evolution_evolve） */
   run_purpose: string | null;
+  /** 服务标识（executor 写作运行 / evolution 会话；运行中透传，REQ-20260920-193428 FR-003） */
+  service?: string | null;
   workload: TraceWorkload | null;
   integrity_status: TraceIntegrityStatus;
   coverage: Record<string, TraceCoverageStatus>;

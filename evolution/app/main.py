@@ -36,6 +36,8 @@ from app.view.users import router as users_router
 from app.versioning.snapshot_api import router as snapshot_router
 from app.versioning.elements_api import router as elements_router
 from app.view.active import router as active_api_router
+# 观测事件流 SSE 通道（REQ-20260920-193428 FR-004）：大盘实时推送
+from app.view.events import router as events_router
 from app.view.agent_package import router as agent_package_router
 from app.evolve.api import router as evolve_router
 from app.tests.api import router as tests_router
@@ -167,6 +169,8 @@ app.include_router(snapshot_router, prefix="/api")
 app.include_router(elements_router, prefix="/api")
 # 监测前端新增端点（D7 active 富化 / D8 agent-package）
 app.include_router(active_api_router, prefix="/api")
+# 观测事件流（REQ-20260920-193428）：GET /api/events/stream
+app.include_router(events_router, prefix="/api")
 app.include_router(agent_package_router, prefix="/api")
 # 进化端单进化 Agent：手动触发 + 查询 + SSE（替换旧 adapt 4 阶段）
 app.include_router(evolve_router, prefix="/api")

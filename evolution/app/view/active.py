@@ -23,11 +23,21 @@ router = APIRouter(tags=["active"])
 
 # 执行端 internal 接点（拉活跃 trace）。
 # 执行端地址优先用 evolution 配置里的 executor_url，否则默认 localhost:8000。
-_POLL_INTERVAL = 5.0  # 轮询间隔（秒）
+# REQ-20260920-193428 FR-001：1s 轮询 + diff 产生 SSE 事件（5s 延迟预算的主通路）。
+_POLL_INTERVAL = 1.0
 
 # 内存缓存（进程级，重启丢失——无妨，活跃大盘是实时观测，不需持久）。
 _active_cache: list[dict[str, Any]] = []
 _task: asyncio.Task | None = None
+
+# 最近一次成功轮询的列表（review R2：失败只清展示缓存，diff 基线保留——
+# 否则 executor 宕机窗口内结束的运行在恢复后无从对比，幽灵行悬挂）。
+_last_good_runs: list[dict[str, Any]] = []
+
+# 已发过 run_finished 的 trace_id（notify 主路径与 poller 兜底去重）。
+# 有界：超过上限整批清理（极端量级下允许一次重复事件，前端按行幂等处理）。
+_finished_emitted: set[str] = set()
+_FINISHED_EMITTED_LIMIT = 1000
 
 
 def start_active_poller() -> None:
@@ -54,18 +64,63 @@ async def _poll_loop(executor_url: str) -> None:
 
 
 def _poll_once(executor_url: str) -> None:
-    """轮询一次执行端 /internal/active-runs。"""
-    global _active_cache
+    """轮询一次执行端 /internal/active-runs，diff 出增删并发布 SSE 事件。"""
+    global _active_cache, _last_good_runs
     try:
         import httpx
 
         url = f"{executor_url.rstrip('/')}/internal/active-runs"
         resp = httpx.get(url, timeout=3.0)
         resp.raise_for_status()
-        _active_cache = resp.json()
+        runs = resp.json()
     except Exception:
-        # 执行端不可用 → 清空缓存（活跃大盘显示空，不报错）
+        # 执行端不可用 → 清空缓存（活跃大盘显示空，不报错）。
+        # 不发 run_finished：来源不可达 ≠ 运行结束（FR-004 失败语义，
+        # 误发会把大盘行提前踢进近期区）。
         _active_cache = []
+        return
+    _emit_diff_events(_last_good_runs, runs)
+    _last_good_runs = runs
+    _active_cache = runs
+
+
+def _mark_finished_published(trace_id: str) -> None:
+    """登记某 trace 的 run_finished 已发（notify 主路径调用，poller 兜底跳过）。"""
+    if len(_finished_emitted) >= _FINISHED_EMITTED_LIMIT:
+        _finished_emitted.clear()
+    _finished_emitted.add(trace_id)
+
+
+def _emit_diff_events(prev: list[dict[str, Any]], current: list[dict[str, Any]]) -> None:
+    """对比前后两轮 executor 活跃列表，发布 run_started / run_finished。
+
+    run_started 携带运行中元数据（executor 侧已透传 session_name/workload 等，
+    FR-003）；run_finished 是兜底路径——executor 终态 notify（ingestion 主路径）
+    丢失时，活跃列表消失在 1 个轮询周期内补发，不带终态摘要（run=None），
+    前端把行移出活跃区，近期区数据靠入库后的列表查询补齐。
+    """
+    from app.view.events import get_event_bus
+
+    bus = get_event_bus()
+    prev_ids = {r.get("trace_id") for r in prev if r.get("trace_id")}
+    current_ids = {r.get("trace_id") for r in current if r.get("trace_id")}
+    for row in current:
+        tid = row.get("trace_id")
+        if tid and tid not in prev_ids:
+            bus.publish("run_started", {"trace_id": tid, "source": "executor", "run": row})
+    for tid in prev_ids - current_ids:
+        if tid in _finished_emitted:
+            continue
+        _mark_finished_published(tid)
+        bus.publish("run_finished", {"trace_id": tid, "source": "executor", "run": None})
+
+
+def _reset_diff_state_for_test() -> None:
+    """测试隔离：清空 diff 状态（不影响生产路径）。"""
+    global _active_cache
+    _active_cache = []
+    _last_good_runs.clear()
+    _finished_emitted.clear()
 
 
 # ── D7：富化 JSON 端点（供监测前端轮询）──
@@ -145,8 +200,10 @@ def active_runs_api() -> list[dict[str, Any]]:
             "started_at": r.get("started_at"),
             "duration_ms": r.get("duration_ms"),
             "event_count": r.get("event_count", 0),
-            # D7 富化：join 不到时 null（前端降级显示 workspace_id/endpoint）
-            "session_name": meta.get("session_name"),
+            # D7 富化：优先 executor 运行中透传的元数据（FR-003，不等入库 join），
+            # 透传缺失时回退库 join（evolution 源 create_run 即写库）。
+            "session_name": r.get("session_name") or meta.get("session_name"),
+            "service": r.get("service") or "evolution",
             "ingested": tid in ingested_map,
             # D9：run_purpose（executor trace 优先用 r 自带的，join 不到时降级）
             # evolution recorder 的活跃 trace 已自带 run_purpose（recorder.list_active_runs 返回）

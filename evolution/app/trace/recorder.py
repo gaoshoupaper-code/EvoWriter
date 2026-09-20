@@ -312,6 +312,30 @@ class EvolutionTraceRecorder:
                 "links": self._run_links[trace_id],
             },
         )
+
+        # REQ-20260920-193428 FR-001：进程内直发 run_started（evolution 源，
+        # 即时，不等 poller diff）。广播失败不影响业务。
+        try:
+            from app.view.events import get_event_bus
+
+            get_event_bus().publish(
+                "run_started",
+                {
+                    "trace_id": trace_id,
+                    "source": "evolution",
+                    "run": {
+                        "trace_id": trace_id,
+                        "session_name": trace_session_id,
+                        "workload": resolved_workload,
+                        "status": "running",
+                        "started_at": started_iso,
+                        "run_purpose": run_purpose,
+                        "service": "evolution",
+                    },
+                },
+            )
+        except Exception:
+            logger.debug("run_started 事件广播失败: trace=%s", trace_id, exc_info=True)
         return handle
 
     def resume_run(self, trace_id: str, session_id: str = "") -> bool:
@@ -826,6 +850,39 @@ class EvolutionTraceRecorder:
 
         from app.trace.otlp import schedule_otlp_export
         schedule_otlp_export(trace_id)
+
+        # REQ-20260920-193428 FR-002：终态直发 run_finished（evolution 源）。
+        # runs 表已 UPDATE 终态，行数据查表取（内存态即将被清理，不能依赖）。
+        # 广播失败不影响收尾。
+        try:
+            from app.view.events import get_event_bus
+
+            row = db.query_one(
+                "SELECT session_name, workload, started_at, ended_at FROM runs WHERE trace_id=?",
+                (trace_id,),
+            )
+            if row is not None:
+                get_event_bus().publish(
+                    "run_finished",
+                    {
+                        "trace_id": trace_id,
+                        "source": "evolution",
+                        "run": {
+                            "trace_id": trace_id,
+                            "session_name": row["session_name"],
+                            "workload": row["workload"],
+                            "status": status,
+                            "started_at": row["started_at"],
+                            "ended_at": row.get("ended_at"),
+                            "duration_ms": duration_ms,
+                            "event_count": seq,
+                            "error": self._optional_str(error),
+                            "service": "evolution",
+                        },
+                    },
+                )
+        except Exception:
+            logger.debug("run_finished 事件广播失败: trace=%s", trace_id, exc_info=True)
 
         # 导出 summary JSON。
         self._export_summary(trace_id, status)

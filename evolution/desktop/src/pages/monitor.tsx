@@ -1,14 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
-  getActiveRuns,
   getTraces,
-  type ActiveRun,
   type TraceListItem,
 } from "@/lib/api";
-import type { TraceIntegrityStatus, TraceWorkload } from "@/lib/types";
+import { useActiveRunsStream, type FinishedRunInfo } from "@/hooks/useActiveRunsStream";
+import type { ActiveRun, TraceIntegrityStatus, TraceStatus, TraceWorkload } from "@/lib/types";
 
 const PAGE_SIZE = 50;
 const WORKLOADS: Array<{ value: TraceWorkload | "all"; label: string }> = [
@@ -33,7 +32,6 @@ export default function MonitorPage() {
   const [integrity, setIntegrity] = useState<TraceIntegrityStatus | "all">("all");
   const [timeRange, setTimeRange] = useState<TimeRange>("7d");
   const [page, setPage] = useState(0);
-  const [activeRuns, setActiveRuns] = useState<ActiveRun[]>([]);
   const [recentRuns, setRecentRuns] = useState<TraceListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -48,17 +46,13 @@ export default function MonitorPage() {
   const refresh = useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const [active, recent] = await Promise.all([
-        getActiveRuns(),
-        getTraces({
-          workload: workload === "all" ? undefined : workload,
-          integrity_status: integrity === "all" ? undefined : integrity,
-          since,
-          limit: PAGE_SIZE,
-          offset: page * PAGE_SIZE,
-        }),
-      ]);
-      setActiveRuns(active);
+      const recent = await getTraces({
+        workload: workload === "all" ? undefined : workload,
+        integrity_status: integrity === "all" ? undefined : integrity,
+        since,
+        limit: PAGE_SIZE,
+        offset: page * PAGE_SIZE,
+      });
       setRecentRuns(recent.items);
       setTotal(recent.total);
       setError(null);
@@ -75,10 +69,40 @@ export default function MonitorPage() {
     refresh();
   }, [refresh]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => refresh(true), 5000);
-    return () => window.clearInterval(timer);
-  }, [refresh]);
+  // 终态即时翻转（REQ-20260920-193428 FR-002）：事件行先进近期区，
+  // 摄入入库有秒级延迟，3s 后拉一次权威列表校正（review R5：句柄可清理）。
+  const correctTimerRef = useRef<number | null>(null);
+  const finishedSeenRef = useRef<Set<string>>(new Set());
+  const handleRunFinished = useCallback(
+    (run: FinishedRunInfo | null, traceId: string) => {
+      // 重复 finished（notify 主路径 + poller 兜底竞态）只结算一次（review R5）。
+      if (traceId && finishedSeenRef.current.has(traceId)) return;
+      if (traceId) finishedSeenRef.current.add(traceId);
+      if (run) {
+        // 只在匹配当前筛选时插入近期区（review R5：避免非匹配行突兀出现）。
+        const workloadMatch = workload === "all" || run.workload === workload;
+        if (workloadMatch) {
+          setRecentRuns((prev) =>
+            prev.some((r) => r.trace_id === traceId)
+              ? prev
+              : [finishedRunToListItem(run), ...prev].slice(0, PAGE_SIZE),
+          );
+          setTotal((t) => t + 1);
+        }
+      }
+      if (correctTimerRef.current != null) window.clearTimeout(correctTimerRef.current);
+      correctTimerRef.current = window.setTimeout(() => { void refresh(true); }, 3000);
+    },
+    [refresh, workload],
+  );
+
+  // 活跃运行实时流（FR-001/FR-005）：SSE 事件驱动，断线自动降级轮询（FR-006）。
+  const { activeRuns } = useActiveRunsStream(handleRunFinished);
+
+  // 卸载清理校正定时器。
+  useEffect(() => () => {
+    if (correctTimerRef.current != null) window.clearTimeout(correctTimerRef.current);
+  }, []);
 
   const filteredActive = useMemo(
     () => activeRuns.filter((run) =>
@@ -210,6 +234,37 @@ function RunTableHead({ active = false }: { active?: boolean }) {
 }
 
 type ObservableRun = ActiveRun | TraceListItem;
+
+/** run_finished 事件行 → 近期区列表项（入库前的即时占位，刷新后自然校正）。 */
+function finishedRunToListItem(run: FinishedRunInfo): TraceListItem {
+  return {
+    trace_id: run.trace_id,
+    workspace_id: "",
+    thread_id: null,
+    session_name: run.session_name,
+    endpoint: null,
+    status: (run.status || "completed") as TraceStatus,
+    started_at: run.started_at,
+    ended_at: run.ended_at,
+    duration_ms: run.duration_ms,
+    event_count: run.event_count ?? 0,
+    error: run.error,
+    flag_count: 0,
+    owner_user_id: "",
+    owner_username: null,
+    run_purpose: "",
+    schema_version: 2,
+    service: null,
+    workload: run.workload as TraceWorkload | null,
+    integrity_status: "pending",
+    evidence_status: "",
+    evidence_gaps: [],
+    coverage: {},
+    skill_activation_count: 0,
+    middleware_intervention_count: 0,
+    hitl_count: 0,
+  };
+}
 
 function RunRow({ run, onOpen }: { run: ObservableRun; onOpen: () => void }) {
   return (

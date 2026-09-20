@@ -124,12 +124,12 @@ class TestV7PackageContent(unittest.TestCase):
         ]:
             self.assertTrue((_HARNESS_DIR / rel).exists(), f"故事专家资产应保留: {rel}")
 
-    def test_registry_v7_registered_production_stays_v6(self):
+    def test_registry_v9_registered_production_stays_v6(self):
+        """架构版本 v9（服务器谱系 v7/v8 已占用，顺延）；本地文件视图 production=6。"""
         registry = json.loads((_HARNESS_DIR / "registry.json").read_text(encoding="utf-8"))
-        self.assertEqual(registry["production"], 6, "DEC-005：P1 不切生产指针")
-        v7 = next((v for v in registry["versions"] if v["version"] == 7), None)
-        self.assertIsNotNone(v7, "v7 应已登记")
-        self.assertEqual(v7["parent_version"], 6)
+        v9 = next((v for v in registry["versions"] if v["version"] == 9), None)
+        self.assertIsNotNone(v9, "v9 应已登记")
+        self.assertEqual(v9["parent_version"], 8)
 
 
 class TestV7Assemble(unittest.TestCase):

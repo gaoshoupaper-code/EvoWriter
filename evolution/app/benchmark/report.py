@@ -117,6 +117,7 @@ def build_report(batch_id: str) -> dict[str, Any]:
             "judge_fp": rows[0].get("judge_fp"),
             "model_fp": rows[0].get("model_fp"),
             "manifest_fp": rows[0].get("manifest_fp"),
+            "platform_manifest_id": rows[0].get("platform_manifest_id"),
             "harness_version": rows[0]["harness_version"],
         },
         "calibration": rubric_v3.CALIBRATION_STATUS,

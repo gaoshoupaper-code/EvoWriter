@@ -110,17 +110,31 @@ def check_comparable(rows_a: list[dict], rows_b: list[dict]) -> list[str]:
 
     model_fp 相同而 manifest_fp 不同 → 差异只能来自 harness commit，正是
     「同模型比 prompt 版本」的合法对比（FR-004 ②）。
+    unbound 防线：任一批次存在 Platform 绑定缺失行（manifest_fp=unbound）→
+    拒绝——「都未知」不等于「相同」，身份不完整的批次须重跑（DEC-015 fail-static）。
     Returns: 不一致项描述列表；空列表 = 可比。
     """
+    from app.benchmark.manifest import UNBOUND
+
     problems: list[str] = []
+    for label, rows in (("A", rows_a), ("B", rows_b)):
+        if any(r.get("manifest_fp") == UNBOUND for r in rows):
+            problems.append(
+                f"batch {label} 存在 Platform 绑定缺失行（manifest_fp=unbound），"
+                "身份不完整，须重跑该批次后再对比"
+            )
     for field in _FINGERPRINT_FIELDS:
         for label, rows in (("A", rows_a), ("B", rows_b)):
             values = set(_batch_field_values(rows, field))
             if len(values) > 1:
-                problems.append(f"batch {label} 内 {field} 不一致（{sorted(values)}）——配置中途漂移")
+                problems.append(
+                    f"batch {label} 内 {field} 不一致（{sorted(map(str, values))}）——配置中途漂移"
+                )
         va, vb = set(_batch_field_values(rows_a, field)), set(_batch_field_values(rows_b, field))
         if va != vb:
-            problems.append(f"两 batch {field} 不同：{sorted(va)} vs {sorted(vb)}")
+            problems.append(
+                f"两 batch {field} 不同：{sorted(map(str, va))} vs {sorted(map(str, vb))}"
+            )
     return problems
 
 

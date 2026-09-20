@@ -270,37 +270,69 @@ class LoadDeliveriesTest(BenchmarkV3TestBase):
         self.assertNotIn("旧版内容", deliveries["主线 storyline"])
 
 
-# ── 被测模型指纹（AC-005）───────────────────────────────────
+# ── Platform 绑定指纹（AC-005，DEC-015 对齐）────────────────
 
 
-class TestedModelFingerprintTest(BenchmarkV3TestBase):
-    def test_extract_model_names(self):
+class PlatformBindingFingerprintTest(unittest.TestCase):
+    """绑定查询与指纹计算（mock httpx，不发真实请求）。"""
+
+    @staticmethod
+    def _binding(manifest_id=7, commit="c0ffee", model="glm-4.7", base_url="https://api.example.com"):
+        return {
+            "trace_id": "tr-1", "manifest_id": manifest_id, "harness_commit": commit,
+            "llm_config": {"model": model, "base_url": base_url, "api_key_ref": None,
+                           "source": "evolution"},
+            "run_purpose": "optimization", "degraded": False,
+            "runtime_identity_digest": None, "bound_at": "2026-09-20T00:00:00Z",
+            "status": "active",
+        }
+
+    def test_llm_snapshot_fingerprint(self):
         from app.benchmark import manifest
 
-        trace_id = "tr-model-1"
-        self._insert_run(trace_id)
-        for seq, model in enumerate(("glm-4.7", "glm-4.7", "deepseek-r1"), start=1):
-            event = {
-                "trace_id": trace_id, "event_id": uuid.uuid4().hex, "sequence": seq,
-                "type": "llm_start", "status": "completed", "timestamp": "2026-09-19T00:00:00Z",
-                "source": "middleware", "model_name": model,
-            }
-            self.db.execute(
-                "INSERT INTO event_payloads (trace_id, sequence, type, payload_json) VALUES (?, ?, ?, ?)",
-                (trace_id, seq, "llm_start", json.dumps(event)),
-            )
-        self.assertEqual(manifest.tested_model_names(trace_id), ["deepseek-r1", "glm-4.7"])
+        fp = manifest.llm_snapshot_fingerprint(self._binding()["llm_config"])
+        self.assertIsNotNone(fp)
+        # 同配置稳定；base_url 尾斜杠归一
+        self.assertEqual(fp, manifest.llm_snapshot_fingerprint(
+            {"model": "glm-4.7", "base_url": "https://api.example.com/"}))
+        # 模型变 → 指纹变
+        self.assertNotEqual(fp, manifest.llm_snapshot_fingerprint(
+            {"model": "deepseek-r1", "base_url": "https://api.example.com"}))
+        # 无快照 → None
+        self.assertIsNone(manifest.llm_snapshot_fingerprint(None))
+        self.assertIsNone(manifest.llm_snapshot_fingerprint({"model": "", "base_url": "x"}))
 
-    def test_fingerprint_stable_and_sensitive(self):
+    def test_binding_manifest_fingerprint_stable_and_sensitive(self):
         from app.benchmark import manifest
 
-        fp1 = manifest.manifest_fingerprint("abc123", "model-fp-1")
-        fp2 = manifest.manifest_fingerprint("abc123", "model-fp-1")
-        fp3 = manifest.manifest_fingerprint("def456", "model-fp-1")
-        fp4 = manifest.manifest_fingerprint("abc123", "model-fp-2")
-        self.assertEqual(fp1, fp2)      # 同输入稳定
-        self.assertNotEqual(fp1, fp3)   # harness 变 → 指纹变
-        self.assertNotEqual(fp1, fp4)   # 模型变 → 指纹变
+        b = self._binding()
+        fp1 = manifest.binding_manifest_fingerprint(b)
+        self.assertEqual(fp1, manifest.binding_manifest_fingerprint(self._binding()))
+        # manifest_id 变 / commit 变 / 模型变 → 指纹变
+        self.assertNotEqual(fp1, manifest.binding_manifest_fingerprint(self._binding(manifest_id=8)))
+        self.assertNotEqual(fp1, manifest.binding_manifest_fingerprint(self._binding(commit="dead00")))
+        self.assertNotEqual(fp1, manifest.binding_manifest_fingerprint(self._binding(model="gpt-4o")))
+
+    def test_fetch_binding_ok_and_fail_static(self):
+        from unittest.mock import patch
+
+        import httpx
+
+        from app.benchmark import manifest
+
+        # 正常 200：返回记录
+        ok_resp = httpx.Response(200, json=self._binding(), request=httpx.Request("GET", "http://x"))
+        with patch.object(manifest.httpx, "get", return_value=ok_resp):
+            self.assertEqual(manifest.fetch_platform_binding("tr-1")["manifest_id"], 7)
+        # 404 / 网络异常 / 结构非法：fail-static 返回 None（不 raise）
+        not_found = httpx.Response(404, json={"detail": "not found"}, request=httpx.Request("GET", "http://x"))
+        with patch.object(manifest.httpx, "get", return_value=not_found):
+            self.assertIsNone(manifest.fetch_platform_binding("tr-1"))
+        with patch.object(manifest.httpx, "get", side_effect=httpx.ConnectError("down")):
+            self.assertIsNone(manifest.fetch_platform_binding("tr-1"))
+        bad = httpx.Response(200, json={"no_manifest_id": True}, request=httpx.Request("GET", "http://x"))
+        with patch.object(manifest.httpx, "get", return_value=bad):
+            self.assertIsNone(manifest.fetch_platform_binding("tr-1"))
 
 
 # ── seed 展开 + 指纹字段（AC-003/005）───────────────────────
@@ -335,11 +367,22 @@ class CreateBatchTest(BenchmarkV3TestBase):
             case_ids=["case-001"], versions=[7], golden_revision="r", seeds=1,
         )
         row = self.db.query_one("SELECT id FROM benchmark_runs WHERE batch_id=?", (batch_id,))
-        repo.set_fingerprints(row["id"], harness_commit="c0ffee", model_fp="mfp", manifest_fp="mfp2")
+        repo.set_fingerprints(
+            row["id"], harness_commit="c0ffee", model_fp="mfp",
+            manifest_fp="mfp2", platform_manifest_id=7,
+        )
         updated = self.db.query_one("SELECT * FROM benchmark_runs WHERE id=?", (row["id"],))
         self.assertEqual(updated["harness_commit"], "c0ffee")
         self.assertEqual(updated["model_fp"], "mfp")
         self.assertEqual(updated["manifest_fp"], "mfp2")
+        self.assertEqual(updated["platform_manifest_id"], 7)
+        # unbound 回填（Platform 失联的 fail-static 路径）
+        repo.set_fingerprints(
+            row["id"], harness_commit=None, model_fp=None, manifest_fp="unbound",
+        )
+        unbound = self.db.query_one("SELECT * FROM benchmark_runs WHERE id=?", (row["id"],))
+        self.assertEqual(unbound["manifest_fp"], "unbound")
+        self.assertIsNone(unbound["platform_manifest_id"])
 
 
 # ── Welch CI 三态 + 指纹校验（AC-006）────────────────────────
@@ -423,6 +466,23 @@ class CompareBatchesTest(BenchmarkV3TestBase):
         result = compare_batches(batch_a, batch_b)
         self.assertFalse(result["comparable"])
         self.assertTrue(any("model_fp" in p for p in result["problems"]))
+
+    def test_rejected_when_batch_has_unbound_rows(self):
+        from app.benchmark.stats import compare_batches
+
+        batch_a = self._make_batch("g1", "v3", "j1", "m1", "mf-a", [4.0] * 6)
+        batch_b = self._make_batch("g1", "v3", "j1", "m1", "mf-b", [3.0] * 6)
+        # 把 batch_a 的一行打成 unbound（Platform 失联路径的落库形态）
+        victim = self.db.query_one(
+            "SELECT id FROM benchmark_runs WHERE batch_id=? LIMIT 1", (batch_a,))
+        self.db.execute(
+            "UPDATE benchmark_runs SET manifest_fp='unbound', model_fp=NULL, "
+            "harness_commit=NULL, platform_manifest_id=NULL WHERE id=?",
+            (victim["id"],),
+        )
+        result = compare_batches(batch_a, batch_b)
+        self.assertFalse(result["comparable"])
+        self.assertTrue(any("unbound" in p for p in result["problems"]))
 
     def test_rejected_when_golden_differs(self):
         from app.benchmark.stats import compare_batches

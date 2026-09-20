@@ -160,9 +160,7 @@ def _execute_one(row: dict[str, Any]) -> None:
     if snapshot is None:
         raise RuntimeError(f"harness v{version} 快照不存在")
 
-    # 2. 调 executor（记录实际 checkout 的 commit，Manifest 组成之一）
-    from app.versioning.registry_repo import get_version_commit
-    harness_commit = get_version_commit(version) or ""
+    # 2. 调 executor（传 commit 供隔离装配；实际身份以 Platform 绑定回填为准）
     task_id = _trigger_executor(demand_md, snapshot)
 
     # 3. 轮询完成
@@ -172,12 +170,23 @@ def _execute_one(row: dict[str, Any]) -> None:
 
     bench_repo.set_trace(run_id, trace_id)
 
-    # 4. 回填指纹（被测模型从 trace 实际 llm 调用提取，DEC-015）
-    model_fp = bench_manifest.tested_model_fingerprint(trace_id)
-    manifest_fp = bench_manifest.manifest_fingerprint(harness_commit, model_fp)
-    bench_repo.set_fingerprints(
-        run_id, harness_commit=harness_commit, model_fp=model_fp, manifest_fp=manifest_fp,
-    )
+    # 4. 回填指纹：查 Platform Run 绑定（DEC-015 对齐——ab_run 已补签，
+    #    run_purpose=optimization）。fail-static：查不到记 unbound，不阻塞评分。
+    binding = bench_manifest.fetch_platform_binding(trace_id)
+    if binding is not None:
+        bench_repo.set_fingerprints(
+            run_id,
+            harness_commit=binding.get("harness_commit"),
+            model_fp=bench_manifest.llm_snapshot_fingerprint(binding.get("llm_config")),
+            manifest_fp=bench_manifest.binding_manifest_fingerprint(binding),
+            platform_manifest_id=binding.get("manifest_id"),
+        )
+    else:
+        bench_repo.set_fingerprints(
+            run_id, harness_commit=None, model_fp=None,
+            manifest_fp=bench_manifest.UNBOUND, platform_manifest_id=None,
+        )
+        logger.warning("评测行 %d trace=%s 无 Platform 绑定，manifest 记 unbound", run_id, trace_id)
 
     # 5. 评测评分（等 trace 摄入完成后再评）
     scores = _score_with_retry(demand_md, trace_id)

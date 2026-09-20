@@ -59,7 +59,7 @@ def create_batch(
                 rows.append((
                     batch_id, case_id, version, golden_revision,
                     None, None, None, STATUS_PENDING, 0, None, now, None,
-                    seed, rubric_version, judge_fp, None, None, None,
+                    seed, rubric_version, judge_fp, None, None, None, None,
                 ))
 
     if rows:
@@ -68,8 +68,9 @@ def create_batch(
                (batch_id, case_id, harness_version, golden_revision,
                 trace_id, eval_id, scores_json, status, retries, error,
                 ran_at, finished_at,
-                seed, rubric_version, judge_fp, model_fp, manifest_fp, harness_commit)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                seed, rubric_version, judge_fp, model_fp, manifest_fp,
+                harness_commit, platform_manifest_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
     logger = _get_logger()
@@ -87,12 +88,17 @@ def set_fingerprints(
     harness_commit: str | None,
     model_fp: str | None,
     manifest_fp: str | None,
+    platform_manifest_id: int | None = None,
 ) -> None:
-    """单行跑完后回填指纹（被测模型从 trace 提取，只能事后采集，DEC-015）。"""
+    """单行跑完后回填指纹（源 = Platform Run 绑定，DEC-015 对齐）。
+
+    Platform 不可达或绑定缺失时调用方传 manifest_fp=UNBOUND（身份未知，
+    版本对比按指纹校验拒绝其所在批次）。
+    """
     db.execute(
         """UPDATE benchmark_runs
-           SET harness_commit=?, model_fp=?, manifest_fp=? WHERE id=?""",
-        (harness_commit, model_fp, manifest_fp, run_id),
+           SET harness_commit=?, model_fp=?, manifest_fp=?, platform_manifest_id=? WHERE id=?""",
+        (harness_commit, model_fp, manifest_fp, platform_manifest_id, run_id),
     )
 
 
@@ -304,6 +310,7 @@ def _row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
         "model_fp": row.get("model_fp"),
         "manifest_fp": row.get("manifest_fp"),
         "harness_commit": row.get("harness_commit"),
+        "platform_manifest_id": row.get("platform_manifest_id"),
     }
 
 

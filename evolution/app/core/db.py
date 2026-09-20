@@ -325,9 +325,10 @@ def init_db() -> None:
                 seed            INTEGER NOT NULL DEFAULT 1, -- 同 case 独立重复序号（DEC-013）
                 rubric_version  TEXT,                      -- 评分标准版本（DEC-015 指纹绑定）
                 judge_fp        TEXT,                      -- judge 模型指纹（DEC-012/015）
-                model_fp        TEXT,                      -- 被测模型指纹（跑完从 trace 回填，DEC-015）
-                manifest_fp     TEXT,                      -- Manifest 指纹 = harness commit + model_fp（DEC-015）
-                harness_commit  TEXT                       -- 本行实际 checkout 的 harness commit
+                model_fp        TEXT,                      -- 被测模型指纹（Platform 绑定 LLM 快照，DEC-015）
+                manifest_fp     TEXT,                      -- Manifest 指纹（platform manifest_id + commit + LLM 快照）
+                harness_commit  TEXT,                      -- 本行实际装配 commit（Platform 绑定为准）
+                platform_manifest_id INTEGER               -- Platform 账本 manifest_id 引用（DEC-015 对齐）
             );
             CREATE INDEX IF NOT EXISTS idx_br_batch ON benchmark_runs(batch_id);
             CREATE INDEX IF NOT EXISTS idx_br_version ON benchmark_runs(harness_version);
@@ -1410,6 +1411,7 @@ def _init_trace_v2_tables(conn: sqlite3.Connection) -> None:
             ("model_fp", "TEXT"),
             ("manifest_fp", "TEXT"),
             ("harness_commit", "TEXT"),
+            ("platform_manifest_id", "INTEGER"),
         ):
             if column not in bench_columns:
                 conn.execute(f"ALTER TABLE benchmark_runs ADD COLUMN {column} {ddl}")

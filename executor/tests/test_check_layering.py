@@ -121,9 +121,9 @@ def test_same_domain_internal_import_not_flagged(linter, tmp_path, monkeypatch):
 def test_baseline_file_exists_and_tracks_transitions():
     """baseline 文件应存在，且每行都对应 scan() 仍能检出的真实存量违规。
 
-    self-harness 阶段曾登记 1 条 harness 依赖（meta/agent.py → app.harnesses.v1）。
-    该违规是 writing/meta 的过渡期状态（commit 76a43d8 登记），待消除后 baseline
-    应归零——归零前允许恰好这一条，不允许悄悄新增其他条目。
+    v7 架构切换（REQ-20260920-150149 FR-102）删除 writing/meta 编排与
+    app.harnesses.v1 后，唯一的过渡期违规已消除，baseline 应为空——
+    不允许悄悄新增其他条目（新违规必须消除或走正式豁免流程）。
     """
     baseline = Path(__file__).resolve().parents[1] / "layering_baseline.txt"
     assert baseline.exists(), "executor/layering_baseline.txt 应存在"
@@ -132,7 +132,6 @@ def test_baseline_file_exists_and_tracks_transitions():
         line for line in content.splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
-    allowed = ["R3|domains/writing/meta/agent.py|app.harnesses.v1"]
-    assert violation_lines == allowed, (
-        f"baseline 只允许登记 writing/meta 过渡期违规，实际：{violation_lines}"
+    assert violation_lines == [], (
+        f"baseline 应为空（meta 过渡期违规已随 v7 消除），实际：{violation_lines}"
     )

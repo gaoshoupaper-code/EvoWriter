@@ -25,19 +25,9 @@ from unittest.mock import MagicMock, patch
 from app.platform.trace.recorder import TraceRecorder
 from app.schemas.screenplay import ThreadSummary
 
-# ── 加载 harness 源仓库作为 package（与 test_ab_memory_integration.py 同款做法）──
-# harness 包定义 _make_quality_callback（召回侧埋点回调构造器）。
-_REPO_DIR = Path(__file__).resolve().parent.parent.parent / "evolution" / "harnesses" / "repo"
-_PKG_NAME = "_harness_mem_trace_pkg"
-if _PKG_NAME not in sys.modules:
-    spec = importlib.util.spec_from_file_location(
-        _PKG_NAME,
-        _REPO_DIR / "__init__.py",
-        submodule_search_locations=[str(_REPO_DIR)],
-    )
-    pkg = importlib.util.module_from_spec(spec)
-    sys.modules[_PKG_NAME] = pkg
-    spec.loader.exec_module(pkg)
+# v7 架构切换（REQ-20260920-150149）：harness 包的记忆挂载胶水
+# （_make_quality_callback 等）随 DEC-003 冻结记忆移除，本文件只保留
+# 写入侧（platform 层 ingestion 埋点）的测试。
 
 
 def _thread(workspace: Path) -> ThreadSummary:
@@ -53,83 +43,6 @@ def _run_meta_events(recorder: TraceRecorder, thread: ThreadSummary, trace_id: s
     detail = recorder.read_run(thread, trace_id)
     assert detail is not None, "trace detail 应可读（事件已落盘）"
     return [ev for ev in detail.events if ev.type == "run_meta"]
-
-
-class MemoryQualityCallbackRealRecorderTest(unittest.TestCase):
-    """FR-001 / AC-001：召回侧 quality_callback 经真实 append_event 写入 trace。
-
-    baseline 上 _make_quality_callback 漏传 status → recorder.append_event 在
-    recorder.py:351 硬读 values["status"] 抛 KeyError → 被 except 吞掉 → trace 无事件。
-    """
-
-    def setUp(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        self._workspace = Path(self._tmp.name)
-        self._thread = _thread(self._workspace)
-        self._recorder = TraceRecorder()
-        self._handle = self._recorder.create_run(self._thread, "screenplay.generate.stream")
-        self._trace_id = self._handle.trace_id
-
-    def tearDown(self) -> None:
-        self._tmp.cleanup()
-
-    def _make_ctx(self) -> SimpleNamespace:
-        """构造最小 ctx（_make_quality_callback 只读 trace_recorder + trace_id）。"""
-        return SimpleNamespace(
-            trace_recorder=self._recorder,
-            trace_id=self._trace_id,
-        )
-
-    def test_successful_recall_writes_memory_quality_event(self) -> None:
-        """成功召回 → trace 含 source=middleware、input.memory_quality、retrieval_ok=True 事件。"""
-        ctx = self._make_ctx()
-        callback = pkg._make_quality_callback(ctx)
-        self.assertIsNotNone(callback, "recorder+trace_id 就绪时应构造回调")
-
-        callback({
-            "chapter_num": 1,
-            "query": "主角的过去",
-            "retrieval_ok": True,
-            "evidence_nodes_count": 3,
-        })
-
-        events = _run_meta_events(self._recorder, self._thread, self._trace_id)
-        mq_events = [
-            ev for ev in events
-            if ev.source == "middleware" and ev.input
-            and isinstance(ev.input, dict) and "memory_quality" in ev.input
-        ]
-        self.assertEqual(len(mq_events), 1, "应写一条 memory_quality run_meta 事件")
-        self.assertTrue(mq_events[0].input["memory_quality"]["retrieval_ok"])
-        self.assertEqual(mq_events[0].input["memory_quality"]["chapter_num"], 1)
-
-    def test_failed_recall_writes_retrieval_ok_false(self) -> None:
-        """EDGE-002：召回失败也写事件，retrieval_ok=False（评估器据此判 participated）。"""
-        ctx = self._make_ctx()
-        callback = pkg._make_quality_callback(ctx)
-
-        callback({
-            "chapter_num": 2,
-            "query": "配角关系",
-            "retrieval_ok": False,
-            "error": "backend_unhealthy",
-        })
-
-        events = _run_meta_events(self._recorder, self._thread, self._trace_id)
-        mq_events = [
-            ev for ev in events
-            if ev.input and isinstance(ev.input, dict) and "memory_quality" in ev.input
-        ]
-        self.assertEqual(len(mq_events), 1)
-        self.assertFalse(mq_events[0].input["memory_quality"]["retrieval_ok"])
-        self.assertEqual(
-            mq_events[0].input["memory_quality"]["error"], "backend_unhealthy",
-        )
-
-    def test_none_recorder_returns_none_no_callback(self) -> None:
-        """EDGE-001：recorder 为 None 时返回 None（合理降级，不埋点）。"""
-        ctx = SimpleNamespace(trace_recorder=None, trace_id=self._trace_id)
-        self.assertIsNone(pkg._make_quality_callback(ctx))
 
 
 class IngestionPublishCallbackRealRecorderTest(unittest.TestCase):
@@ -196,23 +109,6 @@ class TelemetryFailureIsObservableTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
-
-    def test_quality_callback_failure_logs_warning_and_does_not_raise(self) -> None:
-        """recorder.append_event 抛异常 → warning 日志 + 回调不抛（主流程不阻断）。"""
-        ctx = SimpleNamespace(trace_recorder=self._recorder, trace_id=self._trace_id)
-        callback = pkg._make_quality_callback(ctx)
-
-        # 注入 recorder 异常（模拟序列化/磁盘失败，EDGE-003）。
-        with (
-            patch.object(self._recorder, "append_event", side_effect=RuntimeError("disk full")),
-            self.assertLogs("harness_package", level="WARNING") as cm,
-        ):
-            callback({"chapter_num": 1, "retrieval_ok": True})  # 不应抛异常
-
-        self.assertTrue(
-            any("memory_quality 埋点写入失败" in msg for msg in cm.output),
-            "应输出 warning 日志（含埋点失败原因）",
-        )
 
     def test_ingestion_callback_failure_logs_warning_and_does_not_raise(self) -> None:
         """写入侧埋点失败同样 warning 不静默（DEC-002 两处都治）。"""

@@ -19,19 +19,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-# ── 加载 harness 源仓库作为 package（与 test_a2_new_middleware.py 同款做法）──
-_REPO_DIR = Path(__file__).resolve().parent.parent.parent / "evolution" / "harnesses" / "repo"
-_PKG_NAME = "_harness_ab_mem_pkg"
-if _PKG_NAME not in sys.modules:
-    spec = importlib.util.spec_from_file_location(
-        _PKG_NAME,
-        _REPO_DIR / "__init__.py",
-        submodule_search_locations=[str(_REPO_DIR)],
-    )
-    pkg = importlib.util.module_from_spec(spec)
-    sys.modules[_PKG_NAME] = pkg
-    spec.loader.exec_module(pkg)
-
+# v7 架构切换（REQ-20260920-150149）：包级记忆注入胶水随 DEC-003 移除，
+# 本文件只测平台层 memory store 行为（AC-004 清理 / AC-006 可观测）。
 from app.platform.memory import store as store_mod  # noqa: E402
 from app.platform.memory.retriever import MemoryRetriever, get_memory_retriever, set_memory_retriever  # noqa: E402
 
@@ -41,89 +30,6 @@ def _init_pool(memory_root: Path) -> store_mod.MemoryStorePool:
     pool = store_mod.MemoryStorePool(memory_root)
     store_mod.init_memory_store_pool(pool)
     return pool
-
-
-class TestMultiVersionRetrieverIsolation(unittest.TestCase):
-    """AC-003：同进程热加载多版本 harness 时检索要素不交叉污染（FR-003）。"""
-
-    def setUp(self) -> None:
-        # 保留并恢复全局 retriever 单例，避免污染其他测试。
-        self._prev_retriever = get_memory_retriever()
-        # 清掉单例包保护，让两次 assemble 都重新注入（模拟热加载）。
-        if hasattr(pkg, "_harness_retriever_injected"):
-            self._prev_flag = pkg._harness_retriever_injected
-            pkg._harness_retriever_injected = False
-
-    def tearDown(self) -> None:
-        set_memory_retriever(self._prev_retriever)
-        if hasattr(self, "_prev_flag"):
-            pkg._harness_retriever_injected = self._prev_flag
-
-    def test_each_assemble_reinjects_not_locked_to_first(self) -> None:
-        """移除"只注入一次"保护后，第二次 assemble 注入新 retriever，不被首版本锁死。
-
-        场景（SCN-003）：同进程先 assemble v6（旧 join_rules）再 assemble v7（新 join_rules）。
-        修复前（_harness_retriever_injected=True 锁死）：v7 拿到 v6 的 retriever。
-        修复后：每次 assemble 都重新 set_memory_retriever，v7 用 v7 的要素。
-        """
-        # 用两个可区分的 join_rules 函数模拟两个 harness 版本的检索要素。
-        join_rules_v6 = lambda *a, **k: [{"version": "v6"}]  # noqa: E731
-        join_rules_v7 = lambda *a, **k: [{"version": "v7"}]  # noqa: E731
-
-        # 第一次 assemble（v6）：注入 v6 的 join_rules。
-        with patch.object(pkg, "_load_harness_callable", side_effect=lambda m, f: join_rules_v6 if f == "join_rules" else None):
-            pkg._inject_harness_retriever()
-        first = get_memory_retriever()
-        self.assertIs(first._join_rules, join_rules_v6, "首次 assemble 应注入 v6 的 join_rules")
-
-        # 第二次 assemble（v7）：必须注入 v7 的 join_rules（修复前会被 _harness_retriever_injected 短路，仍为 v6）。
-        with patch.object(pkg, "_load_harness_callable", side_effect=lambda m, f: join_rules_v7 if f == "join_rules" else None):
-            pkg._inject_harness_retriever()
-        second = get_memory_retriever()
-        self.assertIs(second._join_rules, join_rules_v7, "第二次 assemble 必须注入 v7 的 join_rules，不被 v6 锁死")
-
-    def test_load_harness_callable_uses_package_name_not_production_cache(self) -> None:
-        """_load_harness_callable 用 __name__（本包）加载，不依赖 load_current_package 生产缓存。
-
-        FR-003 隐含修复：A/B 候选包（_PKG_NAME）加载自身 tools，而非生产 harness_current。
-        """
-        # harness 包 tools/join_rules.py 应能被 _load_harness_callable 找到（None 表示降级，
-        # 但模块必须能 import——若用错包名会 ImportError 返回 None，区别在于 join_rules 模块存在）。
-        result = pkg._load_harness_callable("join_rules", "join_rules")
-        # join_rules.py 定义了 join_rules 函数（可调用）；若 harness 未实现则 None。
-        # 关键断言：能加载到本包的可调用对象（非因包名错误而 None）。
-        self.assertTrue(result is None or callable(result), "join_rules 应为 None（降级）或可调用")
-
-    def test_concurrent_assemble_does_not_tear_global_retriever(self) -> None:
-        """EDGE-004：并发 assemble 时 _harness_retriever_lock 保证 set_memory_retriever 不撕裂。
-
-        并发多次注入不同 join_rules，最终全局 retriever 应是一个完整有效的 MemoryRetriever
-        实例（而非撕裂的半成品）。retriever 无状态，重设只影响下一次检索用的 join_rules。
-        """
-        import threading
-
-        join_rules_variants = [lambda *a, **k: [{"i": i}] for i in range(20)]  # noqa: E731
-        errors: list[Exception] = []
-
-        def _assemble(jr) -> None:
-            try:
-                with patch.object(pkg, "_load_harness_callable", side_effect=lambda m, f: jr if f == "join_rules" else None):
-                    pkg._inject_harness_retriever()
-            except Exception as e:  # noqa: BLE001
-                errors.append(e)
-
-        threads = [threading.Thread(target=_assemble, args=(jr,)) for jr in join_rules_variants]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        self.assertEqual(errors, [], "并发注入不应抛异常")
-        final = get_memory_retriever()
-        # 最终全局 retriever 必须是一个完整有效的 MemoryRetriever 实例。
-        self.assertIsInstance(final, MemoryRetriever, "并发后全局 retriever 应是完整实例，无撕裂")
-        # _join_rules 必须是其中一个变体（非 None、可调用）。
-        self.assertTrue(callable(final._join_rules), "并发后 retriever 的 join_rules 应完整有效")
 
 
 class TestAbMemoryDbCleanup(unittest.TestCase):

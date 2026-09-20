@@ -6,6 +6,7 @@ resume 兼容判定。本包定义三端（platform / executor / evolution）通
 
 涉及的端点（挂在 platform 服务的 /api 路由下，内网信任域，不暴露公网）：
 - GET  /api/production                     当前生产版本状态（Runtime 启动/对账用）
+- GET  /api/versions                       账本版本列表 + production 指针（评测侧读）
 - GET  /api/artifacts/{commit}/meta        artifact 元数据（digest/大小）
 - GET  /api/artifacts/{commit}/download    artifact 下载（Runtime 校验 digest 后装配）
 - POST /api/bindings                       Run 绑定签发（Runtime 每次 Run 开始时调）
@@ -34,6 +35,8 @@ from contracts.platform.api import (
     PromoteRequest,
     PromoteResult,
     ResumeCheck,
+    VersionLine,
+    VersionsStatus,
 )
 
 __all__ = [
@@ -51,4 +54,6 @@ __all__ = [
     "PromoteResult",
     "ResumeCheck",
     "SurfaceFingerprint",
+    "VersionLine",
+    "VersionsStatus",
 ]

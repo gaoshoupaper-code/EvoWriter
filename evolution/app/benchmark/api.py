@@ -5,6 +5,7 @@
   POST /api/benchmark/rerun-golden     golden 升级后重跑最近 K=3（D8/D18）
   GET  /api/benchmark/rubric           评分标准全文只读（FR-002）
   GET  /api/benchmark/judges           judge 候选列表 + 同源标记（FR-003）
+  GET  /api/benchmark/versions         版本下拉数据源（Platform 账本；registry.json 已冻结退役）
   GET  /api/benchmark/leaderboard      跨版本对比（按 golden_revision）
   GET  /api/benchmark/batches/{id}     查批次状态
   GET  /api/benchmark/batches/{id}/report   弱点报告（FR-005）
@@ -20,6 +21,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from app.benchmark import repo, runner, stats, report
+from app.benchmark.manifest import fetch_platform_versions
 
 logger = logging.getLogger("evolution.benchmark.api")
 
@@ -51,6 +53,34 @@ def trigger_run(req: RunRequest) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        # Platform 账本不可达（默认版本解析）——无版本号可评，快败不给半配置批次
+        raise HTTPException(status_code=502, detail=str(exc))
+
+
+@router.get("/versions")
+def list_versions() -> dict[str, Any]:
+    """版本下拉数据源（Platform 账本；Phase A 后 registry.json 冻结退役）。
+
+    Platform 不可达时 502——前端退化为仅「跟随 production」，不回退冻结
+    registry（那是错误数据，宁缺勿错）。
+    """
+    try:
+        data = fetch_platform_versions()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    prod = data["production_version"]
+    items = [
+        {
+            "version": v["version"],
+            "status": "production" if v["version"] == prod else "retired",
+            "change_summary": v.get("note") or "",
+            "commit": v["commit"],
+            "created_at": v.get("created_at") or "",
+        }
+        for v in data["items"]
+    ]
+    return {"items": items, "production_version": prod, "total": len(items)}
 
     batch = repo.get_batch(batch_id)
     return {

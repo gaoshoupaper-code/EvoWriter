@@ -38,6 +38,9 @@ UNBOUND = "unbound"
 # Platform 内网直连，查询预算收紧
 _BINDING_TIMEOUT_S = 5.0
 
+# 账本版本列表查询预算（下拉数据源 + runner 版本解析共用）
+_VERSIONS_TIMEOUT_S = 5.0
+
 
 def _sha16(text: str) -> str:
     import hashlib
@@ -74,6 +77,46 @@ def fetch_platform_binding(trace_id: str) -> dict[str, Any] | None:
     except ValueError as exc:
         logger.warning("Platform 绑定记录解析失败 trace=%s: %s", trace_id, exc)
         return None
+
+
+def fetch_platform_versions() -> dict[str, Any]:
+    """拉 Platform 账本版本列表（GET /api/versions）。
+
+    Phase A 后 registry.json 发版写线退役、内容冻结，账本是版本号的
+    唯一活跃数据源——版本下拉与 runner 的版本→commit 解析都以此为准。
+
+    Returns:
+        {"items": [{version, commit, note, created_at}...]（版本号倒序）,
+         "production_version": int | None}
+
+    Raises:
+        RuntimeError: Platform 不可达 / 非 200 / 响应畸形。
+        与 fetch_platform_binding 的 fail-static 不同：调用方没有可降级的
+        旧数据源，拿不到账本必须报错——静默退回冻结 registry 会让评测
+        跑在错误的 harness 版本上（宁拒勿错）。
+    """
+    url = f"{settings.platform_url.rstrip('/')}/api/versions"
+    try:
+        resp = httpx.get(url, timeout=_VERSIONS_TIMEOUT_S)
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"Platform 账本不可达：{exc}") from exc
+    if resp.status_code != 200:
+        raise RuntimeError(f"Platform 账本查询异常：HTTP {resp.status_code}")
+    try:
+        data = resp.json()
+        items = data["items"]
+        if not isinstance(items, list) or not all(
+            isinstance(v, dict) and isinstance(v.get("version"), int)
+            and isinstance(v.get("commit"), str)
+            for v in items
+        ):
+            raise ValueError(f"账本版本列表畸形: {data!r}")
+        production = data.get("production_version")
+        if production is not None and not isinstance(production, int):
+            raise ValueError(f"production_version 畸形: {production!r}")
+    except (KeyError, ValueError) as exc:
+        raise RuntimeError(f"Platform 账本响应解析失败：{exc}") from exc
+    return data
 
 
 def llm_snapshot_fingerprint(llm_config: dict[str, Any] | None) -> str | None:
@@ -204,6 +247,7 @@ __all__ = [
     "JUDGE_TEMPERATURE",
     "UNBOUND",
     "fetch_platform_binding",
+    "fetch_platform_versions",
     "llm_snapshot_fingerprint",
     "binding_manifest_fingerprint",
     "resolve_judge_config",

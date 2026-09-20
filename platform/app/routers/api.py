@@ -20,6 +20,8 @@ from contracts.platform import (
     PromoteRequest,
     PromoteResult,
     ResumeCheck,
+    VersionLine,
+    VersionsStatus,
 )
 
 from app import artifacts, bindings, release
@@ -51,6 +53,18 @@ def get_production() -> ProductionStatus:
         artifact_digest=manifest.artifact_digest,
         surface_fingerprint=manifest.surface_fingerprint,
         promoted_at=production.promoted_at,
+    )
+
+
+@router.get("/versions", response_model=VersionsStatus)
+def list_versions() -> VersionsStatus:
+    """账本版本列表（倒序）+ production 指针（评测版本下拉 / runner 解析源）。"""
+    ledger = ledger_from_settings()
+    production = ledger.get_production()
+    items = sorted(ledger.list_versions(), key=lambda v: v["version"], reverse=True)
+    return VersionsStatus(
+        items=[VersionLine(**v) for v in items],
+        production_version=production.version if production else None,
     )
 
 

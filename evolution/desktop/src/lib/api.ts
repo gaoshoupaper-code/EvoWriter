@@ -1380,6 +1380,30 @@ export async function getVersions(): Promise<VersionsListResponse> {
   return evoJson<VersionsListResponse>(`/api/versions?limit=200`, { method: "GET" });
 }
 
+// ── 评测版本下拉（GET /api/benchmark/versions，Platform 账本源）──
+// Phase A 后 registry.json 冻结退役，评测可选版本以 Platform 账本流水为准；
+// 账本版本号与「架构代号」（如 v9 单故事专家）可能错位，note 会标注实际内容。
+
+/** 账本版本单条（下拉项） */
+export interface BenchmarkVersionItem {
+  version: number;
+  status: string; // production | retired
+  change_summary: string;
+  commit: string;
+  created_at: string;
+}
+
+/** GET /api/benchmark/versions 响应 */
+export interface BenchmarkVersionsResponse {
+  items: BenchmarkVersionItem[];
+  production_version: number | null;
+  total: number;
+}
+
+export async function getBenchmarkVersions(): Promise<BenchmarkVersionsResponse> {
+  return evoJson<BenchmarkVersionsResponse>(`/api/benchmark/versions`, { method: "GET" });
+}
+
 // ════════════════════════════════════════════════════════════
 //  数据集（dataset）— golden/growing 评估集
 // ════════════════════════════════════════════════════════════

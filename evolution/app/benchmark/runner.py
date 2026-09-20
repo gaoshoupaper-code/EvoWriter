@@ -385,24 +385,26 @@ def _execute_one(
 
 
 def _get_production_version() -> int | None:
-    """当前 production 版本号（从 registry.json）。"""
-    from app.versioning.registry_repo import get_production_version_number
-    return get_production_version_number()
+    """当前 production 版本号（Platform 账本；registry.json 已冻结退役）。"""
+    data = bench_manifest.fetch_platform_versions()
+    return data["production_version"]
 
 
 def _get_snapshot(version: int) -> dict[str, Any] | None:
-    """版本元数据（从 registry.json）。"""
-    from app.versioning.registry_repo import get_version
-    return get_version(version)
+    """版本元数据（Platform 账本流水；registry.json 已冻结退役）。"""
+    data = bench_manifest.fetch_platform_versions()
+    for item in data["items"]:
+        if item["version"] == version:
+            return item
+    return None
 
 
 def _trigger_executor(demand_md: str, snapshot: dict[str, Any]) -> str:
     """调 executor /internal/ab/run，返回 task_id。"""
-    from app.versioning.registry_repo import get_version_commit
     payload = {
         "demand_md": demand_md,
         "baseline": False,
-        "source_commit": get_version_commit(snapshot["version"]) or "",
+        "source_commit": snapshot["commit"] or "",
     }
     resp = httpx.post(_executor_url("/internal/ab/run"), json=payload, timeout=_EXEC_TIMEOUT)
     resp.raise_for_status()

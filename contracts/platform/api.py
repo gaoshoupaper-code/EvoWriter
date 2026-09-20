@@ -39,6 +39,26 @@ class ArtifactMeta(BaseModel):
     built_at: str
 
 
+class VersionLine(BaseModel):
+    """GET /api/versions 的版本流水一行（账本仲裁源的只读视图）。"""
+
+    version: int
+    commit: str
+    note: str = ""
+    created_at: str = ""
+
+
+class VersionsStatus(BaseModel):
+    """GET /api/versions 的响应：版本列表（倒序）+ production 指针。
+
+    消费方：evolution 评测版本下拉 / runner 版本解析（Phase A 后
+    registry.json 已冻结退役，账本是唯一活跃数据源）。
+    """
+
+    items: list[VersionLine]
+    production_version: int | None = None
+
+
 # ── Run 绑定（FR-004）────────────────────────────────────────────
 
 

@@ -12,7 +12,7 @@ import {
   getDatasetCases,
   getCaseContent,
   getGoldenRevision,
-  getVersions,
+  getBenchmarkVersions,
   stopBenchmark,
   type BenchmarkBatchSummary,
   type BenchmarkReport,
@@ -22,7 +22,7 @@ import {
   type JudgeDefault,
   type DatasetCase,
   type GoldenRevision,
-  type VersionListItem,
+  type BenchmarkVersionItem,
 } from "@/lib/api";
 
 /**
@@ -48,8 +48,9 @@ export default function BenchmarkPage() {
   const [seeds, setSeeds] = useState(3);
   const [concurrency, setConcurrency] = useState<1 | 3 | 5>(3);
 
-  // harness 版本谱系（下拉数据源，REQ-20260920-192126/FR-003；加载失败退化为仅「跟随」）
-  const [versions, setVersions] = useState<VersionListItem[]>([]);
+  // harness 版本下拉（Platform 账本流水，registry.json 已冻结退役；
+  // 加载失败退化为仅「跟随」）
+  const [versions, setVersions] = useState<BenchmarkVersionItem[]>([]);
   const [productionVersion, setProductionVersion] = useState<number | null>(null);
 
   // judge 候选（FR-003）
@@ -77,13 +78,13 @@ export default function BenchmarkPage() {
       .catch(() => {
         // 候选加载失败不阻塞页面：judge 下拉退化为「默认」一项
       });
-    getVersions()
+    getBenchmarkVersions()
       .then((resp) => {
         setVersions(resp.items);
         setProductionVersion(resp.production_version);
       })
       .catch(() => {
-        // 版本谱系加载失败不阻塞触发：下拉退化为仅「跟随 production」（不带版本号）
+        // 账本加载失败不阻塞触发：下拉退化为仅「跟随 production」（不带版本号）
       });
   }, []);
 

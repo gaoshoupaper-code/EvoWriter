@@ -19,7 +19,7 @@ export interface StageSubStep {
 export interface Stage {
   id: string;
   type: StageType;
-  label: string; // 故事构建/细纲规划/正文写作/辅助任务
+  label: string; // 故事专家/审查修订/辅助任务（v9 两泳道）
   status: "running" | "completed" | "failed";
   iteration?: { current: number; total?: number }; // storybuilding 轮次
   subSteps: StageSubStep[];

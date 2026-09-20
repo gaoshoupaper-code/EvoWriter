@@ -14,10 +14,8 @@ import { NavLink, Outlet, Navigate } from "react-router-dom";
 const ADMIN_TABS = [
   { to: "/admin/users", label: "用户" },
   { to: "/admin/invite-codes", label: "邀请码" },
-  { to: "/admin/credits", label: "积分流水" },
-  // 积分设置是 /admin/credits/settings，用 end=false 让 /admin/credits 和 /admin/credits/settings
-  // 都能高亮"积分"区——但这里我们想让 settings 单独一个 tab，所以拆开：
-  { to: "/admin/credits/settings", label: "积分设置" },
+  // v9 免计费（FR-007，REQ-20260920-150149）：积分流水/积分设置 tab 隐藏
+  // （路由保留可直达，业务代码不动——关闭不拆语义）。
 ];
 
 export default function AdminLayout() {
@@ -26,8 +24,8 @@ export default function AdminLayout() {
       <header className="page-header">
         <h1>管理后台</h1>
         <p className="page-desc">
-          用户与积分管理。用户管理可调整积分、重置密码、禁启用账户；邀请码控制注册；
-          积分流水查看所有变动；积分设置配置积分规则。
+          用户管理与邀请码。用户管理可重置密码、禁启用账户；邀请码控制注册。
+          （v9 免计费：积分页已隐藏，恢复计费时还原 AdminLayout 的积分 tab。）
         </p>
       </header>
       <nav className="admin-tabs">

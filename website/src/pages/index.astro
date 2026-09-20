@@ -10,13 +10,13 @@ const features = (await getCollection("features")).sort(
   (a, b) => a.data.order - b.data.order
 );
 
-// 写作流水线四阶段（与 ai-writing.md 一致），提升到 hero 右栏作非对称重点。
+// v9 大纲创作链（REQ-20260920-150149）：表单直入 → 故事专家 → 审查修订 → 对话迭代。
 // 描述用网文作者看得懂的大白话：动作 + 结果，不堆术语。
 const pipeline = [
-  { num: "01", name: "访谈", desc: "先问你几个问题，把故事想清楚" },
-  { num: "02", name: "大纲", desc: "搭好世界观、主线、人物" },
-  { num: "03", name: "章节", desc: "按大纲一章一章往下写" },
-  { num: "04", name: "审查", desc: "逐章查风格，把 AI 味磨掉" },
+  { num: "01", name: "需求", desc: "填一份表单，说清题材与卖点" },
+  { num: "02", name: "大纲", desc: "故事专家生成故事线、人物、世界观" },
+  { num: "03", name: "审查", desc: "自动查一致性，不合适就改" },
+  { num: "04", name: "修订", desc: "对话提反馈，大纲越改越合心意" },
 ];
 
 // 特性图标：手绘线条 SVG，不用 emoji。
@@ -41,7 +41,7 @@ const icon = (name?: string) => (name && icons[name] ? icons[name] : icons.pen);
     <link rel="shortcut icon" href="/favicon.ico" />
     <meta name="viewport" content="width=device-width" />
     <meta name="generator" content={Astro.generator} />
-    <meta name="description" content="思衍 — 你把故事想法告诉它，它从大纲到章节一路写完整本书。设定不崩、文笔不飘。" />
+    <meta name="description" content="思衍 — 填一份表单，故事专家为你生成完整小说大纲：故事线、人物、世界观一次到位，还能对话修订。" />
     <title>思衍 — AI 长篇小说引擎</title>
     {/* 共享基底：颜色 token + 排版 scale + body reset */}
     <link rel="stylesheet" href="/styles/base.css" />
@@ -80,7 +80,7 @@ const icon = (name?: string) => (name && icons[name] ? icons[name] : icons.pen);
               <em class="typer" aria-hidden="true" data-typer="故事世界">故事世界</em><span class="caret" aria-hidden="true"></span>
             </h1>
             <p class="hero__sub" data-reveal>
-              你把故事想法告诉它，它从大纲到章节一路写完整本书。设定不崩、文笔不飘，中途想插手随时能改——不想插手，让它全自动跑完也行。
+              填一份需求表单，故事专家 Agent 为你生成完整小说大纲——故事线、人物、世界观一次到位，自动审查修订；产出后对话提反馈，越改越合心意。
             </p>
             <div class="hero__cta" data-reveal>
               <a class="btn" href="/download" data-magnetic>
@@ -116,7 +116,7 @@ const icon = (name?: string) => (name && icons[name] ? icons[name] : icons.pen);
             <div class="section-head__text">
               <h2 class="section-title">为长篇创作<br />而设计</h2>
               <p class="section-lead">
-                不是一问一答的一次性工具，是从想法到成书的全自动流水线。
+                不是一问一答的一次性工具，是从想法到成品大纲的自动创作链。
               </p>
             </div>
           </header>

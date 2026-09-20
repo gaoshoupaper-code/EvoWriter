@@ -1,8 +1,10 @@
-"""评测 API（REQ-20260919-172934，评测主链路）。
+"""评测 API（REQ-20260919-172934，评测主链路；REQ-20260920-104714 增强）。
 
 端点：
-  POST /api/benchmark/run              触发评测批次（手动，含 3 seed 展开）
+  POST /api/benchmark/run              触发评测批次（手动，含 3 seed 展开；并发度可选，FR-001）
   POST /api/benchmark/rerun-golden     golden 升级后重跑最近 K=3（D8/D18）
+  GET  /api/benchmark/rubric           评分标准全文只读（FR-002）
+  GET  /api/benchmark/judges           judge 候选列表 + 同源标记（FR-003）
   GET  /api/benchmark/leaderboard      跨版本对比（按 golden_revision）
   GET  /api/benchmark/batches/{id}     查批次状态
   GET  /api/benchmark/batches/{id}/report   弱点报告（FR-005）
@@ -11,7 +13,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
@@ -29,6 +31,10 @@ class RunRequest(BaseModel):
     versions: list[int] | None = None  # 多版本（优先于 version）
     case_ids: list[str] | None = None  # None=golden 全 case
     seeds: int = runner.DEFAULT_SEEDS  # 每 case 独立重复次数（DEC-013）
+    # 批次内并发执行的行数上限（FR-001/DEC-004，AC-001：默认 3）
+    concurrency: Literal[1, 3, 5] = runner.DEFAULT_CONCURRENCY
+    # 指定 judge 配置（FR-003/DEC-005）；None=默认解析（eval 优先，降级 evolution）
+    judge_config_id: int | None = None
 
 
 @router.post("/run")
@@ -40,6 +46,7 @@ def trigger_run(req: RunRequest) -> dict[str, Any]:
     try:
         batch_id = runner.trigger_run(
             versions=versions, case_ids=req.case_ids, seeds=req.seeds,
+            concurrency=req.concurrency, judge_config_id=req.judge_config_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -81,6 +88,61 @@ def get_leaderboard(
 ) -> dict[str, Any]:
     """跨版本 leaderboard（按 golden_revision 过滤）。"""
     return repo.get_leaderboard(golden_revision)
+
+
+@router.get("/rubric")
+def get_rubric() -> dict[str, Any]:
+    """当前评分标准全文（FR-002/DEC-011：只读展示 + 草稿状态明示，AC-003）。
+
+    直接返回 rubric_v3 常量（单一事实源）——前端不硬编码规则内容，
+    代码改规则后展示自动跟上（防漂移）。
+    """
+    from app.benchmark import rubric_v3
+
+    return {
+        "rubric_version": rubric_v3.RUBRIC_VERSION,
+        "calibration_status": rubric_v3.CALIBRATION_STATUS,
+        "anchor_status": rubric_v3.ANCHOR_DRAFT_STATUS,
+        "low_score_threshold": rubric_v3.LOW_SCORE_THRESHOLD,
+        "dimensions": rubric_v3.DIMENSIONS,
+        "rule_delivery": rubric_v3.RULE_DELIVERY_COMPLETE,
+    }
+
+
+@router.get("/judges")
+def list_judges() -> dict[str, Any]:
+    """judge 候选列表（FR-003/DEC-005/010，触发评测下拉用）。
+
+    候选 = eval + evolution 两 scope 全部配置；排除 executor（生产写作模型，
+    判评分离）。每条带 same_family_as_executor 标记（界面黄条告警数据源）。
+    default = 未显式选择时的现有解析结果（eval 激活项，降级 evolution）。
+    """
+    import app.core.db as db
+
+    from app.benchmark import manifest as bench_manifest
+
+    judges = []
+    for scope in ("eval", "evolution"):
+        for cfg in db.LlmConfigsRepository.list_all(scope):
+            judges.append({
+                "config_id": cfg["id"],
+                "name": cfg["name"],
+                "model": cfg["model"],
+                "base_url": cfg["base_url"],
+                "scope": scope,
+                "is_active": bool(cfg["is_active"]),
+                "has_key": bool(cfg["has_key"]),
+                "same_family_as_executor": bench_manifest.same_family_as_executor(cfg["model"]),
+            })
+
+    resolved = bench_manifest.resolve_judge_config()
+    default = {
+        "scope": resolved["scope"],
+        "model": resolved["model"],
+        "fingerprint": resolved["fingerprint"],
+        "degraded": resolved["degraded"],
+    }
+    return {"judges": judges, "default": default}
 
 
 @router.get("/batches")

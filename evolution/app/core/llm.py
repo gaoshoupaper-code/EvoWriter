@@ -75,6 +75,7 @@ def chat(
     trace: LlmCallObserver | None = None,
     phase: str = "llm",
     scope: str = "evolution",
+    config_id: int | None = None,
 ) -> str:
     """调一次 chat completion，返回 assistant 文本。
 
@@ -84,8 +85,17 @@ def chat(
     trace/phase（DEC-001）：确定性流水线（证据编纂、内容评分）通过 trace 传入观测者，
     chat 回调它把本次调用记录为 llm span。Agent 路径不传 trace，仍由 TraceMiddleware 覆盖。
     scope（DEC-012）：默认 evolution；评测 judge 传 'eval'（未配置降级 evolution）。
+    config_id（REQ-20260920-104714/FR-003）：显式指定用哪条 llm_configs 配置，
+    优先于 scope 解析——评测 judge 触发时下拉选择的配置经此传入；未配置或被删
+    时抛 RuntimeError（调用方按失败语义处理）。
     """
-    api_key, base_url_raw, model_raw = _get_config(scope)
+    if config_id is not None:
+        config = db.LlmConfigsRepository.get_decrypted(config_id)
+        if config is None:
+            raise RuntimeError(f"指定的 LLM 配置 #{config_id} 不存在或不可用")
+        api_key, base_url_raw, model_raw = config
+    else:
+        api_key, base_url_raw, model_raw = _get_config(scope)
     base_url = base_url_raw.rstrip("/")
     url = f"{base_url}/chat/completions"
     # model 可能是 "openai:gpt-4o-mini" 或 "gpt-4o-mini"，去掉 provider 前缀

@@ -99,12 +99,43 @@ def binding_manifest_fingerprint(binding: dict[str, Any]) -> str:
 # ── judge 评分配置指纹（评分侧自采，不随 Platform 迁移）──────
 
 
-def resolve_judge_config() -> dict[str, Any]:
-    """解析 judge 配置：eval scope 优先，未配置降级 evolution（DEC-012）。
+def resolve_judge_config(config_id: int | None = None) -> dict[str, Any]:
+    """解析 judge 配置（REQ-20260920-104714/FR-003）。
+
+    config_id 有值：用该条 llm_configs 配置（触发时下拉选择，FR-003）；
+      仅接受 eval / evolution scope（DEC-010 判评分离——executor 生产模型
+      不得作 judge，UI 下拉不提供，API 层同样拒绝）；配置不存在 / 缺 key /
+      base_url / model 任一项 → 按 unconfigured 返回（scope="selected"，
+      调用方据 config_id 给出可定位的错误信息）。
+    config_id 为 None：eval scope 优先，未配置降级 evolution（DEC-012）。
 
     Returns: {scope, base_url, model, fingerprint, degraded}
     DB 未初始化 / 未配置 master key 等环境问题返回 unconfigured（不 raise）。
     """
+    if config_id is not None:
+        try:
+            safe = db.LlmConfigsRepository.get_safe_by_id(config_id)
+            config = db.LlmConfigsRepository.get_decrypted(config_id)
+        except Exception:
+            logger.warning("judge 配置 #%s 读取失败（DB 未初始化等）", config_id, exc_info=True)
+            safe, config = None, None
+        if (
+            safe is None
+            or safe.get("scope") not in ("eval", "evolution")  # DEC-010 判评分离
+            or config is None or not config[0] or not config[1] or not config[2]
+        ):
+            return {
+                "scope": "selected", "base_url": "", "model": "",
+                "fingerprint": "unconfigured", "degraded": False,
+            }
+        _api_key, base_url, model = config
+        return {
+            "scope": "selected",
+            "base_url": base_url,
+            "model": model,
+            "fingerprint": _sha16(f"{base_url.rstrip('/')}|{model}|t={JUDGE_TEMPERATURE}"),
+            "degraded": False,
+        }
     try:
         config = db.LlmConfigsRepository.get_active("eval")
         degraded = False
@@ -142,21 +173,29 @@ def _model_family(model: str) -> str:
     return lower.split("-")[0] if lower else "unknown"
 
 
+def same_family_as_executor(model: str) -> bool:
+    """judge 候选模型与 executor 被测模型是否同家族（FR-003/DEC-010）。
+
+    同家族 → 界面黄条告警的数据源（自我偏好风险，arXiv:2502.01534）。
+    executor 未配置时返回 False（无从比较，不告警）。
+    """
+    if not model:
+        return False
+    executor_cfg = db.LlmConfigsRepository.get_active("executor")
+    if not executor_cfg or not executor_cfg[2]:
+        return False
+    return _model_family(model) == _model_family(executor_cfg[2])
+
+
 def judge_same_family_warning() -> str | None:
     """judge 与 executor 被测模型同家族时返回告警文案（DEC-012，仅告警不阻断）。"""
     judge = resolve_judge_config()
     if not judge["model"]:
         return None
-    executor_cfg = db.LlmConfigsRepository.get_active("executor")
-    if not executor_cfg:
-        return None
-    _key, _base, executor_model = executor_cfg
-    if not executor_model:
-        return None
-    if _model_family(judge["model"]) == _model_family(executor_model):
+    if same_family_as_executor(judge["model"]):
         return (
             f"判评分离告警：judge 模型 {judge['model']} 与 executor 被测模型 "
-            f"{executor_model} 同家族，评测存在自我偏好风险（arXiv:2502.01534）"
+            f"同家族，评测存在自我偏好风险（arXiv:2502.01534）"
         )
     return None
 
@@ -168,5 +207,6 @@ __all__ = [
     "llm_snapshot_fingerprint",
     "binding_manifest_fingerprint",
     "resolve_judge_config",
+    "same_family_as_executor",
     "judge_same_family_warning",
 ]

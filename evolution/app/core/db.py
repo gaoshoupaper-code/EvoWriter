@@ -328,7 +328,8 @@ def init_db() -> None:
                 model_fp        TEXT,                      -- 被测模型指纹（Platform 绑定 LLM 快照，DEC-015）
                 manifest_fp     TEXT,                      -- Manifest 指纹（platform manifest_id + commit + LLM 快照）
                 harness_commit  TEXT,                      -- 本行实际装配 commit（Platform 绑定为准）
-                platform_manifest_id INTEGER               -- Platform 账本 manifest_id 引用（DEC-015 对齐）
+                platform_manifest_id INTEGER,              -- Platform 账本 manifest_id 引用（DEC-015 对齐）
+                concurrency     INTEGER NOT NULL DEFAULT 1 -- 本批次执行并发度（REQ-20260920-104714/FR-001）
             );
             CREATE INDEX IF NOT EXISTS idx_br_batch ON benchmark_runs(batch_id);
             CREATE INDEX IF NOT EXISTS idx_br_version ON benchmark_runs(harness_version);
@@ -620,6 +621,8 @@ def init_db() -> None:
         _migrate_llm_configs_multi(conn)
         # scope 分家：llm_configs 加 scope 列 + 现有数据复制成双份（evolution + executor）
         _migrate_llm_configs_scope(conn)
+        # 评测并发：benchmark_runs 补 concurrency 列（REQ-20260920-104714/FR-001）
+        _migrate_benchmark_runs_concurrency(conn)
         # user_cache 表由 executescript CREATE IF NOT EXISTS 直接建（新表无需 ALTER 迁移）
 
         # 评估尝试演化：evaluation_sessions 加列（bound_dossier / 资源消耗 / 失败原因 / 封存回填）
@@ -866,6 +869,22 @@ def _migrate_runs_ingested_seq(conn: sqlite3.Connection) -> None:
         return
     with _lock:
         conn.execute("ALTER TABLE runs ADD COLUMN ingested_seq INTEGER DEFAULT 0")
+        conn.commit()
+
+
+def _migrate_benchmark_runs_concurrency(conn: sqlite3.Connection) -> None:
+    """幂等迁移：给 benchmark_runs 补 concurrency 列（REQ-20260920-104714/FR-001）。
+
+    并发度随批次持久化（AC-001）：建批时写入每行（与 rubric_version/judge_fp
+    同款批次级冗余模式），聚合查询 MAX 取值。存量行回填 1（历史批次均为串行执行）。
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(benchmark_runs)").fetchall()}
+    if "concurrency" in existing:
+        return
+    with _lock:
+        conn.execute(
+            "ALTER TABLE benchmark_runs ADD COLUMN concurrency INTEGER NOT NULL DEFAULT 1"
+        )
         conn.commit()
 
 

@@ -163,8 +163,13 @@ def _validate_judgement(judgement: dict[str, Any]) -> None:
                 raise ValueError(f"维度 {key} 低分但缺理由")
 
 
-def score_case(demand_md: str, deliveries: dict[str, str]) -> dict[str, Any]:
+def score_case(
+    demand_md: str, deliveries: dict[str, str], judge_config_id: int | None = None,
+) -> dict[str, Any]:
     """对一个 case 的一次生成产物评分（1 次 judge 调用 + 规则项判定）。
+
+    judge_config_id（FR-003）：指定 judge 配置（触发时下拉选择的）；
+    None=默认解析（llm.chat scope=eval，未配置降级 evolution）。
 
     Returns: {
       rubric_version, calibration, anchor_status,
@@ -184,6 +189,7 @@ def score_case(demand_md: str, deliveries: dict[str, str]) -> dict[str, Any]:
         timeout=120.0,
         phase="benchmark_score",
         scope="eval",
+        config_id=judge_config_id,
     )
     judgement = _parse_response(raw)
     _validate_judgement(judgement)

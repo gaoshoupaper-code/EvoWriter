@@ -81,6 +81,14 @@ def archive(case_id: str) -> None:
     )
 
 
+def delete_case(case_id: str) -> None:
+    """物理删除 case 元数据行（仅受控新增失败回滚用，REQ-20260920-104714/FR-004）。
+
+    与 archive（软删）不同：新增流程失败时必须零残留，不留半登记行。
+    """
+    db.execute("DELETE FROM dataset_meta WHERE case_id=?", (case_id,))
+
+
 # ── 读 ──────────────────────────────────────────────────────
 
 
@@ -129,6 +137,7 @@ __all__ = [
     "register_case",
     "update_demand_revision",
     "archive",
+    "delete_case",
     "get",
     "list_by_layer",
     "get_golden_revision",

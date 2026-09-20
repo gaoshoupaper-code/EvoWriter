@@ -42,12 +42,14 @@ def create_batch(
     seeds: int = 3,
     rubric_version: str | None = None,
     judge_fp: str | None = None,
+    concurrency: int = 1,
 ) -> str:
     """创建一个 benchmark 批次（case × 版本 × seed 的笛卡尔积），返回 batch_id。
 
     每个组合创建一行 benchmark_runs（pending 状态）。seeds = 每 case 独立
     重复次数（DEC-013 固定 3）。rubric_version / judge_fp 建批时采集（DEC-015）；
     model_fp / manifest_fp / harness_commit 由 runner 跑完后逐行回填。
+    concurrency = 本批次执行并发度（FR-001，随批次持久化，AC-001）。
     """
     batch_id = _new_batch_id()
     now = _now()
@@ -60,6 +62,7 @@ def create_batch(
                     batch_id, case_id, version, golden_revision,
                     None, None, None, STATUS_PENDING, 0, None, now, None,
                     seed, rubric_version, judge_fp, None, None, None, None,
+                    max(1, concurrency),
                 ))
 
     if rows:
@@ -69,15 +72,15 @@ def create_batch(
                 trace_id, eval_id, scores_json, status, retries, error,
                 ran_at, finished_at,
                 seed, rubric_version, judge_fp, model_fp, manifest_fp,
-                harness_commit, platform_manifest_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                harness_commit, platform_manifest_id, concurrency)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             rows,
         )
     logger = _get_logger()
     logger.info(
-        "创建 benchmark 批次 %s: %d case × %d 版本 × %d seed = %d 行 (golden_revision=%s rubric=%s judge=%s)",
+        "创建 benchmark 批次 %s: %d case × %d 版本 × %d seed = %d 行 (golden_revision=%s rubric=%s judge=%s 并发=%d)",
         batch_id, len(case_ids), len(versions), max(1, seeds), len(rows),
-        golden_revision, rubric_version, judge_fp,
+        golden_revision, rubric_version, judge_fp, max(1, concurrency),
     )
     return batch_id
 
@@ -105,13 +108,29 @@ def set_fingerprints(
 # ── 行状态流转 ──────────────────────────────────────────────
 
 
-def get_pending(limit: int = 5) -> list[dict[str, Any]]:
-    """取待执行的行（runner 用）。按 ran_at ASC 限 limit 条。"""
-    return db.query_all(
-        """SELECT * FROM benchmark_runs WHERE status=? AND retries < ?
-           ORDER BY ran_at ASC LIMIT ?""",
-        (STATUS_PENDING, MAX_RETRIES, limit),
-    )
+def claim_next_pending(batch_id: str) -> dict[str, Any] | None:
+    """原子抢占一行 pending 转 running（并发 worker 池用，FR-001）。
+
+    单条 UPDATE...RETURNING 在 db 锁内原子完成「选中 + 占据」，
+    多 worker 并发调用不会取到同一行（AC-001 竞态风险的处置）。
+    本批次无 pending（含重试退回的行被重新抢占）返回 None。
+    """
+    with db.transaction() as conn:
+        cur = conn.execute(
+            """UPDATE benchmark_runs SET status=?
+               WHERE id = (
+                   SELECT id FROM benchmark_runs
+                   WHERE status=? AND retries < ? AND batch_id=?
+                   ORDER BY ran_at ASC, id ASC LIMIT 1
+               )
+               RETURNING *""",
+            (STATUS_RUNNING, STATUS_PENDING, MAX_RETRIES, batch_id),
+        )
+        row = cur.fetchone()
+        # 耗尽 RETURNING 结果集（语句 step 到完成），否则事务 commit 报
+        # "SQL statements in progress"
+        cur.fetchall()
+    return dict(row) if row else None
 
 
 def mark_running(run_id: int) -> None:
@@ -169,7 +188,8 @@ def get_recent_batches(limit: int = 20) -> list[dict[str, Any]]:
                   MAX(harness_version) AS harness_version,
                   MAX(golden_revision) AS golden_revision,
                   MAX(rubric_version) AS rubric_version,
-                  MAX(judge_fp) AS judge_fp
+                  MAX(judge_fp) AS judge_fp,
+                  MAX(concurrency) AS concurrency
            FROM benchmark_runs
            GROUP BY batch_id
            ORDER BY trigger_at DESC
@@ -193,6 +213,7 @@ def get_recent_batches(limit: int = 20) -> list[dict[str, Any]]:
             "golden_revision": row["golden_revision"],
             "rubric_version": row["rubric_version"],
             "judge_fp": row["judge_fp"],
+            "concurrency": row["concurrency"],
             "triggered_at": row["trigger_at"],
         })
     return batches
@@ -224,6 +245,7 @@ def get_batch(batch_id: str) -> dict[str, Any]:
         "status": status,
         "progress": {"total": total, "done": done, "failed": failed, "active": active},
         "golden_revision": rows[0]["golden_revision"],
+        "concurrency": rows[0].get("concurrency", 1) if "concurrency" in rows[0].keys() else 1,
         "results": [_row_to_dict(r) for r in rows],
     }
 
@@ -311,6 +333,7 @@ def _row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
         "manifest_fp": row.get("manifest_fp"),
         "harness_commit": row.get("harness_commit"),
         "platform_manifest_id": row.get("platform_manifest_id"),
+        "concurrency": row.get("concurrency"),
     }
 
 
@@ -322,7 +345,8 @@ def _get_logger():
 __all__ = [
     "STATUS_PENDING", "STATUS_RUNNING", "STATUS_EVALUATING",
     "STATUS_DONE", "STATUS_FAILED", "MAX_RETRIES",
-    "create_batch", "set_fingerprints", "get_pending", "mark_running", "set_trace",
+    "create_batch", "set_fingerprints", "claim_next_pending",
+    "mark_running", "set_trace",
     "set_result", "mark_failed",
     "get_batch", "get_recent_batches", "get_leaderboard", "get_recent_versions",
 ]

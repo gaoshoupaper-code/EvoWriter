@@ -6,14 +6,13 @@
   3. 评测评分（scorer：直读 ArtifactRevision + rubric v3 judge，不走卷宗/eval_agent）
   4. 写 benchmark_runs（含四类指纹绑定，DEC-015）
 
-后台异步（asyncio.create_task），不阻塞触发 API。
+后台线程执行（daemon thread），不阻塞触发 API。
 失败自动重试（MAX_RETRIES=3），超过转 failed。
 
 调用 executor 的逻辑与 tests/api 平行（不依赖其私有函数），复用相同的端点契约。
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import time
@@ -41,6 +40,10 @@ _POLL_INTERVAL = 5.0
 # 每 case 独立重复次数（DEC-013 固定 3 seed）
 DEFAULT_SEEDS = 3
 
+# 批次默认并发度（FR-001/DEC-004：可选 1/3/5，默认 3；API 层限制取值，
+# runner 层只做下界保护——直接调用方（rerun_golden 等）不受取值集合约束）
+DEFAULT_CONCURRENCY = 3
+
 # 评分失败重试次数（FR-002 失败语义：重试 1 次）
 _SCORE_MAX_ATTEMPTS = 2
 
@@ -57,6 +60,8 @@ def trigger_run(
     versions: list[int] | None = None,
     case_ids: list[str] | None = None,
     seeds: int = DEFAULT_SEEDS,
+    concurrency: int = DEFAULT_CONCURRENCY,
+    judge_config_id: int | None = None,
 ) -> str:
     """触发一个评测批次（同步建表，异步执行）。返回 batch_id。
 
@@ -64,6 +69,9 @@ def trigger_run(
         versions: 要跑的版本号列表；None=当前 production 版本
         case_ids: 要跑的 case；None=golden 全 case
         seeds: 每 case 独立重复次数（DEC-013 默认 3）
+        concurrency: 批次内并发执行的行数上限（FR-001/DEC-004 默认 3）
+        judge_config_id: 指定 judge 配置（FR-003/DEC-005）；None=默认解析
+            （eval scope 激活项，降级 evolution）
     """
     # 默认：当前 production 版本
     if versions is None:
@@ -86,17 +94,25 @@ def trigger_run(
     if locked and not revision.verify_golden_intact(locked):
         logger.warning("golden 内容与锁定 revision 不一致（可能被篡改），仍用锁定值跑")
 
-    # 评分配置指纹（DEC-012/015：建批时采集 judge 指纹 + rubric 版本）
-    judge_cfg = bench_manifest.resolve_judge_config()
+    # 评分配置指纹（DEC-012/015：建批时采集 judge 指纹 + rubric 版本；
+    # FR-003：config_id 指定时校验该配置完整，无效即拒——不产生半配置批次）
+    judge_cfg = bench_manifest.resolve_judge_config(judge_config_id)
     if judge_cfg["fingerprint"] == "unconfigured":
+        if judge_config_id is not None:
+            raise ValueError(
+                f"所选 judge 配置 #{judge_config_id} 无效（不存在或缺 api_key/base_url/model），"
+                "请在「进化端模型」页检查后再试"
+            )
         raise ValueError(
             "评测 judge LLM 未配置：请在桌面端「进化端模型」页配置（eval 或 evolution scope）"
         )
     if judge_cfg.get("degraded"):
         logger.warning("eval scope 未配置，judge 降级使用 evolution scope 配置")
-    family_warning = bench_manifest.judge_same_family_warning()
-    if family_warning:
-        logger.warning(family_warning)
+    if bench_manifest.same_family_as_executor(judge_cfg["model"]):
+        logger.warning(
+            "判评分离告警：judge 模型 %s 与 executor 被测模型同家族，"
+            "评测存在自我偏好风险（arXiv:2502.01534）", judge_cfg["model"],
+        )
 
     batch_id = bench_repo.create_batch(
         case_ids=case_ids,
@@ -105,12 +121,26 @@ def trigger_run(
         seeds=seeds,
         rubric_version=rubric_v3.RUBRIC_VERSION,
         judge_fp=judge_cfg["fingerprint"],
+        concurrency=concurrency,
     )
 
-    # 后台异步执行（不阻塞）
-    asyncio.create_task(_run_batch_async(batch_id))
-    logger.info("评测批次 %s 已触发，后台执行", batch_id)
+    # 后台执行（不阻塞）。直接起 daemon 线程——本函数在 FastAPI sync 端点
+    # （线程池 worker）里被调，无 running event loop，asyncio.create_task 会抛
+    # RuntimeError（review P0：触发即 500、批次永久卡 running）。
+    _dispatch_batch(batch_id, concurrency, judge_config_id)
+    logger.info("评测批次 %s 已触发，后台执行（并发 %d）", batch_id, concurrency)
     return batch_id
+
+
+def _dispatch_batch(batch_id: str, concurrency: int, judge_config_id: int | None) -> None:
+    """起后台线程执行批次（trigger_run 唯一的派发出口，测试 seam）。"""
+    import threading
+
+    threading.Thread(
+        target=_run_batch_sync,
+        args=(batch_id, concurrency, judge_config_id),
+        daemon=True, name=f"bench-runner-{batch_id[:8]}",
+    ).start()
 
 
 def trigger_golden_upgrade_rerun(k: int = 3) -> str:
@@ -124,28 +154,49 @@ def trigger_golden_upgrade_rerun(k: int = 3) -> str:
 # ── 后台执行 ────────────────────────────────────────────────
 
 
-async def _run_batch_async(batch_id: str) -> None:
-    """后台跑一个批次的所有 pending 行。"""
-    await asyncio.to_thread(_run_batch_sync, batch_id)
+def _run_batch_sync(
+    batch_id: str,
+    concurrency: int = DEFAULT_CONCURRENCY,
+    judge_config_id: int | None = None,
+) -> None:
+    """并发执行批次：concurrency 个 worker 各自原子抢占 pending 行直到取空。
 
+    抢占经 claim_next_pending（单条 UPDATE...RETURNING，锁内原子），多 worker
+    不会取到同一行；单行失败由 _worker_loop 记 failed/退回重试，不传染其他行。
+    judge_config_id 为全批次统一 judge（FR-003），None=评分走默认 scope 解析。
+    """
+    import threading
 
-def _run_batch_sync(batch_id: str) -> None:
-    """同步执行批次：逐个跑 pending 行。"""
-    logger.info("开始执行 benchmark 批次 %s", batch_id)
-    while True:
-        pending = bench_repo.get_pending(limit=1)
-        if not pending:
-            break
-        row = pending[0]
-        try:
-            _execute_one(row)
-        except Exception as exc:
-            logger.exception("benchmark 行 %d 执行异常", row["id"])
-            bench_repo.mark_failed(row["id"], str(exc))
+    workers = max(1, concurrency)
+    logger.info("开始执行 benchmark 批次 %s（并发 %d）", batch_id, workers)
+    threads = [
+        threading.Thread(
+            target=_worker_loop, args=(batch_id, judge_config_id),
+            daemon=True, name=f"bench-{batch_id[:8]}-{i}",
+        )
+        for i in range(workers)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
     logger.info("benchmark 批次 %s 执行完毕", batch_id)
 
 
-def _execute_one(row: dict[str, Any]) -> None:
+def _worker_loop(batch_id: str, judge_config_id: int | None = None) -> None:
+    """单 worker 主循环：抢占 → 执行 → 失败记账，直到本批次无 pending。"""
+    while True:
+        row = bench_repo.claim_next_pending(batch_id)
+        if row is None:
+            return
+        try:
+            _execute_one(row, judge_config_id)
+        except Exception as exc:
+            logger.exception("benchmark 行 %d 执行异常", row["id"])
+            bench_repo.mark_failed(row["id"], str(exc))
+
+
+def _execute_one(row: dict[str, Any], judge_config_id: int | None = None) -> None:
     """执行单行：调 executor → 轮询 → 评测评分 → 回填指纹 → 写结果。"""
     run_id = row["id"]
     case_id = row["case_id"]
@@ -188,8 +239,8 @@ def _execute_one(row: dict[str, Any]) -> None:
         )
         logger.warning("评测行 %d trace=%s 无 Platform 绑定，manifest 记 unbound", run_id, trace_id)
 
-    # 5. 评测评分（等 trace 摄入完成后再评）
-    scores = _score_with_retry(demand_md, trace_id)
+    # 5. 评测评分（等 trace 摄入完成后再评；judge_config_id 为本批次统一 judge，FR-003）
+    scores = _score_with_retry(demand_md, trace_id, judge_config_id)
     bench_repo.set_result(
         run_id,
         eval_id=None,
@@ -253,7 +304,9 @@ def _poll_until_done(task_id: str, run_id: int) -> str | None:
     raise RuntimeError(f"轮询超时（{_POLL_TIMEOUT}s 无结果）")
 
 
-def _score_with_retry(demand_md: str, trace_id: str) -> dict[str, Any] | None:
+def _score_with_retry(
+    demand_md: str, trace_id: str, judge_config_id: int | None = None,
+) -> dict[str, Any] | None:
     """评测评分：直读 ArtifactRevision 三件套 + rubric v3 judge（FR-002/003）。
 
     解析/校验失败重试 1 次（FR-002 失败语义）；仍失败返回 None（该行转 failed）。
@@ -273,7 +326,7 @@ def _score_with_retry(demand_md: str, trace_id: str) -> dict[str, Any] | None:
     last_error: Exception | None = None
     for attempt in range(1, _SCORE_MAX_ATTEMPTS + 1):
         try:
-            return scorer.score_case(demand_md, deliveries)
+            return scorer.score_case(demand_md, deliveries, judge_config_id=judge_config_id)
         except Exception as exc:
             last_error = exc
             logger.warning("评分第 %d 次失败 trace=%s: %s", attempt, trace_id, exc)

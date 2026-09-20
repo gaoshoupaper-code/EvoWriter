@@ -1649,6 +1649,7 @@ export interface BenchmarkBatchSummary {
   golden_revision: string | null;
   rubric_version: string | null;
   judge_fp: string | null;
+  concurrency: number | null;
   triggered_at: string | null;
 }
 
@@ -1698,16 +1699,92 @@ export interface BenchmarkCompare {
   dimensions?: Record<string, Record<string, { mean: number | null; n: number }>>;
 }
 
-/** 触发评测批次（FR-003）。 */
+/** 触发评测批次（FR-003；并发度/judge 选择为 REQ-20260920-104714 增强）。 */
 export async function runBenchmark(payload: {
   version?: number;
   versions?: number[];
   seeds?: number;
+  concurrency?: 1 | 3 | 5;
+  judge_config_id?: number;
 }): Promise<{ batch_id: string; status: string; progress: Record<string, number>; golden_revision: string }> {
   return evoJson("/api/benchmark/run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
+  });
+}
+
+/** golden 升级后重跑最近 K 个版本（评测页「一键重跑」用，FR-004/DEC-009）。 */
+export async function rerunGolden(
+  k = 3,
+): Promise<{ batch_id: string; status: string; progress: Record<string, number>; golden_revision: string }> {
+  return evoJson("/api/benchmark/rerun-golden", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ k }),
+  });
+}
+
+/** 评分标准全文（只读展示，FR-002；结构对齐后端 rubric_v3 常量）。 */
+export interface BenchmarkRubric {
+  rubric_version: string;
+  calibration_status: string;
+  anchor_status: string;
+  low_score_threshold: number;
+  dimensions: {
+    key: string;
+    question: string;
+    anchors: Record<"1" | "3" | "5", string>;
+    defect_tags: string[];
+  }[];
+  rule_delivery: { key: string; description: string };
+}
+
+/** 当前评分标准（单一事实源在后端，防前端硬编码漂移）。 */
+export async function getBenchmarkRubric(): Promise<BenchmarkRubric> {
+  return evoJson<BenchmarkRubric>("/api/benchmark/rubric", { method: "GET" });
+}
+
+/** judge 候选（FR-003/DEC-010：eval+evolution，排除 executor 生产模型）。 */
+export interface JudgeCandidate {
+  config_id: number;
+  name: string;
+  model: string;
+  base_url: string;
+  scope: "eval" | "evolution";
+  is_active: boolean;
+  has_key: boolean;
+  same_family_as_executor: boolean;
+}
+
+export interface JudgeDefault {
+  scope: string;
+  model: string;
+  fingerprint: string;
+  degraded: boolean;
+}
+
+export async function listJudgeCandidates(): Promise<{
+  judges: JudgeCandidate[];
+  default: JudgeDefault;
+}> {
+  return evoJson("/api/benchmark/judges", { method: "GET" });
+}
+
+/** golden 受控新增结果（FR-004/AC-007）。 */
+export interface GoldenCaseCreateResult {
+  case_id: string;
+  golden_revision: string;
+  git_commit: string;
+  git_push_warning: string | null;
+}
+
+/** 受控新增 golden case（写文件 + 登记 + git 提交 + 重锁，FR-004）。 */
+export async function createGoldenCase(demandMd: string): Promise<GoldenCaseCreateResult> {
+  return evoJson("/api/dataset/golden/cases", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ demand_md: demandMd }),
   });
 }
 

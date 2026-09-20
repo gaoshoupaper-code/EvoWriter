@@ -12590,3 +12590,55 @@ html[data-theme="dark"] .point-chosen { color: var(--teal); }
 
 .bench-compare-result { margin-top: 12px; }
 .bench-compare-note { font-size: 12px; color: var(--evo-ink-muted, #999); margin-top: 6px; }
+
+/* ── 评测平台增强（REQ-20260920-104714）──────────────────── */
+.bench-judge-warn {
+  margin-top: 10px; padding: 8px 12px; border-radius: 6px;
+  font-size: 12px; line-height: 1.6;
+  background: rgba(234, 179, 8, 0.12); color: var(--evo-warning, #eab308);
+}
+.bench-draft-badge {
+  margin-left: 8px; padding: 2px 8px; border-radius: 4px; font-size: 11px;
+  background: rgba(234, 179, 8, 0.15); color: var(--evo-warning, #eab308);
+}
+.bench-rubric-section h3, .bench-golden-section h3 {
+  display: flex; align-items: center; gap: 10px;
+}
+.bench-rubric-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px;
+  margin-top: 10px;
+}
+.bench-rubric-dim {
+  border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 8px; padding: 10px 12px;
+}
+.bench-rubric-dim h4 { margin: 0 0 6px; font-size: 13px; }
+.bench-rubric-question { font-size: 12px; color: var(--evo-ink-muted, #999); margin: 0 0 8px; }
+.bench-rubric-anchors { margin: 0 0 8px; font-size: 12px; line-height: 1.6; }
+.bench-rubric-anchors dt {
+  display: inline-block; min-width: 34px; font-weight: 600;
+  color: var(--teal, #3a9a7e);
+}
+.bench-rubric-anchors dd { display: inline; margin: 0; }
+.bench-rubric-tags { font-size: 11px; color: var(--evo-ink-muted, #999); margin: 0; }
+.bench-rubric-rule {
+  margin-top: 10px; font-size: 12px; line-height: 1.7;
+  color: var(--evo-ink-muted, #999);
+}
+.bench-golden-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 10px;
+}
+@media (max-width: 1000px) { .bench-golden-grid { grid-template-columns: 1fr; } }
+.bench-golden-add h4 { font-size: 13px; margin: 0 0 8px; color: var(--evo-ink-muted, #999); }
+.bench-demand-input {
+  min-height: 160px; resize: vertical; font-family: inherit; margin-bottom: 8px; width: 100%;
+}
+.bench-demand-view {
+  margin: 8px 0 0; padding: 10px; max-height: 240px; overflow: auto;
+  font-size: 12px; line-height: 1.6; white-space: pre-wrap;
+  background: rgba(128, 128, 128, 0.08); border-radius: 6px;
+}
+.bench-golden-added {
+  margin-top: 10px; padding: 10px; border-radius: 8px;
+  background: rgba(110, 207, 184, 0.08); font-size: 12px; line-height: 1.7;
+}
+.bench-golden-added p { margin: 0 0 8px; }

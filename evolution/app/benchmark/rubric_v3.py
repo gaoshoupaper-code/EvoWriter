@@ -9,9 +9,9 @@
 
 模块名保留 rubric_v3（历史标识符，改名扩大无谓 diff）；版本常量已升 v4。
 
-锚点状态（DEC-007）：纪律条款已用户终审；五档锚点为 agent 起草稿，
-小批次实测达标（DEC-014/017）前保持 draft/uncalibrated，达标后置
-user_finalized/calibrated——期间不得用于正式基线。
+锚点状态（DEC-007）：纪律条款已用户终审；五档锚点经两轮小批次实测迭代后
+达标（首轮均分 3.7 未过 → 4 分档收紧 → 次轮 3.3 通过，DEC-014/017），
+状态位已置 user_finalized/calibrated，可用于正式基线。
 
 维度框架（DEC-009 of REQ-20260919-172934）与承诺点制（DEC-008/011 of
 REQ-20260920-150253）不变：需求兑现只判 demand「承诺点（不可漂移项）」小节。
@@ -21,8 +21,10 @@ from __future__ import annotations
 from typing import Any
 
 RUBRIC_VERSION = "v4-outline-5dim-anchored"
-CALIBRATION_STATUS = "uncalibrated"
-ANCHOR_DRAFT_STATUS = "draft"  # 待实测达标稿；DEC-017 四条件通过后置 "user_finalized"
+# 实测达标（DEC-014/017）：batch eed5ea8e（2case×2seed）四条件全过——
+# 理由覆盖 100%、五维全同 0 行、均分 3.3≤3.5、5 分占比 0%≤10%（2026-09-21）
+CALIBRATION_STATUS = "calibrated"
+ANCHOR_DRAFT_STATUS = "user_finalized"
 
 # 评分纪律条款（DEC-016，用户 2026-09-21 逐条终审定稿，不再变更）
 DISCIPLINE_RULES: list[str] = [

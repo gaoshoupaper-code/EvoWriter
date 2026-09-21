@@ -81,9 +81,9 @@ class RubricV3Test(unittest.TestCase):
         # 纪律条款六条（DEC-016 用户终审定稿）
         self.assertEqual(len(rubric_v3.DISCIPLINE_RULES), 6)
         self.assertTrue(all(r.strip() for r in rubric_v3.DISCIPLINE_RULES))
-        # 校准状态如实标注（实测达标前保持 draft/uncalibrated，DEC-007）
-        self.assertEqual(rubric_v3.CALIBRATION_STATUS, "uncalibrated")
-        self.assertEqual(rubric_v3.ANCHOR_DRAFT_STATUS, "draft")
+        # 校准状态如实标注（实测达标后 user_finalized/calibrated，DEC-007/014/017）
+        self.assertEqual(rubric_v3.CALIBRATION_STATUS, "calibrated")
+        self.assertEqual(rubric_v3.ANCHOR_DRAFT_STATUS, "user_finalized")
 
     def test_prompts_built(self):
         from app.benchmark import rubric_v3
@@ -627,7 +627,7 @@ class ReportTest(BenchmarkV3TestBase):
         ])
         report = build_report(batch_id)
         self.assertEqual(report["status"], "ok")
-        self.assertEqual(report["calibration"], "uncalibrated")  # 实测达标前如实标注
+        self.assertEqual(report["calibration"], "calibrated")  # 实测达标后如实标注
         # 维度均分：最弱维度排最前
         self.assertEqual(report["dimensions"][0]["dimension"], "人物塑造")
         # 词表已下线：报告无 tag_hits 字段（DEC-009 of REQ-20260921-210038）

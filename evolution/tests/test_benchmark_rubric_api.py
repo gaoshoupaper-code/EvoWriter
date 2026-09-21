@@ -26,13 +26,13 @@ class RubricApiTest(unittest.TestCase):
         self.assertEqual(resp["dimensions"], rubric_v3.DIMENSIONS)
         self.assertEqual(resp["rule_delivery"], rubric_v3.RULE_DELIVERY_COMPLETE)
 
-    def test_calibration_draft_status_visible(self):
-        """草稿/未校准状态必须出现在响应里（DEC-006：界面明示的数据源）。"""
+    def test_calibration_finalized_status_visible(self):
+        """实测达标后的校准状态必须出现在响应里（DEC-006/007：界面明示的数据源）。"""
         from app.benchmark import api as bench_api
 
         resp = bench_api.get_rubric()
-        self.assertIn("uncalibrated", resp["calibration_status"])
-        self.assertIn("draft", resp["anchor_status"])
+        self.assertIn("calibrated", resp["calibration_status"])
+        self.assertIn("user_finalized", resp["anchor_status"])
 
     def test_dimensions_have_full_fields(self):
         """每个维度含判定问题 + 1-5 五档锚点；词表字段不出现（FR-002 展示完整性）。"""

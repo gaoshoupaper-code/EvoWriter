@@ -241,9 +241,13 @@ class _ProjectionState:
 
         # ── Subagent（含 evaluation agent）：实例化拆分 ──
         current_task = self.task_call_stack[-1] if self.task_call_stack else None
-        last_task = self.agent_last_task.get(event.agent_name)
 
-        if last_task is not None and last_task == current_task:
+        # 「同一实例」判定必须用键存在性，不能用 .get() 的值：current_task=None
+        # （无 task 委托边界，如 ab_run 直接跑顶层装配）与「从未见过该 agent」的
+        # 缺省 None 语义不同。旧写法 `last_task is not None and ...` 在栈空时
+        # 永假，同一 agent 的每个执行事件都拆一个新实例，产生一屏 0ms 噪音行
+        # （storybuilding #1..#N）。
+        if event.agent_name in self.agent_last_task and self.agent_last_task[event.agent_name] == current_task:
             return  # 同一实例内，不需要新节点
 
         # 新实例：不同 task_call_id 或首次出现

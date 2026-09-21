@@ -114,15 +114,13 @@ def make_flow_tools() -> list:
             for d in benchmark.get("weakest_dimensions") or []:
                 if isinstance(d, dict) and d.get("dimension"):
                     valid_benchmark_refs.add(str(d["dimension"]))
-            for tag in benchmark.get("top_tags") or []:
-                valid_benchmark_refs.add(str(tag))
             registry = valid_finding_ids | valid_contract_ids | valid_benchmark_refs
 
             for i, c in enumerate(changes):
                 if not c.evidence_ref:
                     return (
                         f"changes[{i}] 缺少 evidence_ref：每个改动必须引用至少一个证据源 id"
-                        f"（如评测弱点的维度名/缺陷标签、finding id f01、"
+                        f"（如评测弱点的维度名、finding id f01、"
                         f"契约违反 id cv-memory_recalled、或探查所见的要素路径）。"
                     )
                 if not registry:

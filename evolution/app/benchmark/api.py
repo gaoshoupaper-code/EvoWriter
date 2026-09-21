@@ -137,7 +137,7 @@ def get_rubric() -> dict[str, Any]:
         "rubric_version": rubric_v3.RUBRIC_VERSION,
         "calibration_status": rubric_v3.CALIBRATION_STATUS,
         "anchor_status": rubric_v3.ANCHOR_DRAFT_STATUS,
-        "low_score_threshold": rubric_v3.LOW_SCORE_THRESHOLD,
+        "discipline_rules": rubric_v3.DISCIPLINE_RULES,
         "dimensions": rubric_v3.DIMENSIONS,
         "rule_delivery": rubric_v3.RULE_DELIVERY_COMPLETE,
     }

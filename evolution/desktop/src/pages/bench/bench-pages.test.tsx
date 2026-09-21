@@ -6,7 +6,7 @@
  * - AC-003 case 子集勾选 → runBenchmark payload.case_ids（Workbench）
  * - AC-004/005 批次列表渲染 + 趋势 tab 五维（Workbench/LeaderboardTab）
  * - AC-007 低分条目点击直达 case 明细（BatchDetail + CaseRunsPanel focusCase）
- * - AC-008/009/010 评分区：概览/维度卡片理由折叠/交付跳转按钮/seed 极差高亮
+ * - AC-008/009/010 评分区：概览/两段理由默认展开分色/交付跳转按钮/seed 极差高亮
  * - AC-012 三件套降级徽章（DeliveriesView）
  * - AC-013 规则页五维卡片（Rules）
  * - AC-014 数据集 golden 列表 + rerun（Dataset）
@@ -67,14 +67,19 @@ function makeRun(overrides: Partial<{
     status: "done",
     retries: 0,
     error: null,
-    rubric_version: "v3",
+    rubric_version: "v4-outline-5dim-anchored",
     ran_at: null,
     finished_at: null,
     scores: {
-      rubric_version: "v3",
+      rubric_version: "v4-outline-5dim-anchored",
       scores: { 需求兑现: 4, 设定自洽: 3, 人物塑造: 4, 情节构造: 3, 节奏结构: 3 },
-      tags: {},
-      reasons: { 需求兑现: "核心需求全部兑现。" },
+      reasons: {
+        需求兑现: { 达标: ["承诺点全部兑现"], 不足: ["配角 B 交代潦草"] },
+        设定自洽: { 达标: ["力量体系闭环"], 不足: ["代价边界模糊"] },
+        人物塑造: { 达标: ["主角动机清晰"], 不足: ["弧线后段偏快"] },
+        情节构造: { 达标: ["因果链完整"], 不足: ["第二幕转折铺垫不足"] },
+        节奏结构: { 达标: ["阶段划分清晰"], 不足: ["中段爽点密度偏低"] },
+      },
       overall: 3.4,
       rule_delivery: { key: "delivery_complete", passed: true, problems: [] },
     },
@@ -211,35 +216,41 @@ describe("工作台（AC-003/004/005）", () => {
 // ── AC-006/007 + 008/009/010：批次详情 + 评分区 ──
 
 describe("批次详情（AC-006/007/008/009/010）", () => {
-  it("报告低分行点击直达对应 case 明细；评分区含概览/折叠理由/交付跳转；seed 极差高亮", async () => {
+  it("报告低分行点击直达对应 case 明细；两段理由默认展开分色；seed 极差高亮；旧格式理由兼容", async () => {
     api.getBenchmarkReport.mockResolvedValue({
       batch_id: "batch-1",
       status: "ok", calibration: "uncalibrated", anchor_status: "draft",
       dimensions: [{ dimension: "需求兑现", mean: 3.1, n: 6 }],
-      tag_hits: [{ tag: "设定前后矛盾", hits: 2 }],
       low_cases: [{
         case_id: "case-002", seed: 1, overall: 2.4,
         scores: { 需求兑现: 2, 设定自洽: 2, 人物塑造: 3, 情节构造: 2, 节奏结构: 3 },
-        tags: { 设定自洽: ["设定前后矛盾"] }, rule_delivery_passed: false,
+        rule_delivery_passed: false,
       }],
       failed_rows: [], rule_delivery_failed: 1,
     });
     api.listBenchmarkRuns.mockResolvedValue({
       batch_id: "batch-1",
       items: [
+        // v3 旧格式行：字符串理由 → 「旧版理由」标签展示（FR-008 双轨兼容）
         makeRun({ id: 11, case_id: "case-002", seed: 1, scores: {
           rubric_version: "v3",
           scores: { 需求兑现: 2, 设定自洽: 2, 人物塑造: 3, 情节构造: 2, 节奏结构: 3 },
-          tags: { 设定自洽: ["设定前后矛盾"] },
           reasons: { 设定自洽: "世界观规则前后冲突。" },
           overall: 2.4,
           rule_delivery: { key: "delivery_complete", passed: false, problems: ["大纲字数不足"] },
         } }),
+        // v4 新格式行：两段对象理由默认展开（DEC-011）
         makeRun({ id: 12, case_id: "case-002", seed: 2 }),
         makeRun({ id: 13, case_id: "case-002", seed: 3, scores: {
-          rubric_version: "v3",
+          rubric_version: "v4-outline-5dim-anchored",
           scores: { 需求兑现: 4, 设定自洽: 4, 人物塑造: 4, 情节构造: 3, 节奏结构: 3 },
-          tags: {}, reasons: {},
+          reasons: {
+            需求兑现: { 达标: ["承诺点兑现"], 不足: ["未发现不足"] },
+            设定自洽: { 达标: ["规则闭环"], 不足: ["边界模糊"] },
+            人物塑造: { 达标: ["动机清晰"], 不足: ["弧线偏快"] },
+            情节构造: { 达标: ["因果完整"], 不足: ["铺垫不足"] },
+            节奏结构: { 达标: ["结构清晰"], 不足: ["密度偏低"] },
+          },
           overall: 3.6,
           rule_delivery: { key: "delivery_complete", passed: true, problems: [] },
         } }),
@@ -284,10 +295,18 @@ describe("批次详情（AC-006/007/008/009/010）", () => {
     expect(unstableTwo).toBeTruthy();
     // 五维概览（AC-008）
     expect(document.querySelectorAll(".bench-score-overview-row").length).toBeGreaterThanOrEqual(5);
-    // 维度卡片：理由默认折叠、按钮存在（AC-008）
-    expect(screen.queryByText("世界观规则前后冲突。")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByText("展开评分理由"));
-    expect(screen.getByText("世界观规则前后冲突。")).toBeInTheDocument();
+    // 默认选中 seed #1（v3 旧格式行）：字符串理由 → 「旧版理由」标签兼容渲染（FR-008）
+    expect(await screen.findByText("旧版理由")).toBeInTheDocument();
+    expect(screen.getByText(/世界观规则前后冲突。/)).toBeInTheDocument();
+    // 切到 seed #2（v4 新格式行）：两段理由默认展开（DEC-011），无需点击；达标/不足分色块均在
+    // （case 卡片区与 seed 对比表头都含 "#2"，在抽屉 seed 行内精确定位）
+    const drawer = document.querySelector(".bench-case-sheet") as HTMLElement;
+    const seedRow = drawer.querySelector(".bench-seed-row-drawer") as HTMLElement;
+    fireEvent.click(within(seedRow).getByText("#2"));
+    expect(await screen.findAllByText("✓ 达标")).toHaveLength(5);
+    expect(screen.getAllByText("⚠ 不足")).toHaveLength(5);
+    expect(screen.getByText("承诺点全部兑现")).toBeInTheDocument();
+    expect(screen.getByText("配角 B 交代潦草")).toBeInTheDocument();
     // 交付跳转按钮（AC-010）：设定自洽 → 世界观。点击后定位效果真实生效
     // （review rev1 finding 1 回归锚点：nonce 拼接曾使关键词永不匹配）
     fireEvent.click(screen.getByText("查看相关交付（世界观）"));
@@ -304,7 +323,7 @@ describe("批次详情（AC-006/007/008/009/010）", () => {
     // 曾因统计字段必填声明 + toFixed 直接调用而白屏
     api.getBenchmarkReport.mockResolvedValue({
       batch_id: "batch-1", status: "ok", calibration: "uncalibrated", anchor_status: "draft",
-      dimensions: [], tag_hits: [], low_cases: [], failed_rows: [],
+      dimensions: [], low_cases: [], failed_rows: [],
     });
     api.listBenchmarkRuns.mockResolvedValue({ batch_id: "batch-1", items: [], total: 0 });
     api.listBenchmarkBatches.mockResolvedValue({
@@ -360,15 +379,28 @@ describe("DeliveriesView 降级（AC-012）", () => {
 // ── AC-013：规则页 ──
 
 describe("规则页（AC-013）", () => {
-  it("渲染版本、校准状态、五维卡片与评分制说明", async () => {
+  it("渲染版本、校准状态、纪律条款、五维卡片五档锚点与评分制说明", async () => {
     api.getBenchmarkRubric.mockResolvedValue({
-      rubric_version: "v3-outline-5dim-uncalibrated",
+      rubric_version: "v4-outline-5dim-anchored",
       calibration_status: "uncalibrated",
       anchor_status: "draft",
-      low_score_threshold: 2,
+      discipline_rules: [
+        "证据先行：只依据可指认的原文判定。",
+        "先列缺陷再定档：缺陷清点未完成不得打分。",
+        "高分举证：给 4 分及以上必须逐条论证。",
+        "5 分稀缺：存在任何可指认缺陷即不得给 5 分。",
+        "禁止整体印象迁移：不得因整体感觉好而抬分。",
+        "两可取低：两档之间犹豫时取低档。",
+      ],
       dimensions: [
-        { key: "需求兑现", question: "大纲是否兑现需求？", anchors: { "5": "全兑现", "3": "大部分", "1": "偏离" }, defect_tags: ["核心冲突缺位"] },
-        { key: "设定自洽", question: "设定是否自洽？", anchors: { "5": "自洽", "3": "小出入", "1": "矛盾" }, defect_tags: ["设定前后矛盾"] },
+        {
+          key: "需求兑现", question: "大纲是否兑现需求？",
+          anchors: { "5": "全兑现", "4": "轻微弱化一处", "3": "个别落空", "2": "一条整条落空", "1": "偏离" },
+        },
+        {
+          key: "设定自洽", question: "设定是否自洽？",
+          anchors: { "5": "自洽", "4": "一处边界模糊", "3": "小出入", "2": "多处矛盾", "1": "矛盾" },
+        },
       ],
       rule_delivery: { key: "delivery_complete", description: "三件套齐全且无占位符" },
     });
@@ -377,11 +409,19 @@ describe("规则页（AC-013）", () => {
         <Rules />
       </MemoryRouter>,
     );
-    expect(await screen.findByText("v3-outline-5dim-uncalibrated")).toBeInTheDocument();
+    expect(await screen.findByText("v4-outline-5dim-anchored")).toBeInTheDocument();
     expect(screen.getByText("需求兑现")).toBeInTheDocument();
     expect(screen.getByText("大纲是否兑现需求？")).toBeInTheDocument();
-    expect(screen.getByText(/核心冲突缺位/)).toBeInTheDocument();
+    // 五档锚点逐档渲染（DEC-001）
+    for (const text of ["全兑现", "轻微弱化一处", "个别落空", "一条整条落空", "偏离"]) {
+      expect(screen.getByText(text)).toBeInTheDocument();
+    }
+    // 纪律条款区（DEC-016）
+    expect(screen.getByText("评分纪律（judge 每次评分必须遵守）")).toBeInTheDocument();
+    expect(screen.getByText(/两可取低/)).toBeInTheDocument();
     expect(screen.getByText(/评分制说明/)).toBeInTheDocument();
+    // 两段理由说明（DEC-002）
+    expect(screen.getByText(/两段式理由/)).toBeInTheDocument();
   });
 });
 

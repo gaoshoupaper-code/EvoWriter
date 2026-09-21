@@ -1,14 +1,16 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { getBenchmarkRubric, type BenchmarkRubric } from "@/lib/api";
 
 /**
- * 评测规则页（REQ-20260921-135543 FR-007，DEC-003/021）。
+ * 评测规则页（REQ-20260921-135543 FR-007，DEC-003/021；v4 适配 REQ-20260921-210038）。
  *
  * rubric 只读展示：头部版本/校准状态/只读说明 →
- * 五维卡片（判定问题/1-3-5 锚点/缺陷标签词表）→ 交付完整规则项 → 评分制说明。
+ * 评分纪律条款 → 五维卡片（判定问题/1-5 五档锚点）→ 交付完整规则项 → 评分制说明。
  * rubric 是代码常量单一事实源（改规则走代码发版，不做在线编辑）。
  */
+const ANCHOR_LEVELS = ["5", "4", "3", "2", "1"] as const;
+
 export default function BenchRules() {
   const [rubric, setRubric] = useState<BenchmarkRubric | null>(null);
   const [loading, setLoading] = useState(true);
@@ -55,19 +57,28 @@ export default function BenchRules() {
             </span>
           </div>
 
+          <div className="bench-rules-scoring bench-rules-discipline">
+            <h4>评分纪律（judge 每次评分必须遵守）</h4>
+            <ol>
+              {rubric.discipline_rules.map((rule, i) => (
+                <li key={i}>{rule}</li>
+              ))}
+            </ol>
+          </div>
+
           <div className="bench-rules-grid">
             {rubric.dimensions.map((dim) => (
               <article key={dim.key} className="bench-rules-dim">
                 <h4>{dim.key}</h4>
                 <p className="bench-rules-question">{dim.question}</p>
                 <dl className="bench-rules-anchors">
-                  <dt>5 分</dt><dd>{dim.anchors["5"]}</dd>
-                  <dt>3 分</dt><dd>{dim.anchors["3"]}</dd>
-                  <dt>1 分</dt><dd>{dim.anchors["1"]}</dd>
+                  {ANCHOR_LEVELS.map((level) => (
+                    <Fragment key={level}>
+                      <dt>{level} 分</dt>
+                      <dd>{dim.anchors[level]}</dd>
+                    </Fragment>
+                  ))}
                 </dl>
-                <p className="bench-rules-tags">
-                  缺陷标签词表：{dim.defect_tags.join("、")}
-                </p>
               </article>
             ))}
           </div>
@@ -80,12 +91,9 @@ export default function BenchRules() {
           <div className="bench-rules-scoring">
             <h4>评分制说明</h4>
             <ul>
-              <li>五维各 1–5 整数分；0 分 = 无法判断（不作质量结论）。</li>
+              <li>五维各 1–5 整数分，每维独立调用 judge 评判；0 分 = 无法判断（不作质量结论）。</li>
               <li>总分 = 五维均值。</li>
-              <li>
-                任一维度 ≤{rubric.low_score_threshold} 分时，judge 必须挂词表内缺陷标签并给出理由；
-                ≥3 分维度理由可省略。
-              </li>
+              <li>每个维度不论几分都必有两段式理由：达标点（引原文佐证）+ 不足点；5 分不足段可为「未发现不足」。</li>
               <li>分数只用于同指纹前缀的相对对比（校准完成前绝对值不作质量结论）。</li>
             </ul>
           </div>

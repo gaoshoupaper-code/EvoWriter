@@ -1269,7 +1269,7 @@ export interface BenchmarkBatchSummary {
   stop_reason?: "user_stop" | "auto_fail" | null;
 }
 
-/** 弱点报告（FR-005）。 */
+/** 弱点报告（FR-005；标签命中已随词表下线，REQ-20260921-210038 DEC-009）。 */
 export interface BenchmarkReport {
   batch_id: string;
   status: string; // ok | not_found | no_scored_data
@@ -1279,14 +1279,12 @@ export interface BenchmarkReport {
   calibration: string;
   anchor_status: string;
   dimensions?: { dimension: string; mean: number | null; n: number }[];
-  tag_hits?: { tag: string; hits: number }[];
   rule_delivery_failed?: number;
   low_cases?: {
     case_id: string;
     seed: number | null;
     overall: number | null;
     scores: Record<string, number>;
-    tags: Record<string, string[]>;
     rule_delivery_passed: boolean | null;
   }[];
   failed_rows?: { case_id: string; seed: number | null; error: string | null }[];
@@ -1351,17 +1349,17 @@ export async function stopBenchmark(
   return evoJson(`/api/benchmark/batches/${batchId}/stop`, { method: "POST" });
 }
 
-/** 评分标准全文（只读展示，FR-002；结构对齐后端 rubric_v3 常量）。 */
+/** 评分标准全文（只读展示，FR-002；结构对齐后端 rubric 常量，v4 五档锚点）。 */
 export interface BenchmarkRubric {
   rubric_version: string;
   calibration_status: string;
   anchor_status: string;
-  low_score_threshold: number;
+  /** 评分纪律条款（REQ-20260921-210038 DEC-016，judge prompt 同源） */
+  discipline_rules: string[];
   dimensions: {
     key: string;
     question: string;
-    anchors: Record<"1" | "3" | "5", string>;
-    defect_tags: string[];
+    anchors: Record<"1" | "2" | "3" | "4" | "5", string>;
   }[];
   rule_delivery: { key: string; description: string };
 }
@@ -1428,8 +1426,11 @@ export async function getBenchmarkReport(batchId: string): Promise<BenchmarkRepo
 export interface BenchmarkRunScores {
   rubric_version?: string;
   scores?: Record<string, number>;
-  tags?: Record<string, string[]>;
-  reasons?: Record<string, string>;
+  /**
+   * 两段式理由（rubric v4，REQ-20260921-210038 DEC-006）。
+   * 旧批次（v3 及更早）为字符串或不存在的双轨格式——渲染层按类型分派。
+   */
+  reasons?: Record<string, string | { 达标: string[]; 不足: string[] }>;
   overall?: number;
   rule_delivery?: { key?: string; passed?: boolean | null; problems?: string[] };
 }

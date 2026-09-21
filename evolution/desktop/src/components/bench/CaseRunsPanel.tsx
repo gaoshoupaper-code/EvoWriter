@@ -16,10 +16,10 @@ import { DeliveriesView, groupsForDimension } from "@/components/bench/Deliverie
  * 评测批次 case 明细面板（REQ-20260921-135543 FR-005，DEC-009/010/011）。
  *
  * case 聚合卡片 → 行明细抽屉：
- * - 五维概览（条形）+ 维度卡片（分值/低分标签/理由折叠/关联交付跳转）
+ * - 五维概览（条形）+ 维度卡片（分值/两段理由默认展开分色/关联交付跳转）
  * - seed 并排对比（同维极差 ≥2 高亮 = 输出不稳定）
  * - 三件套 Markdown 渲染（DeliveriesView，FR-006）
- * - 低分下钻目标区（focusCase：报告低分行/缺陷标签点击直达）
+ * - 低分下钻目标区（focusCase：报告低分行点击直达）
  */
 
 const STATUS_LABEL: Record<string, string> = {
@@ -403,13 +403,12 @@ function RunDetail({
       {/* 五维概览（DEC-009：条形，扫一眼） */}
       <ScoreOverview scores={scores.scores} />
 
-      {/* 维度卡片（DEC-009/011：理由折叠 + 关联交付跳转） */}
+      {/* 维度卡片（DEC-011 of REQ-20260921-210038：两段理由默认展开分色 + 关联交付跳转） */}
       {Object.entries(scores.scores).map(([dim, value]) => (
         <DimensionCard
           key={dim}
           dim={dim}
           value={value}
-          tags={scores.tags?.[dim]}
           reason={scores.reasons?.[dim]}
           onJump={onJumpDelivery}
         />
@@ -453,20 +452,21 @@ function ScoreOverview({ scores }: { scores: Record<string, number> }) {
   );
 }
 
+/**
+ * 维度卡片：分值 + 两段理由（达标/不足）默认展开分色（DEC-011 of REQ-20260921-210038）。
+ * 旧批次理由为字符串（v3 及更早）→ 原样展示并标「旧版规则」；无理由 → 占位说明。
+ */
 function DimensionCard({
   dim,
   value,
-  tags,
   reason,
   onJump,
 }: {
   dim: string;
   value: number;
-  tags?: string[];
-  reason?: string;
+  reason?: string | { 达标: string[]; 不足: string[] };
   onJump: (hint: string | null) => void;
 }) {
-  const [open, setOpen] = useState(false);
   const hint = groupsForDimension(dim);
   return (
     <div className="bench-dim-card">
@@ -474,26 +474,34 @@ function DimensionCard({
         <span className="bench-dim-name">{dim}</span>
         <span className={`bench-dim-score ${scoreClass(value)}`}>{value}/5</span>
       </div>
-      {(tags?.length ?? 0) > 0 && (
-        <div className="bench-tag-row">
-          {tags?.map((tag) => (
-            <span key={tag} className="bench-tag-chip">{tag}</span>
-          ))}
+      {reason == null ? (
+        <p className="bench-reason-absent">旧版规则评分，未生成理由</p>
+      ) : typeof reason === "string" ? (
+        <div className="bench-dim-reasons">
+          <p className="bench-dim-reason bench-dim-reason-legacy">
+            <span className="bench-reason-legacy-tag">旧版理由</span>
+            {reason}
+          </p>
         </div>
-      )}
-      {reason ? (
-        <>
-          <button
-            type="button"
-            className="action-link bench-reason-toggle"
-            onClick={() => setOpen((o) => !o)}
-          >
-            {open ? "收起评分理由" : "展开评分理由"}
-          </button>
-          {open && <p className="bench-dim-reason">{reason}</p>}
-        </>
       ) : (
-        <span className="bench-reason-absent">未提供理由（≥3 分维度可省略）</span>
+        <div className="bench-dim-reasons">
+          <div className="bench-dim-reason-list bench-dim-reason-met">
+            <span className="bench-dim-reason-label">✓ 达标</span>
+            <ul>
+              {reason.达标.map((item, i) => (
+                <li key={i}>{item}</li>
+              ))}
+            </ul>
+          </div>
+          <div className="bench-dim-reason-list bench-dim-reason-flaw">
+            <span className="bench-dim-reason-label">⚠ 不足</span>
+            <ul>
+              {reason.不足.map((item, i) => (
+                <li key={i}>{item}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
       )}
       <button
         type="button"

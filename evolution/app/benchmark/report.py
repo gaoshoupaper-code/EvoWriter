@@ -1,9 +1,10 @@
-"""评测弱点报告（REQ-20260919-172934 / FR-005，DEC-004/009/010）。
+"""评测弱点报告（REQ-20260919-172934 / FR-005，DEC-004/009/010；v4 适配 REQ-20260921-210038）。
 
 batch 聚合视图（查询时生成，不设独立报告制品存储；进化接口以 batch_id 为引用单位）：
-  - 维度层：5 主观维均分排名 + 缺陷标签命中统计（哪个标签被挂最多）
+  - 维度层：5 主观维均分排名（缺陷标签命中统计随词表下线，弱点信号在
+    各行 reasons 的「不足」段，DEC-009）
   - 个例层：总分最低的 case 清单（含失败条目）
-  - 校准状态如实标注（uncalibrated——本次无校准工作流，需求风险处置约束）
+  - 校准状态如实标注（uncalibrated——实测达标前不翻转，DEC-007）
 """
 from __future__ import annotations
 
@@ -49,9 +50,8 @@ def build_report(batch_id: str) -> dict[str, Any]:
             data = None
         parsed.append({"row": row, "data": data})
 
-    # 维度层：均分 + 标签命中
+    # 维度层：均分（标签命中统计已随词表下线，DEC-009 of REQ-20260921-210038）
     dim_sums: dict[str, tuple[float, int]] = {}
-    tag_hits: dict[str, int] = {}
     for item in parsed:
         data = item["data"]
         if not data:
@@ -60,11 +60,6 @@ def build_report(batch_id: str) -> dict[str, Any]:
             if key in rubric_v3.DIMENSION_KEYS and isinstance(value, (int, float)) and value > 0:
                 s, c = dim_sums.get(key, (0.0, 0))
                 dim_sums[key] = (s + value, c + 1)
-        for dim_tags in (data.get("tags") or {}).values():
-            if isinstance(dim_tags, list):
-                for tag in dim_tags:
-                    if tag in rubric_v3.ALL_DEFECT_TAGS:
-                        tag_hits[tag] = tag_hits.get(tag, 0) + 1
 
     dimensions = sorted(
         (
@@ -77,10 +72,6 @@ def build_report(batch_id: str) -> dict[str, Any]:
         ),
         key=lambda d: d["mean"] if d["mean"] is not None else 99,
     )
-    tags = sorted(
-        ({"tag": tag, "hits": hits} for tag, hits in tag_hits.items()),
-        key=lambda t: -t["hits"],
-    )
 
     # 个例层：总分最低的条目 + 失败条目
     scored = [i for i in parsed if i["data"]]
@@ -91,7 +82,6 @@ def build_report(batch_id: str) -> dict[str, Any]:
                 "seed": i["row"].get("seed"),
                 "overall": i["data"].get("overall"),
                 "scores": i["data"].get("scores", {}),
-                "tags": i["data"].get("tags", {}),
                 "rule_delivery_passed": (i["data"].get("rule_delivery") or {}).get("passed"),
             }
             for i in scored
@@ -123,7 +113,6 @@ def build_report(batch_id: str) -> dict[str, Any]:
         "calibration": rubric_v3.CALIBRATION_STATUS,
         "anchor_status": rubric_v3.ANCHOR_DRAFT_STATUS,
         "dimensions": dimensions,
-        "tag_hits": tags,
         "rule_delivery_failed": rule_fail_count,
         "low_cases": low_cases,
         "failed_rows": [
@@ -134,10 +123,7 @@ def build_report(batch_id: str) -> dict[str, Any]:
 
 
 def build_summary_for_evolve(batch_id: str, limit: int = 5) -> dict[str, Any] | None:
-    """给进化会话注入用的精简摘要（FR-006）：维度弱点排序 + 高频标签。
-
-    返回 None 表示该 batch 无可聚合数据（调用方降级不阻断）。
-    """
+    """给进化会话注入用的精简摘要（FR-006）：维度弱点排序（词表已下线，无标签信号）。"""
     report = build_report(batch_id)
     if report.get("status") != "ok":
         return None
@@ -148,7 +134,6 @@ def build_summary_for_evolve(batch_id: str, limit: int = 5) -> dict[str, Any] | 
         "weakest_dimensions": [
             d for d in report["dimensions"][:limit]
         ],
-        "top_tags": report["tag_hits"][:limit],
         "rule_delivery_failed": report["rule_delivery_failed"],
     }
 

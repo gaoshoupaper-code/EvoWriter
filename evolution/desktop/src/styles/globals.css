@@ -12554,14 +12554,6 @@ html[data-theme="dark"] .point-chosen { color: var(--teal); }
 
 .bench-report-block h4 { font-size: 13px; margin: 0 0 8px; color: var(--evo-ink-muted, #999); }
 
-.bench-tag-list { list-style: none; margin: 0; padding: 0; }
-.bench-tag-list li {
-  display: flex; justify-content: space-between; align-items: center;
-  padding: 5px 10px; border-radius: 5px; margin-bottom: 4px;
-  background: rgba(201, 121, 78, 0.1); font-size: 13px;
-}
-.bench-tag-hits { font-weight: 600; color: var(--coral, #c9794e); }
-
 .bench-rule-warn {
   margin-top: 8px; font-size: 12.5px; color: var(--coral, #c9794e);
 }
@@ -12732,12 +12724,20 @@ html[data-theme="dark"] .point-chosen { color: var(--teal); }
 .bench-dim-score.bench-dim-low { color: var(--evo-danger, #d05f5f); }
 .bench-dim-score.bench-dim-mid { color: var(--evo-warning, #eab308); }
 .bench-dim-score.bench-dim-high { color: var(--evo-success, #3f9d6f); }
-.bench-tag-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
-.bench-tag-chip {
-  font-size: 11px; padding: 2px 8px; border-radius: 4px;
-  background: rgba(201, 121, 78, 0.12); color: var(--coral, #c9794e);
-}
+/* 两段式理由（REQ-20260921-210038 DEC-011：默认展开、达标/不足分色） */
+.bench-dim-reasons { margin-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.bench-dim-reason-list { border-radius: 6px; padding: 6px 9px; font-size: 12px; line-height: 1.7; }
+.bench-dim-reason-list ul { margin: 4px 0 0; padding-left: 16px; }
+.bench-dim-reason-label { font-weight: 650; }
+.bench-dim-reason-met { background: rgba(63, 157, 111, 0.08); }
+.bench-dim-reason-met .bench-dim-reason-label { color: var(--evo-success, #3f9d6f); }
+.bench-dim-reason-flaw { background: rgba(234, 179, 8, 0.09); }
+.bench-dim-reason-flaw .bench-dim-reason-label { color: var(--evo-warning, #eab308); }
 .bench-dim-reason { margin: 6px 0 0; line-height: 1.7; color: var(--evo-ink-muted, #999); }
+.bench-reason-legacy-tag {
+  display: inline-block; font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
+  margin-right: 6px; background: rgba(128, 128, 128, 0.14); color: var(--evo-ink-muted, #999);
+}
 .bench-rule-problems h5 { margin: 4px 0 6px; font-size: 12px; }
 .bench-rule-problems ul { margin: 0; padding-left: 18px; line-height: 1.8; }
 .bench-error-box {
@@ -12825,12 +12825,11 @@ html[data-theme="dark"] .point-chosen { color: var(--teal); }
 .bench-score-overview-dim { width: 72px; font-size: 11.5px; flex-shrink: 0; }
 .bench-score-overview-value { font-size: 12px; font-weight: 700; width: 34px; text-align: right; }
 
-/* 明细：维度卡片（DEC-009/011：理由折叠 + 交付跳转） */
+/* 明细：维度卡片（DEC-011：两段理由默认展开 + 交付跳转） */
 .bench-dim-card {
   border: 1px solid rgba(128, 128, 128, 0.18); border-radius: 8px;
   padding: 10px 12px; margin: 8px 0; background: rgba(128, 128, 128, 0.03);
 }
-.bench-reason-toggle { padding: 2px 0; }
 .bench-reason-absent { font-size: 11px; color: var(--evo-ink-muted, #999); }
 
 /* 明细：seed 并排对比（DEC-010：极差 ≥2 高亮） */
@@ -12841,11 +12840,6 @@ html[data-theme="dark"] .point-chosen { color: var(--teal); }
 
 /* 明细：低分下钻聚焦（DEC-014） */
 .bench-case-focused { outline: 2px solid var(--teal, #3a9a7e); outline-offset: 2px; }
-.bench-tag-link {
-  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
-  background: none; border: none; padding: 2px 4px; border-radius: 6px;
-}
-.bench-tag-link:hover { background: rgba(58, 154, 126, 0.08); }
 
 /* 规则页（FR-007） */
 .bench-rules-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -12864,7 +12858,6 @@ html[data-theme="dark"] .point-chosen { color: var(--teal); }
 .bench-rules-anchors { margin: 0 0 10px; font-size: 11.5px; line-height: 1.7; }
 .bench-rules-anchors dt { font-weight: 700; color: var(--teal, #3a9a7e); }
 .bench-rules-anchors dd { margin: 0 0 6px 0; }
-.bench-rules-tags { font-size: 11px; color: var(--evo-ink-muted, #999); margin: 0; }
 .bench-rules-rule { margin: 14px 0; font-size: 12.5px; }
 .bench-rules-scoring { margin-top: 14px; }
 .bench-rules-scoring h4 { font-size: 13px; margin: 0 0 8px; }

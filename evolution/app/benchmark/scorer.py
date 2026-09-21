@@ -1,9 +1,12 @@
-"""评测评分引擎（REQ-20260919-172934 / FR-002/003，TD-002）。
+"""评测评分引擎（REQ-20260919-172934 / FR-002/003，TD-002；v4 重构 REQ-20260921-210038）。
 
 评测评分链路（benchmark 唯一主链路）：
   1. load_outline_deliveries：从 ArtifactRevision 事件直读大纲三件套
      （不走卷宗编译、不走 eval_agent 旧直评路径——DEC-006 休眠链路零依赖）
-  2. score_case：rubric v3 judge prompt → llm.chat(scope=eval) → 解析校验 → 规则项判定
+  2. score_case：rubric v4 按维独立 judge 调用（五维并发，DEC-010）→
+     两段理由校验（DEC-002/006）→ 规则项判定
+  3. 单维失败仅重试该维 1 次，仍败上抛 DimensionScoreError（DEC-013），
+     调用方按行级 failed 处理
 
 轻量可信读取（TD-002）：只做 content_hash 自校验，不做卷宗级 event 全链校验——
 评测消费的是冻结产物内容，可信链校验是卷宗（已休眠）的职责。
@@ -14,6 +17,7 @@ import hashlib
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import app.core.db as db
@@ -32,6 +36,9 @@ _GROUP_WORLDVIEW = ("世界观 worldview", "worldview")
 # 规则项「交付完整」的判定参数
 _MIN_GROUP_CHARS = 200          # 每组正文最小长度
 _PLACEHOLDER_PAT = re.compile(r"TODO|待补充|待填|占位|\[placeholder\]", re.IGNORECASE)
+
+# 单维 judge 调用尝试数（DEC-013：1 次 + 重试 1 次）
+_DIM_ATTEMPTS = 2
 
 
 # ── 三件套直读（ArtifactRevision 事件）──────────────────────
@@ -188,7 +195,11 @@ def check_delivery_complete(deliveries: dict[str, str]) -> dict[str, Any]:
     }
 
 
-# ── judge 评分 ─────────────────────────────────────────────
+# ── judge 评分（按维独立调用，DEC-010）─────────────────────
+
+
+class DimensionScoreError(RuntimeError):
+    """单维评分重试用尽（DEC-013）；message 含失败维度名，行级 error 由此携带。"""
 
 
 def _parse_response(raw: str) -> dict[str, Any]:
@@ -207,75 +218,104 @@ def _parse_response(raw: str) -> dict[str, Any]:
     raise ValueError(f"无法解析 judge 返回为 JSON: {raw[:200]}")
 
 
-def _validate_judgement(judgement: dict[str, Any]) -> None:
-    """校验 judge 输出契约（FR-002 失败语义：校验不过 = 评分失败可重试）。
+def _validate_dim_judgement(judgement: dict[str, Any], dim_key: str) -> None:
+    """校验单维 judge 输出契约（FR-004；失败 = 该维评分失败可重试）。
 
-    - scores 五维齐全，值为 0-5 整数
-    - 分数 ≤2 的维度必须有词表内标签 + 理由
-    - 各维 tags 必须是该维词表子集（闭合校验，DEC-010）
+    - score 为 0-5 整数
+    - 达标/不足均为非空字符串数组（5 分不足段允许且仅允许「未发现不足」占位）
+    - score<5 时不足段不得是「未发现不足」占位（有差距才低于 5 分）
     """
-    scores = judgement.get("scores")
-    if not isinstance(scores, dict):
-        raise ValueError("judge 输出缺 scores 对象")
-    tags = judgement.get("tags") or {}
-    reasons = judgement.get("reasons") or {}
-    if not isinstance(tags, dict) or not isinstance(reasons, dict):
-        raise ValueError("judge 输出 tags/reasons 结构非法")
+    score = judgement.get("score")
+    if not isinstance(score, int) or isinstance(score, bool) or not (0 <= score <= 5):
+        raise ValueError(f"{dim_key} 分数非法: {score!r}")
+    for field in ("达标", "不足"):
+        items = judgement.get(field)
+        if not isinstance(items, list) or not items:
+            raise ValueError(f"{dim_key} 「{field}」缺失或为空数组")
+        if not all(isinstance(i, str) and i.strip() for i in items):
+            raise ValueError(f"{dim_key} 「{field}」存在空条目")
+    flaws = judgement["不足"]
+    if (
+        score < 5
+        and len(flaws) == 1
+        and flaws[0].strip() == rubric_v3.NO_FLAW_PLACEHOLDER
+    ):
+        raise ValueError(f"{dim_key} 分数 {score} <5 但不足段为「{rubric_v3.NO_FLAW_PLACEHOLDER}」")
 
-    tag_vocab = {d["key"]: set(d["defect_tags"]) for d in rubric_v3.DIMENSIONS}
-    for key in rubric_v3.DIMENSION_KEYS:
-        score = scores.get(key)
-        if not isinstance(score, int) or isinstance(score, bool) or not (0 <= score <= 5):
-            raise ValueError(f"维度 {key} 分数非法: {score!r}")
-        dim_tags = tags.get(key, [])
-        if not isinstance(dim_tags, list):
-            raise ValueError(f"维度 {key} tags 非法: {dim_tags!r}")
-        vocab = tag_vocab[key]
-        for tag in dim_tags:
-            if tag not in vocab:
-                raise ValueError(f"维度 {key} 输出词表外标签: {tag}")
-        if score <= rubric_v3.LOW_SCORE_THRESHOLD:
-            if not dim_tags:
-                raise ValueError(f"维度 {key} 分数 {score} ≤{rubric_v3.LOW_SCORE_THRESHOLD} 但未挂缺陷标签")
-            if not str(reasons.get(key, "")).strip():
-                raise ValueError(f"维度 {key} 低分但缺理由")
+
+def _score_dimension_once(
+    dim: dict[str, Any], demand_md: str, deliveries: dict[str, str],
+    judge_config_id: int | None,
+) -> dict[str, Any]:
+    """单维 judge 调用 + 解析 + 校验（一次尝试）。"""
+    messages = [
+        {"role": "system", "content": rubric_v3.build_judge_dim_system_prompt(dim)},
+        {"role": "user", "content": rubric_v3.build_judge_user_prompt(demand_md, deliveries)},
+    ]
+    # 300s：judge 非流式输出单维 JSON；输入含大纲三件套全文，与 executor/
+    # evolution 侧 300s 先例对齐（deepseek 兼容端点 120s 常态撞线的既有教训）。
+    raw = llm.chat(
+        messages,
+        temperature=0.0,
+        timeout=300.0,
+        phase=f"benchmark_score:{dim['key']}",
+        scope="eval",
+        config_id=judge_config_id,
+    )
+    judgement = _parse_response(raw)
+    _validate_dim_judgement(judgement, dim["key"])
+    return judgement
+
+
+def _score_dimension(
+    dim: dict[str, Any], demand_md: str, deliveries: dict[str, str],
+    judge_config_id: int | None,
+) -> dict[str, Any]:
+    """单维评分：失败仅重试该维 1 次（DEC-013），仍败上抛 DimensionScoreError。"""
+    last_error: Exception | None = None
+    for attempt in range(1, _DIM_ATTEMPTS + 1):
+        try:
+            return _score_dimension_once(dim, demand_md, deliveries, judge_config_id)
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "评分维度「%s」第 %d 次尝试失败: %s", dim["key"], attempt, exc,
+            )
+    raise DimensionScoreError(
+        f"维度「{dim['key']}」评分重试用尽（{_DIM_ATTEMPTS} 次）: {last_error}"
+    ) from last_error
 
 
 def score_case(
     demand_md: str, deliveries: dict[str, str], judge_config_id: int | None = None,
 ) -> dict[str, Any]:
-    """对一个 case 的一次生成产物评分（1 次 judge 调用 + 规则项判定）。
+    """对一个 case 的一次生成产物评分（5 次按维 judge 调用并发 + 规则项判定）。
 
     judge_config_id（FR-003）：指定 judge 配置（触发时下拉选择的）；
     None=默认解析（llm.chat scope=eval，未配置降级 evolution）。
 
     Returns: {
       rubric_version, calibration, anchor_status,
-      scores: {维度: 分}, tags: {维度: [标签]}, reasons: {维度: 理由},
+      scores: {维度: 分}, reasons: {维度: {达标: [...], 不足: [...]}}（DEC-006）,
       overall: 有效维度均分（score>0 参与）,
       rule_delivery: {passed, problems},
     }
-    Raises: 解析/校验失败（调用方按 FR-002 失败语义重试 1 次）。
+    Raises: DimensionScoreError（单维重试用尽，含维度名）；调用方按行级 failed 处理。
     """
-    messages = [
-        {"role": "system", "content": rubric_v3.build_judge_system_prompt()},
-        {"role": "user", "content": rubric_v3.build_judge_user_prompt(demand_md, deliveries)},
-    ]
-    raw = llm.chat(
-        messages,
-        temperature=0.0,
-        # 300s：judge 非流式输出五维大 JSON（scores/tags/reasons），输入含
-        # 大纲三件套全文——deepseek 兼容端点实测 120s 常态撞线（评分重试
-        # 双双超时的根因），与 executor/evolution 侧 300s 先例对齐。
-        timeout=300.0,
-        phase="benchmark_score",
-        scope="eval",
-        config_id=judge_config_id,
-    )
-    judgement = _parse_response(raw)
-    _validate_judgement(judgement)
+    with ThreadPoolExecutor(max_workers=len(rubric_v3.DIMENSIONS)) as pool:
+        futures = {
+            dim["key"]: pool.submit(
+                _score_dimension, dim, demand_md, deliveries, judge_config_id,
+            )
+            for dim in rubric_v3.DIMENSIONS
+        }
+        judgements = {key: fut.result() for key, fut in futures.items()}
 
-    scores = {key: judgement["scores"][key] for key in rubric_v3.DIMENSION_KEYS}
+    scores = {key: judgements[key]["score"] for key in rubric_v3.DIMENSION_KEYS}
+    reasons = {
+        key: {"达标": judgements[key]["达标"], "不足": judgements[key]["不足"]}
+        for key in rubric_v3.DIMENSION_KEYS
+    }
     valid = [v for v in scores.values() if v > 0]
     overall = round(sum(valid) / len(valid), 2) if valid else 0.0
     return {
@@ -283,14 +323,14 @@ def score_case(
         "calibration": rubric_v3.CALIBRATION_STATUS,
         "anchor_status": rubric_v3.ANCHOR_DRAFT_STATUS,
         "scores": scores,
-        "tags": {k: v for k, v in (judgement.get("tags") or {}).items() if v},
-        "reasons": judgement.get("reasons") or {},
+        "reasons": reasons,
         "overall": overall,
         "rule_delivery": check_delivery_complete(deliveries),
     }
 
 
 __all__ = [
+    "DimensionScoreError",
     "load_outline_deliveries",
     "load_outline_delivery_index",
     "check_delivery_complete",

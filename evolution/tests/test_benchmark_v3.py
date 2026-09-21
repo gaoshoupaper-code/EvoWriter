@@ -1,8 +1,9 @@
-"""评测系统 v3 单元测试（REQ-20260919-172934）。
+"""评测系统单元测试（REQ-20260919-172934；v4 重构 REQ-20260921-210038）。
 
 覆盖：
-- rubric v3 结构完整性（AC-002）
-- judge 输出契约校验（FR-002 失败语义）
+- rubric v4 结构完整性（五档锚点/纪律条款/词表下线）
+- 单维 judge 输出契约校验（FR-004 / AC-001）
+- 按维独立调用与单维重试（FR-003/005 / AC-002）
 - 交付完整规则项（FR-002 ③）
 - ArtifactRevision 直读三件套（FR-003 / AC-004）
 - 被测模型指纹提取（AC-005）
@@ -61,7 +62,7 @@ class BenchmarkV3TestBase(unittest.TestCase):
             pass
 
 
-# ── rubric v3 结构（AC-002）─────────────────────────────────
+# ── rubric v4 结构（AC-002，REQ-20260921-210038）─────────────
 
 
 class RubricV3Test(unittest.TestCase):
@@ -70,92 +71,187 @@ class RubricV3Test(unittest.TestCase):
 
         self.assertEqual(len(rubric_v3.DIMENSIONS), 5)
         for dim in rubric_v3.DIMENSIONS:
-            self.assertEqual(sorted(dim["anchors"].keys()), ["1", "3", "5"], dim["key"])
+            # 五档锚点全定义（DEC-001），词表已下线（DEC-009）
+            self.assertEqual(
+                sorted(dim["anchors"].keys()), ["1", "2", "3", "4", "5"], dim["key"],
+            )
             self.assertTrue(dim["question"])
-            self.assertTrue(3 <= len(dim["defect_tags"]) <= 6, dim["key"])
+            self.assertNotIn("defect_tags", dim)
         self.assertEqual(len(rubric_v3.DIMENSION_KEYS), 5)
-        # 闭合集 = 各维词表并集
-        union = {t for d in rubric_v3.DIMENSIONS for t in d["defect_tags"]}
-        self.assertEqual(rubric_v3.ALL_DEFECT_TAGS, union)
-        # 校准状态如实标注（FR-005 ③）
+        # 纪律条款六条（DEC-016 用户终审定稿）
+        self.assertEqual(len(rubric_v3.DISCIPLINE_RULES), 6)
+        self.assertTrue(all(r.strip() for r in rubric_v3.DISCIPLINE_RULES))
+        # 校准状态如实标注（实测达标前保持 draft/uncalibrated，DEC-007）
         self.assertEqual(rubric_v3.CALIBRATION_STATUS, "uncalibrated")
         self.assertEqual(rubric_v3.ANCHOR_DRAFT_STATUS, "draft")
 
     def test_prompts_built(self):
         from app.benchmark import rubric_v3
 
-        system = rubric_v3.build_judge_system_prompt()
         for dim in rubric_v3.DIMENSIONS:
+            system = rubric_v3.build_judge_dim_system_prompt(dim)
             self.assertIn(dim["key"], system)
-            self.assertIn(dim["anchors"]["5"], system)
+            for level in ("1", "2", "3", "4", "5"):
+                self.assertIn(dim["anchors"][level], system)
+            # 六条纪律全部进入每次按维调用
+            for rule in rubric_v3.DISCIPLINE_RULES:
+                self.assertIn(rule, system)
         user = rubric_v3.build_judge_user_prompt("某需求", {"主线 storyline": "内容A", "人物 character": "内容B"})
         self.assertIn("某需求", user)
         self.assertIn("内容A", user)
 
 
-# ── judge 输出契约校验（FR-002 失败语义）────────────────────
+# ── 单维 judge 输出契约校验（FR-004 / AC-001，REQ-20260921-210038）──
 
 
-class ValidateJudgementTest(unittest.TestCase):
+class ValidateDimJudgementTest(unittest.TestCase):
     def _good(self, **overrides):
         from app.benchmark import rubric_v3
 
-        payload = {
-            "scores": {k: 4 for k in rubric_v3.DIMENSION_KEYS},
-            "tags": {},
-            "reasons": {},
-        }
+        payload = {"score": 4, "达标": ["承诺点均兑现（demand 承诺点第 1 条）"], "不足": ["配角 B 交代潦草"]}
         payload.update(overrides)
-        return payload
+        return payload, rubric_v3.DIMENSION_KEYS[0]
 
     def test_valid_passes(self):
-        from app.benchmark.scorer import _validate_judgement
+        from app.benchmark.scorer import _validate_dim_judgement
 
-        _validate_judgement(self._good())
+        payload, key = self._good()
+        _validate_dim_judgement(payload, key)
 
-    def test_low_score_with_tag_passes(self):
+    def test_score_five_with_placeholder_passes(self):
         from app.benchmark import rubric_v3
-        from app.benchmark.scorer import _validate_judgement
+        from app.benchmark.scorer import _validate_dim_judgement
 
-        scores = {k: 4 for k in rubric_v3.DIMENSION_KEYS}
-        scores["人物塑造"] = 2
-        _validate_judgement(self._good(
-            scores=scores,
-            tags={"人物塑造": ["弧线缺失"]},
-            reasons={"人物塑造": "主角弧线未展开"},
-        ))
-
-    def test_missing_dimension_rejected(self):
-        from app.benchmark.scorer import _validate_judgement
-
-        with self.assertRaises(ValueError):
-            _validate_judgement({"scores": {"需求兑现": 4}, "tags": {}, "reasons": {}})
+        payload, key = self._good(
+            score=5, 不足=[rubric_v3.NO_FLAW_PLACEHOLDER],
+        )
+        _validate_dim_judgement(payload, key)
 
     def test_illegal_score_rejected(self):
-        from app.benchmark.scorer import _validate_judgement
+        from app.benchmark.scorer import _validate_dim_judgement
 
-        with self.assertRaises(ValueError):
-            _validate_judgement(self._good(scores={"需求兑现": "4"}))
-        with self.assertRaises(ValueError):
-            _validate_judgement(self._good(scores={"需求兑现": 6}))
+        for bad in ("4", 6, -1, 4.5, True, None):
+            payload, key = self._good(score=bad)
+            with self.assertRaises(ValueError, msg=f"score={bad!r}"):
+                _validate_dim_judgement(payload, key)
 
-    def test_low_score_without_tag_rejected(self):
+    def test_missing_or_empty_segments_rejected(self):
+        from app.benchmark.scorer import _validate_dim_judgement
+
+        for bad_field in ("达标", "不足"):
+            payload, key = self._good(**{bad_field: []})
+            with self.assertRaises(ValueError):
+                _validate_dim_judgement(payload, key)
+            payload, key = self._good(**{bad_field: "不是数组"})
+            with self.assertRaises(ValueError):
+                _validate_dim_judgement(payload, key)
+            payload, key = self._good(**{bad_field: ["  "]})
+            with self.assertRaises(ValueError):
+                _validate_dim_judgement(payload, key)
+        payload, key = self._good()
+        del payload["达标"]
+        with self.assertRaises(ValueError):
+            _validate_dim_judgement(payload, key)
+
+    def test_below_five_with_placeholder_rejected(self):
         from app.benchmark import rubric_v3
-        from app.benchmark.scorer import _validate_judgement
+        from app.benchmark.scorer import _validate_dim_judgement
 
-        scores = {k: 4 for k in rubric_v3.DIMENSION_KEYS}
-        scores["节奏结构"] = 1
+        payload, key = self._good(score=4, 不足=[rubric_v3.NO_FLAW_PLACEHOLDER])
         with self.assertRaises(ValueError):
-            _validate_judgement(self._good(scores=scores))
+            _validate_dim_judgement(payload, key)
 
-    def test_tag_outside_vocab_rejected(self):
+
+# ── 按维独立调用与单维重试（FR-003/005 / AC-002，REQ-20260921-210038）──
+
+
+class ScoreCaseTest(unittest.TestCase):
+    """score_case 五维并发独立调用；失败维仅重试该维 1 次（mock llm.chat）。"""
+
+    @staticmethod
+    def _dim_response(score=4):
+        return json.dumps(
+            {"score": score, "达标": ["承诺点均兑现"], "不足": ["配角交代潦草"]},
+            ensure_ascii=False,
+        )
+
+    def _run(self, fail_counts: dict[str, int]):
+        """跑一次 score_case；fail_dims={维度: 开头连续失败次数}，其余一次成功。
+
+        返回 (result_or_exc, per-dim 调用计数)。
+        """
+        from unittest.mock import patch
+
         from app.benchmark import rubric_v3
-        from app.benchmark.scorer import _validate_judgement
+        from app.benchmark import scorer
 
-        with self.assertRaises(ValueError):
-            _validate_judgement(self._good(
-                tags={"情节构造": ["不存在的标签"]},
-            ))
+        remaining = dict(fail_counts)
+        calls: list[str] = []
+
+        def fake_chat(messages, **kwargs):
+            system = messages[0]["content"]
+            dim_key = next(
+                d["key"] for d in rubric_v3.DIMENSIONS
+                if f"本次只评审一个维度：{d['key']}" in system
+            )
+            calls.append(dim_key)
+            self.assertEqual(kwargs["phase"], f"benchmark_score:{dim_key}")
+            if remaining.get(dim_key, 0) > 0:
+                remaining[dim_key] -= 1
+                raise RuntimeError(f"mock 失败：{dim_key}")
+            return self._dim_response()
+
+        deliveries = {"主线 storyline": "x" * 250, "人物 character": "y" * 250, "世界观 worldview": "z" * 250}
+        with patch.object(scorer.llm, "chat", side_effect=fake_chat):
+            try:
+                result = scorer.score_case("需求", deliveries)
+            except Exception as exc:  # noqa: BLE001 - 测试需捕获任意上抛类型
+                result = exc
+        from collections import Counter
+
+        return result, Counter(calls)
+
+    def test_all_dims_scored_once(self):
+        result, calls = self._run({})
+        from app.benchmark import rubric_v3
+        from app.benchmark import scorer
+
+        self.assertNotIsInstance(result, Exception)
+        self.assertEqual(sorted(calls.elements()), sorted(rubric_v3.DIMENSION_KEYS))
+        self.assertEqual(set(result["scores"]), set(rubric_v3.DIMENSION_KEYS))
+        # 两段理由结构（DEC-006）+ 无 tags 字段（DEC-009）
+        for key in rubric_v3.DIMENSION_KEYS:
+            self.assertEqual(
+                result["reasons"][key],
+                {"达标": ["承诺点均兑现"], "不足": ["配角交代潦草"]},
+            )
+        self.assertNotIn("tags", result)
+        self.assertEqual(result["overall"], 4.0)
+        self.assertEqual(result["rubric_version"], rubric_v3.RUBRIC_VERSION)
+
+    def test_dim_retry_then_success(self):
+        from app.benchmark import rubric_v3
+
+        result, calls = self._run({"人物塑造": 1})
+        self.assertNotIsInstance(result, Exception)
+        # 失败维恰调用 2 次（1+1 重试），其余维各 1 次
+        self.assertEqual(calls["人物塑造"], 2)
+        for key in rubric_v3.DIMENSION_KEYS:
+            if key != "人物塑造":
+                self.assertEqual(calls[key], 1, key)
+
+    def test_dim_exhausted_raises_with_dim_name(self):
+        from app.benchmark import rubric_v3
+        from app.benchmark import scorer
+
+        result, calls = self._run({"人物塑造": 2})
+        self.assertIsInstance(result, scorer.DimensionScoreError)
+        self.assertIn("人物塑造", str(result))
+        # 重试预算 = 1 次：失败维恰调用 2 次后上抛，不第三次
+        self.assertEqual(calls["人物塑造"], 2)
+        for key in rubric_v3.DIMENSION_KEYS:
+            if key != "人物塑造":
+                self.assertEqual(calls[key], 1, key)
 
 
 # ── 交付完整规则项（FR-002 ③）───────────────────────────────
@@ -499,22 +595,22 @@ class CompareBatchesTest(BenchmarkV3TestBase):
 
 class ReportTest(BenchmarkV3TestBase):
     def _make_batch_with_scores(
-        self, overalls_with_tags: list[tuple[float, dict, dict]],
+        self, overalls_with_overrides: list[tuple[float, dict]],
     ) -> str:
         from app.benchmark import repo
 
         batch_id = repo.create_batch(
-            case_ids=[f"case-{i}" for i in range(len(overalls_with_tags))],
+            case_ids=[f"case-{i}" for i in range(len(overalls_with_overrides))],
             versions=[7], golden_revision="g1", seeds=1,
-            rubric_version="v3", judge_fp="j1",
+            rubric_version="v4", judge_fp="j1",
         )
         rows = self.db.query_all("SELECT * FROM benchmark_runs WHERE batch_id=?", (batch_id,))
-        for row, (overall, tags, dim_overrides) in zip(rows, overalls_with_tags):
+        for row, (overall, dim_overrides) in zip(rows, overalls_with_overrides):
             scores = {k: overall for k in (
                 "需求兑现", "设定自洽", "人物塑造", "情节构造", "节奏结构")}
             scores.update(dim_overrides)
-            data = {"overall": overall, "scores": scores, "tags": tags,
-                    "rule_delivery": {"passed": True, "problems": []}}
+            data = {"overall": overall, "scores": scores,
+                    "reasons": {}, "rule_delivery": {"passed": True, "problems": []}}
             self.db.execute(
                 "UPDATE benchmark_runs SET status='done', scores_json=?, model_fp='m', manifest_fp='mf' WHERE id=?",
                 (json.dumps(data), row["id"]),
@@ -525,24 +621,24 @@ class ReportTest(BenchmarkV3TestBase):
         from app.benchmark.report import build_report, build_summary_for_evolve
 
         batch_id = self._make_batch_with_scores([
-            (4.5, {}, {"人物塑造": 2.0}),
-            (2.0, {"人物塑造": ["弧线缺失"]}, {"人物塑造": 1.5}),
-            (3.0, {"人物塑造": ["弧线缺失"], "节奏结构": ["中段松散"]}, {"人物塑造": 2.5}),
+            (4.5, {"人物塑造": 2.0}),
+            (2.0, {"人物塑造": 1.5}),
+            (3.0, {"人物塑造": 2.5}),
         ])
         report = build_report(batch_id)
         self.assertEqual(report["status"], "ok")
-        self.assertEqual(report["calibration"], "uncalibrated")  # FR-005 ③ 如实标注
+        self.assertEqual(report["calibration"], "uncalibrated")  # 实测达标前如实标注
         # 维度均分：最弱维度排最前
         self.assertEqual(report["dimensions"][0]["dimension"], "人物塑造")
-        # 标签命中：弧线缺失 ×2 最热
-        self.assertEqual(report["tag_hits"][0]["tag"], "弧线缺失")
-        self.assertEqual(report["tag_hits"][0]["hits"], 2)
+        # 词表已下线：报告无 tag_hits 字段（DEC-009 of REQ-20260921-210038）
+        self.assertNotIn("tag_hits", report)
         # 低分 case 在个例层
         self.assertEqual(report["low_cases"][0]["overall"], 2.0)
-        # 进化摘要可用
+        # 进化摘要可用且无 top_tags（FR-006 必要适配）
         summary = build_summary_for_evolve(batch_id)
         self.assertIsNotNone(summary)
         self.assertEqual(summary["batch_id"], batch_id)
+        self.assertNotIn("top_tags", summary)
 
     def test_report_empty_batch(self):
         from app.benchmark.report import build_report

@@ -1,8 +1,9 @@
-"""评分规则只读展示 API 测试（REQ-20260920-104714 / FR-002 / AC-003）。
+"""评分规则只读展示 API 测试（REQ-20260920-104714 / FR-002 / AC-003；v4 适配 REQ-20260921-210038）。
 
 覆盖：
-- 返回内容与 rubric_v3 常量逐字段一致（单一事实源，防前端硬编码漂移）
+- 返回内容与 rubric 常量逐字段一致（单一事实源，防前端硬编码漂移）
 - 校准状态字段存在且如实暴露草稿状态（DEC-006 明示要求）
+- 五档锚点/纪律条款完整、词表字段不出现（DEC-001/009/016）
 """
 import sys
 import unittest
@@ -21,7 +22,7 @@ class RubricApiTest(unittest.TestCase):
         self.assertEqual(resp["rubric_version"], rubric_v3.RUBRIC_VERSION)
         self.assertEqual(resp["calibration_status"], rubric_v3.CALIBRATION_STATUS)
         self.assertEqual(resp["anchor_status"], rubric_v3.ANCHOR_DRAFT_STATUS)
-        self.assertEqual(resp["low_score_threshold"], rubric_v3.LOW_SCORE_THRESHOLD)
+        self.assertEqual(resp["discipline_rules"], rubric_v3.DISCIPLINE_RULES)
         self.assertEqual(resp["dimensions"], rubric_v3.DIMENSIONS)
         self.assertEqual(resp["rule_delivery"], rubric_v3.RULE_DELIVERY_COMPLETE)
 
@@ -34,7 +35,7 @@ class RubricApiTest(unittest.TestCase):
         self.assertIn("draft", resp["anchor_status"])
 
     def test_dimensions_have_full_fields(self):
-        """每个维度含判定问题/三档锚点/缺陷标签词表（FR-002 展示完整性）。"""
+        """每个维度含判定问题 + 1-5 五档锚点；词表字段不出现（FR-002 展示完整性）。"""
         from app.benchmark import api as bench_api
 
         resp = bench_api.get_rubric()
@@ -42,8 +43,16 @@ class RubricApiTest(unittest.TestCase):
         for dim in resp["dimensions"]:
             with self.subTest(dim=dim["key"]):
                 self.assertTrue(dim["question"])
-                self.assertEqual(sorted(dim["anchors"].keys()), ["1", "3", "5"])
-                self.assertGreaterEqual(len(dim["defect_tags"]), 3)
+                self.assertEqual(sorted(dim["anchors"].keys()), ["1", "2", "3", "4", "5"])
+                self.assertNotIn("defect_tags", dim)
+
+    def test_discipline_rules_finalized_six(self):
+        """纪律条款六条全部下发（DEC-016 用户终审定稿，Rules 页展示数据源）。"""
+        from app.benchmark import api as bench_api
+
+        resp = bench_api.get_rubric()
+        self.assertEqual(len(resp["discipline_rules"]), 6)
+        self.assertTrue(all(rule.strip() for rule in resp["discipline_rules"]))
 
 
 if __name__ == "__main__":

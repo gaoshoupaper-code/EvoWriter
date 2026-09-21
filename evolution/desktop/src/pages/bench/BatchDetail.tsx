@@ -14,7 +14,7 @@ import { CaseRunsPanel, type CaseFocus } from "@/components/bench/CaseRunsPanel"
 /**
  * 批次详情页（REQ-20260921-135543 FR-004/FR-005，DEC-006）。
  *
- * 弱点报告（低分条目/缺陷标签点击直达 case 明细，DEC-014）+
+ * 弱点报告（低分条目点击直达 case 明细，DEC-014）+
  * case 明细评分区（DEC-009/010/011）+ A/B 对比（DEC-006）。
  * URL 含批次 id，可收藏可回溯。
  */
@@ -26,7 +26,7 @@ export default function BenchBatchDetail() {
   const [reportError, setReportError] = useState<string | null>(null);
   const [reportRefreshKey, setReportRefreshKey] = useState(0);
 
-  // 低分下钻目标（DEC-014：低分行/缺陷标签点击 → 打开对应 case 明细）
+  // 低分下钻目标（DEC-014：低分行点击 → 打开对应 case 明细）
   const [focusCase, setFocusCase] = useState<CaseFocus | null>(null);
   const caseSectionRef = useRef<HTMLDivElement | null>(null);
 
@@ -66,14 +66,6 @@ export default function BenchBatchDetail() {
     setFocusCase({ caseId, seed: seed ?? undefined, nonce: Date.now() });
     setReportRefreshKey((k) => k + 1);
     caseSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
-  /** 缺陷标签 → 第一个挂该标签的低分 case（DEC-014：标签同样可下钻）。 */
-  function focusTag(tag: string) {
-    const hit = (report?.low_cases ?? []).find((c) =>
-      Object.values(c.tags ?? {}).some((tags) => tags.includes(tag)),
-    );
-    if (hit) focusLowCase(hit.case_id, hit.seed);
   }
 
   async function handleCompare() {
@@ -154,30 +146,6 @@ export default function BenchBatchDetail() {
                     ))}
                   </tbody>
                 </table>
-              </div>
-
-              {/* 标签命中（可点击下钻，DEC-014） */}
-              <div className="bench-report-block">
-                <h4>高频缺陷标签</h4>
-                {(report.tag_hits ?? []).length === 0 ? (
-                  <div className="monitor-empty">无低分标签命中</div>
-                ) : (
-                  <ul className="bench-tag-list">
-                    {(report.tag_hits ?? []).map((t) => (
-                      <li key={t.tag}>
-                        <button
-                          type="button"
-                          className="bench-tag-link"
-                          title="定位第一个挂该标签的低分 case"
-                          onClick={() => focusTag(t.tag)}
-                        >
-                          <span className="bench-tag-name">{t.tag}</span>
-                          <span className="bench-tag-hits">×{t.hits}</span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                )}
                 {report.rule_delivery_failed ? (
                   <div className="bench-rule-warn">
                     交付完整规则项未过：{report.rule_delivery_failed} 条
@@ -194,7 +162,7 @@ export default function BenchBatchDetail() {
               ) : (
                 <table className="data-table bench-lowcases-table">
                   <thead>
-                    <tr><th>Case</th><th>Seed</th><th>总分</th><th>缺陷标签</th><th>交付完整</th></tr>
+                    <tr><th>Case</th><th>Seed</th><th>总分</th><th>交付完整</th></tr>
                   </thead>
                   <tbody>
                     {(report.low_cases ?? []).map((c, i) => (
@@ -207,11 +175,6 @@ export default function BenchBatchDetail() {
                         <td className="mono">{c.case_id}</td>
                         <td>#{c.seed}</td>
                         <td>{c.overall?.toFixed(2) ?? "—"}</td>
-                        <td>
-                          {Object.entries(c.tags ?? {}).flatMap(([dim, tags]) =>
-                            tags.map((t) => `${dim}:${t}`),
-                          ).join("、") || "—"}
-                        </td>
                         <td>{c.rule_delivery_passed ? "过" : "未过"}</td>
                       </tr>
                     ))}

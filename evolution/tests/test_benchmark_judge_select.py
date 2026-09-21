@@ -240,7 +240,7 @@ class JudgeSelectionTest(JudgeTestBase):
 
 
 class ScoreChainTest(JudgeTestBase):
-    """FR-003：score_case 透传 config_id 到 llm.chat。"""
+    """FR-003：score_case 透传 config_id 到 llm.chat（五次按维调用均携带）。"""
 
     def test_score_case_passes_config_id(self):
         import json
@@ -248,14 +248,15 @@ class ScoreChainTest(JudgeTestBase):
         from app.benchmark import scorer
 
         deliveries = {"主线 storyline": "x" * 300, "人物 character": "y" * 300, "世界观 worldview": "z" * 300}
-        # 五维全 5 分（不触发 ≤2 低分校验），结构合法
-        scores = {k: 5 for k in ["需求兑现", "设定自洽", "人物塑造", "情节构造", "节奏结构"]}
-        raw = json.dumps({"scores": scores, "tags": {}, "reasons": {}})
+        # 单维契约（rubric v4）：score + 两段理由
+        raw = json.dumps({"score": 5, "达标": ["承诺点全部兑现"], "不足": ["未发现不足"]})
         with patch.object(scorer.llm, "chat", return_value=raw) as m:
             scorer.score_case("demand", deliveries, judge_config_id=42)
 
-        self.assertEqual(m.call_args.kwargs.get("config_id"), 42,
-                         "score_case 应把 judge_config_id 透传给 llm.chat")
+        self.assertEqual(m.call_count, 5, "五维应各触发一次 judge 调用")
+        for call in m.call_args_list:
+            self.assertEqual(call.kwargs.get("config_id"), 42,
+                             "score_case 应把 judge_config_id 透传给每次 llm.chat")
 
 
 if __name__ == "__main__":

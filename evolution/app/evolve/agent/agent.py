@@ -405,8 +405,7 @@ async def run_inspect_round(ctx: EvolveContext, trace_id: str) -> dict[str, Any]
             "本次会话附带数据集评测全局弱点视图（多 case 聚合，来源评测批次 "
             f"{benchmark_report.get('batch_id')}，校准状态 {benchmark_report.get('calibration')}）：\n"
             f"{_json.dumps(benchmark_report.get('weakest_dimensions', []), ensure_ascii=False, indent=1)}\n"
-            f"高频缺陷标签：{_json.dumps(benchmark_report.get('top_tags', []), ensure_ascii=False)}\n"
-            "该视图是本次进化最重要的证据输入——全局弱在哪维、高频缺陷是什么，"
+            "该视图是本次进化最重要的证据输入——全局弱在哪维，"
             "探查与设计都应围绕它展开。\n\n"
         )
 
@@ -647,7 +646,6 @@ def _format_input_summary(ctx: EvolveContext) -> str:
     benchmark = snap.get("benchmark_report")
     if benchmark:
         dims = benchmark.get("weakest_dimensions") or []
-        tags = benchmark.get("top_tags") or []
         lines.append(f"- 评测弱点视图: 批次 {benchmark.get('batch_id')}"
                      f"（校准状态 {benchmark.get('calibration')}）")
         if dims:
@@ -655,8 +653,6 @@ def _format_input_summary(ctx: EvolveContext) -> str:
                 d.get("dimension", "?") if isinstance(d, dict) else str(d) for d in dims[:8]
             )
             lines.append(f"  最弱维度: {dim_desc}")
-        if tags:
-            lines.append(f"  高频缺陷标签: {', '.join(str(tg) for tg in tags[:10])}")
 
     findings = snap.get("findings") or []
     if findings:

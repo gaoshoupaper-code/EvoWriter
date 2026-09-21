@@ -53,8 +53,8 @@ DEFAULT_SEEDS = 3
 # runner 层只做下界保护——直接调用方（rerun_golden 等）不受取值集合约束）
 DEFAULT_CONCURRENCY = 3
 
-# 评分失败重试次数（FR-002 失败语义：重试 1 次）
-_SCORE_MAX_ATTEMPTS = 2
+# 评分重试在 score_case 内按维度进行（DEC-013：单维 1+1 次）；
+# 行级不再整体重试——任一维重试用尽即整行 failed，error 含维度名。
 
 # 行失败回退 pending 后的 worker 退避（FR-004：避免零间隔立即重抢）
 _RETRY_BACKOFF_S = 10.0
@@ -472,11 +472,12 @@ def _score_with_retry(
     demand_md: str, trace_id: str, judge_config_id: int | None = None,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, Any] | None:
-    """评测评分：直读 ArtifactRevision 三件套 + rubric v3 judge（FR-002/003）。
+    """评测评分：直读 ArtifactRevision 三件套 + rubric v4 按维 judge（FR-002/003）。
 
-    解析/校验失败重试 1 次（FR-002 失败语义）；仍失败返回 None（该行转 failed）。
+    重试语义（DEC-013）：单维失败在 score_case 内重试该维 1 次；任一维重试
+    用尽即整行上抛（DimensionScoreError，message 含维度名 → 行 failed）。
     先等 trace 摄入完成（runs 表出现终态），与旧评估路径同语义；
-    等待与每次尝试前检查批次取消（FR-001 硬停语义：评分结果不再等待/写回）。
+    等待与评分前检查批次取消（FR-001 硬停语义：评分结果不再等待/写回）。
     """
     # 等 trace 入库（executor done 后 ingestion 异步拉取，可能稍慢）
     for _ in range(20):  # 最多等 60s
@@ -490,15 +491,8 @@ def _score_with_retry(
     if not deliveries:
         raise RuntimeError(f"trace {trace_id} 无大纲三件套产物（ArtifactRevision）")
 
-    last_error: Exception | None = None
-    for attempt in range(1, _SCORE_MAX_ATTEMPTS + 1):
-        _check_cancel(cancel_event)
-        try:
-            return scorer.score_case(demand_md, deliveries, judge_config_id=judge_config_id)
-        except Exception as exc:
-            last_error = exc
-            logger.warning("评分第 %d 次失败 trace=%s: %s", attempt, trace_id, exc)
-    raise RuntimeError(f"评分重试用尽（{_SCORE_MAX_ATTEMPTS} 次）: {last_error}")
+    _check_cancel(cancel_event)
+    return scorer.score_case(demand_md, deliveries, judge_config_id=judge_config_id)
 
 
 __all__ = [

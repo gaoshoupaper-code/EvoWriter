@@ -144,15 +144,14 @@ class EvidenceRefMultisourceTest(unittest.TestCase):
         self.assertIn("设计文档已产出", result)
 
     def test_benchmark_refs_in_registry(self):
-        """附带评测批次 → 弱点维度名/缺陷标签是合法证据源；未知维度被拒。"""
+        """附带评测批次 → 弱点维度名是合法证据源；未知维度被拒。"""
         eval_snapshot = {"benchmark_report": {
             "batch_id": "b1",
             "weakest_dimensions": [{"dimension": "人物塑造"}],
-            "top_tags": ["人物扁平"],
         }}
         ok = [DesignChange(
             target="x", change_desc="c", reason="r",
-            evidence_ref=["人物塑造", "人物扁平"],
+            evidence_ref=["人物塑造"],
             expected_up="u", expected_down="d",
         )]
         result, _ = _invoke_write_design_doc(ok, eval_snapshot)

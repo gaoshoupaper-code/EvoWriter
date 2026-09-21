@@ -186,7 +186,10 @@ def score_case(
     raw = llm.chat(
         messages,
         temperature=0.0,
-        timeout=120.0,
+        # 300s：judge 非流式输出五维大 JSON（scores/tags/reasons），输入含
+        # 大纲三件套全文——deepseek 兼容端点实测 120s 常态撞线（评分重试
+        # 双双超时的根因），与 executor/evolution 侧 300s 先例对齐。
+        timeout=300.0,
         phase="benchmark_score",
         scope="eval",
         config_id=judge_config_id,

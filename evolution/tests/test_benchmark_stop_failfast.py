@@ -349,5 +349,37 @@ class Poll4xxFastFailTest(StopFailFastTestBase):
         self.assertEqual(ctx.exception.task_id, "task-z", "取消信号须携带 task_id 供 executor 叫停")
 
 
+class PollFailureStopsExecutorTest(StopFailFastTestBase):
+    """行失败叫停 executor：轮询失败尽力停 executor 任务，不白烧 API（FR-006）。"""
+
+    def _execute_with_poll_error(self, poll_exc):
+        from app.benchmark import runner
+
+        stop_calls: list[str] = []
+        with patch.object(runner.evalset, "load_case_demand", return_value="demand"), \
+             patch.object(runner, "_get_snapshot", return_value={"commit": "c1"}), \
+             patch.object(runner, "_trigger_executor", return_value="task-x"), \
+             patch.object(runner, "_poll_until_done", side_effect=poll_exc), \
+             patch.object(runner, "_stop_executor_task",
+                          lambda tid: stop_calls.append(tid)):
+            with self.assertRaises(type(poll_exc)):
+                runner._execute_one(
+                    {"id": 1, "case_id": "case-a", "harness_version": 1, "seed": 1}
+                )
+        return stop_calls
+
+    def test_poll_failure_stops_executor_task(self):
+        """轮询异常（4xx 快败/executor failed）：行失败前叫停 executor 生成任务。"""
+        stop_calls = self._execute_with_poll_error(RuntimeError("executor task failed: boom"))
+        self.assertEqual(stop_calls, ["task-x"], "失败路径必须尽力叫停 executor 任务")
+
+    def test_batch_cancel_not_double_stopped(self):
+        """批次取消（_BatchCancelled）：走 worker 收尾的叫停语义，不重复停。"""
+        from app.benchmark import runner
+
+        stop_calls = self._execute_with_poll_error(runner._BatchCancelled(task_id="task-x"))
+        self.assertEqual(stop_calls, [], "取消路径由 worker 收尾叫停，轮询层不重复停")
+
+
 if __name__ == "__main__":
     unittest.main()

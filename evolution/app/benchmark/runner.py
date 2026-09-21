@@ -39,8 +39,12 @@ logger = logging.getLogger("evolution.benchmark.runner")
 
 # executor 调用配置（与 tests/api 对齐）
 _EXEC_TIMEOUT = 30.0
-_POLL_TIMEOUT = 600.0   # 单 case 10 分钟
 _POLL_INTERVAL = 5.0
+# 轮询不设时间上限（DEC-004 修订，2026-09-21）：单 case 生成实测 >18 分钟，
+# 固定预算会在 executor 正常干活时把行判死——重试再开一个全新生成，旧任务
+# 不停，最多 3 个重叠生成白烧 API。终止条件=executor 终态（done/failed/
+# cancelled）或批次手动停止（每轮检查取消事件）；executor 重启后任务表丢失
+# 会以 404 快速失败兜底，无死循环风险。
 
 # 每 case 独立重复次数（DEC-013 固定 3 seed）
 DEFAULT_SEEDS = 3
@@ -345,9 +349,16 @@ def _execute_one(
     # 2. 调 executor（传 commit 供隔离装配；实际身份以 Platform 绑定回填为准）
     task_id = _trigger_executor(demand_md, snapshot)
 
-    # 3. 轮询完成
+    # 3. 轮询完成（失败时尽力叫停 executor 生成任务，不白烧 API；
+    #    _BatchCancelled 走 worker 收尾的 task_id 叫停语义，不在此重复停）
     _check_cancel(cancel_event, task_id=task_id)
-    trace_id = _poll_until_done(task_id, run_id, cancel_event=cancel_event)
+    try:
+        trace_id = _poll_until_done(task_id, run_id, cancel_event=cancel_event)
+    except _BatchCancelled:
+        raise
+    except Exception:
+        _stop_executor_task(task_id)
+        raise
     if not trace_id:
         raise RuntimeError(f"executor task {task_id} 无 trace_id")
 
@@ -418,13 +429,12 @@ def _poll_until_done(
     run_id: int,
     cancel_event: threading.Event | None = None,
 ) -> str | None:
-    """轮询 executor task 直到完成，返回 trace_id。
+    """轮询 executor task 直到完成，返回 trace_id（不设时间上限，见模块配置注释）。
 
-    4xx 快速失败（FR-004：任务不存在/无效秒级判败，不等满超时）；
-    5xx 与网络错误维持退避重试。每轮检查批次取消（FR-001）。
+    4xx 快速失败（FR-004：任务不存在/无效秒级判败）；5xx 与网络错误维持退避
+    重试。每轮检查批次取消（FR-001）。
     """
-    deadline = time.time() + _POLL_TIMEOUT
-    while time.time() < deadline:
+    while True:
         time.sleep(_POLL_INTERVAL)
         _check_cancel(cancel_event, task_id=task_id)
         try:
@@ -449,7 +459,6 @@ def _poll_until_done(
             raise RuntimeError("executor task cancelled")
         # running：继续等
 
-    raise RuntimeError(f"轮询超时（{_POLL_TIMEOUT}s 无结果）")
 
 
 def _score_with_retry(

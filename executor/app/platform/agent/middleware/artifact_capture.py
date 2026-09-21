@@ -84,6 +84,12 @@ class PlatformArtifactCaptureMiddleware(AgentMiddleware):
         )
         tool_call_id = str(_mapping_value(tool_call, "id") or "")
         tool_name = str(_mapping_value(tool_call, "name") or "")
+        if self._already_captured(tool_call_id, file_path):
+            # 内层快照中间件（文件串行化锁内）已对该调用取证：锁外重读文件
+            # 会与同文件并发写竞态——兄弟工具调用把文件推进后，本层读到不同
+            # hash，同 (call,path) 两次不同内容触发 hash conflict 误判（A/B
+            # 线上批次 12494f65 根因）。跳过重读，以锁内首次取证为准。
+            return
         try:
             content = self._read_workspace_file(file_path)
             content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
@@ -109,6 +115,16 @@ class PlatformArtifactCaptureMiddleware(AgentMiddleware):
                     f"ArtifactRevision capture failed for {tool_name} "
                     f"{file_path} ({tool_call_id or 'missing tool_call_id'}): {exc}"
                 ) from exc
+
+    def _already_captured(self, tool_call_id: str, file_path: str) -> bool:
+        """该 (tool_call_id, 路径) 是否已被内层取证（查询失败按未取证走原路径）。"""
+        has_capture = getattr(self.recorder, "has_artifact_call_capture", None)
+        if not callable(has_capture) or not tool_call_id:
+            return False
+        try:
+            return bool(has_capture(self.trace_id, tool_call_id, file_path))
+        except Exception:
+            return False
 
     def _read_workspace_file(self, file_path: str) -> str:
         root = self.workspace_root.resolve()

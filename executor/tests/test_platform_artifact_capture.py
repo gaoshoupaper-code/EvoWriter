@@ -31,6 +31,17 @@ class _Recorder:
         self.degraded.append(f"{trace_id}:{reason}")
 
 
+class _SkipRecorder(_Recorder):
+    """模拟内层快照已取证的 recorder：has_artifact_call_capture 命中即跳过。"""
+
+    def __init__(self, captured_keys: set[str]) -> None:
+        super().__init__()
+        self._captured_keys = captured_keys
+
+    def has_artifact_call_capture(self, trace_id: str, tool_call_id: str, file_path: str) -> bool:
+        return f"{tool_call_id}\x00{file_path}" in self._captured_keys
+
+
 class PlatformArtifactCaptureTest(unittest.TestCase):
     def test_successful_write_is_read_back_after_handler(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -99,6 +110,39 @@ class PlatformArtifactCaptureTest(unittest.TestCase):
             )
             with self.assertRaises(EvidenceCaptureError):
                 strict.wrap_tool_call(request, lambda _: result)
+
+    def test_already_captured_call_skips_reread(self) -> None:
+        """内层快照已取证的调用：平台层跳过重读，不重复取证、不误判冲突。
+
+        竞态还原：内层（文件串行化锁内）取证 hash_1 后，同文件被并发兄弟
+        写推进——平台层（锁外）若重读会拿到不同内容触发 hash conflict。
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            target = workspace / "character" / "林玄霜.md"
+            target.parent.mkdir(parents=True)
+            target.write_text("并发写推进后的内容", encoding="utf-8")
+
+            recorder = _SkipRecorder({"call-3\x00/character/林玄霜.md"})
+            middleware = PlatformArtifactCaptureMiddleware(
+                recorder=recorder,
+                trace_id="trace-race",
+                workspace_root=workspace,
+                agent_name="storybuilding-subagent",
+                strict=True,
+            )
+            request = SimpleNamespace(
+                tool_call={
+                    "id": "call-3",
+                    "name": "edit_file",
+                    "args": {"file_path": "/character/林玄霜.md"},
+                }
+            )
+            result = ToolMessage(content="ok", tool_call_id="call-3")
+
+            # strict 模式下也不得抛 EvidenceCaptureError，且不产生第二次取证。
+            self.assertIs(middleware.wrap_tool_call(request, lambda _: result), result)
+            self.assertEqual(recorder.captures, [], "已取证的调用不得重复取证")
 
     def test_runtime_factory_prepends_capture_to_agent_and_specs(self) -> None:
         recorder = _Recorder()

@@ -1636,6 +1636,25 @@ class TraceRecorder:
             self._write_artifact_capture_index(index_path, capture_index)
             return revision_id
 
+    def has_artifact_call_capture(self, trace_id: str, tool_call_id: str, file_path: str) -> bool:
+        """该 (tool_call_id, 路径) 是否已完成取证。
+
+        平台取证层在文件串行化锁外执行，重读文件会与同文件并发写竞态——
+        内层快照层（锁内）刚取证完，兄弟工具调用又写同一文件，平台层再读
+        就拿到不同 hash，同 (call,path) 两次不同内容触发 hash conflict
+        误判（A/B 线上批次 12494f65 根因）。平台层调用本方法：已取证则
+        跳过重读，保持「一次调用=一份不可变内容」由锁内的首次取证定义。
+        """
+        capture_tool_call_id = tool_call_id or ""
+        if not capture_tool_call_id:
+            return False
+        logical_key = "/" + file_path.replace("\\", "/").lstrip("/")
+        call_path_key = f"{capture_tool_call_id}\x00{logical_key}"
+        with self._artifact_head_lock:
+            index_path = self._artifact_capture_index_path(trace_id)
+            capture_index = self._read_artifact_capture_index(trace_id, index_path)
+            return call_path_key in capture_index["call_paths"]
+
     def _artifact_heads_path(self, trace_id: str) -> Path:
         run_path = self._run_paths.get(trace_id)
         if run_path is None:

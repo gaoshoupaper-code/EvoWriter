@@ -33,12 +33,13 @@ logger = logging.getLogger("evolution.evolve.agent.tools.writers")
 # 防止 Agent 传 "../etc/passwd" 或 "a/b/../../../c" 之类穿越路径
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_\-\.]+$")
 
-# CON-002 物理隔离纵深防御：进化 agent 禁写评估器/契约代码（防 reward hacking）。
-# 主隔离靠 FilesystemBackend(root_dir=harness_work_dir, virtual_mode=True)——eval_agent/
-# contracts/ 都在 root 之外物理不可达。这里加显式前缀拒绝作纵深防御：
+# CON-002 物理隔离纵深防御：进化 agent 禁写契约代码（防 reward hacking）。
+# 主隔离靠 FilesystemBackend(root_dir=harness_work_dir, virtual_mode=True)——contracts/
+# 在 root 之外物理不可达。这里加显式前缀拒绝作纵深防御：
 # ①给 Agent 清晰报错（而非晦涩的 backend ValueError）；②防未来 root_dir 配置回归。
 # 即便路径因 backend 虚拟化解析不到这些目录，命中前缀就直接拒。
-_FORBIDDEN_EDIT_PREFIXES = ("eval_agent/", "contracts/", "../eval_agent", "../contracts")
+# （eval_agent/ 前缀随休眠评估系统裁撤，REQ-20260921-124733）
+_FORBIDDEN_EDIT_PREFIXES = ("contracts/", "../contracts")
 
 
 def _sanitize_name(name: str, suffix: str = "") -> str:
@@ -186,9 +187,9 @@ def make_writer_tools(backend) -> list:
                 )
                 return (
                     f"错误：拒绝修改 '{file_path}'——CON-002 物理隔离："
-                    f"进化 Agent 禁止修改评估器代码（eval_agent/）、契约代码（contracts/）、"
-                    f"评分依据。这是防 reward hacking 的红线（评估器/契约是评估的确定性依据，"
-                    f"进化改它们 = 自己改考卷）。只能改 harness 包内要素。"
+                    f"进化 Agent 禁止修改契约代码（contracts/）。"
+                    f"这是防 reward hacking 的红线（契约是评测的确定性依据，"
+                    f"进化改契约 = 自己改考卷）。只能改 harness 包内要素。"
                 )
         result = backend.edit(virt_path, old_string, new_string)
         if result.error:

@@ -358,7 +358,7 @@ def _compute_integrity_diagnosis(trace_id: str) -> IntegrityDiagnosis:
         evidence_status = run_row.get("evidence_status") or "unknown"
         evidence_gaps = json.loads(run_row.get("evidence_gaps_json") or "[]")
         if run_row.get("service") == "executor" and run_row.get("workload") == "creation":
-            from app.dossier.eligibility import assess_creation_trace
+            from app.trace.evidence import assess_creation_trace
 
             report = assess_creation_trace(trace_id)
             evidence_status = report.evidence_status

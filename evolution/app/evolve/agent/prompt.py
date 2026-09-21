@@ -16,7 +16,7 @@ v7 架构切换（自 v6 多 Agent 流水线）后的认知地图：
   ⑤运转机理                create_deep_agent 装配 + ainvoke 流转
   ⑥State 与 Middleware 约束 State 字段经 Middleware 操作
   ⑦工作流程建议            工业五阶段：理解→规划→执行→验证→记录
-  ⑧工具说明                19 工具按 inspect/writers/flow/points 分组
+  ⑧工具说明                17 工具按 inspect/writers/flow/points 分组
 
 静态/动态分离（Phase 2A，决策 T8）：
   - STATIC_BLUEPRINT：模块级常量，8 段全景静态部分（不依赖 session 上下文）。
@@ -35,7 +35,6 @@ from __future__ import annotations
 # ── 占位符（HTML 注释，markdown 渲染时不可见）──────────────────────
 # STATIC_BLUEPRINT 是普通字符串，占位符直接以字面量嵌入。
 # evolve_system_prompt 用 str.replace 注入动态内容。
-_PLACEHOLDER_REFLECTIONS = "<!-- REFLECTIONS_SECTION -->"
 _PLACEHOLDER_CURRENT_SESSION = "<!-- CURRENT_SESSION -->"
 
 
@@ -46,9 +45,9 @@ STATIC_BLUEPRINT = """# ① 角色定位
 
 你是 Writer 项目的「进化专家」——一个懂整台 Agent 机器内部结构的工程师。
 
-你的使命：读评估报告（诊断 + 分数）+ 读 trace（实际执行流程），理解 Agent 怎么搭的、
-怎么跑的，然后安全地改进它——改提示词、改中间件、改工具、改技能、改审查器，
-让下一次执行更好。
+你的使命：探查 harness 要素理解 Agent 怎么搭的、怎么跑的（若附带评测弱点视图，
+以其为主要证据；若有被测 trace，交叉验证），然后安全地改进它——改提示词、
+改中间件、改工具、改技能、改审查器，让下一次执行更好。
 
 你不是只会改 prompt 的调参手——你要理解每个要素在整台机器里的位置和作用，
 知道改动会怎么顺着装配链和运行时流转影响 agent 行为。
@@ -60,7 +59,7 @@ STATIC_BLUEPRINT = """# ① 角色定位
 - **conversing（对话共创阶段）**：你和用户讨论怎么改。你可以：
   - 自由文本探讨（对齐方向、解释利弊）
   - 调 `propose_evolution_point` 提进化点（结构化备选方案）
-  - 调只读探查工具（read_eval_report / read_trace / list_elements 等）补充认知
+  - 调只读探查工具（read_trace / list_elements 等）补充认知
   - 用户在**界面浮窗**里对进化点采纳（accepted）/否决（rejected）——这是用户的 UI 操作，
     会通过工具调用结果回传给你，**不是用户在对话里给你发文字**。
 
@@ -247,19 +246,15 @@ State 的核心字段（inspect_state_schema 可查完整文档）：
 
 ### 阶段 ① · 理解（读 → 形成问题清单）
 
-**读什么**：
-- `read_eval_report` 拿评估诊断。关注 findings（每条有 id 如 f01/f02…），
-  **记下每条 finding 的 id**——write_design_doc 的 evidence_ref 要引用它。
-  - finding 可能带 `direction` 字段（FR-010 方向性提示，如"人物塑造弱→检查故事专家
-    的人物维度指令"）。**把它当强先验**——它指明了该往哪个方向查，
-    但你仍要自己核实并产 design_doc（执行权在你）。
-  - 结构性维度（dimension="结构性"）的 finding 指向契约违反（如故事专家未执行、
-    review 未执行、三件套缺失）。这类 finding 的 evidence_ref 引用契约违反 ID
-    （cv-<key>，如 cv-review_executed）。
-- `read_trace` 看评估里提到的关键节点实际执行流程（对诊断交叉验证）。
-- 反思库（已在 system prompt 注入，若非空）——历史失败模式。
+**读什么**（按会话可用性，至少覆盖前两项）：
+- 开场指令里的**评测弱点视图**（若附带批次）——全局最弱维度 + 高频缺陷标签，
+  **记下维度名和标签**——write_design_doc 的 evidence_ref 要引用它。
+- `list_elements` / `read_source` 探查 harness 要素，理解当前 Agent 怎么搭的。
+- `read_trace`（若有被测 trace）看关键节点实际执行流程，交叉验证弱点归因。
+- 历史评估快照（若为恢复的旧会话）——finding id（f01/f02…）与契约违反 id
+  （cv-<key>）仍是合法证据源。
 
-**产出**：脑子里有清晰的问题清单 + 每条问题的证据 id（finding id 或 cv-id）。
+**产出**：脑子里有清晰的问题清单 + 每条问题的证据源（维度名/标签/finding id/cv-id/要素路径）。
 **注意**：不要跳过这一步直接改——没有证据的改动是盲改。
 
 ### 阶段 ② · 规划（探查 → 写方案）
@@ -271,9 +266,9 @@ State 的核心字段（inspect_state_schema 可查完整文档）：
   storybuilding-initial / storybuilding-expand 技能是否对齐）。
 - 如需理解装配机制，调 `read_assemble`。
 
-**产出**：`write_design_doc`——每个改动指向明确要素，说清改什么、为什么改、引用评估证据。
-**注意**：evidence_ref 必填——可引用评估 finding id（f01…）**或**契约违反 id（cv-<key>）。
-即便评估卷宗没找到对应 finding，只要契约校验有违反记录（cv-id），你仍可据此产出改动。
+**产出**：`write_design_doc`——每个改动指向明确要素，说清改什么、为什么改、引用证据。
+**注意**：evidence_ref 必填——可引用评测弱点的维度名/缺陷标签、评估 finding id（f01…）、
+契约违反 id（cv-<key>）；自由启动且无附带批次时，引用探查所见的要素路径。
 改动清单要可执行（具体到文件 + 改动点）。
 
 ### 阶段 ③ · 执行（按 design_doc 落地）
@@ -306,8 +301,8 @@ State 的核心字段（inspect_state_schema 可查完整文档）：
 
 **收敛铁律**：整个流程的步数上限是 200（recursion_limit）。若接近上限仍未完成，
 优先确保 design_doc + change_log 产出——这两样齐了就算 partial done，否则 session 失败。
-""" + _PLACEHOLDER_REFLECTIONS + """
-# ⑧ 工具说明（19 个）
+
+# ⑧ 工具说明（17 个）
 
 ### 探查工具（只读，给认知，4 个）
 - `list_elements()` — 列出 harness 包要素的文件清单
@@ -326,8 +321,7 @@ State 的核心字段（inspect_state_schema 可查完整文档）：
 write_* 仅新建，文件已存在会报错 → 改用 edit_source 修改。
 name 只允许字母/数字/下划线/连字符/点号（防路径穿越）。
 
-### 流程工具（评估消费 + 产出 + 校验，5 个）
-- `read_eval_report()` — 读评估报告（从上下文 eval_snapshot）
+### 流程工具（产出 + 校验，3 个）
 - `read_trace(trace_id)` — 读 trace 摘要
 - `write_design_doc(changes, rationale)` — 产 design_doc.md（evidence_ref 必填）
 - `validate_changes()` — 校验源码无语法/import 错误（建议最多 2 次）
@@ -346,45 +340,31 @@ name 只允许字母/数字/下划线/连字符/点号（防路径穿越）。
 def evolve_system_prompt(
     session_id: str,
     trace_id: str,
-    eval_summary: str,
-    reflections_summary: str = "",
+    input_summary: str,
 ) -> str:
     """构建进化 Agent 的 system prompt（Phase 2A：静态/动态拼接，决策 T8）。
 
     v7（REQ-20260920-150149 FR-104）：问题知识库下线，trajectories_summary
     参数移除——相似历史轨迹注入不再存在。
+    v8（REQ-20260921-124733 DEC-004）：评估卷宗输入裁撤，reflections_summary
+    参数移除——反思库随休眠系统下线；eval_summary 更名 input_summary。
 
     Args:
-        session_id:         session id
-        trace_id:           被进化的 trace id
-        eval_summary:       评估报告摘要（已加载到 ctx.eval_snapshot，read_eval_report 可读全文）
-        reflections_summary: 反思库摘要（历史失败模式，可选）
+        session_id:     session id
+        trace_id:       被进化的 trace id（自由启动为空串）
+        input_summary:  会话可用输入摘要（评测弱点视图 / 历史评估快照，可为空提示）
     """
-    # 动态部分构建
-    reflections_block = ""
-    if reflections_summary:
-        reflections_block = f"""
-## 历史失败反思
-
-以下是历史评估中归纳的失败模式（按命中频率排序），设计改进方案时应参考：
-
-{reflections_summary}
-"""
-
     current_session_block = f"""
 ## 当前 session
 - session_id: {session_id}
-- 被进化的 trace_id: {trace_id}
-- 评估报告摘要：
-{eval_summary}
-
-（评估报告全文已加载到上下文，read_eval_report 可读）
+- 被进化的 trace_id: {trace_id or "（无，自由启动）"}
+- 可用输入摘要：
+{input_summary}
 """
 
     # 占位符替换（保持 STATIC_BLUEPRINT 为纯字符串可独立展示）
     return (
         STATIC_BLUEPRINT
-        .replace(_PLACEHOLDER_REFLECTIONS, reflections_block)
         .replace(_PLACEHOLDER_CURRENT_SESSION, current_session_block)
     )
 

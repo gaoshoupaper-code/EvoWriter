@@ -10,14 +10,12 @@ from pathlib import Path
 
 import app.core.db as db
 from app.core.settings import settings
-from app.dossier.api import CompileStartRequest, list_candidates, start_compile
-from app.dossier.eligibility import assess_creation_trace
+from app.trace.evidence import assess_creation_trace
 from contracts.trace import TraceLogEvent
 from contracts.trace.payload import ContentAddressedPayloadStore
-from fastapi import HTTPException
 
 
-class DossierTraceEligibilityTest(unittest.TestCase):
+class TraceEvidenceEligibilityTest(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.old_db = settings.evolution_db
@@ -35,27 +33,6 @@ class DossierTraceEligibilityTest(unittest.TestCase):
         settings.trace_payload_dir = self.old_payload_dir
         self.tmp.cleanup()
 
-    def test_candidates_and_direct_start_share_one_source_boundary(self) -> None:
-        self._seed_complete_creation("trace-creation")
-        for trace_id, service, workload, purpose in (
-            ("trace-compile", "evolution", "evidence_compile", "evidence_compile"),
-            ("trace-eval", "evolution", "evaluation", "evolution_eval"),
-            ("trace-evolve", "evolution", "evolution", "evolution_evolve"),
-            ("trace-infra", "executor", None, "infrastructure"),
-        ):
-            self._seed_run(trace_id, service=service, workload=workload, purpose=purpose)
-
-        response = list_candidates(limit=100, offset=0)
-
-        self.assertEqual([item["trace_id"] for item in response["items"]], ["trace-creation"])
-        for trace_id in ("trace-compile", "trace-eval", "trace-evolve", "trace-infra"):
-            before = db.query_one("SELECT COUNT(*) AS count FROM evidence_dossiers")["count"]
-            with self.assertRaises(HTTPException) as caught:
-                asyncio.run(start_compile(CompileStartRequest(trace_id=trace_id)))
-            self.assertEqual(caught.exception.status_code, 409)
-            after = db.query_one("SELECT COUNT(*) AS count FROM evidence_dossiers")["count"]
-            self.assertEqual(after, before)
-
     def test_transport_verified_without_revisions_is_not_consumable(self) -> None:
         self._seed_run("trace-missing-revisions")
         self._seed_contract("trace-missing-revisions")
@@ -66,13 +43,7 @@ class DossierTraceEligibilityTest(unittest.TestCase):
         self.assertEqual(report.transport_integrity, "verified")
         self.assertEqual(report.evidence_status, "incomplete")
         self.assertIn("artifact_revision_missing:1", report.missing_fields)
-        self.assertNotIn(
-            "trace-missing-revisions",
-            [item["trace_id"] for item in list_candidates(limit=100, offset=0)["items"]],
-        )
-        with self.assertRaises(HTTPException) as caught:
-            asyncio.run(start_compile(CompileStartRequest(trace_id="trace-missing-revisions")))
-        self.assertIn("artifact_revision_missing:1", caught.exception.detail["missing_fields"])
+        self.assertFalse(report.eligible)
 
     def test_tool_message_error_is_not_counted_as_successful_write(self) -> None:
         self._seed_run("trace-tool-error")
@@ -99,27 +70,6 @@ class DossierTraceEligibilityTest(unittest.TestCase):
         self.assertEqual(report.evidence_status, "complete")
         self.assertEqual(report.successful_write_count, 1)
         self.assertEqual(report.artifact_revision_count, 1)
-
-    def test_compile_lineage_includes_recovery_revision(self) -> None:
-        from app.dossier.api import _record_compile_lineage
-
-        self._seed_complete_creation("trace-recovered")
-        db.execute(
-            """UPDATE artifact_revisions
-               SET producer_trace_id='trace-recovery', source_trace_id='trace-recovered',
-                   provenance='trace_payload_recovery'
-               WHERE artifact_revision_id='revision-trace-recovered'"""
-        )
-
-        _record_compile_lineage("trace-recovered", "dossier-recovered", "trace-compile")
-
-        edge = db.query_one(
-            """SELECT relation FROM lineage_edges
-               WHERE from_type='artifact_revision' AND from_id='revision-trace-recovered'
-                 AND to_type='evidence_dossier' AND to_id='dossier-recovered'"""
-        )
-        self.assertIsNotNone(edge)
-        self.assertEqual(edge["relation"], "compiled_into")
 
     def _seed_complete_creation(self, trace_id: str) -> None:
         self._seed_run(trace_id)

@@ -1,13 +1,13 @@
 """进化端冒烟单测（重构安全网，决策 D3 / 设计 S4）。
 
 隔离策略（S4）：FastAPI TestClient + 临时 SQLite DB，只测校验逻辑——
-evolve/eval_agent 的 start 端点在强前置校验阶段就 400 返回，不触及 LLM/executor。
+不触及 LLM/executor。
 
-覆盖：
-  - import 冒烟：evolve/eval_agent/tests 全部模块可正常 import（重构后路径正确性）
-  - evolve start 强前置校验：未评估的 trace 启动进化 → 400
+覆盖（自由启动改造，REQ-20260921-124733 DEC-004）：
+  - import 冒烟：evolve/tests 全部模块可正常 import（重构后路径正确性）
+  - 旧入口 /evolve/start 已裁撤（404）
+  - start-converse 请求体无必填字段（空 body 不 422）
   - evolve sessions 列表：空 DB 下返回空列表
-  - eval_agent sessions 列表 + evaluated-traces 端点可调
 
 设计依据：.claude/md/20260701_213000_进化端重构_设计.md
 """
@@ -68,51 +68,29 @@ class ImportSmokeTest(unittest.TestCase):
         import app.evolve.agent.tools.flow  # noqa: F401
         import app.evolve.agent.tools.inspect  # noqa: F401
 
-    def test_import_eval_agent_modules(self) -> None:
-        import app.eval_agent.api  # noqa: F401
-        import app.eval_agent.ctx  # noqa: F401
-        import app.eval_agent.repo  # noqa: F401
-        import app.eval_agent.tools  # noqa: F401
-        import app.eval_agent.agent  # noqa: F401
-
     def test_import_tests_modules(self) -> None:
         import app.tests.api  # noqa: F401
         import app.tests.repo  # noqa: F401
 
 
-class EvolveStartGuardTest(unittest.TestCase):
-    """evolve start 端点的强前置校验（不触及 LLM/executor）。"""
+class EvolveStartContractTest(unittest.TestCase):
+    """自由启动契约（DEC-004）：无必填业务输入，旧入口已裁撤。"""
 
     def setUp(self) -> None:
         self.client = TestClient(app)
 
-    def test_start_rejects_unknown_evaluation_dossier(self) -> None:
-        """不存在的评估卷宗启动进化 → 409，且返回缺失事实。"""
+    def test_legacy_start_endpoint_removed(self) -> None:
+        """旧 /evolve/start（评估卷宗强前置）随休眠系统裁撤 → 404。"""
         resp = self.client.post(
-            "/api/evolve/start", json={"eval_dossier_id": "nonexistent-dossier"}
+            "/api/evolve/start", json={"eval_dossier_id": "whatever"}
         )
-        self.assertEqual(resp.status_code, 409)
-        self.assertIn("dossier", resp.json()["detail"]["missing_fields"])
+        self.assertEqual(resp.status_code, 404)
 
-    def test_start_rejects_unsealed_evaluation_dossier(self) -> None:
-        """未封存的评估卷宗启动进化 → 409，不启动下游 Trace。"""
-        db.execute(
-            """INSERT INTO evaluation_dossiers
-               (dossier_id, eval_attempt_id, source_dossier_id, source_dossier_version,
-                trace_id, owner_user_id, completeness_status, seal_status, created_at)
-               VALUES ('unsealed-dossier', 'eval-unsealed', 'evidence-1', 1,
-                       'trace-source', 'user-1', 'incomplete', 'unsealed', '2026-01-01')"""
-        )
-        try:
-            resp = self.client.post(
-                "/api/evolve/start", json={"eval_dossier_id": "unsealed-dossier"}
-            )
-            self.assertEqual(resp.status_code, 409)
-            missing = resp.json()["detail"]["missing_fields"]
-            self.assertIn("seal_status=sealed", missing)
-            self.assertIn("completeness_status=complete", missing)
-        finally:
-            db.execute("DELETE FROM evaluation_dossiers WHERE dossier_id='unsealed-dossier'")
+    def test_start_converse_accepts_empty_body(self) -> None:
+        """无任何业务输入即可启动（不 422）；测试环境无 recorder → 503 守门。"""
+        resp = self.client.post("/api/evolve/start-converse", json={})
+        self.assertEqual(resp.status_code, 503)
+        self.assertIn("trace_recorder", resp.json()["detail"]["missing_fields"])
 
 
 class EvolveSessionsQueryTest(unittest.TestCase):
@@ -128,21 +106,6 @@ class EvolveSessionsQueryTest(unittest.TestCase):
         data = resp.json()
         self.assertEqual(data["total"], 0)
         self.assertEqual(data["sessions"], [])
-
-
-class EvalAgentQueryTest(unittest.TestCase):
-    """eval_agent 查询端点可调（不触及 LLM）。"""
-
-    def setUp(self) -> None:
-        self.client = TestClient(app)
-
-    def test_list_eval_sessions(self) -> None:
-        resp = self.client.get("/api/eval-agent/sessions")
-        self.assertEqual(resp.status_code, 200)
-
-    def test_evaluated_traces(self) -> None:
-        resp = self.client.get("/api/eval-agent/evaluated-traces")
-        self.assertEqual(resp.status_code, 200)
 
 
 if __name__ == "__main__":

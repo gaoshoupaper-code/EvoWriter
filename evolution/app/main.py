@@ -2,7 +2,7 @@
 
 第一期路由随各 Phase 逐步挂载：
 - Phase 2: ingestion（POST /ingestion/notify）
-- Phase 3: traces（GET /traces, /traces/{id}）、stats（/stats/...）
+- Phase 3: traces（GET /traces, /traces/{id}）
 - Phase 4: rules（/rules ...）
 """
 
@@ -31,7 +31,6 @@ from app.core import db
 from app.core.settings import settings
 from app.ingestion.ingestion import router as ingestion_router
 from app.view.traces import router as traces_router
-from app.view.stats import router as stats_router
 from app.view.users import router as users_router
 from app.versioning.snapshot_api import router as snapshot_router
 from app.versioning.elements_api import router as elements_router
@@ -41,15 +40,11 @@ from app.view.events import router as events_router
 from app.view.agent_package import router as agent_package_router
 from app.evolve.api import router as evolve_router
 from app.tests.api import router as tests_router
-from app.eval_agent.api import router as eval_agent_router
-from app.dossier.api import router as dossier_router
 from app.view.versions_api import router as versions_router
 from app.dataset.api import router as dataset_router
 from app.ingestion.scan import start_scan_scheduler
 from app.ingestion.user_sync import start_user_sync_scheduler
 from app.view.active import start_active_poller
-from app.promote.api import router as promote_router
-from app.promote.scheduler import start_judge_scheduler
 from app.benchmark.api import router as benchmark_router
 from app.trace.recorder import EvolutionTraceRecorder
 from app.trace_payloads import start_payload_lifecycle_scheduler
@@ -75,28 +70,9 @@ async def lifespan(app: FastAPI):
         orphan_log.exception("历史孤儿迁移失败（不影响启动）")
     start_scan_scheduler()
     start_active_poller()
-    # 数据闭环：启动 promote judge 调度器（后台定时扫描生产 trace → judge）
-    start_judge_scheduler()
     # 用户映射同步：定时从 executor 拉取用户列表 → user_cache 表（trace 历史列表展示用户名）
     start_user_sync_scheduler()
     start_payload_lifecycle_scheduler()
-
-    # FR-004 / EDGE-003：评估终态一致性对账——以不可变 sealed dossier 为事实，
-    # 把封存成功后收尾崩溃造成的「业务 failed / 封存成功」分裂态收敛为 completed。
-    # 不重跑模型、不改卷宗内容、不改历史 Trace 事件。
-    from app.eval_agent.reconcile import reconcile_eval_terminal_states
-    try:
-        recon = reconcile_eval_terminal_states()
-        if recon["scanned"]:
-            import logging
-            logging.getLogger("evolution.eval_agent.reconcile").info(
-                "评估终态对账：%s", recon,
-            )
-    except Exception:
-        import logging
-        logging.getLogger("evolution.eval_agent.reconcile").exception(
-            "评估终态对账失败（不影响启动）"
-        )
 
     # D5/D8：创建 recorder 单例 + 崩溃恢复 + 启动 drain + 心跳扫描。
     # 顺序保证：init_db 先于 recorder（recorder 写 DB 依赖表已建）。
@@ -162,7 +138,6 @@ app.add_middleware(NotifyTokenMiddleware)
 app.include_router(ingestion_router, prefix="/api")
 app.include_router(traces_router, prefix="/api")
 app.include_router(trace_workbenches_router, prefix="/api")
-app.include_router(stats_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 app.include_router(snapshot_router, prefix="/api")
 # Harness 要素展示（前端「Harness 要素」页）
@@ -177,14 +152,11 @@ app.include_router(evolve_router, prefix="/api")
 # 手动单次测试入口（数据集选择 + Agent 版本选择 + 独立测试记录，D-Q9）
 app.include_router(tests_router, prefix="/api")
 # 评估 Agent（三功能解耦：评估从进化流水线抽离为独立顶层 Agent，S1/S7）
-app.include_router(eval_agent_router, prefix="/api")
-app.include_router(dossier_router, prefix="/api")
 # 配置版本谱系视图（前端版本谱系页 D8）
 app.include_router(versions_router, prefix="/api")
 # 数据集管理（数据闭环设计：分层数据集 golden/growing + revision 锁定）
 app.include_router(dataset_router, prefix="/api")
 # Promote 闸门（数据闭环设计：生产 trace → 数据集的清洗 + 标注流水线）
-app.include_router(promote_router, prefix="/api")
 # Benchmark 矩阵 + Runner（数据闭环设计：跨版本对比 + golden 升级重跑）
 app.include_router(benchmark_router, prefix="/api")
 # 大模型 API 配置（桌面化改造，2026-07-07：桌面端唯一 key 配置入口）

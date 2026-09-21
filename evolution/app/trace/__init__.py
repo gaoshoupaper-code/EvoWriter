@@ -1,6 +1,6 @@
 """进化端 trace 自观测模块（决策 D1：从执行端移植改造）。
 
-为评估 Agent 和进化 Agent 提供与执行端同等的观测能力：
+为进化端工作负载（进化 Agent / 评测执行等）提供与执行端同等的观测能力：
   - EvolutionTraceRecorder：核心记录器（DB 主存 + jsonl WAL）
   - TraceMiddleware：拦截 LLM/Tool 调用产事件
   - TraceCallbackHandler：注册 run 父子关系构建调用树

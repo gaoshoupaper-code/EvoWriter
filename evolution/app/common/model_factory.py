@@ -1,7 +1,7 @@
 """Agent 的 LLM 模型工厂（D7：复用 judge 配置）。
 
 evolution 端引入 langchain ChatOpenAI，供 create_deep_agent 使用。
-evolve / eval_agent 两个 Agent 都用本工厂构建模型，复用同一套
+evolve 等进化端 Agent 用本工厂构建模型，复用同一套
 deepseek/openai 兼容端点 + API key。
 
 桌面化改造（2026-07-07）：配置不再从 settings.judge_* 读，改从 llm_config 表读
@@ -57,7 +57,7 @@ def build_agent_model(*, temperature: float = 0.2, scope: str = "evolution") -> 
         temperature: 温度（Agent 决策需要一定探索性，默认 0.2）
         scope: 模型配置作用域。FR-007 判评分离：
             - "evolution"（默认）：evolve agent 用
-            - "eval"：eval_agent 用，与 evolution 异家族根治 PLS（EVD-004）
+            - "eval"：历史评估家族（已休眠），保留 profile 定义（EVD-004）
             - "executor"：写作 agent 用（本工厂不直接用，保留）
             eval scope 未配置时降级用 evolution scope 并警告（EDGE-005，不阻塞）。
 

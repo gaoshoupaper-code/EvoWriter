@@ -14,7 +14,8 @@
       backend=FilesystemBackend(...),          # 写工具落盘
   )
 
-输入：trace_id + 评估报告（从 evaluation_sessions 表加载到 ctx.eval_snapshot）
+输入：自由启动（无必填业务输入）；可选评测弱点视图（ctx.eval_snapshot.benchmark_report）
+     + Agent 探查 harness 要素 + 用户对话共创（REQ-20260921-124733 DEC-004）
 产出：harnesses/repo/ 代码改动 + design_doc.md + change_log.md → 待审（pending_review）
 """
 from __future__ import annotations
@@ -33,8 +34,6 @@ from app.evolve.agent.prompt import evolve_system_prompt
 from app.evolve.agent.tools import make_evolve_tools
 from app.evolve.ctx import EvolveContext, set_tool_context
 from app.trace import TraceMiddleware, TraceCallbackHandler
-from app.trace.facts import add_lineage
-from contracts.trace import TraceSpanLink
 
 logger = logging.getLogger("evolution.evolve.agent")
 
@@ -43,33 +42,18 @@ def _start_evolution_trace(ctx: EvolveContext, endpoint: str) -> None:
     """为一次进化工作流创建唯一 Trace；后续对话与落地轮次复用它。"""
     if not ctx.recorder or ctx.trace_id_self:
         return
-    evaluation_trace_id = str(ctx.eval_dossier.get("evaluation_trace_id") or "")
+    benchmark = (ctx.eval_snapshot or {}).get("benchmark_report") or {}
     handle = ctx.recorder.create_run(
         session_id=ctx.session_id,
         run_purpose="evolution_evolve",
         endpoint=endpoint,
         session_type="evolve",
         workload="evolution",
-        links=[TraceSpanLink(
-            target_trace_id=evaluation_trace_id,
-            relation="consumes",
-            artifact={"type": "evaluation_dossier", "id": ctx.eval_dossier_id},
-        )],
         external_refs={
-            "experiment_id": f"experiment-{ctx.session_id}",
-            "evaluation_id": str(ctx.eval_dossier.get("eval_attempt_id") or ""),
-            "evaluation_dossier_id": ctx.eval_dossier_id,
+            "benchmark_batch_id": str(benchmark.get("batch_id") or ""),
         },
     )
     ctx.trace_id_self = handle.trace_id
-    try:
-        add_lineage(
-            "trace", ctx.trace_id_self, "consumes",
-            "evaluation_dossier", ctx.eval_dossier_id,
-        )
-    except Exception as exc:
-        ctx.recorder.fail_run(ctx.trace_id_self, exc)
-        raise
 
 
 async def _run_agent_streamed(
@@ -156,7 +140,7 @@ async def _run_agent_streamed(
 #   - 进化点工具：propose/update/reject（浮窗权威状态 + 对话可见）
 #   - 落地工具：write_*/edit_source（落地进度，finalizing 阶段可见）
 #   - 校验工具：validate_changes（落地结果）
-# 其他工具（read_eval_report/read_trace/list_elements 等只读探查）不落消息，
+# 其他工具（read_trace/list_elements 等只读探查）不落消息，
 # 避免污染对话历史。
 _MESSAGE_TOOLS = frozenset({
     # 进化点工具
@@ -308,11 +292,8 @@ async def build_evolve_agent(ctx: EvolveContext):
     共创工作台的多轮对话铺地基。thread_id = session_id，LangGraph 据此从
     checkpoint 自动恢复对话史。
 
-    当前仍是单体模式（run_evolve_session 单次 ainvoke），Phase 2B 拆 round 后
-    才真正利用多轮对话能力。
-
     Args:
-        ctx: 进化上下文（trace_id + eval_snapshot 已作为输入填入）
+        ctx: 进化上下文（自由启动；eval_snapshot 可含 benchmark_report）
 
     Returns:
         编译后的 CompiledStateGraph（可 ainvoke/astream）
@@ -331,14 +312,13 @@ async def build_evolve_agent(ctx: EvolveContext):
         virtual_mode=True,
     )
 
-    # 15 工具（inspect 4 + writers 6 + flow 5），writers 需 backend
+    # 13 工具（inspect 4 + writers 6 + flow 3），writers 需 backend
     tools = make_evolve_tools(backend=backend)
 
     system_prompt = evolve_system_prompt(
         session_id=ctx.session_id,
         trace_id=ctx.trace_id,
-        eval_summary=_format_eval_summary(ctx),
-        reflections_summary=_format_reflections(ctx),
+        input_summary=_format_input_summary(ctx),
     )
 
     # middleware：禁框架 fs + 产出约束 + 自观测 trace
@@ -377,125 +357,15 @@ async def build_evolve_agent(ctx: EvolveContext):
     return agent
 
 
-async def run_evolve_session(ctx: EvolveContext, trace_id: str) -> dict[str, Any]:
-    """跑一次完整的进化 session（单体 Agent 自主编排，兼容入口）。
-
-    Phase 2B 重构：内部走「inspect round + finalize round」串联（conversing round
-    留给 Phase 3 API 触发）。从外部 API 视角行为不变——仍是一锤子跑完。
-
-    Args:
-        ctx: 进化上下文（eval_snapshot 已加载评估报告）
-        trace_id: 被进化的 trace id
-
-    Returns:
-        {"status": "done"|"failed"|"incomplete"|"cancelled", "session_id": ...}
-    """
-    from app.evolve import db as ev_db
-
-    ctx.trace_id = trace_id
-    ctx.session_status = "running"
-    ev_db.update_session(ctx.session_id, status="running")
-
-    _start_evolution_trace(ctx, "evolve-agent.run")
-
-    # ── 阶段 1：inspect round（探查 + 设计 + 落地，单体兼容模式）──
-    # 单体模式下 status 保持 running，FlowGuard 不做阶段门控（conversing 才拦），
-    # Agent 一气呵成跑完探查→设计→落地→产出。
-    agent = await build_evolve_agent(ctx)
-
-    config: dict[str, Any] = {
-        "configurable": {"thread_id": ctx.thread_id},
-        "recursion_limit": 200,  # 显式放开（避免 LangChain 框架默认 25 误杀）
-    }
-    if ctx.recorder and ctx.trace_id_self:
-        config["callbacks"] = [TraceCallbackHandler(ctx.recorder, ctx.trace_id_self)]
-
-    ctx.emit_log("单体进化 Agent 启动，开始自主编排...")
-    logger.info("session %s: 进化 Agent 启动 trace=%s", ctx.session_id, trace_id)
-
-    user_input = (
-        f"请开始进化流程。trace_id={trace_id}，case_id={ctx.case_id}。"
-        f"按 system prompt 的建议流程：读评估报告 → 读 trace → 探查要素 → "
-        f"设计改进方案（write_design_doc）→ 落地改动（write_*/edit_source）→ "
-        f"校验（validate_changes）→ 产出记录（write_change_log）。"
-        f"注意：评估报告已加载到上下文（read_eval_report 可读）。"
-    )
-
-    try:
-        await agent.ainvoke(
-            {"messages": [{"role": "user", "content": user_input}]},
-            config=config,
-        )
-
-        logger.info("session %s: 进化 Agent 执行完成", ctx.session_id)
-
-        # 产出检查：design_doc + change_log 都齐才算完成。
-        if ctx.change_log_path and ctx.design_doc_path:
-            ctx.session_status = "pending_review"
-            ev_db.update_session(ctx.session_id, status="pending_review")
-            ctx.emit_log("进化流程完成，改动已落地，等待人工 review 发版。")
-            if ctx.recorder and ctx.trace_id_self:
-                ctx.recorder.complete_run(ctx.trace_id_self)
-            return {"status": "done", "session_id": ctx.session_id}
-        else:
-            # 区分失败原因
-            if not ctx.design_doc_path:
-                ctx.emit_log("Agent 结束但未产出 design_doc（方案设计未完成）。")
-                fail_reason = "未产出 design_doc"
-            else:
-                ctx.emit_log("Agent 结束但未产出 change_log（改动记录未完成）。")
-                fail_reason = "未产出 change_log"
-            ev_db.update_session(ctx.session_id, status="failed")
-            if ctx.recorder and ctx.trace_id_self:
-                ctx.recorder.fail_run(ctx.trace_id_self, fail_reason)
-            return {"status": "incomplete", "session_id": ctx.session_id}
-
-    except GraphRecursionError:
-        # 步数触顶（recursion_limit=200）：模型陷入死循环没收敛（反复调工具不收尾）。
-        await _handle_recursion_error(ctx, "evolve")
-        return {
-            "status": "failed", "session_id": ctx.session_id,
-            "error": "进化 Agent 步数触顶（未收敛）",
-        }
-    except asyncio.CancelledError:
-        # 用户手动停止（stop 端点调 task.cancel）：ainvoke 在某个 await 点被中断。
-        # 推进 cancelled 终态 + recorder 收尾。不 re-raise——否则会被 _run_evolve_bg
-        # 的 except Exception 当失败处理，覆盖刚标的 cancelled。
-        logger.info("session %s: 进化 Agent 被用户停止", ctx.session_id)
-        ctx.emit_log("进化已被手动停止。")
-        ev_db.update_session(ctx.session_id, status="cancelled")
-        if ctx.recorder and ctx.trace_id_self:
-            ctx.recorder.cancel_run(ctx.trace_id_self, reason="user_stop")
-        return {"status": "cancelled", "session_id": ctx.session_id}
-    except Exception as e:
-        logger.exception("session %s: 进化 Agent 执行失败", ctx.session_id)
-        ev_db.update_session(ctx.session_id, status="failed")
-        if ctx.recorder and ctx.trace_id_self:
-            ctx.recorder.fail_run(ctx.trace_id_self, e)
-        return {"status": "failed", "error": str(e), "session_id": ctx.session_id}
-
-
-# ════════════════════════════════════════════════════════════
-#  对话式共创 round 函数（Phase 2B，决策 T2/T10）
-# ────────────────────────────────────────────────────────────
-#  Phase 3 API 改造后，三个 round 各自挂到独立端点：
-#    POST /evolve/start         → run_inspect_round（探查 + Agent 开场白）
-#    POST /evolve/sessions/:id/messages → run_converse_round（一轮对话）
-#    POST /evolve/sessions/:id/finalize → run_finalize_round（落地）
-#
-#  Phase 2B 阶段：这些函数已就绪但未被 API 调用，靠单元测试保证可用。
-# ════════════════════════════════════════════════════════════
-
-
 async def run_inspect_round(ctx: EvolveContext, trace_id: str) -> dict[str, Any]:
     """探查阶段 round（决策 T2，conversing 之前的准备）。
 
     流程：
       1. 创建 recorder run + 构建 agent（带 checkpointer + thread_id）
       2. status = running（FlowGuard 不拦，探查工具 + 设计工具可用）
-      3. Agent 自动跑：读评估报告 → 读 trace → 探查要素 → 发开场白
+      3. Agent 自动跑：探查 harness 要素（+ 若有被测 trace / 评测弱点视图则一并看）→ 发开场白
          （开场白里总结评估 + 提出本次要讨论的问题，决策 J）
-      4. Agent 调 read_eval_report / read_trace / inspect_* 完成探查后，
+      4. Agent 调 read_trace / inspect_* 完成探查后，
          自然结束（不进入落地，因为没用户对话）
       5. 探查完成 → status 转 conversing，等用户第一条消息
 
@@ -526,7 +396,7 @@ async def run_inspect_round(ctx: EvolveContext, trace_id: str) -> dict[str, Any]
     ctx.emit_log("进化 Agent 启动探查阶段...")
     logger.info("session %s: inspect round 启动 trace=%s", ctx.session_id, trace_id)
 
-    # FR-006（REQ-20260919-172934）：附带评测批次时注入全局弱点视图（降级不阻断）
+    # FR-006（REQ-20260921-124733）：附带评测批次时注入全局弱点视图（降级不阻断）
     benchmark_section = ""
     benchmark_report = (ctx.eval_snapshot or {}).get("benchmark_report")
     if benchmark_report:
@@ -536,21 +406,25 @@ async def run_inspect_round(ctx: EvolveContext, trace_id: str) -> dict[str, Any]
             f"{benchmark_report.get('batch_id')}，校准状态 {benchmark_report.get('calibration')}）：\n"
             f"{_json.dumps(benchmark_report.get('weakest_dimensions', []), ensure_ascii=False, indent=1)}\n"
             f"高频缺陷标签：{_json.dumps(benchmark_report.get('top_tags', []), ensure_ascii=False)}\n"
-            "请把该全局视图与单 trace 评估诊断相互印证——全局弱在哪维、单 trace 是否同样暴露。\n\n"
+            "该视图是本次进化最重要的证据输入——全局弱在哪维、高频缺陷是什么，"
+            "探查与设计都应围绕它展开。\n\n"
         )
 
+    trace_section = (
+        f"被测 trace_id={trace_id}。\n" if trace_id
+        else "本次进化无被测 trace 输入（自由启动）。\n"
+    )
     user_input = (
-        f"请开始进化流程的探查阶段。trace_id={trace_id}，case_id={ctx.case_id}。\n"
+        f"请开始进化流程的探查阶段。{trace_section}case_id={ctx.case_id}。\n"
         f"{benchmark_section}"
         f"本阶段任务：\n"
-        f"1. 调 read_eval_report 读取评估诊断，理解主要问题\n"
-        f"2. 调 read_trace 看实际执行流程（对诊断里提到的关键节点）\n"
-        f"3. 调 list_elements / read_source 探查 harness 包要素，理解 Agent 当前怎么搭\n"
-        f"4. 探查完后，给用户发一条开场白——总结评估发现的主要问题，"
+        f"1. 调 list_elements / read_source 探查 harness 包要素，理解 Agent 当前怎么搭\n"
+        + (f"2. 调 read_trace 看实际执行流程（关注暴露弱点维度的关键节点）\n" if trace_id else "")
+        + f"3. 探查完后，给用户发一条开场白——总结探查发现与（若附带）评测弱点，"
         f"提出本次进化要讨论的核心方向（不要直接 propose 进化点，先让用户了解全貌）\n\n"
         f"重要约束：\n"
         f"- 不要在本阶段调 write_design_doc / write_* / edit_source（落地工具）\n"
-        f"- 不要急于 propose 进化点——先让用户了解评估发现，再逐个讨论\n"
+        f"- 不要急于 propose 进化点——先让用户了解发现，再逐个讨论\n"
         f"- 开场白里清晰说明：发现了什么问题、你建议讨论哪些方向、让用户决定从哪开始"
     )
 
@@ -759,81 +633,45 @@ async def run_finalize_round(ctx: EvolveContext) -> dict[str, Any]:
 # ── prompt 摘要辅助（从 driver/agent.py 搬来）─────────────────────
 
 
-def _format_eval_summary(ctx: EvolveContext) -> str:
-    """把评估报告快照格式化成 system prompt 的摘要。"""
-    snap = ctx.eval_snapshot
-    if not snap:
-        return "(未加载评估报告)"
-    findings = snap.get("findings") or []
-    scores = snap.get("scores") or {}
-    lines = [
-        f"- trace_id: {snap.get('trace_id', '?')}",
-        f"- 诊断条目数: {len(findings)}",
-    ]
-    # 数据闭环 F1：数据集层标注（golden 验证 / growing 探索），指导进化模式。
-    if ctx.origin_layer:
-        if ctx.origin_layer == "golden":
-            lines.append("- 数据集层: golden（验证模式——改进后不能在 golden 集上退化）")
-        else:
-            lines.append("- 数据集层: growing（探索模式——用于发现新问题/新方向）")
-    # 摘要前几个高 severity finding
-    high = [f for f in findings if isinstance(f, dict) and f.get("severity") == "high"]
-    if high:
-        lines.append(f"- 高优先级问题（{len(high)} 条）:")
-        for h in high[:3]:
-            lines.append(f"  • [{h.get('dimension', '?')}] {h.get('finding', '')[:80]}")
-    content = scores.get("content", {})
-    if isinstance(content, dict) and content.get("content", {}).get("overall") is not None:
-        lines.append(f"- 内容层 overall: {content['content']['overall']}")
-    return "\n".join(lines)
+def _format_input_summary(ctx: EvolveContext) -> str:
+    """把会话可用输入格式化成 system prompt 的摘要（自由启动，DEC-004）。
 
-
-def _format_reflections(ctx: EvolveContext) -> str:
-    """从反思库提取与当前评估问题相关的失败模式，格式化为 prompt 摘要。
-
-    按 eval_snapshot.findings 的 dimension 查相关反思，每类取 top 3。
-    无反思或查询失败返回空串（prompt 里不渲染反思段）。
+    输入来源（按可用性）：
+      - 评测弱点视图（附带 benchmark_batch_id 时，inspect round 注入）
+      - 历史评估快照（旧会话恢复时直读旧表回填）
+      - 都没有 → 提示以探查 + 对话为准
     """
-    try:
-        from app.reflection import repo as reflection_repo
-    except ImportError:
-        return ""
+    snap = ctx.eval_snapshot or {}
+    lines: list[str] = []
 
-    snap = ctx.eval_snapshot
-    if not snap:
-        return ""
+    benchmark = snap.get("benchmark_report")
+    if benchmark:
+        dims = benchmark.get("weakest_dimensions") or []
+        tags = benchmark.get("top_tags") or []
+        lines.append(f"- 评测弱点视图: 批次 {benchmark.get('batch_id')}"
+                     f"（校准状态 {benchmark.get('calibration')}）")
+        if dims:
+            dim_desc = ", ".join(
+                d.get("dimension", "?") if isinstance(d, dict) else str(d) for d in dims[:8]
+            )
+            lines.append(f"  最弱维度: {dim_desc}")
+        if tags:
+            lines.append(f"  高频缺陷标签: {', '.join(str(tg) for tg in tags[:10])}")
+
     findings = snap.get("findings") or []
-    categories: list[str] = []
-    for f in findings:
-        if isinstance(f, dict) and f.get("dimension"):
-            dim = f["dimension"]
-            if dim not in categories:
-                categories.append(dim)
+    if findings:
+        # 历史会话恢复：旧评估快照仍有归因价值
+        lines.append(f"- 历史评估诊断条目数: {len(findings)}")
+        high = [f for f in findings if isinstance(f, dict) and f.get("severity") == "high"]
+        if high:
+            lines.append(f"- 高优先级问题（{len(high)} 条）:")
+            for h in high[:3]:
+                lines.append(f"  • [{h.get('dimension', '?')}] {h.get('finding', '')[:80]}")
 
-    if not categories:
-        reflections = reflection_repo.list_all(limit=5)
-    else:
-        reflections = reflection_repo.list_by_categories(categories, limit_per_category=3)
-
-    # P4：记忆失败模式（recall_miss/retrieval_fail）不是 eval dimension，
-    # 上面按 dimension 查会遗漏。这里追加查记忆类别，确保 evolution agent 能看到。
-    memory_categories = ["recall_miss", "retrieval_fail", "extraction_gap",
-                         "temporal_violation", "epistemic_violation", "promise_orphan"]
-    existing_ids = {r.get("id") for r in reflections}
-    for mc in memory_categories:
-        mem_reflections = reflection_repo.list_by_categories([mc], limit_per_category=2)
-        for r in mem_reflections:
-            if r.get("id") not in existing_ids:
-                reflections.append(r)
-                existing_ids.add(r.get("id"))
-
-    if not reflections:
-        return ""
-
-    lines = [f"（共 {len(reflections)} 条历史失败模式）"]
-    for r in reflections[:10]:
-        hit = r.get("hit_count", 0)
-        lines.append(f"  • [{r['category']}] (命中{hit}次) {r['pattern'][:120]}")
+    if not lines:
+        return "(本次进化自由启动：无评估报告/评测弱点输入，以 harness 要素探查与用户对话为准)"
+    if ctx.trace_id:
+        lines.append(f"- 被测 trace_id: {ctx.trace_id}")
     return "\n".join(lines)
 
 

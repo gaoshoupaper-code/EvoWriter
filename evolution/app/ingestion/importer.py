@@ -134,7 +134,7 @@ def ingest_events(
         conn.execute("DELETE FROM nodes WHERE trace_id = ?", (run.trace_id,))
         _write_nodes(conn, run.trace_id, run, canonical_events)
 
-    from app.dossier.eligibility import assess_creation_trace
+    from app.trace.evidence import assess_creation_trace
 
     assess_creation_trace(run.trace_id)
     return run.trace_id

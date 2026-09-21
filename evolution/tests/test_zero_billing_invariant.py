@@ -17,9 +17,7 @@ from pathlib import Path
 
 # 四类进化工作负载的入口文件——必须保持零用户计费。
 _EVOLUTION_FREE_WORKLOAD_FILES = [
-    "evolution/app/eval_agent/api.py",
     "evolution/app/evolve/api.py",
-    "evolution/app/dossier/api.py",
     "evolution/app/tests/api.py",
 ]
 

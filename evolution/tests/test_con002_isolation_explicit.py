@@ -1,11 +1,11 @@
 """CON-002 进化禁写评估器/契约代码测试（AC-012 / AC-019）。
 
 验证物理隔离的纵深防御：
-  - AC-012：edit_source 试图改 eval_agent/ 代码 → 拒绝 + 记录违规。
+  - AC-012：edit_source 试图改 contracts/ 代码 → 拒绝 + 记录违规。
   - AC-019：edit_source 试图改 contracts/ 契约文件 → 拒绝。
 
 主隔离靠 FilesystemBackend(root_dir=harness_work_dir, virtual_mode=True)，
-eval_agent/contracts 都在 root 之外物理不可达。本测试固化显式 forbidden-prefix 纵深防御。
+contracts 在 root 之外物理不可达。本测试固化显式 forbidden-prefix 纵深防御。
 """
 import os
 import sys
@@ -24,11 +24,11 @@ from app.evolve.agent.tools.writers import (  # noqa: E402
 class Con002ForbiddenPrefixTest(unittest.TestCase):
     """AC-012 / AC-019：edit_source forbidden-prefix 纵深防御。"""
 
-    def test_forbidden_prefixes_include_eval_and_contracts(self):
-        """forbidden-prefix 清单含 eval_agent/ 和 contracts/。"""
+    def test_forbidden_prefixes_include_contracts(self):
+        """forbidden-prefix 清单含 contracts/（eval_agent 前缀随休眠系统裁撤）。"""
         prefixes_str = " ".join(_FORBIDDEN_EDIT_PREFIXES)
-        self.assertIn("eval_agent/", prefixes_str)
         self.assertIn("contracts/", prefixes_str)
+        self.assertNotIn("eval_agent/", prefixes_str)
 
     def test_forbidden_prefix_constant_is_frozen(self):
         """_FORBIDDEN_EDIT_PREFIXES 是 frozenset/tuple（防运行时篡改）。"""
@@ -70,30 +70,6 @@ class Con002EditSourceLogicTest(unittest.TestCase):
         self.assertIn("_FORBIDDEN_EDIT_PREFIXES", source)
         self.assertIn("CON-002", source)
         self.assertIn("reward hacking", source)
-
-    def test_edit_source_rejects_eval_agent_path(self):
-        """AC-012：edit_source 改 eval_agent/foo.py → 拒绝。"""
-        from types import SimpleNamespace
-        from app.evolve.ctx import EvolveContext, set_tool_context
-        from app.evolve.agent.tools.writers import make_writer_tools
-
-        ctx = EvolveContext("sess-con002")
-        set_tool_context(ctx)
-
-        # mock backend：即便 backend 不拒绝，edit_source 的 forbidden-prefix 应先拒
-        fake_backend = SimpleNamespace(
-            edit=lambda *a, **kw: SimpleNamespace(error=None, occurrences=1),
-        )
-        tools = make_writer_tools(fake_backend)
-        edit_source = next(t for t in tools if t.name == "edit_source")
-
-        result = edit_source.invoke({
-            "file_path": "eval_agent/scoring.py",
-            "old_string": "x", "new_string": "y",
-        })
-        self.assertIn("拒绝", result)
-        self.assertIn("CON-002", result)
-        self.assertIn("eval_agent", result)
 
     def test_edit_source_rejects_contracts_path(self):
         """AC-019：edit_source 改 contracts/foo.yaml → 拒绝。"""

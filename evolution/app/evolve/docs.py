@@ -8,7 +8,7 @@
   design_doc.md      方案子代理产出（结构化改动列表 + 自然语言详述）
   change_log.md      执行子代理产出（落地了哪些改动 + validate 结果）
 
-（评估报告已改为 DB 交接——eval_agent 写 evaluation_sessions 表，
+（历史：评估报告曾由 eval_agent 写 evaluation_sessions 表交接，评估系统已休眠裁撤；
 不再落 eval_report.md 文件，相关函数已随三功能解耦清理。）
 
 落盘位置：evolution/data/evolve_workspace/<session_id>/（每 session 独立目录）。

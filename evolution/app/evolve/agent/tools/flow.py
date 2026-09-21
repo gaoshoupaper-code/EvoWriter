@@ -1,16 +1,12 @@
-"""流程工具——进化 Agent 的评估消费 + 产出 + 校验（决策 S2/S9）。
+"""流程工具——进化 Agent 的产出 + 校验（决策 S2/S9；自由启动改造 DEC-004）。
 
-阶段 D（2026-07-27）切断进化旁路：进化 Agent 只读评估卷宗，不读原始 trace /
-完整证据卷宗。
+评估消费工具（read_eval_report / read_evidence_pack）随休眠评估系统裁撤。
+进化证据来源改为：评测弱点视图（benchmark_report，附带批次时）+ 探查所见。
 
 工具：
-  - read_eval_report()              读评估卷宗（findings + 冻结证据 + scores）
-  - read_evidence_pack()            读评估卷宗的过程归因（frozen_evidence 片段）
   - write_design_doc(changes, rationale)  产 design_doc.md
   - validate_changes()              纯源码校验（py_compile + import）
   - write_change_log(applied, summary)    产 change_log.md
-
-阶段 D 切断：read_trace / _read_memory_quality_summary 已移除（旁路）。
 """
 from __future__ import annotations
 
@@ -40,8 +36,9 @@ class DesignChange(BaseModel):
     change_desc: str = Field(description="改什么（描述性）")
     reason: str = Field(description="依据评估证据（自然语言）")
     evidence_ref: list[str] = Field(
-        description="引用证据源的 id（必填）。可引用评估 finding id（f01…）"
-        "或契约违反 id（cv-<key>，如 cv-memory_recalled）。至少一个。"
+        description="引用证据源的 id（必填，至少一个）。可引用：评测弱点视图的"
+        "维度名或缺陷标签（附带批次时）、评估 finding id（f01…，历史会话）、"
+        "契约违反 id（cv-<key>）、或探查所见的 trace 节点 / 要素路径。"
     )
     expected_up: str = Field(description="预期涨的方面")
     expected_down: str = Field(description="预期跌的方面（诚实声明）")
@@ -67,101 +64,22 @@ def make_flow_tools() -> list:
     """构建流程工具集（5 个）。"""
 
     @tool
-    def read_eval_report() -> str:
-        """读取当前 session 的评估报告（由评估 Agent 产出，已加载到上下文）。
-
-        评估报告包含：
-          - scores：内容层评分 + 流程硬指标
-          - findings：诊断条目（每条含 id/dimension/severity/evidence_type/finding/evidence）
-          - report_md：可读报告全文
-
-        注意：评估只诊断问题（不含改进方案）。你据此设计改进方案。
-        记下每条 finding 的 id（f01/f02…），write_design_doc 的 evidence_ref 要引用它。
-        """
-        ctx = get_tool_context()
-        if ctx is None:
-            return "错误：session 未初始化"
-        if not ctx.eval_snapshot:
-            return "错误：评估报告未加载（eval_snapshot 为空）"
-        snap = ctx.eval_snapshot
-        scores = snap.get("scores", {})
-        findings = snap.get("findings", [])
-        report_md = snap.get("report_md", "")
-        return (
-            f"## 评估报告（trace={snap.get('trace_id', '?')}）\n\n"
-            f"### 结构化分数\n```json\n{json.dumps(scores, ensure_ascii=False, indent=2)}\n```\n\n"
-            f"### 诊断条目\n```json\n{json.dumps(findings, ensure_ascii=False, indent=2)}\n```\n\n"
-            f"### 报告正文\n{report_md}"
-        )
-
-    @tool
-    def read_evidence_pack() -> str:
-        """读取评估卷宗引用的冻结证据片段（过程归因，阶段 D）。
-
-        阶段 D 切断：进化 Agent 只读评估卷宗。本工具展示评估 finding 实际引用的
-        冻结证据片段（封存时从证据卷宗冻结进评估卷宗，需求 §22），用于归因定位。
-        不读原始 trace / 完整证据卷宗。
-        """
-        ctx = get_tool_context()
-        if ctx is None:
-            return "错误：session 未初始化"
-        if not ctx.eval_dossier:
-            return "错误：评估卷宗未加载"
-        dossier = ctx.eval_dossier
-        frozen = dossier.get("frozen_evidence") or {}
-        findings = dossier.get("findings") or []
-
-        lines = ["# 评估卷宗 · 引用证据片段", ""]
-
-        if not frozen:
-            lines.append("本次评估未冻结证据片段（评估卷宗封存时无引用或证据卷宗无对应片段）。")
-            lines.append("结合 read_eval_report 的 findings 理解问题。")
-            return "\n".join(lines)
-
-        # 按 finding 归组展示其引用的片段
-        lines.append(f"## 冻结证据片段（共 {len(frozen)} 个）")
-        for fid, snapshot in frozen.items():
-            lines.append(f"### {fid}")
-            lines.append(f"- type: {snapshot.get('type', '?')}")
-            lines.append(f"- agent: {snapshot.get('agent_name', '?')}")
-            lines.append(f"- sequence: {snapshot.get('sequence', '?')}")
-            if snapshot.get("error"):
-                lines.append(f"- error: {snapshot['error'][:200]}")
-            if snapshot.get("tool_output"):
-                lines.append(f"- tool_output: {snapshot['tool_output'][:400]}")
-            if snapshot.get("output"):
-                lines.append(f"- output: {snapshot['output'][:400]}")
-            lines.append("")
-
-        # 哪些 finding 引用了哪些片段
-        lines.append("## finding → 证据引用")
-        for f in findings:
-            refs = f.get("evidence_ref") or f.get("evidence_id")
-            if isinstance(refs, str):
-                refs = [refs]
-            if isinstance(refs, list) and refs:
-                lines.append(f"- {f.get('id', '?')}: {', '.join(str(r) for r in refs)}")
-        lines.append("")
-        lines.append("结合 read_eval_report 的 findings 诊断 + 这里的证据片段定位改进点。")
-
-        return "\n".join(lines)
-
-    @tool
     def write_design_doc(changes: list[DesignChange], rationale: str) -> str:
         """产出改动设计文档 design_doc.md。
 
-        基于评估诊断设计具体改动方案。每个改动必须是可落地的具体指令。
+        基于会话可用证据设计具体改动方案。每个改动必须是可落地的具体指令。
         这应在实际改代码之前调用——先想清楚改什么、为什么改，再动手。
 
         Args:
             changes: 改动列表。每条含：
               - target / change_desc / reason / evidence_ref / expected_up / expected_down
               **evidence_ref 是硬性必填**：每个改动必须引用至少一个证据源 id，
-              证明"为什么改"。可引用：
-                - 评估 finding id（f01/f02…，从 read_eval_report 的 findings 取）
-                - 契约违反 id（cv-<key>，如 cv-memory_recalled，从结构性 finding 暴露）
-              即便评估无内容 finding，只要契约校验有违反（cv-id），仍可据此产出改动（FR-004）。
-            rationale: 自然语言总述（基于评估报告的整体判断，为什么这么改）
+              证明"为什么改"。可引用（按会话可用性）：
+                - 评测弱点视图的维度名 / 缺陷标签（附带批次时，从弱点视图取）
+                - 评估 finding id（f01/f02…，历史会话回填的旧快照）
+                - 契约违反 id（cv-<key>，结构性 finding 暴露）
+                - 自由启动且无附带批次时：探查所见的 trace 节点 / 要素路径
+            rationale: 自然语言总述（基于可用证据的整体判断，为什么这么改）
         """
         ctx = get_tool_context()
         if ctx is None:
@@ -171,10 +89,10 @@ def make_flow_tools() -> list:
             if not changes:
                 return "changes 不能为空（至少一个改动）"
 
-            # FR-004：合法证据源 = 评估 finding id（f01…）∪ 契约违反 id（cv-<key>…）。
-            # cv-id 来自结构性 finding 自己声明的 evidence_ref（FR-002 的结构性 finding
-            # 带 evidence_ref=[cv-<key>]）。这样 cv-id 只有在评估卷宗里真有对应结构性
-            # finding 时才合法——不会出现凭空引用不存在的 cv-id。
+            # 证据源注册表（REQ-20260921-124733 DEC-004）：
+            #   旧评估快照的 finding id / cv-id（历史会话）∪ 评测弱点视图的维度名/标签。
+            # 有注册表 → 严格校验引用真实性；无注册表（自由启动且未附带批次）→
+            # 退化为非空校验（探查所见无稳定 id 体系可核验）。
             snap = ctx.eval_snapshot or {}
             findings = snap.get("findings") or []
             valid_finding_ids: set[str] = set()
@@ -184,7 +102,6 @@ def make_flow_tools() -> list:
                     continue
                 if f.get("id"):
                     valid_finding_ids.add(str(f["id"]))
-                # 收集这条 finding 自己暴露的 cv-id（结构性 finding 的 evidence_ref）
                 refs = f.get("evidence_ref")
                 if isinstance(refs, str):
                     refs = [refs]
@@ -192,42 +109,37 @@ def make_flow_tools() -> list:
                     for r in refs:
                         if isinstance(r, str) and r.startswith("cv-"):
                             valid_contract_ids.add(r)
-            all_valid_refs = valid_finding_ids | valid_contract_ids
+            benchmark = snap.get("benchmark_report") or {}
+            valid_benchmark_refs: set[str] = set()
+            for d in benchmark.get("weakest_dimensions") or []:
+                if isinstance(d, dict) and d.get("dimension"):
+                    valid_benchmark_refs.add(str(d["dimension"]))
+            for tag in benchmark.get("top_tags") or []:
+                valid_benchmark_refs.add(str(tag))
+            registry = valid_finding_ids | valid_contract_ids | valid_benchmark_refs
 
-            # FR-004：移除"无 finding 死局短路"。所有证据源都为空才返回死局。
-            # 即：评估无内容 finding 但有契约违反 cv-id 时，进化仍可产出 design_doc（AC-005）。
-            if not all_valid_refs:
-                ctx.emit_step("write_design_doc", "failed", reason="no_evidence_source")
-                return (
-                    "评估报告没有任何可引用的证据源（既无 finding id 也无契约违反 cv-id）。"
-                    "evidence_ref 校验无法满足，无法产出 design_doc。"
-                    "这是评估阶段的问题——请结束当前进化，提示重新评估该 trace 后再启动进化。"
-                )
-
-            # Pydantic 已保证字段齐全，这里校验业务约束：
-            # evidence_ref 必须引用真实证据源（finding id 或 cv-id）。
-            # 单源校验失败时报具体哪个源类型，便于 Agent 定位。
             for i, c in enumerate(changes):
                 if not c.evidence_ref:
                     return (
                         f"changes[{i}] 缺少 evidence_ref：每个改动必须引用至少一个证据源 id"
-                        f"（finding id 如 f01，或契约违反 id 如 cv-memory_recalled）。"
-                        f"请先 read_eval_report 拿到合法 id。"
+                        f"（如评测弱点的维度名/缺陷标签、finding id f01、"
+                        f"契约违反 id cv-memory_recalled、或探查所见的要素路径）。"
                     )
-                bad = [r for r in c.evidence_ref if str(r) not in all_valid_refs]
+                if not registry:
+                    # 无注册表可核验：非空即可（自由启动会话）
+                    continue
+                bad = [r for r in c.evidence_ref if str(r) not in registry]
                 if bad:
-                    # 区分 bad 的类型，报具体哪个源校验失败
                     bad_findings = [r for r in bad if not str(r).startswith("cv-")]
                     bad_contracts = [r for r in bad if str(r).startswith("cv-")]
                     parts = []
                     if bad_findings:
-                        parts.append(f"finding id {bad_findings} 不在评估 finding 列表中")
+                        parts.append(f"证据源 id {bad_findings} 不在可用证据列表中")
                     if bad_contracts:
                         parts.append(f"契约违反 id {bad_contracts} 不在结构性 finding 暴露的 cv-id 列表中")
                     return (
                         f"changes[{i}] 的 evidence_ref 校验失败：{'; '.join(parts)}。"
-                        f"合法 finding id：{sorted(valid_finding_ids) or '（无）'}；"
-                        f"合法 cv-id：{sorted(valid_contract_ids) or '（无）'}。"
+                        f"合法证据源：{sorted(registry) or '（无）'}。"
                     )
 
             # 转 list[dict] 传给 docs 层（落盘契约不变）
@@ -334,7 +246,7 @@ def make_flow_tools() -> list:
             ctx.emit_step("write_change_log", "failed", error=str(e))
             return f"产出记录失败：{e}"
 
-    return [read_eval_report, read_evidence_pack, write_design_doc, validate_changes, write_change_log]
+    return [write_design_doc, validate_changes, write_change_log]
 
 
 # ── import 检查辅助 ─────────────────────────────────────────────

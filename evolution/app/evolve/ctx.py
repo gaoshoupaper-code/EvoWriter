@@ -14,12 +14,12 @@ EvolveMessagesRepo / EvolvePointsRepo 为静态方法类，Agent 工具直接 im
 使用，不放 ctx（无实例状态可注入）。
 
 机制（沿用 D15）：contextvars 绑定，多 session 并发各取各的，互不串台。
-与 eval_agent/ctx.py 的 EvaluationContext 独立，互不干扰。
+（历史注：曾与 eval_agent/ctx.py 的 EvaluationContext 并存，评估系统已休眠裁撤。）
 
 字段：
   - session_id / case_id               会话标识
   - trace_id                           进化输入的 trace（被改进对象）
-  - eval_snapshot                      从 DB 加载的评估报告快照
+  - eval_snapshot                      会话可用输入快照（benchmark_report / 历史评估回填）
   - design_doc_path / change_log_path  各阶段产出文档路径
   - session_status                     6+态机状态缓存（决策 T1.3）
   - thread_id                          LangGraph thread_id（= session_id，决策 T1）
@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from app.trace.recorder import EvolutionTraceRecorder
 
 # ── contextvar：当前协程上下文绑定的 EvolveContext ────────────────
-# 与 eval_agent/ctx.py 的 _current_eval_ctx 独立。
+# （eval_agent 已休眠裁撤；本 contextvar 为进化会话独立状态。）
 _current_ctx: contextvars.ContextVar["EvolveContext | None"] = contextvars.ContextVar(
     "evolve_current_ctx", default=None
 )
@@ -88,15 +88,11 @@ class EvolveContext:
         # 自观测 trace id（本次进化的录像）。由 api 启动时 create_run 设置。
         self.trace_id_self: str = ""
 
-        # 进化输入（S2：trace + 评估报告，强前置 T2）
+        # 进化输入（自由启动，DEC-004：无必填业务输入）
         self.trace_id: str = ""
-        # 评估报告快照（从评估卷宗加载，dict：scores/findings/report_md）
+        # 会话可用输入快照：benchmark_report（附带评测批次时注入）；
+        # 历史会话恢复时回填旧评估 findings/scores/report_md（DEC-006 表保留）
         self.eval_snapshot: dict[str, Any] = {}
-        # 阶段 D（2026-07-27）：评估卷宗是进化 Agent 的唯一业务证据输入。
-        # eval_dossier 含 findings + frozen_evidence + scores + report_md。
-        # 进化 Agent 不读原始 trace / 完整证据卷宗（需求 §22）。
-        self.eval_dossier: dict[str, Any] = {}
-        self.eval_dossier_id: str = ""
 
         # 数据闭环 F1：trace 所属的数据集层（golden|growing）。
         # golden → 验证模式（不能退化）；growing → 探索模式（找新方向）。
@@ -147,7 +143,7 @@ class EvolveContext:
           - finalizing 事件（落地进度）：
             emit_step("finalizing", "edit|validate|change_log", target=..., result=...)
             → SSE: {type:"finalizing", event, target, ...}
-          - 普通 step：emit_step("read_eval_report", "running"/"done")
+          - 普通 step：emit_step("write_design_doc", "running"/"done")
             → SSE: {type:"step", tool, ...}
         """
         if self.recorder and self.trace_id_self:

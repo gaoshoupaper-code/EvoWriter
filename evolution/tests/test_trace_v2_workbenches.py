@@ -66,7 +66,6 @@ class TraceV2WorkbenchesTest(unittest.TestCase):
         result = workload_profiles(hours=None)
         profiles = {item["workload"]: item for item in result["profiles"]}
         creation = profiles["creation"]
-        evaluation = profiles["evaluation"]
 
         self.assertEqual(result["formula_version"], "writer-trace-v2/profile-1")
         self.assertEqual(creation["sample_size"], 1)
@@ -77,8 +76,9 @@ class TraceV2WorkbenchesTest(unittest.TestCase):
         self.assertEqual(creation["mechanisms"]["retries"], 1)
         self.assertIn("linked_outcome", creation["advanced_analysis"]["missing_conditions"])
         self.assertIn("completed_experiment", creation["advanced_analysis"]["missing_conditions"])
-        self.assertEqual(evaluation["sample_size"], 1)
-        self.assertEqual(evaluation["success_rate"], 0.0)
+        # 休眠工作负载（evidence_compile/evaluation）随 DEC-002 裁撤，profile 不再返回
+        self.assertNotIn("evaluation", profiles)
+        self.assertNotIn("evidence_compile", profiles)
 
     def test_trace_list_filters_by_integrity_status(self) -> None:
         from app.view.traces import list_traces
@@ -123,12 +123,10 @@ class TraceV2WorkbenchesTest(unittest.TestCase):
         self.assertEqual(summary.links[0].target_trace_id, "trace-source")
         self.assertEqual(summary.links[0].attributes["dossier_id"], "dossier-1")
 
-    def test_lineage_and_artifact_revision_are_structural_by_default(self) -> None:
-        from app.trace.facts import add_lineage
+    def test_artifact_revision_endpoints_are_structural_by_default(self) -> None:
         from app.view.workbenches import (
             get_artifact_revision,
             get_artifact_revision_content,
-            get_lineage,
             list_trace_artifact_revisions,
         )
         from contracts.trace.payload import ContentAddressedPayloadStore
@@ -154,10 +152,6 @@ class TraceV2WorkbenchesTest(unittest.TestCase):
                VALUES ('revision-1', 'artifact-1', ?, ?, 'trace-create', '2026-07-28')""",
             (ref.payload_id, ref.content_hash),
         )
-        add_lineage("trace", "trace-create", "produces", "artifact_revision", "revision-1")
-
-        graph = get_lineage("trace", "trace-create")
-        self.assertEqual(graph["outgoing"][0]["to_id"], "revision-1")
         revision = get_artifact_revision("revision-1")
         self.assertEqual(revision["payload_id"], ref.payload_id)
         self.assertNotIn("content", revision)

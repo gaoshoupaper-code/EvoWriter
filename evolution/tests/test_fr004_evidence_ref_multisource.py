@@ -1,10 +1,12 @@
-"""FR-004 evidence_ref 多源校验测试（AC-005）。
+"""write_design_doc 的 evidence_ref 多源校验测试。
 
-验证 write_design_doc 的多源 evidence_ref 校验：
-  - AC-005：评估无内容 finding 但有契约违反 cv-id → write_design_doc 通过；
-            引用不存在的 ID → 报具体哪个源；不再有"无 finding 死局短路"。
+自由启动改造（REQ-20260921-124733 DEC-004）后的契约：
+  - 历史评估快照（findings）在 registry → 严格校验 finding id / cv-id
+  - 评测弱点视图（benchmark_report）在 registry → 维度名/缺陷标签合法
+  - 自由启动且无附带批次（registry 空）→ 退化为非空校验（探查所见无稳定 id 体系）
+  - 空 evidence_ref 一律拒绝
 
-设计依据：.claude/md/20260801_192157_进化信息可见性与评估漏判.md FR-004 / EVD-007 / DEC-004
+设计依据：.claude/md/20260801_192157（FR-004）+ REQ-20260921-124733（DEC-004）
 """
 import os
 import sys
@@ -115,7 +117,7 @@ class EvidenceRefMultisourceTest(unittest.TestCase):
         result, _ = _invoke_write_design_doc(changes, eval_snapshot)
         self.assertIn("校验失败", result)
         self.assertIn("f99", result)
-        self.assertIn("finding", result.lower())
+        self.assertIn("不在可用证据列表", result)
 
     def test_ac005_nonexistent_cv_id_reports_specific_source(self):
         """引用不存在的 cv-id → 报具体源（cv-id 不在结构性 finding 暴露列表）。"""
@@ -130,17 +132,40 @@ class EvidenceRefMultisourceTest(unittest.TestCase):
         self.assertIn("cv-memory_recalled", result)
         self.assertIn("cv-id", result.lower())
 
-    def test_ac005_no_evidence_source_returns_deadend(self):
-        """所有证据源都为空 → 返回死局（不再是"无 finding 死局短路"，是"无证据源死局"）。"""
-        eval_snapshot = {"findings": []}
+    def test_free_start_empty_snapshot_passes_with_any_ref(self):
+        """自由启动且无附带批次（registry 空）→ 非空 evidence_ref 即通过。"""
+        eval_snapshot = {}
         changes = [DesignChange(
             target="x", change_desc="c", reason="r",
-            evidence_ref=["f01"],  # 但 eval_snapshot 空
+            evidence_ref=["探查所见:middleware/pacing.py"],  # 探查所见，无注册表可核验
             expected_up="u", expected_down="d",
         )]
-        result, ctx = _invoke_write_design_doc(changes, eval_snapshot)
-        self.assertIn("没有任何可引用的证据源", result)
-        # emit_step 的 reason 记在 ctx.steps 里（FR-004 语义：no_evidence_source 替代旧 no_findings）
+        result, _ = _invoke_write_design_doc(changes, eval_snapshot)
+        self.assertIn("设计文档已产出", result)
+
+    def test_benchmark_refs_in_registry(self):
+        """附带评测批次 → 弱点维度名/缺陷标签是合法证据源；未知维度被拒。"""
+        eval_snapshot = {"benchmark_report": {
+            "batch_id": "b1",
+            "weakest_dimensions": [{"dimension": "人物塑造"}],
+            "top_tags": ["人物扁平"],
+        }}
+        ok = [DesignChange(
+            target="x", change_desc="c", reason="r",
+            evidence_ref=["人物塑造", "人物扁平"],
+            expected_up="u", expected_down="d",
+        )]
+        result, _ = _invoke_write_design_doc(ok, eval_snapshot)
+        self.assertIn("设计文档已产出", result)
+
+        bad = [DesignChange(
+            target="x", change_desc="c", reason="r",
+            evidence_ref=["未知维度"],
+            expected_up="u", expected_down="d",
+        )]
+        result, _ = _invoke_write_design_doc(bad, eval_snapshot)
+        self.assertIn("校验失败", result)
+        self.assertIn("未知维度", result)
 
     def test_empty_evidence_ref_rejected(self):
         """空 evidence_ref → 报缺 evidence_ref。"""
@@ -152,19 +177,6 @@ class EvidenceRefMultisourceTest(unittest.TestCase):
         )]
         result, _ = _invoke_write_design_doc(changes, eval_snapshot)
         self.assertIn("缺少 evidence_ref", result)
-
-    def test_deadend_message_changed_from_no_findings(self):
-        """死局消息从"no_findings"改为"no_evidence_source"（FR-004 语义变更）。"""
-        eval_snapshot = {"findings": []}
-        changes = [DesignChange(
-            target="x", change_desc="c", reason="r",
-            evidence_ref=["f01"], expected_up="u", expected_down="d",
-        )]
-        result, _ = _invoke_write_design_doc(changes, eval_snapshot)
-        # 旧消息是"评估报告没有可引用的结构化 finding"，新消息是"没有任何可引用的证据源"
-        self.assertNotIn("评估报告没有可引用的结构化 finding", result)
-        self.assertIn("证据源", result)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -95,24 +95,8 @@ class TestElementsViewConstants(unittest.TestCase):
         self.assertEqual(set(stacks), {"storybuilding", "storybuilding_review"})
 
 
-class TestDossierV7(unittest.TestCase):
-    def test_stage_vocabulary(self):
-        from app.dossier import compiler
-
-        self.assertEqual(compiler._STAGES, ["storybuilding"])
-        self.assertEqual(
-            compiler._CONTRACT_KIND_TO_DELIVERY_AGENT,
-            {"character": "storybuilding", "worldview": "storybuilding", "storyline": "storybuilding"},
-        )
-
-
 class TestProblemKbOffline(unittest.TestCase):
     """AC-104：进化链路对错题库零依赖（模块级 + 注入面）。"""
-
-    def test_sealer_no_problem_kb_wiring(self):
-        src = Path("app/eval_agent/sealer.py").read_text(encoding="utf-8")
-        self.assertNotIn("ingest_findings_on_seal", src)
-        import app.eval_agent.sealer  # noqa: F401 — 可导入即无残留硬依赖
 
     def test_evolve_repo_no_problem_kb_wiring(self):
         src = Path("app/evolve/evolve_repo.py").read_text(encoding="utf-8")

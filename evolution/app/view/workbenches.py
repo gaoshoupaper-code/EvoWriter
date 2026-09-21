@@ -1,4 +1,4 @@
-"""运行观测、固定血缘和 workload Profile 的共享查询底座。"""
+"""运行观测与 workload Profile 的共享查询底座。"""
 
 from __future__ import annotations
 
@@ -10,23 +10,13 @@ from fastapi import APIRouter, HTTPException, Query, Request
 
 import app.core.db as db
 from app.trace.access import audit_content_access, require_full_content_access
-from app.trace.facts import lineage_for
 from app.trace_payloads import read_payload
 
 
 router = APIRouter(tags=["trace-workbenches"])
-_WORKLOADS = ("creation", "evidence_compile", "evaluation", "evolution")
+_WORKLOADS = ("creation", "evolution")
 _FORMULA_VERSION = "writer-trace-v2/profile-1"
 _ADVANCED_MIN_SAMPLE = 30
-
-
-@router.get("/lineage/{object_type}/{object_id}")
-def get_lineage(object_type: str, object_id: str) -> dict[str, Any]:
-    try:
-        graph = lineage_for(object_type, object_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return {"object": {"type": object_type, "id": object_id}, **graph}
 
 
 @router.get("/artifacts/revisions/{revision_id}")
@@ -108,7 +98,7 @@ def workload_profiles(
         if hours is not None
         else None
     )
-    where = "schema_version>=2 AND workload IN ('creation','evidence_compile','evaluation','evolution')"
+    where = "schema_version>=2 AND workload IN ('creation','evolution')"
     params: tuple[Any, ...] = ()
     if started_after:
         where += " AND started_at>=?"
@@ -328,6 +318,6 @@ def _percentile(values: list[int], percentile: float) -> int | None:
 
 
 __all__ = [
-    "router", "get_lineage", "get_artifact_revision",
+    "router", "get_artifact_revision",
     "get_artifact_revision_content", "list_trace_artifact_revisions", "workload_profiles",
 ]

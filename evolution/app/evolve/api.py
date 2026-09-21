@@ -1,16 +1,20 @@
 """evolve API —— 进化触发 + 查询 + SSE + 发版/丢弃（三功能解耦，决策 S8/S9）。
 
-端点：
-  POST /api/evolve/start                        触发进化（强前置：trace 必须已评估，S8）
+端点（自由启动改造，REQ-20260921-124733 DEC-004）：
+  POST /api/evolve/start-converse               触发对话式进化（无必填业务输入；
+                                                benchmark_batch_id 可选附带弱点视图）
   GET  /api/evolve/sessions                     session 列表（最新在前）
   GET  /api/evolve/sessions/{id}                单 session 详情
-  GET  /api/evolve/sessions/{id}/stream         SSE 实时事件流
+  GET  /api/evolve/sessions/{id}/messages       消息分页
+  POST /api/evolve/sessions/{id}/messages       用户发言（converse round）
+  POST /api/evolve/sessions/{id}/finalize       拍板（finalize round）
+  POST /api/evolve/sessions/{id}/stop           停止
   POST /api/evolve/sessions/{id}/publish        发版（S9/S12：git commit + bootstrap config + snapshot）
   POST /api/evolve/sessions/{id}/discard        丢弃（S9：git reset 回 production + 状态推进）
 
 执行模型（D3/D4：trace 统一接管 SSE）：
-  start 时注入 recorder 到 ctx → 后台 task 跑进化驱动器 → recorder 产 trace 事件 →
-  SSE 从 recorder 队列消费推前端。SessionEvents 已删除。
+  start 时注入 recorder 到 ctx → 后台 task 跑 inspect round → recorder 产 trace 事件 →
+  前端按消息/事件端点轮询。SessionEvents 已删除。
 """
 from __future__ import annotations
 
@@ -18,17 +22,14 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from contracts.cancel_state import HARD_STOP_DEADLINE_SECONDS, is_terminal
-from app.eval_agent import repo as eval_repo
 from app.core import db
 from app.evolve import db as ev_db
-from app.evolve.agent.agent import run_evolve_session
 from app.evolve.ctx import (
     ACTIVE_STATUSES,
     STATUS_CONVERSING,
@@ -38,10 +39,8 @@ from app.evolve.ctx import (
 )
 from app.trace.recorder import EvolutionTraceRecorder
 from app.trace.facts import (
-    ConsumptionRejected,
     append_release_event,
     latest_release_status,
-    require_sealed_evaluation_dossier,
 )
 
 logger = logging.getLogger("evolution.evolve.api")
@@ -83,13 +82,12 @@ def get_recorder() -> EvolutionTraceRecorder | None:
 
 
 class EvolveStartRequest(BaseModel):
-    """进化启动请求（阶段 D：按评估卷宗启动，永久绑定）。"""
+    """进化启动请求（自由启动，REQ-20260921-124733 DEC-004）。
 
-    eval_dossier_id: str  # 必填：要进化的评估卷宗 id（须为 sealed 完整态）
-    # CON-010 / DEC-012 / AC-015：来源评估运行已取消的 sealed 卷宗，必须由授权用户
-    # 显式确认才能人工提交。系统永不自动调度取消来源卷宗。
-    confirmed_cancel_origin: bool = False
-    # FR-006（REQ-20260919-172934）：可选附带评测批次 id，inspect round 注入全局弱点视图。
+    评估卷宗前置已随休眠评估系统裁撤：无必填业务输入即可启动进化。
+    """
+
+    # FR-005（REQ-20260921-124733）：可选附带评测批次 id，inspect round 注入全局弱点视图。
     # 未附带或批次无数据 → 会话正常启动（降级不阻断）。
     benchmark_batch_id: str | None = None
 
@@ -97,61 +95,19 @@ class EvolveStartRequest(BaseModel):
 class EvolveStartResponse(BaseModel):
     session_id: str
     trace_id: str
-    eval_dossier_id: str  # 永久绑定的评估卷宗
-    status: str  # started
+    status: str  # started_converse
 
 
 # ── 触发 ────────────────────────────────────────────────────
 
 
-@router.post("/evolve/start", response_model=EvolveStartResponse, status_code=202)
-async def evolve_start(
-    req: EvolveStartRequest,
-) -> EvolveStartResponse:
-    """触发一次进化（方案→执行两阶段，单体兼容入口）。
-
-    阶段 D（2026-07-27）：按评估卷宗启动，永久绑定（需求 §42）。
-    进化 Agent 只读评估卷宗（结论 + 引用的冻结证据），不读原始 trace / 完整证据卷宗。
-    """
-    eval_dossier = _resolve_eval_dossier(
-        req.eval_dossier_id, confirmed_cancel_origin=req.confirmed_cancel_origin
-    )
-    active = _find_active_session()
-    if active:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"当前有未结束的进化会话（session {active['session_id']}，状态 {active['status']}），"
-                f"请先发布/丢弃/取消后再启动新进化"
-            ),
-        )
-
-    session_id, ctx = _prepare_evolve_session(req.eval_dossier_id, eval_dossier)
-
-    # 后台跑进化驱动器（单体兼容）
-    task = asyncio.create_task(_run_evolve_bg(ctx, eval_dossier["trace_id"]))
-    _running_tasks[session_id] = task
-
-    logger.info(
-        "进化 session 启动（单体）: session=%s evd=%s trace=%s",
-        session_id, req.eval_dossier_id, eval_dossier["trace_id"],
-    )
-    return EvolveStartResponse(
-        session_id=session_id, trace_id=eval_dossier["trace_id"],
-        eval_dossier_id=req.eval_dossier_id, status="started",
-    )
-
-
 @router.post("/evolve/start-converse", response_model=EvolveStartResponse, status_code=202)
 async def evolve_start_converse(req: EvolveStartRequest) -> EvolveStartResponse:
-    """触发对话式共创进化（Phase 3，决策 T2/T10）。
+    """触发对话式共创进化（Phase 3，决策 T2/T10；自由启动，DEC-004）。
 
-    阶段 D：按评估卷宗启动，永久绑定。内部走 inspect round（探查 + Agent 开场白），
+    无前置业务输入；内部走 inspect round（探查 + Agent 开场白），
     跑完后 status 自动转 conversing，等用户在对话区发消息（POST /messages）。
     """
-    eval_dossier = _resolve_eval_dossier(
-        req.eval_dossier_id, confirmed_cancel_origin=req.confirmed_cancel_origin
-    )
     active = _find_active_session()
     if active:
         raise HTTPException(
@@ -162,7 +118,7 @@ async def evolve_start_converse(req: EvolveStartRequest) -> EvolveStartResponse:
             ),
         )
 
-    session_id, ctx = _prepare_evolve_session(req.eval_dossier_id, eval_dossier)
+    session_id, ctx = _prepare_evolve_session()
 
     # FR-006：附带评测批次时注入全局弱点视图（降级不阻断）
     if req.benchmark_batch_id:
@@ -183,26 +139,21 @@ async def evolve_start_converse(req: EvolveStartRequest) -> EvolveStartResponse:
 
     # 后台跑 inspect round（探查 + 开场白 → 转 conversing）
     from app.evolve.agent.agent import run_inspect_round
-    task = asyncio.create_task(_run_round_bg(ctx, run_inspect_round, eval_dossier["trace_id"]))
+    task = asyncio.create_task(_run_round_bg(ctx, run_inspect_round, ctx.trace_id))
     _running_tasks[session_id] = task
 
     logger.info(
-        "进化 session 启动（对话式）: session=%s evd=%s trace=%s benchmark_batch=%s",
-        session_id, req.eval_dossier_id, eval_dossier["trace_id"], req.benchmark_batch_id,
+        "进化 session 启动（对话式，自由启动）: session=%s benchmark_batch=%s",
+        session_id, req.benchmark_batch_id,
     )
     return EvolveStartResponse(
-        session_id=session_id, trace_id=eval_dossier["trace_id"],
-        eval_dossier_id=req.eval_dossier_id, status="started_converse",
+        session_id=session_id, trace_id=ctx.trace_id,
+        status="started_converse",
     )
 
 
-def _prepare_evolve_session(
-    eval_dossier_id: str, eval_dossier: dict[str, Any]
-) -> tuple[str, EvolveContext]:
-    """创建进化会话 + 构建上下文 + 永久绑定评估卷宗（单体/对话式共用）。
-
-    bound_eval_dossier_id 写入 evolve_sessions，会话创建后永久不变（需求 §42）。
-    """
+def _prepare_evolve_session() -> tuple[str, EvolveContext]:
+    """创建进化会话 + 构建上下文（自由启动，无前置业务输入，DEC-004）。"""
     if get_recorder() is None:
         raise HTTPException(status_code=503, detail={
             "message": "Trace recorder unavailable; evolution was not started",
@@ -211,9 +162,7 @@ def _prepare_evolve_session(
         })
     session_id = uuid.uuid4().hex[:12]
     ev_db.create_session(session_id, case_id="")
-    ctx = _build_evolve_ctx(session_id, eval_dossier)
-    # 永久绑定评估卷宗（不可变）
-    ev_db.update_session(session_id, bound_eval_dossier_id=eval_dossier_id)
+    ctx = _build_evolve_ctx(session_id)
     return session_id, ctx
 
 
@@ -224,7 +173,6 @@ async def _run_round_bg(
 ) -> None:
     """通用后台 round 执行器（决策 T2 按需触发）。
 
-    与 _run_evolve_bg 对称，但跑的是任意 round 函数（inspect/converse/finalize）。
     round 函数自己负责状态推进 + recorder 收尾，本函数只做异常兜底 + task 注册表清理。
 
     Args:
@@ -264,114 +212,17 @@ def _find_active_session() -> dict[str, Any] | None:
     return None
 
 
-def _resolve_eval_dossier(
-    eval_dossier_id: str, *, confirmed_cancel_origin: bool = False,
-    _skip_cancel_check: bool = False,
-) -> dict[str, Any]:
-    """校验评估卷宗存在 + 已封存（sealed）+ 完整（需求 §42 进化输入边界）。
+def _build_evolve_ctx(session_id: str) -> EvolveContext:
+    """构建进化上下文（自由启动：无被测 trace、无评估输入，DEC-004）。
 
-    阶段 D：进化只接受已封存的评估卷宗。旧链路（按 trace_id 查评估）废弃。
-    CON-010 / DEC-012 / AC-015：来源评估运行已取消的 sealed 卷宗，必须由授权用户
-    显式确认（confirmed_cancel_origin=True）才能人工提交。
-    _skip_cancel_check 仅用于会话恢复路径（启动时已检查过，恢复无需重复确认）。
-    Returns:
-        评估卷宗 dict（含 findings/frozen_evidence/scores/report_md）。
-    Raises:
-        HTTPException: 卷宗不存在 / 未封存 / 不完整 / 取消来源未确认。
+    业务证据来源改为：可选的评测弱点视图（start_converse 注入
+    eval_snapshot.benchmark_report）+ Agent 探查所见 + 用户对话。
     """
-    try:
-        row = require_sealed_evaluation_dossier(eval_dossier_id)
-    except ConsumptionRejected as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": str(exc),
-                "integrity_status": exc.integrity_status,
-                "missing_fields": list(exc.missing_fields),
-            },
-        ) from exc
-
-    # CON-010 / AC-015：检测评估来源 trace 是否 cancelled。
-    # 会话恢复路径（_skip_cancel_check）启动时已检查过，跳过。
-    if not _skip_cancel_check:
-        evaluation_trace_id = row.get("evaluation_trace_id")
-        if evaluation_trace_id:
-            eval_run = db.query_one(
-                "SELECT status FROM runs WHERE trace_id=?", (evaluation_trace_id,)
-            )
-            if eval_run and eval_run.get("status") == "cancelled":
-                if not confirmed_cancel_origin:
-                    raise HTTPException(
-                        status_code=409,
-                        detail={
-                            "message": (
-                                f"评估卷宗 {eval_dossier_id} 的来源评估运行已取消（cancelled）。"
-                                "取消来源的卷宗必须由您确认了解其来源已取消、可能影响进化结论"
-                                "后才能人工提交。"
-                            ),
-                            "cancel_origin_confirmation_required": True,
-                            "source_trace_id": evaluation_trace_id,
-                            "source_status": "cancelled",
-                        },
-                    )
-                db.execute(
-                    """INSERT INTO cancel_origin_submissions
-                       (source_trace_id, source_status, dossier_id, target_downstream,
-                        submitted_by, confirmed_at)
-                       VALUES (?, 'cancelled', ?, 'evolution', 'api', ?)""",
-                    (evaluation_trace_id, eval_dossier_id, datetime.now(UTC).isoformat()),
-                )
-                logger.info(
-                    "取消来源评估卷宗 %s 经人工确认进入进化: source_trace=%s",
-                    eval_dossier_id, evaluation_trace_id,
-                )
-
-    import json as _json
-    dossier: dict[str, Any] = dict(row)
-    for col in ("conclusions_json", "findings_json", "positive_patterns_json",
-                "scores_json", "frozen_evidence_json"):
-        raw = dossier.get(col)
-        if raw:
-            try:
-                dossier[col[:-5]] = _json.loads(raw)  # 去 _json 后缀
-            except (_json.JSONDecodeError, TypeError):
-                dossier[col[:-5]] = None
-        else:
-            dossier[col[:-5]] = None
-
-    findings = dossier.get("findings")
-    if not findings or not isinstance(findings, list):
-        raise HTTPException(
-            status_code=400,
-            detail=f"评估卷宗 {eval_dossier_id} 无结构化 findings，不能启动进化",
-        )
-    return dossier
-
-
-def _build_evolve_ctx(session_id: str, eval_dossier: dict[str, Any]) -> EvolveContext:
-    """构建进化上下文：评估卷宗成为唯一业务证据输入（阶段 D）。
-
-    单体 /start 和对话式 /start-converse 共用。
-    评估卷宗含 findings + 冻结证据片段 + scores + report_md，进化不读原始 trace/完整证据卷宗。
-    """
-    trace_id = eval_dossier["trace_id"]
     ctx = EvolveContext(session_id=session_id)
     ctx.recorder = get_recorder()
-    ctx.trace_id = trace_id  # 仅用于自观测录像归属，不作为业务证据输入
-    ctx.origin_layer = _resolve_origin_layer(trace_id)
-    # 评估卷宗是进化的唯一业务证据输入（需求 §22）
-    ctx.eval_dossier = eval_dossier
-    ctx.eval_dossier_id = eval_dossier["dossier_id"]
-    # eval_snapshot 保留向后兼容（read_eval_report 工具读它）—— 从评估卷宗组装
-    ctx.eval_snapshot = {
-        "eval_dossier_id": eval_dossier["dossier_id"],
-        "trace_id": trace_id,
-        "scores": eval_dossier.get("scores"),
-        "findings": eval_dossier.get("findings"),
-        "report_md": eval_dossier.get("report_md"),
-    }
-    # eval_ref 关联评估尝试（兼容旧字段）
-    ev_db.update_session(session_id, eval_ref=eval_dossier.get("eval_attempt_id"))
+    ctx.trace_id = ""  # 自由启动无被测 trace；自观测录像走 trace_id_self
+    ctx.origin_layer = None
+    ctx.eval_snapshot = {}
     return ctx
 
 
@@ -388,33 +239,6 @@ def _resolve_origin_layer(trace_id: str) -> str | None:
     return row["origin_layer"] if row else None
 
 
-async def _run_evolve_bg(ctx: EvolveContext, trace_id: str) -> None:
-    """后台执行进化驱动器（方案→执行两阶段）。
-
-    D3/D4：trace 终态（complete/fail_run）已在 run_evolve_session 内处理。
-    """
-    try:
-        result = await run_evolve_session(ctx, trace_id)
-        # cancelled 是用户主动停止的合法终态，不算失败。
-        if result["status"] not in ("done", "cancelled"):
-            ev_db.update_session(ctx.session_id, status="failed")
-    except asyncio.CancelledError:
-        # task.cancel() 触发；run_evolve_session 内部已处理状态推进，
-        # 但若取消在进入 session 函数前命中，这里兜底标 cancelled。
-        logger.info("进化 session %s 在后台被取消", ctx.session_id)
-        ev_db.update_session(ctx.session_id, status="cancelled")
-        raise
-    except Exception as e:
-        logger.exception("进化 session %s 后台执行异常", ctx.session_id)
-        ev_db.update_session(ctx.session_id, status="failed")
-    finally:
-        _running_tasks.pop(ctx.session_id, None)
-
-
-# ── 查询 ────────────────────────────────────────────────────
-
-
-@router.get("/evolve/system-prompt")
 def get_system_prompt() -> dict[str, Any]:
     """返回进化 Agent 的静态架构蓝图（决策 F/Q/R）。
 
@@ -527,15 +351,38 @@ def _try_read_doc(path: str | None) -> dict[str, Any] | None:
         return None
 
 
+def _load_eval_session_row(eval_ref: str) -> dict[str, Any] | None:
+    """直读 evaluation_sessions 表取历史评估行（休眠评估系统仅存的数据回显）。
+
+    findings/scores 是 *_json 列，反序列化后返回；表随 DEC-006 保留。
+    """
+    row = db.query_one("SELECT * FROM evaluation_sessions WHERE eval_id=?", (eval_ref,))
+    if row is None:
+        return None
+    import json as _json
+    ev = dict(row)
+    # scores/findings 存 *_json 列；report_md 是内联全文列（无 _json 后缀）
+    for col in ("findings", "scores"):
+        raw = ev.get(f"{col}_json")
+        if raw:
+            try:
+                ev[col] = _json.loads(raw)
+            except (_json.JSONDecodeError, TypeError):
+                ev[col] = None
+        else:
+            ev[col] = None
+    return ev
+
+
 def _try_load_eval_snapshot(eval_ref: str | None) -> dict[str, Any] | None:
-    """查关联评估的 findings + scores（审查证据来源）。
+    """查关联评估的 findings + scores（审查证据来源，仅历史会话）。
 
     不带 report_md（太长，审查视图只需 finding 级证据 + 分数对比）。
     """
     if not eval_ref:
         return None
     try:
-        ev = eval_repo.get_session(eval_ref)
+        ev = _load_eval_session_row(eval_ref)
         if not ev:
             return None
         return {
@@ -1038,7 +885,7 @@ async def send_message(session_id: str, req: EvolveMessageRequest) -> dict[str, 
     if ctx is None:
         raise HTTPException(
             status_code=500,
-            detail=f"重建 ctx 失败（session {session_id} 缺 eval_ref 或评估报告）",
+            detail=f"重建 ctx 失败（session {session_id} 会话行缺失）",
         )
 
     # 通知前端"用户消息已落库"（前端轮询拉到 message_updated 帧即调 loadMessages，
@@ -1115,7 +962,7 @@ async def finalize_session(session_id: str) -> dict[str, Any]:
     if ctx is None:
         raise HTTPException(
             status_code=500,
-            detail=f"重建 ctx 失败（session {session_id} 缺 eval_ref 或评估报告）",
+            detail=f"重建 ctx 失败（session {session_id} 会话行缺失）",
         )
 
     # 启动 finalize round（内部会生成 design_doc + 切 finalizing + Agent 落地）
@@ -1134,15 +981,41 @@ async def finalize_session(session_id: str) -> dict[str, Any]:
     }
 
 
+def _load_bound_eval_dossier_snapshot(dossier_id: str) -> dict[str, Any] | None:
+    """直读 evaluation_dossiers 表取历史绑定卷宗快照（DEC-006：表保留，仅回显）。
+
+    只取 evolve 会话恢复所需的 findings/scores/report_md/trace_id；
+    冻结证据与封存校验随休眠评估系统一并裁撤。
+    """
+    row = db.query_one(
+        "SELECT * FROM evaluation_dossiers WHERE dossier_id=?", (dossier_id,),
+    )
+    if row is None:
+        return None
+    import json as _json
+    dossier = dict(row)
+    for col in ("findings", "scores"):
+        raw = dossier.get(f"{col}_json")
+        if raw:
+            try:
+                dossier[col] = _json.loads(raw)
+            except (_json.JSONDecodeError, TypeError):
+                dossier[col] = None
+        else:
+            dossier[col] = None
+    return dossier
+
+
 def _rebuild_ctx_from_db(session_id: str) -> EvolveContext | None:
     """从 DB 重建进化上下文（决策 T2 按需触发——每次请求都重建）。
 
     按需触发模型下，ctx 不在进程内常驻。每条用户消息/拍板请求都重建：
       - session 元数据（status / trace_id / design_doc_path 等）
-      - eval_snapshot（从 eval_ref 反查 evaluation_sessions）
+      - eval_snapshot：历史会话从 bound_eval_dossier_id / eval_ref 直读旧表回填；
+        自由启动的新会话为空 dict（可选含 benchmark_report）
       - recorder 注入
 
-    缺 eval_ref 或评估报告缺失时返回 None（调用方报 500）。
+    session 行缺失时返回 None（调用方报 500）。
     """
     session = ev_db.get_session(session_id)
     if session is None:
@@ -1154,37 +1027,34 @@ def _rebuild_ctx_from_db(session_id: str) -> EvolveContext | None:
     ctx.change_log_path = session.get("change_log_path") or ""
     ctx.session_status = session.get("status") or STATUS_RUNNING
     ctx.thread_id = session_id  # thread_id 始终 = session_id（决策 T1）
+    ctx.eval_snapshot = {}
 
-    # 阶段 D：优先按 bound_eval_dossier_id 加载评估卷宗（永久绑定，不可变）
+    # 历史会话（阶段 D 绑定过评估卷宗）：直读旧表回填快照，保对话上下文连续
     bound_eval_dossier_id = session.get("bound_eval_dossier_id")
     if bound_eval_dossier_id:
-        try:
-            eval_dossier = _resolve_eval_dossier(bound_eval_dossier_id, _skip_cancel_check=True)
-            ctx.eval_dossier = eval_dossier
-            ctx.eval_dossier_id = bound_eval_dossier_id
+        dossier = _load_bound_eval_dossier_snapshot(bound_eval_dossier_id)
+        if dossier is not None:
             ctx.trace_id_self = session.get("self_trace_id") or ""
-            ctx.trace_id = eval_dossier.get("trace_id") or ""
+            ctx.trace_id = dossier.get("trace_id") or ""
             ctx.origin_layer = _resolve_origin_layer(ctx.trace_id) if ctx.trace_id else None
             ctx.eval_snapshot = {
                 "eval_dossier_id": bound_eval_dossier_id,
                 "trace_id": ctx.trace_id,
-                "scores": eval_dossier.get("scores"),
-                "findings": eval_dossier.get("findings"),
-                "report_md": eval_dossier.get("report_md"),
+                "scores": dossier.get("scores"),
+                "findings": dossier.get("findings"),
+                "report_md": dossier.get("report_md"),
             }
             _ensure_trace_resumed(ctx)
             return ctx
-        except HTTPException:
-            # 评估卷宗丢失（级联删除等），降级到旧链路重建（向后兼容）
-            logger.warning("session %s 的评估卷宗 %s 不可用，降级重建",
-                           session_id, bound_eval_dossier_id)
+        logger.warning("session %s 的历史评估卷宗 %s 不可用，降级重建",
+                       session_id, bound_eval_dossier_id)
 
-    # 向后兼容：旧 session（无 bound_eval_dossier_id）按 eval_ref + baseline_trace 重建
+    # 旧 session（无 bound_eval_dossier_id）按 eval_ref + baseline_trace 重建
     ctx.trace_id = session.get("baseline_trace") or ""
     ctx.origin_layer = _resolve_origin_layer(ctx.trace_id) if ctx.trace_id else None
     eval_ref = session.get("eval_ref")
     if eval_ref:
-        ev = eval_repo.get_session(eval_ref)
+        ev = _load_eval_session_row(eval_ref)
         if ev:
             ctx.eval_snapshot = {
                 "eval_id": ev.get("eval_id"),

@@ -1,4 +1,6 @@
-"""证据卷宗来源资格与业务证据完整性的单一判定入口。"""
+"""创作 trace 业务证据完整性的单一判定入口（原 dossier/eligibility，随休眠系统裁撤迁入）。
+
+为 ingestion 入库回填、trace 完整性诊断提供 evidence_status / missing_fields 计算。"""
 
 from __future__ import annotations
 
@@ -9,7 +11,7 @@ from typing import Any
 
 import app.core.db as db
 from app.core.models import TraceLogEvent
-from app.dossier.tool_results import is_successful_tool_end
+from app.trace.tool_results import is_successful_tool_end
 from app.trace_payloads import hydrate_event, read_payload
 
 

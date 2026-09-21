@@ -141,6 +141,23 @@ def case_layer(case_id: str) -> str | None:
 # 格式：HTML 注释块内 `- title: <标题文本>`，与 status 同一 regex 风格。
 _TITLE_RE = re.compile(r"^-\s*title:\s*(.+?)\s*$", re.MULTILINE)
 
+# blank_level（留白度分档 full/semi/minimal，REQ-20260920-150253/FR-002）：
+# 同样只认文件头 HTML 注释块；值域外返回 None。
+_BLANK_LEVELS = ("full", "semi", "minimal")
+_BLANK_LEVEL_RE = re.compile(r"^-\s*blank_level:\s*(\S+)\s*$", re.MULTILINE)
+
+
+def parse_blank_level(demand_md: str) -> str | None:
+    """从 demand.md front-matter 解析 blank_level 字段。
+
+    Returns:
+        full / semi / minimal；缺字段或值域外返回 None。
+    """
+    m = _BLANK_LEVEL_RE.search(demand_md[:300])
+    if m and m.group(1) in _BLANK_LEVELS:
+        return m.group(1)
+    return None
+
 
 def parse_title(demand_md: str, case_id: str = "") -> str:
     """从 demand.md front-matter 解析 title 字段；无则回退 case_id。
@@ -207,6 +224,7 @@ __all__ = [
     "load_case_demand",
     "case_exists",
     "parse_title",
+    "parse_blank_level",
     "load_case",
     "list_cases_with_title",
     "reference_path",

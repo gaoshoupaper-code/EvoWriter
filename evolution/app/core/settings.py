@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     # Trace V2 完整正文内容寻址存储。SQLite 只存元数据与热索引。
     trace_payload_dir: str = "data/trace_payloads"
     # 可选单向 OTLP/HTTP JSON 出口。留空时不启动导出 worker；canonical Trace
-    # 的采集、查询、血缘和分析不依赖外部平台。
+    # 的采集、查询和分析不依赖外部平台。
     trace_otlp_endpoint: str = ""
     trace_otlp_headers_json: str = "{}"
     trace_otlp_timeout_seconds: float = 2.0
@@ -91,9 +91,6 @@ class Settings(BaseSettings):
     # 向量重排用智谱 embedding-3（2048 维）。配置留空 → 向量降级，仅用结构化+FTS（AC-26）。
     # api_key/base_url 默认复用 evolution scope 的 llm_config（同一供应商 key 通常通用），
     # 也可单独配置。model 固定 embedding-3（与 executor 端对齐）。
-    problem_kb_embed_api_key: str = ""   # 留空则复用 llm_config evolution scope 的 key
-    problem_kb_embed_base_url: str = ""  # 留空则复用 llm_config evolution scope 的 base_url
-    problem_kb_embed_model: str = "embedding-3"
 
     @property
     def _evolution_root(self) -> Path:

@@ -57,6 +57,17 @@ def trigger_run(req: RunRequest) -> dict[str, Any]:
         # Platform 账本不可达（默认版本解析）——无版本号可评，快败不给半配置批次
         raise HTTPException(status_code=502, detail=str(exc))
 
+    # 触发成功后回读批次摘要（与 rerun_golden 同构）。
+    # 此 return 曾误位移进 list_versions 成不可达死代码，导致本端点
+    # 因返回 None 与注解不符恒 500（review rev1 finding 2，65e7d8f 引入）。
+    batch = repo.get_batch(batch_id)
+    return {
+        "batch_id": batch_id,
+        "status": batch["status"],
+        "progress": batch["progress"],
+        "golden_revision": batch["golden_revision"],
+    }
+
 
 @router.get("/versions")
 def list_versions() -> dict[str, Any]:
@@ -81,14 +92,6 @@ def list_versions() -> dict[str, Any]:
         for v in data["items"]
     ]
     return {"items": items, "production_version": prod, "total": len(items)}
-
-    batch = repo.get_batch(batch_id)
-    return {
-        "batch_id": batch_id,
-        "status": batch["status"],
-        "progress": batch["progress"],
-        "golden_revision": batch["golden_revision"],
-    }
 
 
 class RerunGoldenRequest(BaseModel):

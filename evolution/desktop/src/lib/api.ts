@@ -1305,12 +1305,13 @@ export interface BenchmarkCompare {
     reason?: string;
     n_candidate: number;
     n_production: number;
-    mean_candidate: number;
-    mean_production: number;
-    ci_95_low: number;
-    ci_95_high: number;
-    delta_mean: number;
-    sufficient_power: boolean;
+    // insufficient（样本不足）时后端只回 verdict/reason/n_*，统计字段缺失
+    mean_candidate?: number;
+    mean_production?: number;
+    ci_95_low?: number;
+    ci_95_high?: number;
+    delta_mean?: number;
+    sufficient_power?: boolean;
   };
   dimensions?: Record<string, Record<string, { mean: number | null; n: number }>>;
 }
@@ -1322,6 +1323,8 @@ export async function runBenchmark(payload: {
   seeds?: number;
   concurrency?: 1 | 3 | 5;
   judge_config_id?: number;
+  /** case 子集（REQ-20260921-135543 DEC-008：空/缺省 = 全量 golden） */
+  case_ids?: string[];
 }): Promise<{ batch_id: string; status: string; progress: Record<string, number>; golden_revision: string }> {
   return evoJson("/api/benchmark/run", {
     method: "POST",
@@ -1495,3 +1498,34 @@ export async function compareBatches(batchA: string, batchB: string): Promise<Be
     body: JSON.stringify({ batch_a: batchA, batch_b: batchB }),
   });
 }
+
+/** 跨版本 leaderboard（REQ-20260921-135543 FR-003：趋势视图数据源）。 */
+export type LeaderboardVersion = {
+  version: number;
+  case_count: number;
+  avg_score: number | null;
+  /** 各维度均分（后端 get_leaderboard 五维聚合） */
+  dimension_means: Record<string, number>;
+  cases: Array<Record<string, unknown>>;
+};
+
+export type LeaderboardResponse = {
+  revision: string;
+  versions: LeaderboardVersion[];
+  case_count: number;
+};
+
+export async function getLeaderboard(goldenRevision?: string): Promise<LeaderboardResponse> {
+  const q = goldenRevision ? `?golden_revision=${encodeURIComponent(goldenRevision)}` : "";
+  return evoJson<LeaderboardResponse>(`/api/benchmark/leaderboard${q}`, { method: "GET" });
+}
+
+/** 整 trace 导出（REQ-20260921-135543 FR-009：全量 JSON，超管门槛）。 */
+export async function exportTraceContent(
+  traceId: string,
+): Promise<Record<string, unknown>> {
+  return evoJson(`/api/trace-content/traces/${encodeURIComponent(traceId)}/export`, {
+    method: "GET",
+  });
+}
+

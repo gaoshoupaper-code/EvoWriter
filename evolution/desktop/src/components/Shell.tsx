@@ -10,7 +10,9 @@ import {
   FlaskConical,
   Gauge,
   LogOut,
+  Package,
   PenTool,
+  ScrollText,
   ShieldCheck,
   Wrench,
   type LucideIcon } from "lucide-react";
@@ -28,9 +30,9 @@ import UpdateBanner from "@/components/UpdateBanner";
 type NavItem = { to: string; label: string; end: boolean; icon: LucideIcon };
 type NavGroup = { title: string; items: NavItem[] };
 
-// 导航重组为对象驱动四分组（FR-009 / DEC-003）：
-// 观测 / 质量闭环 / 系统资产 / 管理。
-// 保留所有现有路由，跨页保留对象上下文（test→trace→evolve→version）。
+// 导航分组（评测板块独立，REQ-20260921-135543 FR-001/DEC-005）：
+// 观测 / 评测 / 质量闭环 / 系统资产 / 管理。
+// 旧 /benchmark、/dataset 入口由 App.tsx 重定向到评测板块。
 const NAV_GROUPS: NavGroup[] = [
   {
     title: "观测",
@@ -40,10 +42,18 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
+    title: "评测",
+    items: [
+      { to: "/bench", label: "评测工作台", end: true, icon: Gauge },
+      { to: "/bench/rules", label: "评测规则", end: false, icon: ScrollText },
+      { to: "/bench/dataset", label: "评测数据集", end: false, icon: Database },
+      { to: "/bench/artifacts", label: "评测产物", end: false, icon: Package },
+    ],
+  },
+  {
     title: "质量闭环",
     items: [
       { to: "/tests", label: "单次测试", end: false, icon: FlaskConical },
-      { to: "/benchmark", label: "评测", end: false, icon: Gauge },
       { to: "/evolve", label: "进化", end: false, icon: Dna },
     ],
   },
@@ -52,7 +62,6 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/harness", label: "Harness 要素", end: false, icon: Wrench },
       { to: "/versions", label: "版本谱系", end: false, icon: FileArchive },
-      { to: "/dataset", label: "数据集", end: false, icon: Database },
     ],
   },
 ];

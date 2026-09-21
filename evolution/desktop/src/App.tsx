@@ -10,9 +10,12 @@ import Evolve from "@/pages/evolve";
 import ReviewReport from "@/pages/review-report";
 import Harness from "@/pages/harness";
 import Versions from "@/pages/versions";
-import Dataset from "@/pages/dataset";
+import BenchWorkbench from "@/pages/bench/Workbench";
+import BenchBatchDetail from "@/pages/bench/BatchDetail";
+import BenchRules from "@/pages/bench/Rules";
+import BenchDataset from "@/pages/bench/Dataset";
+import BenchArtifacts from "@/pages/bench/Artifacts";
 import Tests from "@/pages/tests";
-import Benchmark from "@/pages/benchmark";
 import TraceDetail from "@/pages/trace-detail";
 import AdminUsers from "@/pages/admin/users";
 import AdminInviteCodes from "@/pages/admin/invite-codes";
@@ -53,10 +56,17 @@ function App() {
           <Route path="/evolve/:sessionId/review" element={<ReviewReport />} />
           <Route path="/harness" element={<Harness />} />
           <Route path="/versions" element={<Versions />} />
-          <Route path="/dataset" element={<Dataset />} />
           <Route path="/tests" element={<Tests />} />
-          <Route path="/benchmark" element={<Benchmark />} />
           <Route path="/history" element={<Navigate to="/" replace />} />
+
+          {/* 评测板块（REQ-20260921-135543 FR-001：独立分组 4 入口 + 旧路由重定向） */}
+          <Route path="/bench" element={<BenchWorkbench />} />
+          <Route path="/bench/batches/:batchId" element={<BenchBatchDetail />} />
+          <Route path="/bench/rules" element={<BenchRules />} />
+          <Route path="/bench/dataset" element={<BenchDataset />} />
+          <Route path="/bench/artifacts" element={<BenchArtifacts />} />
+          <Route path="/benchmark" element={<Navigate to="/bench" replace />} />
+          <Route path="/dataset" element={<Navigate to="/bench/dataset" replace />} />
 
           {/* 配置拆两个（D17），老 /config 重定向到 /config/evolution 保兼容 */}
           <Route path="/config/evolution" element={<EvolutionConfigPage />} />

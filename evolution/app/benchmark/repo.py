@@ -387,11 +387,41 @@ def list_batch_runs(batch_id: str) -> dict[str, Any]:
     return {"batch_id": batch_id, "items": items, "total": len(items)}
 
 
+def _aggregate_dimension_means(rows: list[dict[str, Any]]) -> dict[str, float]:
+    """按维度聚合均分（REQ-20260921-135543 FR-003：趋势视图逐维平均）。
+
+    与 report.py/stats.py 同口径：只收 rubric 五维内的数值分且 > 0
+    （0 = 无法判断，不作质量结论，不进均值）。
+    损坏/缺失 scores_json 或非 dict/非数值维度分的行整行跳过。
+    """
+    import json
+
+    from app.benchmark import rubric_v3
+
+    totals: dict[str, list[float]] = {}
+    for row in rows:
+        raw = row.get("scores_json")
+        if not raw:
+            continue
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        scores = parsed.get("scores") if isinstance(parsed, dict) else None
+        if not isinstance(scores, dict):
+            continue
+        for dim, value in scores.items():
+            if dim in rubric_v3.DIMENSION_KEYS and isinstance(value, (int, float)) and value > 0:
+                totals.setdefault(dim, []).append(float(value))
+    return {dim: round(sum(v) / len(v), 4) for dim, v in totals.items()}
+
+
 def get_leaderboard(golden_revision: str | None = None) -> dict[str, Any]:
     """跨版本 leaderboard（按 golden_revision 过滤）。
 
     无 golden_revision 取当前锁定的 revision。
-    结构：{ revision, versions: [{ version, cases: [...], avg_score, done_count }] }
+    结构：{ revision, versions: [{ version, cases: [...], avg_score,
+    dimension_means, done_count }] }
     """
     if golden_revision is None:
         from app.dataset import repo as dataset_repo
@@ -406,20 +436,22 @@ def get_leaderboard(golden_revision: str | None = None) -> dict[str, Any]:
     if not rows:
         return {"revision": golden_revision, "versions": [], "case_count": 0}
 
-    # 按 version 聚合
+    # 按 version 聚合（保留原始行：维度聚合需读 scores_json）
     versions_map: dict[int, list[dict[str, Any]]] = {}
     for row in rows:
         ver = row["harness_version"]
-        versions_map.setdefault(ver, []).append(_row_to_dict(row))
+        versions_map.setdefault(ver, []).append(row)
 
     versions = []
     for ver in sorted(versions_map.keys(), reverse=True):
-        cases = versions_map[ver]
+        raw_rows = versions_map[ver]
+        cases = [_row_to_dict(r) for r in raw_rows]
         scores = [c["scores_avg"] for c in cases if c["scores_avg"] is not None]
         versions.append({
             "version": ver,
             "case_count": len(cases),
             "avg_score": round(sum(scores) / len(scores), 4) if scores else None,
+            "dimension_means": _aggregate_dimension_means(raw_rows),
             "cases": cases,
         })
 
@@ -446,7 +478,8 @@ def _row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
     if row.get("scores_json"):
         try:
             scores = json.loads(row["scores_json"])
-            scores_avg = scores.get("overall")
+            # 合法 JSON 但非 dict（如 "null"）时跳过——与维度聚合同一防御口径
+            scores_avg = scores.get("overall") if isinstance(scores, dict) else None
         except (json.JSONDecodeError, TypeError):
             pass
     return {

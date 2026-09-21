@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { FileText, LoaderCircle, X } from "lucide-react";
+import { X } from "lucide-react";
 
 import {
   Sheet,
@@ -9,21 +9,17 @@ import {
   SheetTitle,
   SheetClose,
 } from "@/components/ui/sheet";
-import {
-  getArtifactRevisionContent,
-  getBenchmarkDeliveries,
-  listBenchmarkRuns,
-  type BenchmarkDeliveriesResponse,
-  type BenchmarkRunRow,
-} from "@/lib/api";
+import { listBenchmarkRuns, type BenchmarkRunRow } from "@/lib/api";
+import { DeliveriesView, groupsForDimension } from "@/components/bench/DeliveriesView";
 
 /**
- * 评测批次 case 明细区（REQ-20260921-114943 FR-001/FR-004，DEC-007）。
+ * 评测批次 case 明细面板（REQ-20260921-135543 FR-005，DEC-009/010/011）。
  *
- * 报告视图内下探：case 聚合卡片（全 seed 状态徽标 + 分数，DEC-008）→
- * 点卡片开行明细抽屉（五维分/理由/标签动态渲染 DEC-006 + 三件套正文 FR-002
- * + 失败行下钻 FR-004）。pending/cancelled 只显示不计入聚合（聚合在报告层，
- * 本区只如实呈现行状态）。
+ * case 聚合卡片 → 行明细抽屉：
+ * - 五维概览（条形）+ 维度卡片（分值/低分标签/理由折叠/关联交付跳转）
+ * - seed 并排对比（同维极差 ≥2 高亮 = 输出不稳定）
+ * - 三件套 Markdown 渲染（DeliveriesView，FR-006）
+ * - 低分下钻目标区（focusCase：报告低分行/缺陷标签点击直达）
  */
 
 const STATUS_LABEL: Record<string, string> = {
@@ -35,18 +31,33 @@ const STATUS_LABEL: Record<string, string> = {
   cancelled: "已取消",
 };
 
-export function CaseRunsSection({
+/** seed 间同维极差达到该值视为不稳定（1-5 分制下 2 分 = 跨档波动）。 */
+const UNSTABLE_SPREAD = 2;
+
+export type CaseFocus = {
+  caseId: string;
+  seed?: number;
+  /** 每次下钻递增，保证同目标重复点击也能触发定位 */
+  nonce: number;
+};
+
+export function CaseRunsPanel({
   batchId,
   refreshKey,
+  focusCase,
 }: {
   batchId: string;
   refreshKey: number;
+  focusCase: CaseFocus | null;
 }) {
   const [rows, setRows] = useState<BenchmarkRunRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [openCase, setOpenCase] = useState<string | null>(null);
   const [activeRunId, setActiveRunId] = useState<number | null>(null);
+  // 维度卡片 → 交付分组定位提示（DEC-011；null=滚动到交付区整体）
+  const [focusHint, setFocusHint] = useState<string | null>(null);
+  const deliveryRef = useRef<HTMLDivElement | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -65,7 +76,7 @@ export function CaseRunsSection({
     void refresh();
   }, [refresh, refreshKey]);
 
-  // 进行中批次随刷新同步更新（FR-001：有活跃行时 5s 轮询）
+  // 进行中批次随刷新同步更新（有活跃行时 5s 轮询）
   const hasActive = rows.some((r) =>
     ["pending", "running", "evaluating"].includes(r.status),
   );
@@ -91,6 +102,33 @@ export function CaseRunsSection({
   const openRows = byCase.find((c) => c.caseId === openCase)?.caseRows ?? [];
   const activeRun = openRows.find((r) => r.id === activeRunId) ?? null;
 
+  // 低分下钻定位（DEC-014）：打开目标 case 抽屉并选中对应 seed 行。
+  // nonce 消费守卫：同一下钻只应用一次——否则批次轮询期间 byCase 换引用
+  // 反复触发本 effect，重开用户已关闭的抽屉/抢回 seed 选择。
+  const appliedNonceRef = useRef<number>(-1);
+  useEffect(() => {
+    if (!focusCase) return;
+    if (appliedNonceRef.current === focusCase.nonce) return;
+    const target = byCase.find((c) => c.caseId === focusCase.caseId);
+    if (!target) return; // runs 尚未到达，等下轮（nonce 保持未消费）
+    appliedNonceRef.current = focusCase.nonce;
+    const row =
+      target.caseRows.find((r) => r.seed === focusCase.seed) ??
+      target.caseRows.find((r) => r.status === "done") ??
+      target.caseRows[0];
+    setOpenCase(focusCase.caseId);
+    setActiveRunId(row.id);
+  }, [focusCase, byCase]);
+
+  function jumpToDelivery(hint: string | null) {
+    if (hint) {
+      setFocusHint(`${hint}:${Date.now()}`); // 拼时间戳让同分组重复点击也能再次定位
+    } else {
+      setFocusHint(null);
+      deliveryRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
+
   return (
     <div className="bench-case-wrap">
       <h4>case 明细</h4>
@@ -105,7 +143,7 @@ export function CaseRunsSection({
           {byCase.map(({ caseId, caseRows }) => (
             <article
               key={caseId}
-              className="bench-case-card"
+              className={`bench-case-card${focusCase?.caseId === caseId ? " bench-case-focused" : ""}`}
               onClick={() => {
                 const first =
                   caseRows.find((r) => r.status === "done") ?? caseRows[0];
@@ -189,7 +227,15 @@ export function CaseRunsSection({
                   </button>
                 ))}
               </div>
-              {activeRun && <RunDetail run={activeRun} />}
+              {openRows.length >= 2 && <SeedCompareTable rows={openRows} />}
+              {activeRun && (
+                <RunDetail
+                  run={activeRun}
+                  focusHint={focusHint}
+                  deliveryRef={deliveryRef}
+                  onJumpDelivery={jumpToDelivery}
+                />
+              )}
             </div>
           )}
         </SheetContent>
@@ -208,15 +254,92 @@ function CaseSummary({ caseRows }: { caseRows: BenchmarkRunRow[] }) {
   return <span className="bench-case-stats">{parts.join(" · ")}</span>;
 }
 
-/** 行明细主体：评分明细 / 失败下钻 / 状态说明（同一抽屉，FR-001/FR-004）。 */
-function RunDetail({ run }: { run: BenchmarkRunRow }) {
+/** seed 并排对比（DEC-010：行=维度，列=seed；同维极差 ≥2 高亮）。 */
+function SeedCompareTable({ rows }: { rows: BenchmarkRunRow[] }) {
+  const dims = useMemo(() => {
+    const seen: string[] = [];
+    for (const r of rows) {
+      for (const dim of Object.keys(r.scores?.scores ?? {})) {
+        if (!seen.includes(dim)) seen.push(dim);
+      }
+    }
+    return seen;
+  }, [rows]);
+
+  if (dims.length === 0) return null;
+
+  return (
+    <div className="bench-seed-compare">
+      <h5>seed 对比（红格 = 同维极差 ≥{UNSTABLE_SPREAD}，输出不稳定信号）</h5>
+      <table className="data-table">
+        <thead>
+          <tr>
+            <th>维度</th>
+            {rows.map((r) => (
+              <th key={r.id}>
+                #{r.seed ?? "-"}
+                <span className="bench-seed-col-status"> {STATUS_LABEL[r.status] ?? r.status}</span>
+              </th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {dims.map((dim) => {
+            const nums = rows
+              .map((r) => r.scores?.scores?.[dim])
+              .filter((v): v is number => typeof v === "number");
+            const spread =
+              nums.length >= 2 ? Math.max(...nums) - Math.min(...nums) : null;
+            const unstable = spread != null && spread >= UNSTABLE_SPREAD;
+            return (
+              <tr key={dim}>
+                <td>{dim}</td>
+                {rows.map((r) => {
+                  const v = r.scores?.scores?.[dim];
+                  return (
+                    <td
+                      key={r.id}
+                      className={unstable && typeof v === "number" ? "bench-seed-unstable" : ""}
+                      title={unstable ? `极差 ${spread?.toFixed(1)} 分` : undefined}
+                    >
+                      {typeof v === "number" ? v.toFixed(1) : "—"}
+                    </td>
+                  );
+                })}
+              </tr>
+            );
+          })}
+          <tr>
+            <td>总分</td>
+            {rows.map((r) => (
+              <td key={r.id}>
+                {r.scores?.overall != null ? r.scores.overall.toFixed(2) : "—"}
+              </td>
+            ))}
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** 行明细主体：评分区（概览+维度卡片）/ 失败下钻 / 状态说明。 */
+function RunDetail({
+  run,
+  focusHint,
+  deliveryRef,
+  onJumpDelivery,
+}: {
+  run: BenchmarkRunRow;
+  focusHint: string | null;
+  deliveryRef: React.RefObject<HTMLDivElement | null>;
+  onJumpDelivery: (hint: string | null) => void;
+}) {
   if (run.status === "failed") {
     return (
       <div className="bench-run-detail">
         <div className="bench-error-box">
-          <p className="bench-error-title">
-            失败（重试 {run.retries} 次）
-          </p>
+          <p className="bench-error-title">失败（重试 {run.retries} 次）</p>
           <p className="bench-error-msg">{run.error || "未知错误"}</p>
         </div>
         {run.trace_id ? (
@@ -252,7 +375,6 @@ function RunDetail({ run }: { run: BenchmarkRunRow }) {
 
   const scores = run.scores;
   if (!scores?.scores || Object.keys(scores.scores).length === 0) {
-    // DEC-006：旧批次无结构化评分数据 → 降级提示，聚合照常在报告层呈现
     return (
       <div className="bench-run-detail">
         <p className="bench-run-note">
@@ -278,25 +400,19 @@ function RunDetail({ run }: { run: BenchmarkRunRow }) {
         )}
       </div>
 
+      {/* 五维概览（DEC-009：条形，扫一眼） */}
+      <ScoreOverview scores={scores.scores} />
+
+      {/* 维度卡片（DEC-009/011：理由折叠 + 关联交付跳转） */}
       {Object.entries(scores.scores).map(([dim, value]) => (
-        <div key={dim} className="bench-dim-block">
-          <div className="bench-dim-head">
-            <span className="bench-dim-name">{dim}</span>
-            <span className={`bench-dim-score ${scoreClass(value)}`}>
-              {value}/5
-            </span>
-          </div>
-          {(scores.tags?.[dim]?.length ?? 0) > 0 && (
-            <div className="bench-tag-row">
-              {scores.tags?.[dim].map((tag) => (
-                <span key={tag} className="bench-tag-chip">{tag}</span>
-              ))}
-            </div>
-          )}
-          {scores.reasons?.[dim] && (
-            <p className="bench-dim-reason">{scores.reasons[dim]}</p>
-          )}
-        </div>
+        <DimensionCard
+          key={dim}
+          dim={dim}
+          value={value}
+          tags={scores.tags?.[dim]}
+          reason={scores.reasons?.[dim]}
+          onJump={onJumpDelivery}
+        />
       ))}
 
       {(scores.rule_delivery?.problems?.length ?? 0) > 0 && (
@@ -310,7 +426,82 @@ function RunDetail({ run }: { run: BenchmarkRunRow }) {
         </div>
       )}
 
-      {run.trace_id && <DeliveriesBlock traceId={run.trace_id} />}
+      {run.trace_id && (
+        <div ref={deliveryRef}>
+          <DeliveriesView traceId={run.trace_id} focusHint={focusHint} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ScoreOverview({ scores }: { scores: Record<string, number> }) {
+  return (
+    <div className="bench-score-overview">
+      {Object.entries(scores).map(([dim, v]) => (
+        <div key={dim} className="bench-score-overview-row">
+          <span className="bench-score-overview-dim">{dim}</span>
+          <div className="bench-score-bar">
+            <div className="bench-score-fill" style={{ width: `${(v / 5) * 100}%` }} />
+          </div>
+          <span className={`bench-score-overview-value ${scoreClass(v)}`}>
+            {v.toFixed(1)}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function DimensionCard({
+  dim,
+  value,
+  tags,
+  reason,
+  onJump,
+}: {
+  dim: string;
+  value: number;
+  tags?: string[];
+  reason?: string;
+  onJump: (hint: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const hint = groupsForDimension(dim);
+  return (
+    <div className="bench-dim-card">
+      <div className="bench-dim-head">
+        <span className="bench-dim-name">{dim}</span>
+        <span className={`bench-dim-score ${scoreClass(value)}`}>{value}/5</span>
+      </div>
+      {(tags?.length ?? 0) > 0 && (
+        <div className="bench-tag-row">
+          {tags?.map((tag) => (
+            <span key={tag} className="bench-tag-chip">{tag}</span>
+          ))}
+        </div>
+      )}
+      {reason ? (
+        <>
+          <button
+            type="button"
+            className="action-link bench-reason-toggle"
+            onClick={() => setOpen((o) => !o)}
+          >
+            {open ? "收起评分理由" : "展开评分理由"}
+          </button>
+          {open && <p className="bench-dim-reason">{reason}</p>}
+        </>
+      ) : (
+        <span className="bench-reason-absent">未提供理由（≥3 分维度可省略）</span>
+      )}
+      <button
+        type="button"
+        className="action-link"
+        onClick={() => onJump(hint ? hint[0] : null)}
+      >
+        查看相关交付{hint ? `（${hint[0]}）` : "（全部三件套）"}
+      </button>
     </div>
   );
 }
@@ -319,155 +510,4 @@ function scoreClass(value: number): string {
   if (value <= 2) return "bench-dim-low";
   if (value <= 3) return "bench-dim-mid";
   return "bench-dim-high";
-}
-
-/** 三件套正文块（FR-002：懒加载 + 无权/过期/缺失降级占位）。 */
-function DeliveriesBlock({ traceId }: { traceId: string }) {
-  const [data, setData] = useState<BenchmarkDeliveriesResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [contents, setContents] = useState<
-    Record<string, { status: "loading" } | { status: "open"; content: unknown } | { status: "error"; message: string }>
-  >({});
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-
-  useEffect(() => {
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    setContents({});
-    setExpanded(new Set());
-    getBenchmarkDeliveries(traceId)
-      .then((resp) => {
-        if (!cancelled) setData(resp);
-      })
-      .catch((e) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [traceId]);
-
-  function toggleFile(revisionId: string) {
-    const next = new Set(expanded);
-    if (next.has(revisionId)) {
-      next.delete(revisionId);
-      setExpanded(next);
-      return;
-    }
-    next.add(revisionId);
-    setExpanded(next);
-    if (contents[revisionId]) return; // 已加载过，直接展开
-    setContents((prev) => ({ ...prev, [revisionId]: { status: "loading" } }));
-    getArtifactRevisionContent(revisionId)
-      .then((resp) => {
-        setContents((prev) => ({
-          ...prev,
-          [revisionId]: { status: "open", content: resp.content },
-        }));
-      })
-      .catch((e) => {
-        setContents((prev) => ({
-          ...prev,
-          [revisionId]: {
-            status: "error",
-            message: e instanceof Error ? e.message : String(e),
-          },
-        }));
-      });
-  }
-
-  if (loading) {
-    return (
-      <div className="bench-delivery">
-        <h5>大纲三件套（评分依据）</h5>
-        <div className="page-loading">加载三件套…</div>
-      </div>
-    );
-  }
-  if (error) {
-    return (
-      <div className="bench-delivery">
-        <h5>大纲三件套（评分依据）</h5>
-        <div className="monitor-empty">读取三件套失败：{error}</div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="bench-delivery">
-      <h5>大纲三件套（评分依据）</h5>
-      {!data?.can_read_content && (
-        <div className="bench-delivery-note">无权查看正文（仅超级管理员可按需读取）。</div>
-      )}
-      {data?.groups.map((group) => (
-        <div key={group.display} className="bench-delivery-group">
-          <div className="bench-delivery-head">
-            <FileText size={13} aria-hidden />
-            <span>{group.display}</span>
-          </div>
-          {group.files.length === 0 ? (
-            <div className="bench-delivery-note">缺失</div>
-          ) : (
-            group.files.map((file) => {
-              const revisionId = file.artifact_revision_id ?? "";
-              const isOpen = expanded.has(revisionId);
-              const state = contents[revisionId];
-              const canOpen =
-                data.can_read_content && file.available && revisionId !== "";
-              return (
-                <div key={`${file.logical_key}:${revisionId}`} className="bench-delivery-file">
-                  <button
-                    type="button"
-                    className="bench-delivery-toggle"
-                    disabled={!canOpen}
-                    onClick={() => toggleFile(revisionId)}
-                    title={
-                      !data.can_read_content
-                        ? "无权查看正文"
-                        : !file.available
-                          ? "正文已过期（保留 90 天）"
-                          : isOpen
-                            ? "收起正文"
-                            : "查看正文"
-                    }
-                  >
-                    <span className="bench-delivery-path" title={file.logical_key}>
-                      {file.logical_key}
-                    </span>
-                    {state?.status === "loading" ? (
-                      <LoaderCircle className="artifact-content-spinner" size={13} />
-                    ) : !file.available ? (
-                      <span className="bench-delivery-note">正文已过期（保留 90 天）</span>
-                    ) : !data.can_read_content ? null : (
-                      <span className="bench-delivery-note">{isOpen ? "收起" : "正文"}</span>
-                    )}
-                  </button>
-                  {state?.status === "error" && (
-                    <div className="bench-delivery-note">读取正文失败：{state.message}</div>
-                  )}
-                  {isOpen && state?.status === "open" && (
-                    <DeliveryContent content={state.content} />
-                  )}
-                </div>
-              );
-            })
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-function DeliveryContent({ content }: { content: unknown }) {
-  if (typeof content === "string") {
-    return <pre className="bench-delivery-content">{content}</pre>;
-  }
-  return (
-    <pre className="bench-delivery-content">{JSON.stringify(content, null, 2)}</pre>
-  );
 }

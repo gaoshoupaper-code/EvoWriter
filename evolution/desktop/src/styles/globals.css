@@ -12775,3 +12775,117 @@ html[data-theme="dark"] .point-chosen { color: var(--teal); }
   background: rgba(128, 128, 128, 0.06); border-radius: 6px;
 }
 
+
+/* ── 评测板块新样式（REQ-20260921-135543 /bench 系列）────────────────── */
+
+/* 可点击行（批次表/低分表/产物库列表） */
+.bench-row-click { cursor: pointer; }
+.bench-row-click:hover td { background: rgba(58, 154, 126, 0.06); }
+
+/* 工作台：case 子集勾选器（DEC-008） */
+.bench-case-picker { margin-top: 10px; }
+.bench-case-picker-body {
+  margin-top: 8px; padding: 10px; max-height: 220px; overflow: auto;
+  border: 1px solid rgba(128, 128, 128, 0.18); border-radius: 8px;
+  background: rgba(128, 128, 128, 0.04);
+}
+.bench-case-picker-actions { display: flex; gap: 12px; margin-bottom: 8px; }
+.bench-case-picker-item {
+  display: flex; align-items: center; gap: 10px; padding: 3px 4px;
+  font-size: 12px; cursor: pointer;
+}
+.bench-case-picker-title { color: var(--evo-ink-muted, #999); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+
+/* 工作台：版本趋势（FR-003） */
+.bench-trend-section { margin-top: 8px; }
+.bench-trend-note { font-size: 12px; color: var(--evo-ink-muted, #999); margin: 0 0 10px; }
+.bench-trend-total { font-weight: 700; font-size: 13px; }
+.bench-trend-dim { display: flex; align-items: center; gap: 8px; min-width: 130px; }
+.bench-trend-dim-value { font-size: 11.5px; color: var(--evo-ink-muted, #999); }
+
+/* 三件套：状态徽章（DEC-015：条目可见 + 徽章）与导出 */
+.bench-delivery-badge {
+  display: inline-block; padding: 1px 8px; border-radius: 10px;
+  font-size: 10.5px; font-weight: 600;
+}
+.bench-delivery-badge.missing { background: rgba(220, 76, 92, 0.14); color: #c94f5e; }
+.bench-delivery-badge.expired { background: rgba(230, 162, 60, 0.16); color: #b7791f; }
+.bench-delivery-badge.locked { background: rgba(128, 128, 128, 0.14); color: #8a8f98; }
+.bench-delivery-file-row { display: flex; align-items: center; gap: 8px; }
+.bench-delivery-file-row .bench-delivery-toggle { flex: 1; }
+.bench-delivery-export { flex-shrink: 0; display: inline-flex; align-items: center; gap: 4px; }
+.bench-delivery-focus { outline: 2px solid var(--teal, #3a9a7e); outline-offset: 2px;
+  border-radius: 6px; transition: outline 0.3s; }
+.bench-delivery-content.prose-doc { white-space: normal; max-height: 420px; }
+
+/* 明细：五维概览（DEC-009） */
+.bench-score-overview { display: flex; flex-direction: column; gap: 6px; margin: 10px 0; }
+.bench-score-overview-row { display: flex; align-items: center; gap: 10px; }
+.bench-score-overview-dim { width: 72px; font-size: 11.5px; flex-shrink: 0; }
+.bench-score-overview-value { font-size: 12px; font-weight: 700; width: 34px; text-align: right; }
+
+/* 明细：维度卡片（DEC-009/011：理由折叠 + 交付跳转） */
+.bench-dim-card {
+  border: 1px solid rgba(128, 128, 128, 0.18); border-radius: 8px;
+  padding: 10px 12px; margin: 8px 0; background: rgba(128, 128, 128, 0.03);
+}
+.bench-reason-toggle { padding: 2px 0; }
+.bench-reason-absent { font-size: 11px; color: var(--evo-ink-muted, #999); }
+
+/* 明细：seed 并排对比（DEC-010：极差 ≥2 高亮） */
+.bench-seed-compare { margin: 10px 0; }
+.bench-seed-compare h5 { margin: 0 0 6px; font-size: 12px; }
+.bench-seed-col-status { font-size: 10px; color: var(--evo-ink-muted, #999); font-weight: 400; }
+.bench-seed-unstable { background: rgba(220, 76, 92, 0.12); color: #c94f5e; font-weight: 700; }
+
+/* 明细：低分下钻聚焦（DEC-014） */
+.bench-case-focused { outline: 2px solid var(--teal, #3a9a7e); outline-offset: 2px; }
+.bench-tag-link {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  background: none; border: none; padding: 2px 4px; border-radius: 6px;
+}
+.bench-tag-link:hover { background: rgba(58, 154, 126, 0.08); }
+
+/* 规则页（FR-007） */
+.bench-rules-header { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+.bench-rules-version { font-size: 12px; font-weight: 600; }
+.bench-rules-badge { padding: 2px 10px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+.bench-rules-badge.ok { background: rgba(58, 154, 126, 0.14); color: var(--teal, #3a9a7e); }
+.bench-rules-badge.warn { background: rgba(230, 162, 60, 0.16); color: #b7791f; }
+.bench-rules-note { font-size: 11px; color: var(--evo-ink-muted, #999); }
+.bench-rules-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+.bench-rules-dim {
+  border: 1px solid rgba(128, 128, 128, 0.18); border-radius: 10px;
+  padding: 12px 14px; background: rgba(128, 128, 128, 0.03);
+}
+.bench-rules-dim h4 { margin: 0 0 6px; font-size: 13.5px; }
+.bench-rules-question { font-size: 12px; color: var(--evo-ink-muted, #999); margin: 0 0 10px; }
+.bench-rules-anchors { margin: 0 0 10px; font-size: 11.5px; line-height: 1.7; }
+.bench-rules-anchors dt { font-weight: 700; color: var(--teal, #3a9a7e); }
+.bench-rules-anchors dd { margin: 0 0 6px 0; }
+.bench-rules-tags { font-size: 11px; color: var(--evo-ink-muted, #999); margin: 0; }
+.bench-rules-rule { margin: 14px 0; font-size: 12.5px; }
+.bench-rules-scoring { margin-top: 14px; }
+.bench-rules-scoring h4 { font-size: 13px; margin: 0 0 8px; }
+.bench-rules-scoring ul { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.9; }
+
+/* 数据集页（FR-008：正文 Markdown 查看） */
+.bench-demand-view {
+  margin: 10px 0; padding: 14px; max-height: 420px; overflow: auto;
+  border: 1px solid rgba(128, 128, 128, 0.18); border-radius: 8px;
+  background: rgba(128, 128, 128, 0.03); font-size: 12px;
+}
+
+/* 产物库（FR-009：面包屑 + 三级下钻） */
+.bench-artifacts-crumbs {
+  display: flex; align-items: center; gap: 4px; margin-bottom: 12px;
+  font-size: 12.5px; color: var(--evo-ink-muted, #999);
+}
+.bench-crumbs-current { color: inherit; font-weight: 700; }
+.bench-crumbs-sep { opacity: 0.6; }
+.bench-crumbs-back { margin-left: 12px; display: inline-flex; align-items: center; gap: 4px; }
+.bench-artifacts-case-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 10px; }
+.bench-artifacts-seeds { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.bench-artifacts-run { margin-top: 4px; }
+.bench-artifacts-hint { font-size: 11px; color: var(--evo-ink-muted, #999); margin-left: 6px; }

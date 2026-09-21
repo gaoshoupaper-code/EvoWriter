@@ -348,6 +348,26 @@ class Poll4xxFastFailTest(StopFailFastTestBase):
 
         self.assertEqual(ctx.exception.task_id, "task-z", "取消信号须携带 task_id 供 executor 叫停")
 
+    def test_unknown_terminal_status_fails_fast(self):
+        """evidence_capture_failed 等未知终态按失败上抛，不得当 running 死等。"""
+        from app.benchmark import runner
+
+        resp = type("R", (), {
+            "status_code": 200,
+            "json": lambda self=None: {
+                "status": "evidence_capture_failed",
+                "trace_ids": [],
+                "error": "capture conflict",
+            },
+        })()
+
+        with patch.object(runner, "_POLL_INTERVAL", 0.05), \
+             patch.object(runner.httpx, "get", return_value=resp):
+            with self.assertRaises(RuntimeError) as ctx:
+                runner._poll_until_done("task-e", 1)
+
+        self.assertIn("evidence_capture_failed", str(ctx.exception))
+
 
 class PollFailureStopsExecutorTest(StopFailFastTestBase):
     """行失败叫停 executor：轮询失败尽力停 executor 任务，不白烧 API（FR-006）。"""

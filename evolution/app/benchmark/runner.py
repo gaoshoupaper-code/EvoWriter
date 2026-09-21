@@ -453,11 +453,18 @@ def _poll_until_done(
 
         if status == "done":
             return trace_ids[0] if trace_ids else None
+        if status == "running":
+            continue
         if status == "failed":
             raise RuntimeError(f"executor task failed: {data.get('error', 'unknown')}")
         if status == "cancelled":
             raise RuntimeError("executor task cancelled")
-        # running：继续等
+        # 未知终态（如 evidence_capture_failed 及未来新增）按失败上抛，
+        # 不得当 running 死等——DEC-004 取消轮询上限后，漏认终态会让行
+        # 永久卡 running（线上批次 12494f65 实际踩中）。
+        raise RuntimeError(
+            f"executor task 终止于未知状态 {status}: {data.get('error', 'unknown')}"
+        )
 
 
 

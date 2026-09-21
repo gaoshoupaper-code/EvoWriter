@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { EvalDossierSummary, EvolveMessage, EvolvePoint } from "@/lib/api";
+import type { BenchmarkBatchSummary, EvolveMessage, EvolvePoint } from "@/lib/api";
 import EvolveMessageBubble from "./EvolveMessageBubble";
 
 /**
@@ -24,11 +24,11 @@ interface Props {
   status: string | null;
   messages: EvolveMessage[];
   points: EvolvePoint[];
-  evalDossiers: EvalDossierSummary[];
+  batches: BenchmarkBatchSummary[];
   starting: boolean;
   stopping: boolean;
   highlightedPointId: string | null; // 来自浮窗点击
-  onStart: (evalDossierId: string) => void;
+  onStart: (benchmarkBatchId: string | null) => void;
   onSend: (content: string) => void;
   onStop: () => void;
   onPointHover: (pointId: string | null) => void;
@@ -39,7 +39,7 @@ export default function ConversationPanel({
   status,
   messages,
   points,
-  evalDossiers,
+  batches,
   starting,
   stopping,
   highlightedPointId,
@@ -48,7 +48,7 @@ export default function ConversationPanel({
   onStop,
   onPointHover,
 }: Props) {
-  const [selectedEvalDossierId, setSelectedEvalDossierId] = useState("");
+  const [selectedBatchId, setSelectedBatchId] = useState("");
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -83,33 +83,30 @@ export default function ConversationPanel({
           <div className="start-icon">🧬</div>
           <h2 className="start-title">启动一次进化共创</h2>
           <p className="start-subtitle">
-            选一份已封存的评估卷宗，进化 Agent 会先读评估结论 + 引用证据 + 探查要素，
-            然后和你一起讨论怎么改。
+            自由启动，无前置输入。附带评测批次可让 Agent 先看全局弱点视图
+            （最弱维度 + 高频缺陷），再探查要素，然后和你一起讨论怎么改。
           </p>
           <div className="start-form">
             <select
               className="trace-select"
-              value={selectedEvalDossierId}
-              onChange={(e) => setSelectedEvalDossierId(e.target.value)}
-              disabled={starting || evalDossiers.length === 0}
+              value={selectedBatchId}
+              onChange={(e) => setSelectedBatchId(e.target.value)}
+              disabled={starting || batches.length === 0}
             >
               <option value="">
-                {evalDossiers.length === 0
-                  ? "暂无已封存的评估卷宗"
-                  : "选择一份评估卷宗…"}
+                {batches.length === 0 ? "暂无评测批次（可不附带）" : "附带评测批次（可选）…"}
               </option>
-              {evalDossiers.map((d) => (
-                <option key={d.dossier_id} value={d.dossier_id}>
-                  trace {d.trace_id?.slice(0, 10)}… · {d.findings_count} 条诊断
-                  {d.scores_summary?.is_badcase ? " · badcase" : ""}
+              {batches.map((b) => (
+                <option key={b.batch_id} value={b.batch_id}>
+                  批次 {b.batch_id.slice(0, 8)}… · v{b.harness_version ?? "?"} · {b.status}
                 </option>
               ))}
             </select>
             <button
               type="button"
               className="start-btn"
-              disabled={!selectedEvalDossierId || starting}
-              onClick={() => selectedEvalDossierId && onStart(selectedEvalDossierId)}
+              disabled={starting}
+              onClick={() => onStart(selectedBatchId || null)}
             >
               {starting ? "启动中…" : "启动进化"}
             </button>

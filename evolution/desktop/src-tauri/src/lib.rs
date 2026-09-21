@@ -3,13 +3,11 @@
 // 复用写作 desktop 的 Rust 基建层（桌面化改造 2026-07-07）：
 // - state:  app 级 reqwest Client 单例 + server_url 管理（cookie jar 自动带 session）
 // - http:   http_request command（绕 WebView CORS）
-// - config: server_url 读写 command
 // - updater: 自动更新检查 + 安装（2026-07-08 新增，独立 latest-evo.json 发布渠道）
 //
 // trace 稳定性重构（设计 20260720_203000）：stream_request 曾从 invoke_handler
 // 注销（SSE 物理删除）。观测大盘实时化（REQ-20260920-193428 FR-005）重新注册。
 
-mod config;
 mod http;
 mod state;
 mod updater;
@@ -21,7 +19,6 @@ use tauri::Manager;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
@@ -46,9 +43,6 @@ pub fn run() {
             http::stream_request,
             // review R4：前端降级/卸载时中止后台流，防僵尸连接累积
             http::stream_cancel,
-            config::get_server_url,
-            config::set_server_url,
-            config::reset_server_url,
             updater::check_update,
             updater::install_update,
         ])

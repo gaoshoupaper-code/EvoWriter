@@ -4,20 +4,16 @@ import {
   Activity,
   BrainCircuit,
   ChartNoAxesCombined,
-  ClipboardCheck,
   Database,
   Dna,
   FileArchive,
   FlaskConical,
   Gauge,
-  GitFork,
   LogOut,
-  Package,
   PenTool,
   ShieldCheck,
   Wrench,
-  type LucideIcon,
-} from "lucide-react";
+  type LucideIcon } from "lucide-react";
 import { fetchMeOrNull, logout, type AuthMe } from "@/lib/api";
 import UpdateBanner from "@/components/UpdateBanner";
 
@@ -34,13 +30,12 @@ type NavGroup = { title: string; items: NavItem[] };
 
 // 导航重组为对象驱动四分组（FR-009 / DEC-003）：
 // 观测 / 质量闭环 / 系统资产 / 管理。
-// 保留所有现有路由，跨页保留对象上下文（test→trace→dossier→eval→evolve→version）。
+// 保留所有现有路由，跨页保留对象上下文（test→trace→evolve→version）。
 const NAV_GROUPS: NavGroup[] = [
   {
     title: "观测",
     items: [
       { to: "/", label: "运行观测", end: true, icon: Activity },
-      { to: "/lineage", label: "血缘", end: false, icon: GitFork },
       { to: "/analysis", label: "分析", end: false, icon: ChartNoAxesCombined },
     ],
   },
@@ -49,8 +44,6 @@ const NAV_GROUPS: NavGroup[] = [
     items: [
       { to: "/tests", label: "单次测试", end: false, icon: FlaskConical },
       { to: "/benchmark", label: "评测", end: false, icon: Gauge },
-      { to: "/dossiers", label: "证据卷宗", end: false, icon: Package },
-      { to: "/evaluation", label: "评估", end: false, icon: ClipboardCheck },
       { to: "/evolve", label: "进化", end: false, icon: Dna },
     ],
   },

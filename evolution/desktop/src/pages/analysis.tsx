@@ -4,10 +4,10 @@ import { useNavigate } from "react-router-dom";
 import { getWorkloadProfiles } from "@/lib/api";
 import type { TraceWorkload, WorkloadProfile, WorkloadProfilesResponse } from "@/lib/types";
 
-const WORKLOAD_LABELS: Record<TraceWorkload, string> = {
+// 历史 workload（evidence_compile/evaluation）的数据仍可能出现在旧 trace 里，
+// 但 profile 查询只覆盖 creation/evolution（休眠工作负载随 DEC-002 裁撤）
+const WORKLOAD_LABELS: Partial<Record<TraceWorkload, string>> = {
   creation: "创作",
-  evidence_compile: "证据编译",
-  evaluation: "评估",
   evolution: "进化",
 };
 const WINDOWS = [
@@ -87,7 +87,7 @@ export default function AnalysisPage() {
             className={selected === item.workload ? "active" : ""}
             onClick={() => setSelected(item.workload)}
           >
-            <span>{WORKLOAD_LABELS[item.workload]}</span><strong>{item.sample_size}</strong>
+            <span>{WORKLOAD_LABELS[item.workload] ?? item.workload}</span><strong>{item.sample_size}</strong>
           </button>
         ))}
       </div>

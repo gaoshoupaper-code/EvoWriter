@@ -73,34 +73,6 @@ impl AppState {
         self.stream_client.read().await.clone()
     }
 
-    /// 切换 server_url（S6 补充约束）。
-    /// 重建 Client + 清 cookie——旧服务器 cookie 在新服务器无效，
-    /// 不清会导致带着 A 站 session 请求 B 站的诡异 bug。
-    pub async fn set_server_url(&self, new_url: String) {
-        let normalized = normalize_url(&new_url);
-        // 清空 cookie jar（新服务器旧 cookie 无效）
-        {
-            let mut jar = self.cookie_jar.write().unwrap();
-            jar.clear();
-        }
-        // 重建 Client（复用同一个 jar 实例，只是清空了内容）
-        let new_client = build_client(self.cookie_jar.clone());
-        {
-            let mut client_guard = self.client.write().await;
-            *client_guard = Some(new_client);
-        }
-        // 同步重建 stream_client（同样复用 jar，同样不带总超时）
-        let new_stream_client = build_stream_client(self.cookie_jar.clone());
-        {
-            let mut sc_guard = self.stream_client.write().await;
-            *sc_guard = Some(new_stream_client);
-        }
-        {
-            let mut url_guard = self.server_url.write().await;
-            *url_guard = normalized;
-        }
-    }
-
     /// 持久化当前 cookie jar 到 Store（http_request 响应后调用）。
     /// 登录响应含 Set-Cookie 时 jar 已被 reqwest 自动更新，这里序列化落盘。
     pub async fn save_cookie_jar(&self, app: &AppHandle) -> Result<(), String> {
@@ -235,23 +207,6 @@ async fn load_cookie_jar(app: &AppHandle) -> cookie_store::CookieStore {
     })
     .await
     .unwrap_or_else(|_| cookie_store::CookieStore::default())
-}
-
-/// 写 server_url 到 Store（持久化）。
-pub async fn save_server_url(app: &AppHandle, url: &str) -> Result<(), String> {
-    let app = app.clone();
-    let url = normalize_url(url);
-    tokio::task::spawn_blocking(move || {
-        let store = app
-            .store(STORE_FILE)
-            .map_err(|e| format!("打开 store 失败: {e}"))?;
-        store.set(KEY_SERVER_URL, serde_json::json!(url));
-        store.save().map_err(|e| format!("保存 store 失败: {e}"))?;
-        Ok::<(), String>(())
-    })
-    .await
-    .map_err(|e| format!("store 任务失败: {e}"))??;
-    Ok(())
 }
 
 /// 规范化 URL：去尾斜杠，校验合法 http(s)。

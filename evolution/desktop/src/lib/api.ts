@@ -3,18 +3,11 @@ import type {
   TraceDetailLite,
   TraceListItem,
   TraceListResponse,
-  UserCacheItem,
   ActiveRun,
-  StatsOverview,
-  SkillStat,
-  TimelinePoint,
-  FailurePattern,
   TraceLogEvent,
   TraceContextSegment,
   ArtifactRevisionContentResponse,
   ArtifactRevisionListResponse,
-  LineageObjectType,
-  LineageResponse,
   TraceIntegrityStatus,
   TraceWorkload,
   WorkloadProfilesResponse,
@@ -25,12 +18,7 @@ export type {
   TraceDetailLite,
   TraceListItem,
   TraceListResponse,
-  UserCacheItem,
   ActiveRun,
-  StatsOverview,
-  SkillStat,
-  TimelinePoint,
-  FailurePattern,
 };
 
 /**
@@ -109,12 +97,12 @@ const EVO_PREFIX = import.meta.env.DEV ? "" : "/evolution-api";
  *
  * 用 evoFetch 调 evolution，apiFetch 调 executor。
  */
-export async function apiFetch(input: string, init: RequestInit = {}): Promise<RelayResponse> {
+async function apiFetch(input: string, init: RequestInit = {}): Promise<RelayResponse> {
   return _fetch(input, init);
 }
 
 /** evolution 接口专用（自动加 /evolution-api 前缀）。 */
-export async function evoFetch(path: string, init: RequestInit = {}): Promise<RelayResponse> {
+async function evoFetch(path: string, init: RequestInit = {}): Promise<RelayResponse> {
   // path 形如 "/api/config/llm"，加前缀后 "/evolution-api/api/config/llm"
   const full = path.startsWith("/") ? `${EVO_PREFIX}${path}` : `${EVO_PREFIX}/${path}`;
   return _fetch(full, init);
@@ -257,14 +245,6 @@ export async function fetchMeOrNull(): Promise<AuthMe | null> {
 /** LLM 配置归属 scope：进化 Agent 评估用 / executor 写作用。 */
 export type LlmConfigScope = "evolution" | "executor";
 
-export interface LlmConfigOut {
-  has_key: boolean;
-  name: string | null;
-  base_url: string;
-  model: string;
-  updated_at: string | null;
-}
-
 /** 配置列表项（不回显 key 明文，附 key_hint 尾 4 位脱敏）。 */
 export interface LlmConfigItem {
   id: number;
@@ -286,11 +266,7 @@ export interface LlmConfigTestResult {
 }
 
 /** 读取指定 scope 的激活配置安全视图。 */
-export async function getLlmConfig(scope: LlmConfigScope): Promise<LlmConfigOut> {
-  return evoJson<LlmConfigOut>(`/api/config/llm?scope=${scope}`, { method: "GET" });
-}
 
-/** 读取指定 scope 的所有配置列表。 */
 export async function listLlmConfigs(scope: LlmConfigScope): Promise<LlmConfigItem[]> {
   return evoJson<LlmConfigItem[]>(`/api/config/llm/list?scope=${scope}`, { method: "GET" });
 }
@@ -362,27 +338,6 @@ export async function testLlmConfig(payload: {
   });
 }
 
-// ════════════════════════════════════════════════════════════
-//  监测（stats + active-runs + traces）
-//  类型统一从 @/lib/types 引用（trace 移植后对齐）
-// ════════════════════════════════════════════════════════════
-
-export async function getStatsOverview(): Promise<StatsOverview> {
-  return evoJson<StatsOverview>("/api/stats/overview", { method: "GET" });
-}
-
-export async function getStatsSkills(top = 20): Promise<SkillStat[]> {
-  return evoJson<SkillStat[]>(`/api/stats/skills?top=${top}`, { method: "GET" });
-}
-
-export async function getStatsTimeline(hours = 168): Promise<TimelinePoint[]> {
-  return evoJson<TimelinePoint[]>(`/api/stats/timeline?hours=${hours}`, { method: "GET" });
-}
-
-export async function getStatsFailures(top = 10): Promise<FailurePattern[]> {
-  return evoJson<FailurePattern[]>(`/api/stats/failures?top=${top}`, { method: "GET" });
-}
-
 export async function getActiveRuns(): Promise<ActiveRun[]> {
   return evoJson<ActiveRun[]>("/api/active-runs", { method: "GET" });
 }
@@ -414,83 +369,8 @@ export async function getTraces(params?: {
   return evoJson<TraceListResponse>(`/api/traces${q ? "?" + q : ""}`, { method: "GET" });
 }
 
-export async function getDossierCandidates(
-  limit = 100,
-  offset = 0,
-): Promise<TraceListResponse> {
-  return evoJson<TraceListResponse>(
-    `/api/dossier/candidates?limit=${limit}&offset=${offset}`,
-    { method: "GET" },
-  );
-}
-
 // ── 人工确认进证据编纂（REQ-20260802-211032）──
 // 产品负责人对"用户主动停止但有价值"的 cancelled+user_stop trace 发起确认。
-
-export type EvidenceOverrideState = {
-  trace_id: string;
-  approved: boolean;
-  ever_approved: boolean;
-  revoked_at: string | null;
-  approver: string | null;
-  reason: string | null;
-  approved_at: string | null;
-};
-
-export type EvidenceOverrideApproveResult = {
-  trace_id: string;
-  approved: boolean;
-  approver: string;
-  recovery: {
-    recovered_count: number;
-    status: string;
-    skipped: boolean;
-    error?: string;
-    recovery_trace_id?: string;
-    reason?: string;
-  };
-};
-
-export async function getEvidenceOverrideState(
-  traceId: string,
-): Promise<EvidenceOverrideState> {
-  return evoJson<EvidenceOverrideState>(
-    `/api/dossier/evidence-override/${encodeURIComponent(traceId)}`,
-    { method: "GET" },
-  );
-}
-
-export async function approveEvidenceOverride(
-  traceId: string,
-  reason: string,
-): Promise<EvidenceOverrideApproveResult> {
-  return evoJson<EvidenceOverrideApproveResult>(
-    `/api/dossier/evidence-override/approve`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ trace_id: traceId, reason }),
-    },
-  );
-}
-
-export async function revokeEvidenceOverride(
-  traceId: string,
-): Promise<{ trace_id: string; revoked: boolean; noop: boolean }> {
-  return evoJson(`/api/dossier/evidence-override/revoke/${encodeURIComponent(traceId)}`, {
-    method: "POST",
-  });
-}
-
-export async function getLineage(
-  objectType: LineageObjectType,
-  objectId: string,
-): Promise<LineageResponse> {
-  return evoJson<LineageResponse>(
-    `/api/lineage/${encodeURIComponent(objectType)}/${encodeURIComponent(objectId)}`,
-    { method: "GET" },
-  );
-}
 
 export async function getWorkloadProfiles(hours = 720): Promise<WorkloadProfilesResponse> {
   return evoJson<WorkloadProfilesResponse>(`/api/analysis/profiles?hours=${hours}`, { method: "GET" });
@@ -515,9 +395,6 @@ export async function getArtifactRevisionContent(
 }
 
 /** 用户缓存列表（trace 历史页用户筛选下拉用） */
-export async function getUserCache(): Promise<UserCacheItem[]> {
-  return evoJson<UserCacheItem[]>("/api/users/cache", { method: "GET" });
-}
 
 export async function getTraceDetail(traceId: string): Promise<TraceDetailLite> {
   return evoJson<TraceDetailLite>(`/api/traces/${encodeURIComponent(traceId)}`, { method: "GET" });
@@ -562,7 +439,7 @@ export async function getTraceContext(
 
 /** trace 当前被哪个活跃 session 跑（详情页停止按钮反查用）。 */
 export interface ActiveSession {
-  session_type: "evolve" | "eval" | "test" | null;
+  session_type: "evolve" | "test" | null;
   session_id: string | null;
   /** 后端算好的 stop 端点路径（如 /api/evolve/sessions/xxx/stop），前端直接 POST。 */
   stop_endpoint: string | null;
@@ -614,7 +491,7 @@ export async function getTraceIntegrity(traceId: string): Promise<IntegrityDiagn
  * 再用本函数按 type 分发到对应的 stop 接口。用户不需要知道 session 类型。
  */
 export async function stopActiveSession(session: {
-  session_type: "evolve" | "eval" | "test" | null;
+  session_type: "evolve" | "test" | null;
   session_id: string | null;
 }): Promise<{ ok: boolean; error?: string }> {
   if (!session.session_type || !session.session_id) {
@@ -623,8 +500,6 @@ export async function stopActiveSession(session: {
   try {
     if (session.session_type === "evolve") {
       await stopEvolve(session.session_id);
-    } else if (session.session_type === "eval") {
-      await stopEval(session.session_id);
     } else if (session.session_type === "test") {
       await stopTest(session.session_id);
     } else {
@@ -636,216 +511,12 @@ export async function stopActiveSession(session: {
   }
 }
 
-// ════════════════════════════════════════════════════════════
-//  评估（eval-agent）
-// ════════════════════════════════════════════════════════════
 
-export interface EvalSession {
-  eval_id: string;
-  trace_id: string;
-  status: string; // running | completed | failed | cancelled（阶段 C：done→completed）
-  bound_dossier_id: string | null;
-  sealed_dossier_id: string | null;
-  scores_json: string | null;
-  findings_json: string | null;
-  report_md: string | null;
-  created_at: string;
-  updated_at: string;
-  scores: Record<string, any> | null;
-  findings: any[] | null;
-}
-
-// ── 评估卷宗（阶段 C 封存的不可变产物）──────────────────────────
-export interface EvalDossierSummary {
-  dossier_id: string;
-  eval_attempt_id: string;
-  source_dossier_id: string;
-  source_dossier_version: number;
-  trace_id: string;
-  owner_user_id: string;
-  completeness_status: string;
-  seal_status: string;
-  findings_count: number;
-  scores_summary: { calibration: string | null; is_badcase: boolean } | null;
-  created_at: string;
-}
-
-export interface EvalDossierDetail extends EvalDossierSummary {
-  conclusions: any[] | null;
-  findings: any[] | null;
-  positive_patterns: any[] | null;
-  scores: Record<string, any> | null;
-  report_md: string | null;
-  frozen_evidence: Record<string, any> | null;
-}
-
-// ── 可消费证据卷宗摘要（阶段 E 评估入口选卷宗用）────────────────
-export interface ConsumableDossierSummary {
-  dossier_id: string;
-  pack_id: string;
-  trace_id: string;
-  owner_user_id: string;
-  version: number;
-  is_current: boolean;
-  status: string;
-  provenance: string;
-  compile_rule_version: string;
-  completeness: string | null;
-  contract_complete: boolean | null;
-  failure_reason: string | null;
-  llm_calls_used: number;
-  created_at: string;
-  finished_at: string | null;
-}
-
-/** 启动评估（阶段 C：按证据卷宗启动，须 ready 完整卷宗）。
- * CON-010/AC-015：来源运行已取消的 ready 卷宗，须 confirmedCancelOrigin=true 才能人工提交。 */
-export async function startEval(
-  dossierId: string,
-  confirmedCancelOrigin = false,
-): Promise<{ eval_id: string; trace_id: string; dossier_id: string; status: string }> {
-  return evoJson(`/api/eval-agent/start`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      dossier_id: dossierId,
-      confirmed_cancel_origin: confirmedCancelOrigin,
-    }),
-  });
-}
-
-/** 列已封存的评估卷宗（阶段 E：进化入口选评估卷宗启动用） */
-export async function getEvalDossiers(
-  limit = 100,
-): Promise<{ dossiers: EvalDossierSummary[]; total: number }> {
-  return evoJson(`/api/eval-agent/dossiers?limit=${limit}`, { method: "GET" });
-}
-
-/** 查单个评估卷宗详情（含 findings / frozen_evidence / scores） */
-export async function getEvalDossier(dossierId: string): Promise<EvalDossierDetail> {
-  return evoJson<EvalDossierDetail>(`/api/eval-agent/dossiers/${dossierId}`, { method: "GET" });
-}
-
-/** 列可消费的证据卷宗（status=ready，阶段 E 评估入口选卷宗用） */
-export async function getConsumableDossiers(
-  limit = 200,
-): Promise<{ dossiers: ConsumableDossierSummary[]; total: number }> {
-  return evoJson(`/api/dossier/consumable?limit=${limit}`, { method: "GET" });
-}
-
-export async function stopEval(evalId: string): Promise<{ status: string; eval_id: string }> {
-  return evoJson(`/api/eval-agent/sessions/${evalId}/stop`, { method: "POST" });
-}
-
-/**
- * 按 sequence 游标拉取评估 session 的事件帧（Pull 替代 SSE，设计 20260720_203000）。
- * 返回从 run_meta 派生的 step/log 帧，前端轮询消费。
- */
 export interface EvalFrame {
   type: "step" | "log" | "start" | "end" | "error";
   [key: string]: unknown;
   /** 事件 sequence（前端去重用，轮询重试不会重复渲染）。 */
   _seq?: number;
-}
-
-export interface EvalEventsSinceResponse {
-  frames: EvalFrame[];
-  max_seq: number;
-  has_more: boolean;
-  eval_status: string; // running / done / failed
-}
-
-export async function getEvalSessionEventsSince(
-  evalId: string,
-  sinceSeq: number,
-  limit = 500,
-): Promise<EvalEventsSinceResponse> {
-  return evoJson<EvalEventsSinceResponse>(
-    `/api/eval-agent/sessions/${evalId}/events/since?since_seq=${sinceSeq}&limit=${limit}`,
-    { method: "GET" },
-  );
-}
-
-export async function getEvalSessions(limit = 50): Promise<{ sessions: EvalSession[]; total: number }> {
-  return evoJson(`/api/eval-agent/sessions?limit=${limit}`, { method: "GET" });
-}
-
-export async function getEvalSession(evalId: string): Promise<EvalSession> {
-  return evoJson<EvalSession>(`/api/eval-agent/sessions/${evalId}`, { method: "GET" });
-}
-
-export async function getEvaluatedTraces(limit = 100): Promise<{ traces: EvalSession[]; total: number }> {
-  return evoJson(`/api/eval-agent/evaluated-traces?limit=${limit}`, { method: "GET" });
-}
-
-// ════════════════════════════════════════════════════════════
-//  证据卷宗（dossier）— Evidence Dossier
-// ════════════════════════════════════════════════════════════
-
-/** 证据卷宗（四层结构 + 两个角色视图，JSON 列按需解析） */
-export interface Dossier {
-  dossier_id: string;
-  pack_id: string; // DB 原始列名（与 dossier_id 同值），保留便于诊断
-  trace_id: string;
-  owner_user_id: string;
-  version: number;
-  is_current: boolean;
-  status: string; // pending|compiling|ready|partial|failed|superseded
-  provenance: string; // trace_time|compile_time_snapshot
-  compile_rule_version: string;
-  manifest: Record<string, any> | null;
-  facts: Record<string, any> | null;
-  semantic: Record<string, any> | null;
-  index: Record<string, any> | null;
-  eval_view: Record<string, any> | null;
-  evolve_view: Record<string, any> | null;
-  failure_reason: string | null;
-  llm_calls_used: number;
-  created_at: string;
-  finished_at: string | null;
-}
-
-/** 启动证据卷宗编译（幂等：同规则版本已有 ready/partial 则直接返回） */
-export async function startCompileDossier(
-  traceId: string,
-): Promise<{ dossier_id: string; trace_id: string; status: string }> {
-  return evoJson(`/api/dossier/start`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ trace_id: traceId }),
-  });
-}
-
-/** 查证据卷宗详情（含四层 + 两个视图） */
-export async function getDossierSession(dossierId: string): Promise<Dossier> {
-  return evoJson<Dossier>(`/api/dossier/sessions/${dossierId}`, { method: "GET" });
-}
-
-/** 列出 trace 的所有证据卷宗版本 */
-export async function getTraceDossiers(
-  traceId: string,
-): Promise<{ packs: Dossier[]; total: number }> {
-  return evoJson(`/api/dossier/traces/${traceId}/packs`, { method: "GET" });
-}
-
-/** 查 trace 的当前推荐版本 */
-export async function getCurrentDossier(traceId: string): Promise<Dossier> {
-  return evoJson<Dossier>(`/api/dossier/traces/${traceId}/current`, { method: "GET" });
-}
-
-/** 取消编译 */
-export async function stopCompileDossier(
-  dossierId: string,
-): Promise<{ status: string; dossier_id: string }> {
-  return evoJson(`/api/dossier/sessions/${dossierId}/stop`, { method: "POST" });
-}
-
-/** 按证据 ID 回钻原始片段（受控回钻，权限校验） */
-export async function drillEvidence(
-  dossierId: string,
-  evidenceId: string,
-): Promise<{ evidence_id: string; trace_id: string; event: Record<string, any> }> {
-  return evoJson(`/api/dossier/packs/${dossierId}/drill/${evidenceId}`, { method: "GET" });
 }
 
 // ════════════════════════════════════════════════════════════
@@ -929,15 +600,6 @@ export interface EvalSnapshot {
 }
 
 /** 启动单体进化（阶段 D：按评估卷宗启动，永久绑定） */
-export async function startEvolve(
-  evalDossierId: string,
-): Promise<{ session_id: string; trace_id: string; eval_dossier_id: string; status: string }> {
-  return evoJson(`/api/evolve/start`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ eval_dossier_id: evalDossierId }),
-  });
-}
 
 export async function stopEvolve(sessionId: string): Promise<{ status: string; session_id: string }> {
   return evoJson(`/api/evolve/sessions/${sessionId}/stop`, { method: "POST" });
@@ -1060,12 +722,15 @@ export async function getEvolveSystemPrompt(): Promise<EvolveSystemPrompt> {
 /** 对话式启动进化（决策 T2，inspect round + 转 conversing） */
 /** 启动对话式进化（阶段 D：按评估卷宗启动，永久绑定） */
 export async function startEvolveConverse(
-  evalDossierId: string,
-): Promise<{ session_id: string; trace_id: string; eval_dossier_id: string; status: string }> {
+  benchmarkBatchId?: string | null,
+): Promise<{ session_id: string; trace_id: string; status: string }> {
+  // 自由启动（DEC-004）：无必填业务输入；benchmark_batch_id 可选附带弱点视图
   return evoJson(`/api/evolve/start-converse`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ eval_dossier_id: evalDossierId }),
+    body: JSON.stringify(
+      benchmarkBatchId ? { benchmark_batch_id: benchmarkBatchId } : {},
+    ),
   });
 }
 
@@ -1229,10 +894,6 @@ export interface HarnessElementsView {
 
 export async function getSnapshots(): Promise<Snapshot[]> {
   return evoJson<Snapshot[]>(`/api/snapshots`, { method: "GET" });
-}
-
-export async function getProductionSnapshot(): Promise<Snapshot> {
-  return evoJson<Snapshot>(`/api/snapshots/production`, { method: "GET" });
 }
 
 export async function getHarnessElements(version: number): Promise<HarnessElementsView> {
@@ -1458,84 +1119,6 @@ export async function getCaseContent(
 /** 当前 golden 集锁定的 revision + 完整性状态。 */
 export async function getGoldenRevision(): Promise<GoldenRevision> {
   return evoJson<GoldenRevision>("/api/dataset/golden-revision", { method: "GET" });
-}
-
-// ════════════════════════════════════════════════════════════
-//  标注队列（promote）— 生产 trace → growing 的标注闸门
-// ════════════════════════════════════════════════════════════
-
-/** judge 打分摘要（存 promote_tasks.judge_scores，结构见 judge._extract_scores_summary）。 */
-export interface JudgeScores {
-  content_overall: number;
-  content_scores: Record<string, any>;
-  subagent_scores: Record<string, number>;
-  is_badcase: boolean;
-  flagged_count: number;
-  [k: string]: any;
-}
-
-export interface PromoteTask {
-  task_id: string;
-  trace_id: string;
-  owner_user_id: string | null;
-  status: string; // pending|judging|needs_confirm|rejected|promoted
-  judge_verdict: string | null; // auto_promote|needs_human|auto_reject
-  judge_scores: JudgeScores | null;
-  created_at: string;
-  decided_at: string | null;
-}
-
-export interface PromoteTaskDetail extends PromoteTask {
-  trace?: {
-    trace_id: string;
-    status: string;
-    owner_user_id: string;
-    started_at: string | null;
-    ended_at: string | null;
-    duration_ms: number | null;
-    session_name: string | null;
-  };
-  deliveries?: Record<string, any>;
-  annotator?: string | null;
-  decision?: string | null;
-  target_case_id?: string | null;
-}
-
-/** 标注队列列表（默认只看活跃态 pending/judging/needs_confirm）。 */
-export async function getPromoteTasks(params?: {
-  status?: string;
-  page?: number;
-  page_size?: number;
-}): Promise<{ tasks: PromoteTask[]; total: number; page: number; page_size: number }> {
-  const qs = new URLSearchParams();
-  if (params?.status) qs.set("status", params.status);
-  qs.set("page", String(params?.page ?? 1));
-  qs.set("page_size", String(params?.page_size ?? 50));
-  return evoJson(`/api/promote/tasks?${qs.toString()}`, { method: "GET" });
-}
-
-/** 标注详情（trace 摘要 + judge 分数 + 交付物概要）。 */
-export async function getPromoteTaskDetail(taskId: string): Promise<PromoteTaskDetail> {
-  return evoJson<PromoteTaskDetail>(`/api/promote/tasks/${taskId}`, { method: "GET" });
-}
-
-/** 提交标注决策。accept 必须二选一：target_case_id（归入）或 new_case_title（新建）。 */
-export async function decidePromoteTask(
-  taskId: string,
-  payload: {
-    decision: "accept" | "reject";
-    annotator?: string;
-    target_case_id?: string;
-    new_case_title?: string;
-    demand_md?: string;
-    reference_output?: string;
-  },
-): Promise<{ task_id: string; status: string; case_id?: string; has_reference?: boolean }> {
-  return evoJson(`/api/promote/tasks/${taskId}/decide`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
 }
 
 // ════════════════════════════════════════════════════════════

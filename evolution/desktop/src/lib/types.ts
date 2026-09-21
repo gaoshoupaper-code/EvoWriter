@@ -245,12 +245,6 @@ export type TraceListResponse = {
   offset: number;
 };
 
-/** 用户缓存项（GET /api/users/cache 返回，用户筛选下拉用） */
-export type UserCacheItem = {
-  user_id: string;
-  username: string;
-};
-
 /** 活跃 trace（evolution /api/active-runs 富化返回，D7） */
 export type ActiveRun = {
   trace_id: string;
@@ -330,32 +324,6 @@ export type ArtifactRevisionContentResponse = {
   content: unknown;
 };
 
-export type LineageObjectType =
-  | "trace"
-  | "artifact_revision"
-  | "evidence_dossier"
-  | "evaluation_dossier"
-  | "score"
-  | "experiment"
-  | "candidate"
-  | "release";
-
-export type LineageEdge = {
-  id: number;
-  from_type: LineageObjectType;
-  from_id: string;
-  relation: string;
-  to_type: LineageObjectType;
-  to_id: string;
-  created_at: string;
-};
-
-export type LineageResponse = {
-  object: { type: LineageObjectType; id: string };
-  incoming: LineageEdge[];
-  outgoing: LineageEdge[];
-};
-
 export type WorkloadProfile = {
   workload: TraceWorkload;
   sample_size: number;
@@ -388,36 +356,3 @@ export type WorkloadProfilesResponse = {
 
 // ── 宏观统计（/api/stats/*）──
 
-export type StatsOverview = {
-  total: number;
-  success: number;
-  failed: number;
-  error_rate: number;
-  duration_p50: number | null;
-  duration_p90: number | null;
-  duration_p99: number | null;
-  total_tokens: number;
-  total_input_tokens: number;
-  total_output_tokens: number;
-};
-
-export type SkillStat = {
-  agent_name: string;
-  call_count: number;
-  node_count: number;
-  avg_duration_ms: number | null;
-  fail_count: number;
-  fail_rate: number;
-};
-
-export type TimelinePoint = {
-  bucket: string;
-  total: number;
-  failed: number;
-};
-
-export type FailurePattern = {
-  error_pattern: string;
-  count: number;
-  sample_trace_ids: string[];
-};

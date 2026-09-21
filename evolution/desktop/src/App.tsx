@@ -8,8 +8,6 @@ import ExecutorConfigPage from "@/pages/config/ExecutorConfigPage";
 import Monitor from "@/pages/monitor";
 import Evolve from "@/pages/evolve";
 import ReviewReport from "@/pages/review-report";
-import Evaluation from "@/pages/evaluation";
-import Dossiers from "@/pages/dossiers";
 import Harness from "@/pages/harness";
 import Versions from "@/pages/versions";
 import Dataset from "@/pages/dataset";
@@ -23,7 +21,6 @@ import AdminCreditsSettings from "@/pages/admin/credits/settings";
 import Shell from "@/components/Shell";
 import AdminLayout from "@/components/AdminLayout";
 
-const Lineage = lazy(() => import("@/pages/lineage"));
 const Analysis = lazy(() => import("@/pages/analysis"));
 
 function UnauthorizedHandler() {
@@ -51,12 +48,9 @@ function App() {
         <Route element={<Shell />}>
           {/* 基础 8 项（D24：不动） */}
           <Route path="/" element={<Monitor />} />
-          <Route path="/lineage" element={<Suspense fallback={<div className="page-loading">加载血缘…</div>}><Lineage /></Suspense>} />
           <Route path="/analysis" element={<Suspense fallback={<div className="page-loading">加载分析…</div>}><Analysis /></Suspense>} />
           <Route path="/evolve" element={<Evolve />} />
           <Route path="/evolve/:sessionId/review" element={<ReviewReport />} />
-          <Route path="/dossiers" element={<Dossiers />} />
-          <Route path="/evaluation" element={<Evaluation />} />
           <Route path="/harness" element={<Harness />} />
           <Route path="/versions" element={<Versions />} />
           <Route path="/dataset" element={<Dataset />} />

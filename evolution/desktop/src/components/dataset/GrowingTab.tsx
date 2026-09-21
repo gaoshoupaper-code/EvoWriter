@@ -5,7 +5,7 @@ import CaseDetailSheet from "./CaseDetailSheet";
 /**
  * Growing Tab：增长探索层。
  *
- * 生产 promote 入库的真实 case。只读查看（重构 2026-07-10：
+ * 历史入库（含早期 promote 通道）与手工维护的真实 case。只读查看（重构 2026-07-10：
  * golden 运行时只读，运行时升级能力已移除）。
  *
  * 刷新：受父组件 refreshSignal 驱动（页面头部刷新按钮）。

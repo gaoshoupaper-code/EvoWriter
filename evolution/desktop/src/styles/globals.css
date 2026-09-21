@@ -12642,3 +12642,136 @@ html[data-theme="dark"] .point-chosen { color: var(--teal); }
   background: rgba(110, 207, 184, 0.08); font-size: 12px; line-height: 1.7;
 }
 .bench-golden-added p { margin: 0 0 8px; }
+
+/* ── 评测报告下钻与产物查看（REQ-20260921-114943）──────────── */
+
+/* 产物 tab：按路径分组（FR-003） */
+.artifact-group {
+  border: 1px solid rgba(128, 128, 128, 0.18);
+  border-radius: 10px;
+  padding: 8px;
+  display: grid;
+  gap: 8px;
+  background: rgba(128, 128, 128, 0.04);
+}
+.artifact-group-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  min-height: 22px;
+}
+.artifact-group-count {
+  font-size: 11px; color: var(--evo-ink-muted, #999);
+}
+.artifact-history-toggle {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-size: 11.5px; color: var(--teal, #3a9a7e);
+  background: none; border: none; cursor: pointer; padding: 2px 6px;
+  border-radius: 5px;
+}
+.artifact-history-toggle:hover { background: rgba(58, 154, 126, 0.1); }
+.artifact-revision-actions {
+  display: flex; align-items: center; gap: 8px;
+}
+.artifact-repeat-badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 4px;
+  background: rgba(128, 128, 128, 0.12); color: var(--evo-ink-muted, #999);
+}
+
+/* 评测页 case 明细区（FR-001/FR-004） */
+.bench-case-wrap { margin-top: 14px; }
+.bench-case-wrap h4 { font-size: 13px; margin: 0 0 8px; color: var(--evo-ink-muted, #999); }
+.bench-case-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 10px;
+}
+.bench-case-card {
+  border: 1px solid rgba(128, 128, 128, 0.2); border-radius: 8px;
+  padding: 10px 12px; cursor: pointer; background: var(--surface, inherit);
+}
+.bench-case-card:hover { border-color: var(--teal, #3a9a7e); }
+.bench-case-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+  margin-bottom: 8px;
+}
+.bench-case-id { font-size: 13px; font-weight: 650; }
+.bench-case-stats { font-size: 11.5px; color: var(--evo-ink-muted, #999); }
+.bench-seed-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.bench-seed-row-drawer { margin-bottom: 12px; }
+.bench-seed-chip {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; padding: 3px 9px; border-radius: 5px;
+  border: 1px solid rgba(128, 128, 128, 0.25);
+  background: rgba(128, 128, 128, 0.06); cursor: pointer;
+}
+.bench-seed-chip:hover { border-color: var(--teal, #3a9a7e); }
+.bench-seed-chip.selected { border-color: var(--teal, #3a9a7e); background: rgba(58, 154, 126, 0.12); }
+.bench-seed-chip .bench-seed-status { color: var(--evo-ink-muted, #999); }
+.bench-seed-chip.status-done .bench-seed-status { color: var(--evo-success, #3f9d6f); }
+.bench-seed-chip.status-failed .bench-seed-status { color: var(--evo-danger, #d05f5f); }
+.bench-seed-chip.status-running .bench-seed-status,
+.bench-seed-chip.status-evaluating .bench-seed-status { color: var(--evo-warning, #eab308); }
+.bench-seed-score { font-weight: 650; }
+
+/* 行明细抽屉 */
+.bench-case-sheet { width: min(560px, 92vw) !important; }
+.bench-case-sheet-body {
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 0 20px 20px; overflow-y: auto;
+}
+.bench-run-detail { display: flex; flex-direction: column; gap: 10px; font-size: 12.5px; }
+.bench-run-note { color: var(--evo-ink-muted, #999); line-height: 1.7; }
+.bench-overall-row {
+  display: flex; align-items: center; gap: 14px; font-size: 12.5px;
+  padding-bottom: 6px; border-bottom: 1px solid rgba(128, 128, 128, 0.15);
+}
+.bench-overall-row strong { font-size: 15px; }
+.bench-dim-block {
+  border: 1px solid rgba(128, 128, 128, 0.18); border-radius: 8px; padding: 9px 11px;
+}
+.bench-dim-head { display: flex; justify-content: space-between; align-items: baseline; }
+.bench-dim-name { font-size: 12.5px; font-weight: 600; }
+.bench-dim-score { font-weight: 650; }
+.bench-dim-score.bench-dim-low { color: var(--evo-danger, #d05f5f); }
+.bench-dim-score.bench-dim-mid { color: var(--evo-warning, #eab308); }
+.bench-dim-score.bench-dim-high { color: var(--evo-success, #3f9d6f); }
+.bench-tag-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.bench-tag-chip {
+  font-size: 11px; padding: 2px 8px; border-radius: 4px;
+  background: rgba(201, 121, 78, 0.12); color: var(--coral, #c9794e);
+}
+.bench-dim-reason { margin: 6px 0 0; line-height: 1.7; color: var(--evo-ink-muted, #999); }
+.bench-rule-problems h5 { margin: 4px 0 6px; font-size: 12px; }
+.bench-rule-problems ul { margin: 0; padding-left: 18px; line-height: 1.8; }
+.bench-error-box {
+  border: 1px solid rgba(208, 95, 95, 0.35); border-radius: 8px;
+  padding: 10px 12px; background: rgba(208, 95, 95, 0.06);
+}
+.bench-error-title { margin: 0 0 4px; font-weight: 650; color: var(--evo-danger, #d05f5f); }
+.bench-error-msg { margin: 0; line-height: 1.7; overflow-wrap: anywhere; }
+
+/* 三件套正文块（FR-002） */
+.bench-delivery {
+  border-top: 1px solid rgba(128, 128, 128, 0.15); padding-top: 10px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.bench-delivery h5 { margin: 0; font-size: 12.5px; }
+.bench-delivery-group { display: flex; flex-direction: column; gap: 4px; }
+.bench-delivery-head {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; font-weight: 600; color: var(--teal, #3a9a7e);
+}
+.bench-delivery-file { display: flex; flex-direction: column; gap: 4px; }
+.bench-delivery-toggle {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; text-align: left; font-size: 11.5px;
+  padding: 5px 9px; border: 1px solid rgba(128, 128, 128, 0.18);
+  border-radius: 6px; background: rgba(128, 128, 128, 0.04); cursor: pointer;
+}
+.bench-delivery-toggle:disabled { cursor: default; opacity: 0.75; }
+.bench-delivery-toggle:not(:disabled):hover { border-color: var(--teal, #3a9a7e); }
+.bench-delivery-path { overflow-wrap: anywhere; }
+.bench-delivery-note { font-size: 11px; color: var(--evo-ink-muted, #999); }
+.bench-delivery-content {
+  margin: 0; padding: 10px; max-height: 320px; overflow: auto;
+  font-size: 11.5px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere;
+  background: rgba(128, 128, 128, 0.06); border-radius: 6px;
+}
+

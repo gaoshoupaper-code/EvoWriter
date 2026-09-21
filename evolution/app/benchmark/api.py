@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Literal
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.benchmark import repo, runner, stats, report
@@ -191,6 +191,18 @@ def get_batch(batch_id: str) -> dict[str, Any]:
     return batch
 
 
+@router.get("/batches/{batch_id}/runs")
+def list_batch_runs(batch_id: str) -> dict[str, Any]:
+    """批次全行明细（REQ-20260921-114943 FR-001/FR-004：case 明细区数据源）。
+
+    行含状态/错误/trace_id 与完整 scores；空批次按 404（建批必产生行）。
+    """
+    result = repo.list_batch_runs(batch_id)
+    if result["total"] == 0:
+        raise HTTPException(status_code=404, detail="batch not found")
+    return result
+
+
 @router.get("/batches/{batch_id}/report")
 def get_batch_report(batch_id: str) -> dict[str, Any]:
     """弱点报告（FR-005：维度均分 + 标签命中 + 低分 case）。"""
@@ -198,6 +210,27 @@ def get_batch_report(batch_id: str) -> dict[str, Any]:
     if result.get("status") == "not_found":
         raise HTTPException(status_code=404, detail="batch not found")
     return result
+
+
+@router.get("/traces/{trace_id}/deliveries")
+def get_trace_deliveries(trace_id: str, request: Request) -> dict[str, Any]:
+    """三件套交付索引（REQ-20260921-114943 FR-002：行明细抽屉的评分依据入口）。
+
+    只回元数据与可用性（过期/缺失降级信息），正文仍走
+    /artifacts/revisions/{id}/content（DEC-003 超权限 + 读取审计）；
+    can_read_content 标注当前用户权限，供前端按「无权查看正文」降级。
+    """
+    import app.core.db as db
+
+    from app.benchmark import scorer
+
+    if db.query_one("SELECT 1 AS found FROM runs WHERE trace_id=?", (trace_id,)) is None:
+        raise HTTPException(status_code=404, detail="trace not found")
+    return {
+        "trace_id": trace_id,
+        "can_read_content": bool(getattr(request.state, "is_super_admin", False)),
+        "groups": scorer.load_outline_delivery_index(trace_id),
+    }
 
 
 @router.post("/batches/{batch_id}/stop")

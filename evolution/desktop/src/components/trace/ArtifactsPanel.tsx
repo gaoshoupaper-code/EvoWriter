@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Eye, EyeOff, FileText, LoaderCircle } from "lucide-react";
+import { Eye, EyeOff, FileText, History, LoaderCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -7,7 +7,7 @@ import {
   getArtifactRevisionContent,
   getTraceArtifactRevisions,
 } from "@/lib/api";
-import type { ArtifactRevision } from "@/lib/types";
+import type { ArtifactRevision, ArtifactRevisionGroup } from "@/lib/types";
 
 type ArtifactsPanelProps = {
   traceId: string;
@@ -20,25 +20,50 @@ type RevisionContentState =
   | { status: "closed"; content: unknown }
   | { status: "error"; message: string };
 
+/** 连续同 content_hash 的修订合并为一段：rev=段内最新（代表），repeat=写入次数。 */
+type RevisionSegment = { rev: ArtifactRevision; repeat: number };
+
+function mergeSegments(revisions: ArtifactRevision[]): RevisionSegment[] {
+  const segments: RevisionSegment[] = [];
+  for (const rev of revisions) {
+    const last = segments[segments.length - 1];
+    if (last && last.rev.content_hash === rev.content_hash) {
+      last.repeat += 1;
+      last.rev = rev;
+    } else {
+      segments.push({ rev, repeat: 1 });
+    }
+  }
+  return segments;
+}
+
+/**
+ * 产物修订面板（REQ-20260921-114943 FR-003：按路径分组，默认展开最新修订）。
+ *
+ * 同一 logical_key 的多次写入折叠为一组：默认只展示最新修订；「历史修订」
+ * 展开后按时间升序展示全部修订；连续内容未变的写入合并一条并标注 ×N。
+ */
 export function ArtifactsPanel({ traceId, canReadContent }: ArtifactsPanelProps) {
-  const [revisions, setRevisions] = useState<ArtifactRevision[]>([]);
+  const [groups, setGroups] = useState<ArtifactRevisionGroup[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [contents, setContents] = useState<Record<string, RevisionContentState>>({});
+  const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setError(null);
     setContents({});
+    setExpandedGroups(new Set());
 
     getTraceArtifactRevisions(traceId)
       .then((response) => {
-        if (!cancelled) setRevisions(response.items);
+        if (!cancelled) setGroups(response.groups);
       })
       .catch((reason: unknown) => {
         if (!cancelled) {
-          setRevisions([]);
+          setGroups([]);
           setError(reason instanceof Error ? reason.message : String(reason));
         }
       })
@@ -51,7 +76,7 @@ export function ArtifactsPanel({ traceId, canReadContent }: ArtifactsPanelProps)
     };
   }, [traceId]);
 
-  async function toggleContent(revisionId: string) {
+  function toggleContent(revisionId: string) {
     const current = contents[revisionId];
     if (current?.status === "open") {
       setContents((states) => ({
@@ -69,90 +94,135 @@ export function ArtifactsPanel({ traceId, canReadContent }: ArtifactsPanelProps)
     }
 
     setContents((states) => ({ ...states, [revisionId]: { status: "loading" } }));
-    try {
-      const response = await getArtifactRevisionContent(revisionId);
-      setContents((states) => ({
-        ...states,
-        [revisionId]: { status: "open", content: response.content },
-      }));
-    } catch (reason) {
-      setContents((states) => ({
-        ...states,
-        [revisionId]: {
-          status: "error",
-          message: reason instanceof Error ? reason.message : String(reason),
-        },
-      }));
-    }
+    getArtifactRevisionContent(revisionId)
+      .then((response) => {
+        setContents((states) => ({
+          ...states,
+          [revisionId]: { status: "open", content: response.content },
+        }));
+      })
+      .catch((reason) => {
+        setContents((states) => ({
+          ...states,
+          [revisionId]: {
+            status: "error",
+            message: reason instanceof Error ? reason.message : String(reason),
+          },
+        }));
+      });
+  }
+
+  function toggleGroupHistory(groupKey: string) {
+    setExpandedGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(groupKey)) next.delete(groupKey);
+      else next.add(groupKey);
+      return next;
+    });
   }
 
   if (loading) return <div className="artifacts-loading">加载制品版本...</div>;
   if (error) return <div className="artifacts-error">读取制品版本失败：{error}</div>;
-  if (revisions.length === 0) {
+  if (groups.length === 0) {
     return <div className="artifacts-empty">该 Trace 没有生成可跨运行复查的制品版本。</div>;
   }
+
+  /** 单条修订卡片（段代表）。 */
+  const renderSegment = (segment: RevisionSegment) => {
+    const revision = segment.rev;
+    const contentState = contents[revision.artifact_revision_id];
+    const expired = isExpired(revision.expires_at);
+    const isOpen = contentState?.status === "open";
+    return (
+      <article className="artifact-revision" key={revision.artifact_revision_id}>
+        <header className="artifact-revision-header">
+          <div className="artifact-revision-title">
+            <FileText size={15} aria-hidden="true" />
+            <div>
+              <h3>{revision.logical_key}</h3>
+              <span>{artifactTypeLabel(revision.artifact_type)}</span>
+            </div>
+          </div>
+          <div className="artifact-revision-actions">
+            {segment.repeat > 1 && (
+              <span className="artifact-repeat-badge" title="连续多次写入内容未变，已合并展示">
+                内容未变 ×{segment.repeat}
+              </span>
+            )}
+            {canReadContent && (
+              <button
+                className="artifact-content-toggle"
+                type="button"
+                disabled={expired || contentState?.status === "loading"}
+                onClick={() => toggleContent(revision.artifact_revision_id)}
+                title={expired ? "正文已过期" : isOpen ? "收起正文" : "查看正文"}
+                aria-label={expired ? "正文已过期" : isOpen ? "收起正文" : "查看正文"}
+              >
+                {contentState?.status === "loading" ? (
+                  <LoaderCircle className="artifact-content-spinner" size={15} />
+                ) : isOpen ? (
+                  <EyeOff size={15} />
+                ) : (
+                  <Eye size={15} />
+                )}
+              </button>
+            )}
+          </div>
+        </header>
+
+        <dl className="artifact-revision-meta">
+          <Meta label="Revision" value={revision.artifact_revision_id} />
+          <Meta label="Content hash" value={revision.content_hash} />
+          <Meta label="Parent" value={revision.parent_revision_id ?? "根版本"} />
+          <Meta label="Producer event" value={revision.producer_event_id ?? "unknown"} />
+          <Meta label="Harness" value={revision.harness_version ?? "unknown"} />
+          <Meta label="Size" value={formatBytes(revision.size_bytes)} />
+          <Meta label="Created" value={formatDateTime(revision.created_at)} />
+          <Meta
+            label="Retention"
+            value={expired ? "正文已过期" : formatDateTime(revision.expires_at)}
+          />
+        </dl>
+
+        {!canReadContent && (
+          <div className="artifact-content-restricted">完整正文仅超级管理员可按需查看。</div>
+        )}
+        {contentState?.status === "error" && (
+          <div className="artifacts-error">读取正文失败：{contentState.message}</div>
+        )}
+        {contentState?.status === "open" && (
+          <RevisionContent content={contentState.content} />
+        )}
+      </article>
+    );
+  };
 
   return (
     <div className="artifacts-panel">
       <div className="artifact-revision-list">
-        {revisions.map((revision) => {
-          const contentState = contents[revision.artifact_revision_id];
-          const expired = isExpired(revision.expires_at);
-          const isOpen = contentState?.status === "open";
+        {groups.map((group) => {
+          const segments = mergeSegments(group.revisions);
+          const head = segments[segments.length - 1];
+          const historyExpanded = expandedGroups.has(group.logical_key);
           return (
-            <article className="artifact-revision" key={revision.artifact_revision_id}>
-              <header className="artifact-revision-header">
-                <div className="artifact-revision-title">
-                  <FileText size={15} aria-hidden="true" />
-                  <div>
-                    <h3>{revision.logical_key}</h3>
-                    <span>{artifactTypeLabel(revision.artifact_type)}</span>
-                  </div>
-                </div>
-                {canReadContent && (
+            <section className="artifact-group" key={`${group.logical_key}:${group.head_revision_id}`}>
+              <header className="artifact-group-header">
+                <span className="artifact-group-count" title="同一路径的修订链长度">
+                  {group.revision_count} 次修订
+                </span>
+                {group.revision_count > 1 && (
                   <button
-                    className="artifact-content-toggle"
+                    className="artifact-history-toggle"
                     type="button"
-                    disabled={expired || contentState?.status === "loading"}
-                    onClick={() => toggleContent(revision.artifact_revision_id)}
-                    title={expired ? "正文已过期" : isOpen ? "收起正文" : "查看正文"}
-                    aria-label={expired ? "正文已过期" : isOpen ? "收起正文" : "查看正文"}
+                    onClick={() => toggleGroupHistory(group.logical_key)}
                   >
-                    {contentState?.status === "loading" ? (
-                      <LoaderCircle className="artifact-content-spinner" size={15} />
-                    ) : isOpen ? (
-                      <EyeOff size={15} />
-                    ) : (
-                      <Eye size={15} />
-                    )}
+                    <History size={13} aria-hidden />
+                    {historyExpanded ? "收起历史修订" : `历史修订（${group.revision_count - 1}）`}
                   </button>
                 )}
               </header>
-
-              <dl className="artifact-revision-meta">
-                <Meta label="Revision" value={revision.artifact_revision_id} />
-                <Meta label="Content hash" value={revision.content_hash} />
-                <Meta label="Parent" value={revision.parent_revision_id ?? "根版本"} />
-                <Meta label="Producer event" value={revision.producer_event_id ?? "unknown"} />
-                <Meta label="Harness" value={revision.harness_version ?? "unknown"} />
-                <Meta label="Size" value={formatBytes(revision.size_bytes)} />
-                <Meta label="Created" value={formatDateTime(revision.created_at)} />
-                <Meta
-                  label="Retention"
-                  value={expired ? "正文已过期" : formatDateTime(revision.expires_at)}
-                />
-              </dl>
-
-              {!canReadContent && (
-                <div className="artifact-content-restricted">完整正文仅超级管理员可按需查看。</div>
-              )}
-              {contentState?.status === "error" && (
-                <div className="artifacts-error">读取正文失败：{contentState.message}</div>
-              )}
-              {contentState?.status === "open" && (
-                <RevisionContent content={contentState.content} />
-              )}
-            </article>
+              {historyExpanded ? segments.map(renderSegment) : renderSegment(head)}
+            </section>
           );
         })}
       </div>

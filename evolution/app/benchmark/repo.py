@@ -348,6 +348,45 @@ def get_batch(batch_id: str) -> dict[str, Any]:
     }
 
 
+def list_batch_runs(batch_id: str) -> dict[str, Any]:
+    """批次全行明细（REQ-20260921-114943 FR-001/FR-004，桌面端 case 明细区）。
+
+    行含解析后的完整 scores（scores/tags/reasons/overall/rule_delivery）；
+    scores_json 缺失或解析失败降级 None，不阻塞其他行展示。
+    前端按 case_id 分组渲染卡片；聚合口径不变（仅 done 行计入报告均分）。
+    """
+    import json
+
+    rows = db.query_all(
+        "SELECT * FROM benchmark_runs WHERE batch_id=? ORDER BY case_id, seed, id",
+        (batch_id,),
+    )
+    items = []
+    for row in rows:
+        scores = None
+        if row.get("scores_json"):
+            try:
+                parsed = json.loads(row["scores_json"])
+                scores = parsed if isinstance(parsed, dict) else None
+            except (ValueError, TypeError):
+                scores = None
+        items.append({
+            "id": row["id"],
+            "case_id": row["case_id"],
+            "seed": row.get("seed"),
+            "harness_version": row["harness_version"],
+            "status": row["status"],
+            "retries": row["retries"],
+            "error": row["error"],
+            "trace_id": row["trace_id"],
+            "rubric_version": row.get("rubric_version"),
+            "scores": scores,
+            "ran_at": row["ran_at"],
+            "finished_at": row["finished_at"],
+        })
+    return {"batch_id": batch_id, "items": items, "total": len(items)}
+
+
 def get_leaderboard(golden_revision: str | None = None) -> dict[str, Any]:
     """跨版本 leaderboard（按 golden_revision 过滤）。
 
@@ -449,4 +488,5 @@ __all__ = [
     "set_result", "mark_failed", "mark_cancelled",
     "stop_batch", "get_stop_reason",
     "get_batch", "get_recent_batches", "get_leaderboard", "get_recent_versions",
+    "list_batch_runs",
 ]

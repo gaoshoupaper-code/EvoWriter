@@ -162,9 +162,13 @@ class TraceV2WorkbenchesTest(unittest.TestCase):
         self.assertEqual(revision["payload_id"], ref.payload_id)
         self.assertNotIn("content", revision)
         revisions = list_trace_artifact_revisions("trace-create")
-        self.assertEqual(revisions["total"], 1)
-        self.assertEqual(revisions["items"][0]["artifact_revision_id"], "revision-1")
-        self.assertNotIn("content", revisions["items"][0])
+        self.assertEqual(revisions["total_groups"], 1)
+        self.assertEqual(revisions["total_revisions"], 1)
+        group = revisions["groups"][0]
+        self.assertEqual(group["logical_key"], "chapter/1")
+        self.assertEqual(group["head_revision_id"], "revision-1")
+        self.assertEqual(group["revisions"][0]["artifact_revision_id"], "revision-1")
+        self.assertNotIn("content", group["revisions"][0])
 
         request = SimpleNamespace(
             state=SimpleNamespace(is_super_admin=True, user_id="admin")
@@ -174,6 +178,46 @@ class TraceV2WorkbenchesTest(unittest.TestCase):
         audit = db.query_one("SELECT action, object_type FROM access_audit")
         self.assertEqual(audit["action"], "view")
         self.assertEqual(audit["object_type"], "artifact_revision")
+
+    def test_artifact_revisions_grouped_by_logical_key(self) -> None:
+        """同路径多修订折叠一组：head=最新、组内时间升序（REQ-20260921-114943 FR-003）。"""
+        from app.view.workbenches import list_trace_artifact_revisions
+
+        db.execute(
+            """INSERT INTO artifacts
+               (artifact_id, artifact_type, workspace_id, logical_key, created_at)
+               VALUES ('artifact-g', 'draft', 'ws', 'storyline/S01.md', '2026-07-28')"""
+        )
+        # 3 次修订：t1 草稿 → t2 润色 → t3 润色未改内容（hash 与 t2 相同）
+        for rid, hash_v, ts in (
+            ("rev-g1", "hash-draft", "2026-07-28T01:00:00+00:00"),
+            ("rev-g2", "hash-polish", "2026-07-28T02:00:00+00:00"),
+            ("rev-g3", "hash-polish", "2026-07-28T03:00:00+00:00"),
+        ):
+            db.execute(
+                """INSERT INTO payload_objects
+                   (payload_id, content_hash, kind, size_bytes, sensitivity, expires_at,
+                    storage_path, created_at)
+                   VALUES (?, ?, 'semantic_full', 10, 'normal', NULL, '', ?)""",
+                (f"pl-{rid}", hash_v, ts),
+            )
+            db.execute(
+                """INSERT INTO artifact_revisions
+                   (artifact_revision_id, artifact_id, payload_id, content_hash,
+                    producer_trace_id, created_at)
+                   VALUES (?, 'artifact-g', ?, ?, 'trace-create', ?)""",
+                (rid, f"pl-{rid}", hash_v, ts),
+            )
+
+        result = list_trace_artifact_revisions("trace-create")
+        by_key = {g["logical_key"]: g for g in result["groups"]}
+        self.assertEqual(result["total_groups"], 1)
+        story = by_key["storyline/S01.md"]
+        self.assertEqual(story["revision_count"], 3)
+        self.assertEqual(story["head_revision_id"], "rev-g3")
+        self.assertEqual([r["artifact_revision_id"] for r in story["revisions"]],
+                         ["rev-g1", "rev-g2", "rev-g3"])  # 时间升序（修订链顺序）
+        self.assertEqual(result["total_revisions"], 3)
 
 
 if __name__ == "__main__":

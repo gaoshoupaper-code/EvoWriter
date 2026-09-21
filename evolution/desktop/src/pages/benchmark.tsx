@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
 import { toast } from "sonner";
+import { CaseRunsSection } from "@/components/benchmark/CaseRunsSection";
 import {
   runBenchmark,
   listBenchmarkBatches,
@@ -62,6 +63,8 @@ export default function BenchmarkPage() {
   const [selectedBatch, setSelectedBatch] = useState("");
   const [report, setReport] = useState<BenchmarkReport | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
+  // case 明细区随报告刷新同步（FR-001：loadReport 时递增触发重拉）
+  const [reportRefreshKey, setReportRefreshKey] = useState(0);
 
   // 对比
   const [cmpA, setCmpA] = useState("");
@@ -149,6 +152,7 @@ export default function BenchmarkPage() {
     setSelectedBatch(batchId);
     setReport(null);
     setReportLoading(true);
+    setReportRefreshKey((k) => k + 1);
     try {
       const r = await getBenchmarkReport(batchId);
       setReport(r);
@@ -447,6 +451,10 @@ export default function BenchmarkPage() {
               </div>
             </>
           )}
+
+          {/* case 明细区（REQ-20260921-114943 FR-001/FR-004：聚合报告下方，
+              全行状态可见；无聚合数据的批次也可下钻失败行） */}
+          <CaseRunsSection batchId={selectedBatch} refreshKey={reportRefreshKey} />
         </section>
       )}
 

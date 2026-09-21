@@ -47,6 +47,12 @@ def get_artifact_revision(revision_id: str) -> dict[str, Any]:
 
 @router.get("/traces/{trace_id}/artifact-revisions")
 def list_trace_artifact_revisions(trace_id: str) -> dict[str, Any]:
+    """按 logical_key 分组返回修订（REQ-20260921-114943 FR-003/DEC-001）。
+
+    同路径多次写入折叠为一组：组内修订按 created_at 升序（修订链阅读顺序），
+    head_revision_id 指向最新；前端默认只展开 head，连续同 content_hash 的
+    修订合并展示（「内容未变 ×N」）。
+    """
     if db.query_one("SELECT 1 AS found FROM runs WHERE trace_id=?", (trace_id,)) is None:
         raise HTTPException(status_code=404, detail="Trace not found")
     rows = db.query_all(
@@ -61,7 +67,25 @@ def list_trace_artifact_revisions(trace_id: str) -> dict[str, Any]:
            ORDER BY r.created_at, r.artifact_revision_id""",
         (trace_id,),
     )
-    return {"trace_id": trace_id, "items": rows, "total": len(rows)}
+    grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault((row["logical_key"], row["artifact_type"]), []).append(dict(row))
+    groups = [
+        {
+            "logical_key": logical_key,
+            "artifact_type": artifact_type,
+            "revision_count": len(revisions),
+            "head_revision_id": revisions[-1]["artifact_revision_id"],
+            "revisions": revisions,
+        }
+        for (logical_key, artifact_type), revisions in grouped.items()
+    ]
+    return {
+        "trace_id": trace_id,
+        "groups": groups,
+        "total_groups": len(groups),
+        "total_revisions": len(rows),
+    }
 
 
 @router.get("/artifacts/revisions/{revision_id}/content")

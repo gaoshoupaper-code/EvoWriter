@@ -49,18 +49,20 @@ def _classify_logical_key(key: str) -> tuple[str, str] | None:
     return None
 
 
-def load_outline_deliveries(trace_id: str) -> dict[str, str]:
-    """从 trace 的 artifact_revision 事件读取大纲三件套（{展示名: 正文}）。
+def _select_latest_outline_revisions(trace_id: str) -> dict[str, dict[str, Any]]:
+    """事件流直读：三件套 logical_key → 最新修订信息（评分与展示共用的选择逻辑）。
 
-    同 logical_key 取最新 revision（事件按 sequence，后写覆盖）；
-    正文经 hydrate 回填 + content_hash 校验，校验失败的 revision 记告警并跳过。
+    事件按 sequence 后写覆盖（同 key 取最新）；content_hash 校验失败的修订
+    记告警并跳过。返回 {logical_key: {display, content, content_hash,
+    artifact_revision_id}}——load_outline_deliveries（评分输入）与
+    load_outline_delivery_index（报告展示）经同一函数保证口径一致（DEC-002）。
     """
     rows = db.query_all(
         "SELECT payload_json FROM event_payloads "
         "WHERE trace_id=? AND type='artifact_revision' ORDER BY sequence",
         (trace_id,),
     )
-    files: dict[str, tuple[str, str]] = {}  # logical_key → (展示名, 正文)
+    files: dict[str, dict[str, Any]] = {}
     for row in rows:
         try:
             event = hydrate_event(TraceLogEvent.model_validate(json.loads(row["payload_json"])))
@@ -80,14 +82,90 @@ def load_outline_deliveries(trace_id: str) -> dict[str, str]:
         if isinstance(expected_hash, str) and actual_hash != expected_hash:
             logger.warning("artifact hash 不一致，跳过 trace=%s key=%s", trace_id, key)
             continue
-        files[key] = (group[0], content)
+        revision_id = getattr(event, "artifact_revision_id", None)
+        files[key] = {
+            "display": group[0],
+            "content": content,
+            "content_hash": expected_hash if isinstance(expected_hash, str) else None,
+            "artifact_revision_id": revision_id,
+        }
+    return files
+
+
+def load_outline_deliveries(trace_id: str) -> dict[str, str]:
+    """从 trace 的 artifact_revision 事件读取大纲三件套（{展示名: 正文}）。
+
+    同 logical_key 取最新 revision（事件按 sequence，后写覆盖）；
+    正文经 hydrate 回填 + content_hash 校验，校验失败的 revision 记告警并跳过。
+    """
+    files = _select_latest_outline_revisions(trace_id)
 
     # 组内多文件按路径排序拼接
     grouped: dict[str, list[str]] = {}
     for key in sorted(files):
-        display, content = files[key]
-        grouped.setdefault(display, []).append(f"### {key}\n\n{content}")
+        info = files[key]
+        grouped.setdefault(info["display"], []).append(f"### {key}\n\n{info['content']}")
     return {display: "\n\n".join(parts) for display, parts in grouped.items()}
+
+
+def load_outline_delivery_index(trace_id: str) -> list[dict[str, Any]]:
+    """三件套交付索引（REQ-20260921-114943 FR-002）：展示名分组 + 每文件最新修订元数据。
+
+    修订选择与评分输入完全同源（_select_latest_outline_revisions，DEC-002）；
+    可用性连接 artifact_revisions/payload_objects——正文已删除或过期（90 天，
+    DEC-009）即 available=False，前端按「正文已过期」降级展示。
+    三组固定顺序返回（主线/人物/世界观），缺失组 files=[] 供前端标注「缺失」。
+    """
+    from datetime import UTC, datetime
+
+    files = _select_latest_outline_revisions(trace_id)
+
+    rev_ids = [v["artifact_revision_id"] for v in files.values() if v["artifact_revision_id"]]
+    meta: dict[str, dict[str, Any]] = {}
+    if rev_ids:
+        placeholders = ",".join("?" * len(rev_ids))
+        for row in db.query_all(
+            f"""SELECT r.artifact_revision_id, p.expires_at, p.deleted_at, p.size_bytes
+                FROM artifact_revisions r
+                LEFT JOIN payload_objects p ON p.payload_id = r.payload_id
+                WHERE r.artifact_revision_id IN ({placeholders})""",
+            tuple(rev_ids),
+        ):
+            meta[row["artifact_revision_id"]] = dict(row)
+
+    now = datetime.now(UTC)
+
+    def _available(m: dict[str, Any] | None) -> bool:
+        if m is None:
+            return False
+        if m.get("deleted_at"):
+            return False
+        expires_at = m.get("expires_at")
+        if not expires_at:
+            return True
+        try:
+            return datetime.fromisoformat(expires_at) > now
+        except ValueError:
+            return False
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for key in sorted(files):
+        info = files[key]
+        revision_id = info["artifact_revision_id"]
+        m = meta.get(revision_id) if revision_id else None
+        groups.setdefault(info["display"], []).append({
+            "logical_key": key,
+            "content_hash": info["content_hash"],
+            "artifact_revision_id": revision_id,
+            "size_bytes": m.get("size_bytes") if m else None,
+            "expires_at": m.get("expires_at") if m else None,
+            "available": _available(m),
+        })
+
+    return [
+        {"display": display, "files": groups.get(display, [])}
+        for display in (_GROUP_STORYLINE[0], _GROUP_CHARACTER[0], _GROUP_WORLDVIEW[0])
+    ]
 
 
 def check_delivery_complete(deliveries: dict[str, str]) -> dict[str, Any]:
@@ -214,6 +292,7 @@ def score_case(
 
 __all__ = [
     "load_outline_deliveries",
+    "load_outline_delivery_index",
     "check_delivery_complete",
     "score_case",
 ]

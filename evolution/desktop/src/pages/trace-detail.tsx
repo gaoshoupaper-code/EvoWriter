@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams, useNavigate, useOutletContext } from "react-router-dom";
+import { useParams, useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
 import { GitFork, RefreshCw } from "lucide-react";
 import { useTracePolling } from "@/hooks/useTraceStream";
 import { TraceChainTimeline } from "@/components/trace/TraceChainTimeline";
@@ -44,7 +44,12 @@ export default function TraceDetailPage() {
   } = useTracePolling(traceId ?? null);
 
   // ── 页面壳状态 ──
-  const [activeTab, setActiveTab] = useState<"trace" | "chart" | "artifacts">("trace");
+  // ?tab= 定位（REQ-20260921-114943 FR-002：评测报告跳转产物 tab 的深链入口）
+  const [searchParams] = useSearchParams();
+  const initialTab = searchParams.get("tab");
+  const [activeTab, setActiveTab] = useState<"trace" | "chart" | "artifacts">(
+    initialTab === "chart" || initialTab === "artifacts" ? initialTab : "trace",
+  );
   const [drawerNodeId, setDrawerNodeId] = useState<string | null>(null);
   const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(null);
   const [highlightedLoopIndex, setHighlightedLoopIndex] = useState<number | null>(null);

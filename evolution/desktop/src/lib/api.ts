@@ -1838,6 +1838,72 @@ export async function getBenchmarkReport(batchId: string): Promise<BenchmarkRepo
   return evoJson(`/api/benchmark/batches/${batchId}/report`, { method: "GET" });
 }
 
+/** 行评分明细（scores_json 结构化结果，键随 rubric 版本动态）。 */
+export interface BenchmarkRunScores {
+  rubric_version?: string;
+  scores?: Record<string, number>;
+  tags?: Record<string, string[]>;
+  reasons?: Record<string, string>;
+  overall?: number;
+  rule_delivery?: { key?: string; passed?: boolean | null; problems?: string[] };
+}
+
+/** 批次单行（case×seed）明细（REQ-20260921-114943 FR-001/FR-004）。 */
+export interface BenchmarkRunRow {
+  id: number;
+  case_id: string;
+  seed: number | null;
+  harness_version: number;
+  status: string; // done | failed | pending | running | evaluating | cancelled
+  retries: number;
+  error: string | null;
+  trace_id: string | null;
+  rubric_version: string | null;
+  scores: BenchmarkRunScores | null;
+  ran_at: string | null;
+  finished_at: string | null;
+}
+
+export interface BenchmarkRunsResponse {
+  batch_id: string;
+  items: BenchmarkRunRow[];
+  total: number;
+}
+
+/** 批次全行明细（case 明细区数据源，DEC-004/008：全量行状态可见）。 */
+export async function listBenchmarkRuns(batchId: string): Promise<BenchmarkRunsResponse> {
+  return evoJson<BenchmarkRunsResponse>(
+    `/api/benchmark/batches/${batchId}/runs`,
+    { method: "GET" },
+  );
+}
+
+/** 三件套交付索引（FR-002/DEC-002：与评分输入同口径的最新修订）。 */
+export interface BenchmarkDeliveryFile {
+  logical_key: string;
+  content_hash: string | null;
+  artifact_revision_id: string | null;
+  size_bytes: number | null;
+  expires_at: string | null;
+  available: boolean;
+}
+
+export interface BenchmarkDeliveriesResponse {
+  trace_id: string;
+  /** 正文读取权限（DEC-003：超管门槛，非超管前端降级占位） */
+  can_read_content: boolean;
+  groups: { display: string; files: BenchmarkDeliveryFile[] }[];
+}
+
+export async function getBenchmarkDeliveries(
+  traceId: string,
+): Promise<BenchmarkDeliveriesResponse> {
+  return evoJson<BenchmarkDeliveriesResponse>(
+    `/api/benchmark/traces/${encodeURIComponent(traceId)}/deliveries`,
+    { method: "GET" },
+  );
+}
+
 /** 两批次 CI 三态对比。 */
 export async function compareBatches(batchA: string, batchB: string): Promise<BenchmarkCompare> {
   return evoJson("/api/benchmark/compare", {

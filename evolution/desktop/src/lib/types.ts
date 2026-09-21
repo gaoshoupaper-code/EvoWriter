@@ -309,10 +309,20 @@ export type ArtifactRevision = {
   expires_at: string | null;
 };
 
+export type ArtifactRevisionGroup = {
+  logical_key: string;
+  artifact_type: string;
+  revision_count: number;
+  head_revision_id: string;
+  /** created_at 升序（修订链阅读顺序），最新在末尾 */
+  revisions: ArtifactRevision[];
+};
+
 export type ArtifactRevisionListResponse = {
   trace_id: string;
-  items: ArtifactRevision[];
-  total: number;
+  groups: ArtifactRevisionGroup[];
+  total_groups: number;
+  total_revisions: number;
 };
 
 export type ArtifactRevisionContentResponse = {

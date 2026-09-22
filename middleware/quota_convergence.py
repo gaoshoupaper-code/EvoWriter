@@ -29,9 +29,12 @@ from contracts.storybuilding_quota import (
     evaluate_quota,
 )
 
-# 默认增量预算：模型调用数上限。必须在执行端 recursion_limit（300）之内
-# 软着陆，留出收尾（timeline 维护 + review + 修订 + 返回）余量。
-DEFAULT_MAX_MODEL_CALLS = 240
+# 默认增量预算：模型调用数上限。执行端 recursion_limit=300 计的是 LangGraph
+# 超步（super-step）——ReAct 循环每次模型调用约消耗 2 个超步（model 节点 +
+# tools 节点），即 300 超步 ≈ 150 次模型调用。预算必须显著低于该值才能在硬
+# 限制前软着陆：120 次调用 ≈ 240 超步，为收尾（timeline 维护 + review +
+# 修订 + 返回）留约 60 超步余量。
+DEFAULT_MAX_MODEL_CALLS = 120
 
 
 class QuotaConvergenceMiddleware(AgentMiddleware):

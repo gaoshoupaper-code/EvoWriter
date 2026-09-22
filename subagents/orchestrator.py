@@ -160,9 +160,14 @@ def build_orchestrator_agent(
         ))
 
     # ---- storyline 领域代理追加单线护栏（预算口径与 v13 一致）----
+    # reset_per_invocation=False：计数跨 task 委托累计，max_new_lines 成为整个
+    # 运行的新增绝对上限（v14 中 orchestrator 会多次委托 storyline 加线，
+    # 按委托重置会使运行级上限失效——review correctness-P2）。
     storyline_mw: list[AgentMiddleware] = list(middleware_factory("storyline-subagent"))
     storyline_mw.append(StorylineSingleLineLimitMiddleware(
-        workspace_root, max_new_lines=resolve_line_budget(quota_target),
+        workspace_root,
+        max_new_lines=resolve_line_budget(quota_target),
+        reset_per_invocation=False,
     ))
 
     domain_specs = [

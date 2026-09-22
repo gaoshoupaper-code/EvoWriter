@@ -193,6 +193,11 @@ def compare_batches(batch_a: str, batch_b: str) -> dict[str, Any]:
                 "mean": round(s / c, 4) if c else None, "n": c,
             }
 
+    # 开销并排（REQ-20260922-162823 FR-006 ③：参考数据，不进胜负判定）
+    cost_stats = _cost_side_by_side(rows_a, rows_b)
+    # 留白档分层均分差（DEC-007 辅判读：方向性观察，不判显著性）
+    blank_layers = _blank_layer_diff(rows_a, rows_b)
+
     return {
         "comparable": True,
         "batch_a": batch_a, "batch_b": batch_b,
@@ -200,7 +205,66 @@ def compare_batches(batch_a: str, batch_b: str) -> dict[str, Any]:
         "manifest_fp_b": rows_b[0].get("manifest_fp"),
         "total": stats,
         "dimensions": dim_stats,
+        "cost": cost_stats,
+        "blank_layers": blank_layers,
     }
+
+
+def _cost_side_by_side(rows_a: list[dict], rows_b: list[dict]) -> dict[str, Any]:
+    """双批次开销并排（合计 + 均摊；NULL 行不参与均值）。"""
+
+    def _mean(rows: list[dict], field: str) -> float | None:
+        values = [r[field] for r in rows if isinstance(r.get(field), int)]
+        return round(sum(values) / len(values), 1) if values else None
+
+    out: dict[str, Any] = {}
+    for field in ("input_tokens", "output_tokens", "llm_calls", "wall_clock_ms"):
+        out[field] = {
+            "candidate_mean": _mean(rows_a, field),
+            "production_mean": _mean(rows_b, field),
+        }
+    return out
+
+
+def _blank_layer_diff(rows_a: list[dict], rows_b: list[dict]) -> list[dict[str, Any]]:
+    """留白档分层 overall 均分差（A=candidate 候选，B=production 基线）。"""
+    from app.common import evalset
+
+    def _layers(rows: list[dict]) -> dict[str, list[float]]:
+        layers: dict[str, list[float]] = {}
+        for row in rows:
+            if not row.get("scores_json"):
+                continue
+            try:
+                overall = json.loads(row["scores_json"]).get("overall")
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(overall, (int, float)):
+                continue
+            try:
+                level = evalset.parse_blank_level(
+                    evalset.load_case_demand(row["case_id"], layer="golden"))
+            except Exception:
+                continue
+            if level:
+                layers.setdefault(level, []).append(float(overall))
+        return layers
+
+    la, lb = _layers(rows_a), _layers(rows_b)
+    result: list[dict[str, Any]] = []
+    for level in ("full", "semi", "minimal"):
+        if la.get(level) and lb.get(level):
+            mean_a = sum(la[level]) / len(la[level])
+            mean_b = sum(lb[level]) / len(lb[level])
+            result.append({
+                "blank_level": level,
+                "candidate_mean": round(mean_a, 4),
+                "production_mean": round(mean_b, 4),
+                "diff": round(mean_a - mean_b, 4),
+                "n_candidate": len(la[level]),
+                "n_production": len(lb[level]),
+            })
+    return result
 
 
 __all__ = ["welch_compare", "check_comparable", "compare_batches", "MIN_SAMPLES_FOR_POWER"]

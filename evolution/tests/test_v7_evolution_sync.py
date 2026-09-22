@@ -86,6 +86,13 @@ class TestElementsViewConstants(unittest.TestCase):
         from app.versioning.middleware_projection import build_middleware_projection
 
         pkg = Path(__file__).resolve().parents[1] / "harnesses" / "repo"
+        # v14 实验包守卫（REQ-20260922-162823）：双架构实验期 working 包为多 Agent
+        # 形态（无 factory.py / 单专家装配），两泳道投影断言不适用；rollback 后恢复。
+        if not (pkg / "subagents" / "factory.py").is_file():
+            self.skipTest(
+                "working 包为 v14 多 Agent 实验形态，v7/v13 两泳道投影断言不适用"
+                "（REQ-20260922-162823 实验期；rollback 后自动恢复）"
+            )
         paths = ["__init__.py", "subagents/storybuilding.py", "subagents/factory.py",
                  "subagents/reviewers/storybuilding.py"]
         paths += [p.relative_to(pkg).as_posix() for p in (pkg / "middleware").glob("*.py")]

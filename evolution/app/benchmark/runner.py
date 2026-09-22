@@ -393,6 +393,42 @@ def _execute_one(
     logger.info("评测 [%d] 完成: case=%s v=%s overall=%s",
                 run_id, case_id, version, scores.get("overall") if scores else "N/A")
 
+    # 6. 开销统计回填（FR-006）：trace 已入库（评分等待点保证），聚合 nodes/runs。
+    #    失败语义：记 NULL 不影响已写入的质量评分（fail-open，开销是参考数据）。
+    try:
+        cost = _aggregate_run_cost(trace_id)
+        bench_repo.set_cost(run_id, **cost)
+    except Exception:
+        logger.warning("评测行 %d 开销聚合失败（记 NULL）", run_id, exc_info=True)
+        bench_repo.set_cost(
+            run_id, input_tokens=None, output_tokens=None,
+            llm_calls=None, wall_clock_ms=None,
+        )
+
+
+def _aggregate_run_cost(trace_id: str) -> dict[str, int | None]:
+    """单次运行开销聚合：token（nodes.usage_*）+ LLM 调用数 + 墙钟（runs.duration_ms）。
+
+    usage 由供应商返回，缺失时列为 NULL（COALESCE 0 求和，计数不受影响）。
+    """
+    row = db.query_one(
+        """SELECT
+             COALESCE(SUM(n.usage_input), 0)  AS input_tokens,
+             COALESCE(SUM(n.usage_output), 0) AS output_tokens,
+             SUM(CASE WHEN n.kind='llm' THEN 1 ELSE 0 END) AS llm_calls
+           FROM nodes n WHERE n.trace_id=?""",
+        (trace_id,),
+    )
+    run_row = db.query_one(
+        "SELECT duration_ms FROM runs WHERE trace_id=?", (trace_id,),
+    )
+    return {
+        "input_tokens": row["input_tokens"] if row else None,
+        "output_tokens": row["output_tokens"] if row else None,
+        "llm_calls": row["llm_calls"] if row else None,
+        "wall_clock_ms": run_row["duration_ms"] if run_row else None,
+    }
+
 
 # ── executor 调用（与 tests/api 平行，复用端点契约）─────────
 

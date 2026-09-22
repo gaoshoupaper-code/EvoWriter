@@ -14,6 +14,15 @@ class MiddlewareProjectionTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.package_root = Path(__file__).resolve().parents[1] / "harnesses" / "repo"
+        # v14 实验包守卫（REQ-20260922-162823）：双架构实验期间 working 包为
+        # 多 Agent 形态（orchestrator + 领域代理，无 factory.py / 单专家装配），
+        # v7/v13 谱系的两泳道投影断言不适用。生产指针 rollback 回 v12 后
+        # working 包恢复单专家形态，本测试自动恢复生效。
+        if not (cls.package_root / "subagents" / "factory.py").is_file():
+            raise unittest.SkipTest(
+                "working 包为 v14 多 Agent 实验形态，v7/v13 两泳道投影断言不适用"
+                "（REQ-20260922-162823 实验期；rollback 后自动恢复）"
+            )
         paths = [
             "__init__.py",
             "subagents/storybuilding.py",

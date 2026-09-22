@@ -1,25 +1,24 @@
-"""Writer 创作 Agent 包 —— v7 单故事专家架构（REQ-20260920-150149 FR-001）。
+"""Writer 创作 Agent 包 —— v14 多 Agent 领域分工架构（REQ-20260922-162823 FR-001）。
 
 包 = 自包含的 Agent 定义单元。执行端通过 assemble(ctx) 一行调用装配完整 agent。
 运行时值（model/backend/checkpointer/workspace/trace）由 ctx 注入，不进包。
 
-v7 架构切换（自 v6 多 Agent 流水线）：
-  - 装配产物 = 单故事专家 Agent（剧情大纲设计）+ reviewer，无 meta 编排、
-    无 interview / detail_outline / writing 子代理、无多级委托
-  - 故事专家复用 storybuilding 方法论资产（prompt / skills / 中间件护栏），
-    由原 meta 下的子代理提升为顶层装配（build_storybuilding_deep_subagent）
-  - 输入 = demand.md（表单模板化生成，ContextAssembler 注入；DEC-009 表单直入）
-  - 产物 = 大纲三件套 storyline / character / worldview，走 ArtifactRevision 冻结
-  - 记忆系统（NWM）按 DEC-003 冻结保留：要素文件在包内，不挂载、不装配
-  - 免计费（FR-007）：CreditsMiddleware 不装配，执行端不再注入积分服务
+v14 架构（双架构实验的多 Agent 臂，基于 v13 连续增量版之上）：
+  - 装配产物 = orchestrator（主控编排）+ 3 领域 SubAgent（worldview / character /
+    storyline）+ review-storybuilding，全部经 task 委托调度
+  - 领域分工（DEC-003）：世界观→人物→故事线依赖序初构；增量按 R 值分流
+  - 共享工作区全量可读、写入按领域 permissions 隔离（DEC-006）
+  - QuotaConvergenceMiddleware 驱动连续增量循环至配比达标（DEC-011 与 v13
+    挂载同一份实现；判定器唯一实现于 contracts.storybuilding_quota）
+  - reviewer 审查后修订按领域分派（DEC-009），review 调用上限 2 次与 v13 一致
+  - 记忆系统（NWM）维持冻结不挂载；免计费不变
 
 assemble 职责：
-  - 实例化故事专家 middleware 栈（ErrorRecovery → ReadCache → PathGuard →
+  - 实例化各 agent 通用 middleware 骨架（ErrorRecovery → ReadCache → PathGuard →
     EncodingGuard → FileStateTracker → FileWriteSerialize → WriteResultInspector
-    → Trace/Credits 注入 → ArtifactSnapshot → Storyline 单线护栏 → RevisionLimit
-    → ArtifactValidation）
-  - 调 build_storybuilding_deep_subagent 装配故事专家 + reviewer 闭环
-  - 返回编译图（含 checkpointer，P2 修订对话线程持久化依赖）
+    → Trace 注入 → ArtifactSnapshot）
+  - 调 build_orchestrator_agent 装配编排（领域代理 + review + skills + 导航）
+  - 返回编译图（含 checkpointer）
 """
 from __future__ import annotations
 
@@ -102,7 +101,7 @@ def _retry_runner_for(ctx: RuntimeContext):
 
 
 def assemble(ctx: RuntimeContext):
-    """装配单故事专家 Agent（剧情大纲设计）+ reviewer。
+    """装配 v14 多 Agent 编排（orchestrator + 3 领域 SubAgent + reviewer）。
 
     入参 ctx 含全部运行时值（model/backend/checkpointer/workspace/trace/owner +
     trace_recorder + trace_middleware_cls）。包内只读 ctx，不依赖执行端其他状态。
@@ -111,8 +110,9 @@ def assemble(ctx: RuntimeContext):
         ctx: RuntimeContext（运行时值）
 
     Returns:
-        编译图（create_deep_agent 产物，含 checkpointer）。顶层即故事专家本体，
-        review 作为其唯一子代理（task 工具委托），RevisionLimit 强制单次审查修订。
+        编译图（create_deep_agent 产物，含 checkpointer）。顶层为 orchestrator，
+        worldview / character / storyline 领域代理与 review 经 task 委托调度；
+        QuotaConvergence 驱动连续增量循环（与 v13 同一中间件实现）。
     """
     from .middleware.error_recovery import ErrorRecoveryMiddleware
     from .middleware.path_guard import FilesystemPathGuardMiddleware
@@ -123,23 +123,14 @@ def assemble(ctx: RuntimeContext):
     from .middleware.file_state_tracker import FileStateTrackerMiddleware
     from .middleware.write_result_inspector import WriteResultInspectorMiddleware
     from .middleware.artifact_snapshot import ArtifactSnapshotMiddleware
-    from .subagents.storybuilding import build_storybuilding_deep_subagent
+
+    # ── v14 多 Agent 编排装配（REQ-20260922-162823 FR-001）──
+    # demand.md 注入：orchestrator 经 ContextAssembler 读取需求（表单直入，DEC-009）。
+    from .subagents.orchestrator import SKILL_DIRS, build_orchestrator_agent
 
     workspace_path = ctx.workspace_path
     styles = ctx.styles or {}
 
-    # ── middleware 工厂（故事专家 + reviewer 共用骨架）──
-    # 装配顺序（外层→内层）：
-    #   ErrorRecovery（捕异常/重试，最外层）
-    #   → ReadCache（命中短路，最外层拦截 read_file）
-    #   → FilesystemPathGuard（路径白名单 + 规范化）
-    #   → EncodingGuard（写入后编码+完整性校验；在 PathGuard 之后拿规范化路径）
-    #   → FileStateTracker（edit_file 前 old_string 预检）
-    #   → FileWriteSerialize（按 file_path 串行化写）
-    #   → WriteResultInspector（在串行化内、ErrorRecovery 内，转抛 WriteFailedError）
-    #   → ArtifactSnapshot（最内层，写盘成功才快照进 ArtifactRevision）
-    # （v7 删除 MetaReadOnly / GoalMiddleware——meta 层概念随 meta 一起退役；
-    #   Storyline 单线护栏与 RevisionLimit 在故事专家装配内追加）
     def middleware_factory(agent_name: str) -> list:
         intervention_callback = _make_intervention_callback(ctx, agent_name)
         mw = [
@@ -162,32 +153,25 @@ def assemble(ctx: RuntimeContext):
                 ctx.trace_recorder, ctx.trace_id, agent_name, retry_runner=_retry_runner_for(ctx),
             ))
         # FR-007（REQ-20260920-150149）：免计费——CreditsMiddleware 不装配。
-        # 恢复计费 = 执行端重新注入 credits_service/credits_middleware_cls 并还原此块。
-        # ArtifactSnapshotMiddleware 挂载（第二期证据采集，2026-07）。
-        # 装在 WriteResultInspector 之后（最内层），只有写盘成功的才快照。
         artifact_cb = _make_artifact_snapshot_callback(ctx)
         if artifact_cb is not None:
             mw.append(ArtifactSnapshotMiddleware(artifact_cb, workspace_path, agent_name))
-        # Trace V2：技能目录按 scope 冻结（v7 仅故事专家 scope）
+        # Trace V2：orchestrator 按 scope 冻结 v14 skill 目录（4 个：调度+3 领域）
         if ctx.trace_recorder is not None and ctx.trace_id:
-            catalog_scopes = {"storybuilding-subagent": "storybuilding"}
-            scope = catalog_scopes.get(agent_name)
-            if scope:
-                base = PACKAGE_DIR / "skills"
-                paths = [str(base / "storybuilding-initial"), str(base / "storybuilding-expand")]
+            if agent_name == "orchestrator":
                 from app.platform.agent.runtime import compose_skills_backend
-                _, runtime_sources = compose_skills_backend(ctx.backend, paths)
+
+                _, runtime_sources = compose_skills_backend(ctx.backend, SKILL_DIRS)
                 record_catalog = getattr(ctx.trace_recorder, "record_skill_catalog", None)
                 if callable(record_catalog):
-                    record_catalog(ctx.trace_id, agent_name, paths, runtime_sources)
-            record_stack = getattr(ctx.trace_recorder, "record_middleware_assembly", None)
-            if callable(record_stack) and agent_name not in catalog_scopes:
-                record_stack(ctx.trace_id, agent_name, mw)
+                    record_catalog(ctx.trace_id, agent_name, SKILL_DIRS, runtime_sources)
+            else:
+                record_stack = getattr(ctx.trace_recorder, "record_middleware_assembly", None)
+                if callable(record_stack):
+                    record_stack(ctx.trace_id, agent_name, mw)
         return mw
 
-    # ── 故事专家装配（顶层）──
-    # demand.md 注入：表单模板化生成的需求（DEC-009 表单直入，无访谈环节）。
-    story_expert = build_storybuilding_deep_subagent(
+    return build_orchestrator_agent(
         workspace_path,
         ctx.model,
         ctx.backend,
@@ -196,7 +180,6 @@ def assemble(ctx: RuntimeContext):
         context_file_paths=["demand.md"],
         checkpointer=ctx.checkpointer,
     )
-    return story_expert["runnable"]
 
 
 __all__ = ["assemble"]

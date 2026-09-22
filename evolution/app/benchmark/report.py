@@ -93,6 +93,15 @@ def build_report(batch_id: str) -> dict[str, Any]:
         1 for i in scored if not (i["data"].get("rule_delivery") or {}).get("passed", True)
     )
 
+    # 开销统计聚合（REQ-20260922-162823 FR-006 ③：报告并排呈现，不进胜负）
+    cost = _aggregate_cost(done_rows)
+
+    # 配比达成聚合（FR-005 ③）：full/semi 档行给达成率，minimal 档跳过
+    quota = _aggregate_quota(scored)
+
+    # 留白档分层（DEC-007 辅判读：blank_level 三档方向性观察，不判显著性）
+    blank_layers = _aggregate_blank_layers(scored)
+
     # 指纹与校准标注（FR-005 ③：报告标注 rubric 版本与校准状态）
     return {
         "batch_id": batch_id,
@@ -114,12 +123,89 @@ def build_report(batch_id: str) -> dict[str, Any]:
         "anchor_status": rubric_v3.ANCHOR_DRAFT_STATUS,
         "dimensions": dimensions,
         "rule_delivery_failed": rule_fail_count,
+        "cost": cost,
+        "quota": quota,
+        "blank_layers": blank_layers,
         "low_cases": low_cases,
         "failed_rows": [
             {"case_id": r["case_id"], "seed": r.get("seed"), "error": r["error"]}
             for r in failed_rows
         ],
     }
+
+
+def _aggregate_cost(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """批次开销聚合：合计与均摊（NULL 行不参与均值计数，如实保留 None）。"""
+    def _nums(field: str) -> list[int]:
+        return [r[field] for r in rows if isinstance(r.get(field), int)]
+
+    fields = ("input_tokens", "output_tokens", "llm_calls", "wall_clock_ms")
+    out: dict[str, Any] = {}
+    for field in fields:
+        values = _nums(field)
+        out[field] = {
+            "total": sum(values) if values else None,
+            "mean": round(sum(values) / len(values), 1) if values else None,
+            "n": len(values),
+        }
+    return out
+
+
+def _aggregate_quota(scored: list[dict[str, Any]]) -> dict[str, Any]:
+    """配比达成聚合：达标行数 / 已核对行数 + 逐行摘要（minimal 档跳过不计入）。"""
+    checked: list[dict[str, Any]] = []
+    skipped = 0
+    passed = 0
+    for item in scored:
+        rule = item["data"].get("rule_quota") if item["data"] else None
+        if not isinstance(rule, dict):
+            continue
+        if rule.get("status") == "skipped_minimal":
+            skipped += 1
+            continue
+        if rule.get("passed"):
+            passed += 1
+        checked.append({
+            "case_id": item["row"]["case_id"],
+            "seed": item["row"].get("seed"),
+            "passed": rule.get("passed"),
+            "summary": rule.get("summary", ""),
+        })
+    return {
+        "checked": len(checked),
+        "passed": passed,
+        "skipped_minimal": skipped,
+        "rows": checked,
+    }
+
+
+def _aggregate_blank_layers(scored: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """留白档分层均分（DEC-007：方向性辅判读，样本少不判显著性）。"""
+    from app.common import evalset
+
+    layers: dict[str, list[float]] = {}
+    for item in scored:
+        case_id = item["row"]["case_id"]
+        overall = item["data"].get("overall") if item["data"] else None
+        if not isinstance(overall, (int, float)):
+            continue
+        try:
+            demand_md = evalset.load_case_demand(case_id, layer="golden")
+        except Exception:
+            continue
+        level = evalset.parse_blank_level(demand_md)
+        if level is None:
+            continue
+        layers.setdefault(level, []).append(float(overall))
+    return [
+        {
+            "blank_level": level,
+            "mean_overall": round(sum(layers[level]) / len(layers[level]), 4),
+            "n": len(layers[level]),
+        }
+        for level in ("full", "semi", "minimal")
+        if layers.get(level)
+    ]
 
 
 def build_summary_for_evolve(batch_id: str, limit: int = 5) -> dict[str, Any] | None:

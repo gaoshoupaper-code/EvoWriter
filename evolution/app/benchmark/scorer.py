@@ -175,6 +175,61 @@ def load_outline_delivery_index(trace_id: str) -> list[dict[str, Any]]:
     ]
 
 
+def check_quota_attainment(
+    demand_md: str, deliveries: dict[str, str],
+) -> dict[str, Any]:
+    """规则项「配比达成核对」（REQ-20260922-162823 FR-005，代码判不走 LLM）。
+
+    判定器 = contracts.storybuilding_quota（与两实验 harness 版本运行侧同一实现，
+    DEC-011）。三态：
+      - demand 无配比（minimal 档留白）→ status=skipped_minimal（DEC-013 软终止档）
+      - 配比可解析 → 按一览表类型分布核对，passed=各类型达标，附 target/actual/gaps
+      - 一览表不可解析 → 按 storyline 文件标题计数兜底（总数口径，无类型分布）
+    实际计数口径：deliveries 为三件套拼接文本，一览表行在「主线 storyline」组内，
+    storyline/S{XX} 详情文件以「### storyline/S{XX}-*.md」标题行出现。
+    """
+    from contracts.storybuilding_quota import (
+        LINE_TYPES,
+        evaluate_quota,
+        parse_demand_quota,
+        parse_storyline_index,
+    )
+
+    target = parse_demand_quota(demand_md)
+    if target is None:
+        return {"key": "rule_quota", "status": "skipped_minimal"}
+
+    storyline_content = deliveries.get(_GROUP_STORYLINE[0], "")
+    by_type = parse_storyline_index(storyline_content)
+    if by_type is not None:
+        status = evaluate_quota(target, by_type)
+        return {
+            "key": "rule_quota",
+            "status": "checked",
+            "passed": status.achieved,
+            "target": status.target,
+            "actual": status.actual,
+            "gaps": status.gaps,
+            "summary": status.summary_line(),
+        }
+    # 兜底：数拼接文本里的 storyline/S{XX} 详情文件标题（总数口径）
+    file_count = len(re.findall(r"(?m)^### storyline/S\d{2}", storyline_content))
+    actual_total = sum(
+        len(re.findall(rf"(?m)^\|\s*S\d{{2}}\s*\|[^|]*\|\s*{t}", storyline_content))
+        for t in LINE_TYPES
+    ) or file_count
+    target_total = target.total()
+    return {
+        "key": "rule_quota",
+        "status": "checked_by_total",
+        "passed": actual_total >= target_total,
+        "target": target.as_dict(),
+        "actual_total": actual_total,
+        "gaps": {"总数": target_total - actual_total} if actual_total < target_total else {},
+        "summary": f"目标总额 {target_total}；实际 {actual_total}（一览表不可解析，按总数口径）",
+    }
+
+
 def check_delivery_complete(deliveries: dict[str, str]) -> dict[str, Any]:
     """规则项「交付完整」：三件套齐全、内容非空非占位（FR-002 ③，代码判）。"""
     problems: list[str] = []
@@ -299,6 +354,7 @@ def score_case(
       scores: {维度: 分}, reasons: {维度: {达标: [...], 不足: [...]}}（DEC-006）,
       overall: 有效维度均分（score>0 参与）,
       rule_delivery: {passed, problems},
+      rule_quota: 配比达成核对（REQ-20260922-162823 FR-005；minimal 档 skipped_minimal）,
     }
     Raises: DimensionScoreError（单维重试用尽，含维度名）；调用方按行级 failed 处理。
     """
@@ -326,6 +382,7 @@ def score_case(
         "reasons": reasons,
         "overall": overall,
         "rule_delivery": check_delivery_complete(deliveries),
+        "rule_quota": check_quota_attainment(demand_md, deliveries),
     }
 
 
@@ -334,5 +391,6 @@ __all__ = [
     "load_outline_deliveries",
     "load_outline_delivery_index",
     "check_delivery_complete",
+    "check_quota_attainment",
     "score_case",
 ]

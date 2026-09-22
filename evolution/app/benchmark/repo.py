@@ -110,6 +110,27 @@ def set_fingerprints(
     )
 
 
+def set_cost(
+    run_id: int,
+    *,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    llm_calls: int | None,
+    wall_clock_ms: int | None,
+) -> None:
+    """单行评分完成后回填开销统计（REQ-20260922-162823 FR-006）。
+
+    数据源 = trace 摄入库聚合（nodes.usage_* / runs.duration_ms）；聚合失败
+    由调用方捕获后传全 None（失败语义：该行开销字段记 NULL，不影响质量评分）。
+    """
+    db.execute(
+        """UPDATE benchmark_runs
+           SET input_tokens=?, output_tokens=?, llm_calls=?, wall_clock_ms=?
+           WHERE id=?""",
+        (input_tokens, output_tokens, llm_calls, wall_clock_ms, run_id),
+    )
+
+
 # ── 行状态流转 ──────────────────────────────────────────────
 
 

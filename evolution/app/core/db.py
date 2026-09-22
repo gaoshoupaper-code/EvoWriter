@@ -329,7 +329,12 @@ def init_db() -> None:
                 manifest_fp     TEXT,                      -- Manifest 指纹（platform manifest_id + commit + LLM 快照）
                 harness_commit  TEXT,                      -- 本行实际装配 commit（Platform 绑定为准）
                 platform_manifest_id INTEGER,              -- Platform 账本 manifest_id 引用（DEC-015 对齐）
-                concurrency     INTEGER NOT NULL DEFAULT 1 -- 本批次执行并发度（REQ-20260920-104714/FR-001）
+                concurrency     INTEGER NOT NULL DEFAULT 1, -- 本批次执行并发度（REQ-20260920-104714/FR-001）
+                -- 开销统计（REQ-20260922-162823 FR-006：双架构对比，报告并排呈现不进胜负）
+                input_tokens    INTEGER,                   -- LLM 输入 token 合计（trace nodes 聚合）
+                output_tokens   INTEGER,                   -- LLM 输出 token 合计
+                llm_calls       INTEGER,                   -- LLM 调用次数（kind='llm' 节点数）
+                wall_clock_ms   INTEGER                    -- 生成段墙钟时长（runs.duration_ms）
             );
             CREATE INDEX IF NOT EXISTS idx_br_batch ON benchmark_runs(batch_id);
             CREATE INDEX IF NOT EXISTS idx_br_version ON benchmark_runs(harness_version);
@@ -1443,6 +1448,13 @@ def _init_trace_v2_tables(conn: sqlite3.Connection) -> None:
         ):
             if column not in bench_columns:
                 conn.execute(f"ALTER TABLE benchmark_runs ADD COLUMN {column} {ddl}")
+        # benchmark_runs 开销统计列（REQ-20260922-162823 FR-006）
+        bench_cost_columns = {
+            row[1] for row in conn.execute("PRAGMA table_info(benchmark_runs)").fetchall()
+        }
+        for column in ("input_tokens", "output_tokens", "llm_calls", "wall_clock_ms"):
+            if column not in bench_cost_columns:
+                conn.execute(f"ALTER TABLE benchmark_runs ADD COLUMN {column} INTEGER")
         # evolve_sessions 评测批次标注列（FR-006）
         es_columns = {
             row[1] for row in conn.execute("PRAGMA table_info(evolve_sessions)").fetchall()

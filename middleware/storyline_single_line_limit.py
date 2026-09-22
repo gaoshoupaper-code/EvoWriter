@@ -153,13 +153,23 @@ class StorylineSingleLineLimitMiddleware(AgentMiddleware):
           （不转抛 WriteFailedError 触发重试）——业务拦截是正常流程，不该重试。
         """
         tool_call_id = _mapping_value(tool_call, "id")
-        return ToolMessage(
-            content=(
+        if self._reset_per_invocation:
+            limit_text = (
                 f"已达单次单线生成上限（{self.max_new_lines} 条 / 本轮 storybuilding）。"
                 "本次新增的故事线已写入，请停止创建更多故事线文件。"
                 "请在返回给父代理的摘要中明确注明：「本轮因达到单线生成上限，已跳过后续新增」，"
                 "再基于当前已有内容收尾返回。"
-            ),
+            )
+        else:
+            # 运行级绝对上限（v14）：计数跨委托累计，后续任何委托都无法再新增
+            limit_text = (
+                f"已达本次运行新增故事线上限（{self.max_new_lines} 条，跨全部委托累计）。"
+                "本次新增的故事线已写入，请停止创建更多故事线文件。"
+                "请在返回摘要中明确注明：「故事线新增额度已用尽，后续委托无法再新增」，"
+                "再基于当前已有内容收尾返回。"
+            )
+        return ToolMessage(
+            content=limit_text,
             name="write_file",
             tool_call_id=str(tool_call_id or ""),
             status="error",

@@ -25,6 +25,10 @@ _V14_PROMPTS = _HARNESS_REPO / "prompts" / "v14"
 # v13 基准经嵌套仓 git 历史读取（git show）——fresh clone / 未携带嵌套 .git 的
 # 环境（CI）无该对象，守卫跳过而非 RuntimeError（review correctness-P2）。
 _HAS_NESTED_GIT = (_HARNESS_REPO / ".git").exists()
+# working 包形态守卫（promote 拓扑）：工作树呈现 v14 形态时才能对照 v14 拆分
+# 文件；v13 实验修正版（c12b177，工作树恢复 v13 形态）期间跳过——v14 拆分
+# 内容在嵌套仓 826b52b..ef6d660 可考，形态切换后自动恢复。
+_HAS_V14_PROMPTS = (_V14_PROMPTS / "common_rules.md").is_file()
 
 
 def _git_show(path: str) -> str:
@@ -60,7 +64,8 @@ def _read_v14(name: str) -> str:
     return (_V14_PROMPTS / name).read_text(encoding="utf-8")
 
 
-@unittest.skipUnless(_HAS_NESTED_GIT, "嵌套 harness 仓 git 历史不可用（fresh clone），v13 基准对齐校验跳过")
+@unittest.skipUnless(_HAS_NESTED_GIT and _HAS_V14_PROMPTS,
+                     "嵌套仓 git 历史不可用，或 working 包为 v13 形态（promote 拓扑），v14 对齐校验跳过")
 class PromptAlignmentTest(unittest.TestCase):
     """v14 领域/公共文件逐字包含 v13 对应段落（DEC-001/005）。"""
 
@@ -130,7 +135,8 @@ class PromptAlignmentTest(unittest.TestCase):
                     body.strip(), v14_all, msg=f"v13 子节未覆盖: {title}")
 
 
-@unittest.skipUnless(_HAS_NESTED_GIT, "嵌套 harness 仓 git 历史不可用（fresh clone），v13 基准对齐校验跳过")
+@unittest.skipUnless(_HAS_NESTED_GIT and _HAS_V14_PROMPTS,
+                     "嵌套仓 git 历史不可用，或 working 包为 v13 形态（promote 拓扑），v14 对齐校验跳过")
 class SkillAlignmentTest(unittest.TestCase):
     """v14 skills 与 v13 initial/expand 的关键流程同源（DEC-005 抽查）。"""
 

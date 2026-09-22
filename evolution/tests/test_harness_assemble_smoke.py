@@ -74,7 +74,22 @@ ctx = RuntimeContext(
     artifact_snapshot_callback=lambda _d: None,
 )
 graph = mod.assemble(ctx)
-print(json.dumps({"ok": graph is not None}))
+
+# 线数预算断言也在子进程做：v13 形态的 storybuilding.py 含相对导入
+# （.factory/..middleware），主进程 spec 单文件加载不了（promote 拓扑形态相关）
+from contracts.storybuilding_quota import parse_demand_quota
+
+storybuilding = importlib.import_module(f"{mod.__name__}.subagents.storybuilding")
+demand_md = (workspace / "demand.md").read_text(encoding="utf-8")
+target = parse_demand_quota(demand_md)
+budget_full = storybuilding.resolve_line_budget(target)
+budget_none = storybuilding.resolve_line_budget(None)
+print(json.dumps({
+    "ok": graph is not None,
+    "budget_full": (budget_full if isinstance(budget_full, int) else None),
+    "budget_none": (budget_none if isinstance(budget_none, int) else None),
+    "quota_parsed": target is not None,
+}))
 """
 
 
@@ -114,30 +129,19 @@ class AssembleSmokeTest(unittest.TestCase):
     def test_line_budget_resolution(self) -> None:
         """线数预算 = 目标总数 + 余量；无配比走 minimal 宽松上限（FR-002①）。
 
-        两个模块均为纯标准库单文件（无 app/相对依赖），主进程 spec 加载，
-        不触碰 sys.path（避免仓库根的 platform 目录遮蔽 stdlib）。
+        与装配同子进程执行：v13 形态的 storybuilding.py 含相对导入，
+        主进程单文件加载不可行（形态随 promote 拓扑切换）。
         """
-        import importlib.util
+        result = _run_assemble_child(_DEMAND_FULL)
+        self.assertTrue(result["ok"], msg=str(result.get("error")))
+        self.assertTrue(result["quota_parsed"])
+        self.assertEqual(result["budget_full"], 7 + 2)
+        self.assertEqual(result["budget_none"], 8)
 
-        def _load(name: str, path: Path):
-            spec = importlib.util.spec_from_file_location(name, path)
-            mod = importlib.util.module_from_spec(spec)
-            sys.modules[name] = mod  # dataclasses 按 __module__ 反查需已注册
-            spec.loader.exec_module(mod)
-            return mod
-
-        quota = _load(
-            "smoke_storybuilding_quota",
-            _REPO_ROOT / "contracts" / "storybuilding_quota.py",
-        )
-        storybuilding = _load(
-            "smoke_storybuilding_budget",
-            _WORKING_PKG / "subagents" / "storybuilding.py",
-        )
-        target = quota.parse_demand_quota(_DEMAND_FULL)
-        self.assertIsNotNone(target)
-        self.assertEqual(storybuilding.resolve_line_budget(target), 7 + 2)
-        self.assertEqual(storybuilding.resolve_line_budget(None), 8)
+        result_minimal = _run_assemble_child(_DEMAND_MINIMAL)
+        self.assertTrue(result_minimal["ok"], msg=str(result_minimal.get("error")))
+        self.assertFalse(result_minimal["quota_parsed"])
+        self.assertEqual(result_minimal["budget_none"], 8)
 
 
 if __name__ == "__main__":

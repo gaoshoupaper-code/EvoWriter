@@ -28,6 +28,10 @@ from app.platform.agent.runtime import (
 from .factory import build_deep_subagent
 from .reviewers.storybuilding import build_storybuilding_reviewer
 from .types import apply_style_suffix
+from ..middleware.quota_convergence import (
+    DEFAULT_MAX_MODEL_CALLS,
+    QuotaConvergenceMiddleware,
+)
 from ..middleware.storyline_single_line_limit import (
     StorylineSingleLineLimitMiddleware,
 )
@@ -35,6 +39,20 @@ from app.platform.agent.middleware import ContextAssemblerMiddleware
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "storybuilding_system.md"
 SKILLS_PATH_BASE = Path(__file__).resolve().parent.parent / "skills"
+
+# 连续增量负载（REQ-20260922-162823 FR-002）：
+#   - 有配比（full/semi）：单线护栏预算 = 目标线总数 + 余量（防中途废稿重写卡护栏）
+#   - 无配比（minimal / 生产缺字段，DEC-013 软终止）：固定宽松上限防失控
+#     （与 QuotaConvergence 的模型调用预算构成双层防护）
+_MINIMAL_LINE_BUDGET = 8
+_LINE_BUDGET_MARGIN = 2
+
+
+def resolve_line_budget(target) -> int:
+    """按 demand 目标配比计算本次运行的新增故事线预算（护栏 max_new_lines）。"""
+    if target is None:
+        return _MINIMAL_LINE_BUDGET
+    return target.total() + _LINE_BUDGET_MARGIN
 
 
 def build_storybuilding_subagent(
@@ -121,11 +139,28 @@ def build_storybuilding_deep_subagent(
     """
     # ---- 主代理 middleware ----
     storybuilding_middleware = list(middleware_factory("storybuilding-subagent"))
-    # 单次单线硬约束：每次 storybuilding 运行最多新增 1 条 storyline（见需求 B1/B4）
+    # 连续增量护栏（REQ-20260922-162823 FR-002，DEC-011 同一判定器）：
+    #   1. 单线护栏按 demand 目标配比放宽为线数预算（原 v12 固定 max_new_lines=1，
+    #      连续增量负载下会在第 2 条线被硬拦，见需求查证事实）；
+    #   2. QuotaConvergence 每轮注入「继续增量/达标收尾/预算耗尽」导航指令，
+    #      与 v14 多 Agent 版挂载同一份实现，终止语义一致。
     # 注意：ReadCache 已由 middleware_factory 全 agent 装配（A2-D2），此处不重复装配。
-    # v7 删除 StorybuildingIterationLimitMiddleware——其语义是"跨 meta 委托的迭代
-    # 上限、超限迫使 meta 推进到 detail-outline"，属多 Agent 编排护栏，随 meta 一起退役。
-    storybuilding_middleware.append(StorylineSingleLineLimitMiddleware(workspace_root, max_new_lines=1))
+    demand_path = workspace_root / "demand.md"
+    demand_md = (
+        demand_path.read_text(encoding="utf-8") if demand_path.exists() else ""
+    )
+    from contracts.storybuilding_quota import parse_demand_quota
+
+    quota_target = parse_demand_quota(demand_md)
+    storybuilding_middleware.append(StorylineSingleLineLimitMiddleware(
+        workspace_root,
+        max_new_lines=resolve_line_budget(quota_target),
+    ))
+    storybuilding_middleware.append(QuotaConvergenceMiddleware(
+        workspace_root,
+        quota_target,
+        max_model_calls=DEFAULT_MAX_MODEL_CALLS,
+    ))
     if context_file_paths:
         storybuilding_middleware.append(ContextAssemblerMiddleware(
             workspace_root,

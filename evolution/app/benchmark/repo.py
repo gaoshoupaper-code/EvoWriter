@@ -292,13 +292,16 @@ def get_recent_batches(limit: int = 20) -> list[dict[str, Any]]:
     """最近批次摘要列表（桌面端评测页用，FR-008 增量）。
 
     按 batch 聚合：进度计数（含 cancelled）+ 批次级指纹（取首行）+
-    harness 版本 + 终止原因。
+    harness 版本 + 终止原因 + 均分（done 行 overall 平均，
+    FR-002/REQ-20260923-131103——单 SQL 聚合，无逐行 N+1）。
     """
     rows = db.query_all(
         """SELECT r.batch_id, COUNT(*) AS total,
                   SUM(CASE WHEN r.status='done' THEN 1 ELSE 0 END) AS done,
                   SUM(CASE WHEN r.status='failed' THEN 1 ELSE 0 END) AS failed,
                   SUM(CASE WHEN r.status='cancelled' THEN 1 ELSE 0 END) AS cancelled,
+                  AVG(CASE WHEN r.status='done'
+                           THEN json_extract(r.scores_json, '$.overall') END) AS avg_raw,
                   MAX(ran_at) AS ran_at, MIN(ran_at) AS trigger_at,
                   MAX(r.harness_version) AS harness_version,
                   MAX(r.golden_revision) AS golden_revision,
@@ -321,6 +324,7 @@ def get_recent_batches(limit: int = 20) -> list[dict[str, Any]]:
             total=total, done=done, failed=failed, cancelled=cancelled,
             stop_reason=row["stop_reason"],
         )
+        avg_raw = row["avg_raw"]
         batches.append({
             "batch_id": row["batch_id"],
             "status": status,
@@ -328,6 +332,7 @@ def get_recent_batches(limit: int = 20) -> list[dict[str, Any]]:
                 "total": total, "done": done, "failed": failed,
                 "cancelled": cancelled, "active": total - done - failed - cancelled,
             },
+            "avg_overall": round(avg_raw, 2) if isinstance(avg_raw, (int, float)) else None,
             "harness_version": row["harness_version"],
             "golden_revision": row["golden_revision"],
             "rubric_version": row["rubric_version"],
@@ -337,6 +342,12 @@ def get_recent_batches(limit: int = 20) -> list[dict[str, Any]]:
             "stop_reason": row["stop_reason"],
         })
     return batches
+
+
+def count_batches() -> int:
+    """去重批次总数（批次列表「加载更多」可见性依据，FR-002）。"""
+    row = db.query_one("SELECT COUNT(DISTINCT batch_id) AS n FROM benchmark_runs")
+    return row["n"] if row else 0
 
 
 def get_batch(batch_id: str) -> dict[str, Any]:
@@ -541,6 +552,6 @@ __all__ = [
     "mark_running", "set_trace",
     "set_result", "mark_failed", "mark_cancelled",
     "stop_batch", "get_stop_reason",
-    "get_batch", "get_recent_batches", "get_leaderboard", "get_recent_versions",
+    "get_batch", "get_recent_batches", "count_batches", "get_leaderboard", "get_recent_versions",
     "list_batch_runs",
 ]

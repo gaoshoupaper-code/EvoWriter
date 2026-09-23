@@ -42,7 +42,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import * as apiModule from "@/lib/api";
-import type { BenchmarkRunRow } from "@/lib/api";
+import type { BenchmarkBatchSummary, BenchmarkRunRow, GoldenRevision } from "@/lib/api";
 import Shell from "@/components/Shell";
 import Workbench from "@/pages/bench/Workbench";
 import BatchDetail from "@/pages/bench/BatchDetail";
@@ -57,6 +57,7 @@ const api = vi.mocked(apiModule);
 function makeRun(overrides: Partial<{
   id: number; case_id: string; seed: number | null; status: string;
   scores: BenchmarkRunRow["scores"]; trace_id: string | null;
+  error: string | null; rubric_version: string;
 }> = {}): BenchmarkRunRow {
   return {
     id: 1,
@@ -373,6 +374,290 @@ describe("DeliveriesView 降级（AC-012）", () => {
     await waitFor(() => expect(screen.getByText("主线 storyline")).toBeInTheDocument());
     expect(screen.getByText("无权")).toBeInTheDocument();
     expect(screen.getByText(/无权查看正文/)).toBeInTheDocument();
+  });
+});
+
+// ── AC-001（REQ-20260923-131103）：产物正文 Markdown 渲染 ──
+
+describe("产物正文 Markdown 渲染（FR-001）", () => {
+  const FILE = {
+    logical_key: "storyline.md", content_hash: "h",
+    artifact_revision_id: "r1", size_bytes: 10, expires_at: null, available: true,
+  };
+
+  async function openDeliveries(content: unknown) {
+    const { DeliveriesView } = await import("@/components/bench/DeliveriesView");
+    api.getBenchmarkDeliveries.mockResolvedValue({
+      trace_id: "t1", can_read_content: true,
+      groups: [{ display: "主线 storyline", files: [FILE] }],
+    });
+    api.getArtifactRevisionContent.mockResolvedValue({
+      artifact_revision_id: "r1", content,
+    });
+    render(<DeliveriesView traceId="t1" />);
+    fireEvent.click(await screen.findByText("storyline.md"));
+  }
+
+  it("内容为 {content: md} 对象时剥壳渲染 Markdown（线上实际形状）", async () => {
+    await openDeliveries({ content: "# 主线大纲\n\n|甲|乙|\n|---|---|\n|1|2|" });
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "主线大纲" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("table")).toBeInTheDocument();
+    expect(screen.queryByText(/content/)).toBeNull();
+  });
+
+  it("内容为裸字符串时照常渲染（回归）", async () => {
+    await openDeliveries("# 裸字符串标题");
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "裸字符串标题" }),
+    ).toBeInTheDocument();
+  });
+
+  it("内容为其他对象时回退 JSON 展示，不白屏", async () => {
+    await openDeliveries({ foo: "bar" });
+    await waitFor(() => expect(screen.getByText(/foo/)).toBeInTheDocument());
+    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
+  });
+});
+
+// ── FR-002（REQ-20260923-131103）：批次列表数据集列/均分列/加载更多 ──
+
+describe("产物库批次列表（FR-002）", () => {
+  function makeBatch(over: Partial<BenchmarkBatchSummary> = {}) {
+    return {
+      batch_id: "batch-aaa-bbbb", status: "done",
+      progress: { done: 3, total: 3, failed: 0, active: 0 },
+      harness_version: 7, rubric_version: "v4", concurrency: 3, judge_fp: "jfp",
+      triggered_at: null, golden_revision: "abcdef123456",
+      avg_overall: 3.5,
+      ...over,
+    };
+  }
+
+  it("显示数据集指纹与均分；无 golden_revision/无 done 显示 —", async () => {
+    api.listBenchmarkBatches.mockResolvedValue({
+      total: 2,
+      batches: [
+        makeBatch(),
+        makeBatch({ batch_id: "batch-ccc-dddd", golden_revision: null, avg_overall: null }),
+      ],
+    });
+    render(
+      <MemoryRouter>
+        <Artifacts />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByText("golden @ abcdef1")).toBeInTheDocument());
+    expect(screen.getByText("3.50")).toBeInTheDocument();
+    const dashes = await screen.findAllByText("—");
+    expect(dashes.length).toBeGreaterThanOrEqual(2); // 数据集 + 均分各一个 —
+  });
+
+  it("total 超过已加载数时出现加载更多，点击以更大 limit 重拉", async () => {
+    api.listBenchmarkBatches.mockImplementation(async (limit?: number) => ({
+      total: 25,
+      batches: Array.from({ length: Math.min(limit ?? 20, 25) }, (_, i) =>
+        makeBatch({ batch_id: `batch-${String(i).padStart(4, "0")}-xxxx` })),
+    }));
+    render(
+      <MemoryRouter>
+        <Artifacts />
+      </MemoryRouter>,
+    );
+    await waitFor(() =>
+      expect(screen.getAllByText("golden @ abcdef1").length).toBeGreaterThan(0),
+    );
+    const more = screen.getByRole("button", { name: /加载更多/ });
+    fireEvent.click(more);
+    await waitFor(() =>
+      expect(api.listBenchmarkBatches).toHaveBeenLastCalledWith(40),
+    );
+  });
+});
+
+// ── FR-003（REQ-20260923-131103）：case 层标题与排序 ──
+
+describe("产物库 case 层（FR-003）", () => {
+  it("主显标题 + case_id 小字；无均分置前、其余均分升序", async () => {
+    api.listBenchmarkBatches.mockResolvedValue({
+      total: 1,
+      batches: [{
+        batch_id: "batch-aaa-bbbb", status: "done",
+        progress: { done: 5, total: 5, failed: 0, active: 0 },
+        harness_version: 7, rubric_version: "v4", concurrency: 3, judge_fp: "jfp",
+        triggered_at: null, golden_revision: "rev", avg_overall: 3.5,
+      }],
+    });
+    api.listBenchmarkRuns.mockResolvedValue({
+      batch_id: "batch-aaa-bbbb",
+      items: [
+        // case-001 均分 3.0；case-003 均分 4.5；case-002 全失败（无均分、无标题）
+        makeRun({ id: 1, case_id: "case-001", seed: 1, scores: { ...makeRun().scores!, overall: 3.0 } }),
+        makeRun({ id: 3, case_id: "case-003", seed: 1, scores: { ...makeRun().scores!, overall: 4.5 } }),
+        makeRun({ id: 5, case_id: "case-002", seed: 1, status: "failed", scores: null, trace_id: null, error: "boom" }),
+      ],
+      total: 3,
+    });
+    api.getDatasetCases.mockResolvedValue({
+      cases: [
+        { case_id: "case-001", title: "穿越者复仇记", layer: "golden", source_trace_id: null, demand_revision: null, promoted_at: null, created_by: "x", has_reference: false },
+        { case_id: "case-003", title: "废土拾荒指南", layer: "golden", source_trace_id: null, demand_revision: null, promoted_at: null, created_by: "x", has_reference: false },
+      ],
+      total: 2,
+    });
+
+    const { container } = render(
+      <MemoryRouter>
+        <Artifacts />
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByText("batch-aa"));
+    await waitFor(() =>
+      expect(screen.getByText("穿越者复仇记")).toBeInTheDocument(),
+    );
+    const cards = container.querySelectorAll(".bench-case-card");
+    expect(cards.length).toBe(3);
+    // 排序：无均分（case-002）→ 3.0（case-001）→ 4.5（case-003）
+    expect(cards[0].textContent).toContain("case-002");
+    expect(cards[1].textContent).toContain("穿越者复仇记");
+    expect(cards[2].textContent).toContain("废土拾荒指南");
+    // 标题主显时 case_id 降为小字副标（class 存在性）
+    expect(cards[1].querySelector(".bench-case-id-sub")).not.toBeNull();
+  });
+});
+
+// ── FR-004/005/006（REQ-20260923-131103）：seed 详情分栏 + 需求折叠条 ──
+
+describe("产物库 seed 详情（FR-004/005/006）", () => {
+  // golden 可覆写指纹一致态；caseContentError 覆写需求拉取失败态（AC-005 边界）
+  type SeedPageOpts = { golden?: GoldenRevision; caseContentError?: Error };
+
+  function mockSeedPage(items: ReturnType<typeof makeRun>[], opts: SeedPageOpts = {}) {
+    api.listBenchmarkBatches.mockResolvedValue({
+      total: 1,
+      batches: [{
+        batch_id: "batch-aaa-bbbb", status: "done",
+        progress: { done: items.length, total: items.length, failed: 0, active: 0 },
+        harness_version: 7, rubric_version: "v4", concurrency: 3, judge_fp: "jfp",
+        triggered_at: null, golden_revision: "rev-old", avg_overall: 3.5,
+      }],
+    });
+    api.listBenchmarkRuns.mockResolvedValue({
+      batch_id: "batch-aaa-bbbb", items, total: items.length,
+    });
+    api.getBenchmarkDeliveries.mockResolvedValue({
+      trace_id: "trace-1", can_read_content: true,
+      groups: [{ display: "人物 character", files: [] }],
+    });
+    api.getGoldenRevision.mockResolvedValue(
+      opts.golden ?? {
+        revision: "rev-new", locked: true, intact: true, case_count: 6, cases: [],
+      },
+    );
+    if (opts.caseContentError) {
+      api.getCaseContent.mockRejectedValue(opts.caseContentError);
+    } else {
+      api.getCaseContent.mockResolvedValue({
+        case_id: "case-001", title: "穿越者复仇记", layer: "golden",
+        demand_md: "# 需求标题\n\n主角必须完成复仇。",
+        reference_md: null, source_trace_id: null, demand_revision: "rev-new",
+        promoted_at: null, created_by: "x", status: "active",
+      });
+    }
+  }
+
+  async function renderToSeed(
+    items: ReturnType<typeof makeRun>[],
+    opts: SeedPageOpts = {},
+  ) {
+    mockSeedPage(items, opts);
+    const view = render(
+      <MemoryRouter>
+        <Artifacts />
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByText("batch-aa"));
+    fireEvent.click(await screen.findByText("case-001"));
+    fireEvent.click(await screen.findByText("#1"));
+    // 等产物区出现
+    await screen.findByText("人物 character");
+    return view;
+  }
+
+  it("左右分栏：左评分（五维条+维度卡片+seed对比折叠）右产物", async () => {
+    const { container } = await renderToSeed([
+      makeRun({ id: 1, case_id: "case-001", seed: 1 }),
+      makeRun({ id: 2, case_id: "case-001", seed: 2 }),
+    ]);
+    const split = container.querySelector(".bench-run-split");
+    expect(split).not.toBeNull();
+    expect(split!.querySelector(".bench-run-score .bench-score-overview")).not.toBeNull();
+    expect(split!.querySelectorAll(".bench-dim-card").length).toBe(5);
+    // seed 对比默认折叠：按钮在、表不在
+    expect(screen.getByRole("button", { name: /seed 对比/ })).toBeInTheDocument();
+    expect(container.querySelector(".bench-seed-compare")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /seed 对比/ }));
+    expect(container.querySelector(".bench-seed-compare")).not.toBeNull();
+    // 右栏含产物
+    expect(split!.querySelector(".bench-run-product .bench-delivery")).not.toBeNull();
+  });
+
+  it("需求条默认收起；展开渲染 demand.md；指纹不一致显示提示", async () => {
+    await renderToSeed([makeRun({ id: 1, case_id: "case-001", seed: 1 })]);
+    // 默认收起：正文未渲染
+    expect(screen.queryByRole("heading", { level: 1, name: "需求标题" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /需求（demand）/ }));
+    expect(
+      await screen.findByRole("heading", { level: 1, name: "需求标题" }),
+    ).toBeInTheDocument();
+    // 批次 rev-old ≠ 当前 rev-new → 提示条
+    expect(screen.getByText(/数据集已更新/)).toBeInTheDocument();
+  });
+
+  it("旧 rubric 行：评分区「明细不可用」，产物区照常（FR-006）", async () => {
+    await renderToSeed([
+      makeRun({
+        id: 1, case_id: "case-001", seed: 1,
+        rubric_version: "v3", scores: null,
+      }),
+    ]);
+    expect(screen.getByText(/明细不可用/)).toBeInTheDocument();
+    expect(screen.getByText("人物 character")).toBeInTheDocument();
+  });
+
+  it("进行中批次（全部无均分）case 按 id 稳定排序（AC-003 边界）", async () => {
+    mockSeedPage([
+      makeRun({ id: 2, case_id: "case-002", seed: 1, status: "running", scores: null, trace_id: null }),
+      makeRun({ id: 1, case_id: "case-001", seed: 1, status: "pending", scores: null, trace_id: null }),
+    ]);
+    const { container } = render(
+      <MemoryRouter>
+        <Artifacts />
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByText("batch-aa"));
+    await waitFor(() =>
+      expect(container.querySelectorAll(".bench-case-card").length).toBe(2),
+    );
+    const cards = container.querySelectorAll(".bench-case-card");
+    expect(cards[0].textContent).toContain("case-001");
+    expect(cards[1].textContent).toContain("case-002");
+  });
+
+  it("需求指纹一致无提示；拉取失败不阻断产物（AC-005 边界）", async () => {
+    await renderToSeed(
+      [makeRun({ id: 1, case_id: "case-001", seed: 1 })],
+      {
+        golden: { revision: "rev-old", locked: true, intact: true, case_count: 6, cases: [] },
+        caseContentError: new Error("接口 500"),
+      },
+    );
+    fireEvent.click(screen.getByRole("button", { name: /需求（demand）/ }));
+    expect(await screen.findByText(/读取需求失败/)).toBeInTheDocument();
+    expect(screen.queryByText(/数据集已更新/)).toBeNull();
+    // 产物区不受需求失败影响
+    expect(screen.getByText("人物 character")).toBeInTheDocument();
   });
 });
 

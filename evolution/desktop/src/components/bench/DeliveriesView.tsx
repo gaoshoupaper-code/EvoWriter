@@ -225,11 +225,30 @@ export function DeliveriesView({
   );
 }
 
+/**
+ * 正文渲染：字符串直接 Markdown；{"content": <字符串>} 对象剥壳后渲染
+ * （FR-001/REQ-20260923-131103——内容接口按负载原样返回该包装形状）；
+ * 其余对象回退 JSON 展示。
+ */
+function extractMarkdown(content: unknown): string | null {
+  if (typeof content === "string") return content;
+  if (
+    content != null &&
+    typeof content === "object" &&
+    !Array.isArray(content) &&
+    typeof (content as { content?: unknown }).content === "string"
+  ) {
+    return (content as { content: string }).content;
+  }
+  return null;
+}
+
 function ContentBody({ content }: { content: unknown }) {
-  if (typeof content === "string") {
+  const markdown = extractMarkdown(content);
+  if (markdown != null) {
     return (
       <div className="bench-delivery-content prose-doc">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
       </div>
     );
   }

@@ -181,8 +181,8 @@ def list_judges() -> dict[str, Any]:
 
 @router.get("/batches")
 def list_batches(limit: int = Query(20, ge=1, le=100)) -> dict[str, Any]:
-    """最近批次摘要列表（桌面端评测页）。"""
-    return {"batches": repo.get_recent_batches(limit)}
+    """最近批次摘要列表（桌面端评测页；total 供「加载更多」可见性，FR-002）。"""
+    return {"batches": repo.get_recent_batches(limit), "total": repo.count_batches()}
 
 
 @router.get("/batches/{batch_id}")

@@ -1260,6 +1260,8 @@ export interface BenchmarkBatchSummary {
   batch_id: string;
   status: string; // running | done | partial | failed | cancelled
   progress: { total: number; done: number; failed: number; cancelled?: number; active: number };
+  /** done 行 overall 平均（FR-002/REQ-20260923-131103）；无 done 行为 null。 */
+  avg_overall?: number | null;
   harness_version: number | null;
   golden_revision: string | null;
   rubric_version: string | null;
@@ -1412,8 +1414,10 @@ export async function createGoldenCase(demandMd: string): Promise<GoldenCaseCrea
   });
 }
 
-/** 最近批次列表。 */
-export async function listBenchmarkBatches(limit = 20): Promise<{ batches: BenchmarkBatchSummary[] }> {
+/** 最近批次列表（total 为去重批次总数，「加载更多」可见性依据，FR-002）。 */
+export async function listBenchmarkBatches(
+  limit = 20,
+): Promise<{ batches: BenchmarkBatchSummary[]; total?: number }> {
   return evoJson(`/api/benchmark/batches?limit=${limit}`, { method: "GET" });
 }
 

@@ -98,13 +98,15 @@ class ParseStorylineIndexTest(unittest.TestCase):
         self.assertIsNone(parse_storyline_index(""))
 
     def test_wide_index_variant_counted(self) -> None:
-        """宽表变体（S{XX} 粘名字 + 多列）也按类型计数（pilot v14 实测形态）。"""
+        """宽表变体（S{XX} 粘名字 + 多列 + 类型词粗体包裹）也按类型计数（pilot v14 实测形态）。"""
         wide = (
-            "## 故事线一览表\n\n| S01-铁匠铺起点 | 铁匠铺起点 | 主线 | 摘要… | 角色 | 事件 | 时间 | 活跃 |\n"
-            "| S02-秩序囚徒 | 秩序囚徒 | 角色线 | 摘要… | 角色 | 事件 | 时间 | 活跃 |\n"
+            "## 故事线一览表\n\n"
+            "| S01-铁匠铺起点 | 铁匠铺起点 | 主线 | 摘要… | 角色 | 事件 | 时间 | 活跃 |\n"
+            "| S06-秩序囚徒 | 秩序囚徒 | **角色线** | 摘要… | 角色 | 事件 | 时间 | 活跃 |\n"
+            "| S07-散修之网 | 散修之网 | **支线** | 摘要… | 角色 | 事件 | 时间 | 活跃 |\n"
         )
         counts = parse_storyline_index(wide)
-        self.assertEqual(counts, {"主线": 1, "支线": 0, "角色线": 1, "暗线": 0})
+        self.assertEqual(counts, {"主线": 1, "支线": 1, "角色线": 1, "暗线": 0})
 
 
 class CountFilesTest(unittest.TestCase):

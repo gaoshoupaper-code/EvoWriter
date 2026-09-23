@@ -36,9 +36,11 @@ _QUOTA_COMMITMENT_RE = re.compile(
     r"配比\s*主线\s*(\d+)\s*[/／、]\s*支线\s*(\d+)\s*[/／、]\s*角色线\s*(\d+)\s*[/／、]\s*暗线\s*(\d+)"
 )
 
-# storyline.md 一览表数据行：| S01 | 名称 | 主线 | 活跃 |
+# storyline.md 一览表数据行：标准四列 | S01 | 名称 | 主线 | 活跃 |；
+# 宽表变体 | S01-名字 | 名字 | 主线 | 摘要... |（多 Agent 版实测出现过——
+# 第一列 S{XX} 后粘名字，列数更多）。两种都按「第 1 或第 3 列命中类型词」计类型。
 _INDEX_ROW_RE = re.compile(
-    r"^\s*\|\s*S\d{2}\s*\|[^|]*\|\s*(" + "|".join(LINE_TYPES) + r")\s*\|",
+    r"^\s*\|\s*S\d{2}(?:[-–][^|]*)?\s*\|[^|]*\|\s*(" + "|".join(LINE_TYPES) + r")\s*\|",
     re.MULTILINE,
 )
 

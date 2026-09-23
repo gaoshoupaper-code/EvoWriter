@@ -512,7 +512,10 @@ def _score_with_retry(
 
     重试语义（DEC-013）：单维失败在 score_case 内重试该维 1 次；任一维重试
     用尽即整行上抛（DimensionScoreError，message 含维度名 → 行 failed）。
-    先等 trace 摄入完成（runs 表出现终态），与旧评估路径同语义；
+    先等 trace 摄入完成（runs 表出现终态），再等产物事件数稳定（连续两轮
+    轮询 artifact_revision 计数不变）——大 trace（多 Agent 连续增量 138+
+    产物事件）的 ingestion 分批搬运慢于 runs 终态写入，只等终态会在半截
+    产物上评分（pilot 批次 8d0c198e 行 130/131 实测：评分时仅 2/7 条线入库）；
     等待与评分前检查批次取消（FR-001 硬停语义：评分结果不再等待/写回）。
     """
     # 等 trace 入库（executor done 后 ingestion 异步拉取，可能稍慢）
@@ -521,6 +524,28 @@ def _score_with_retry(
         if row and row["status"] in ("completed", "failed"):
             break
         _check_cancel(cancel_event)
+        time.sleep(3.0)
+
+    # 等产物事件稳定（REQ-20260922-162823 pilot 修复）：连续两轮计数不变才评分。
+    # 上限 90s：终态后 ingestion 正常秒级补齐；超时按当前数据评（不因摄入卡死阻塞批次）。
+    def _artifact_count() -> int:
+        r = db.query_one(
+            "SELECT COUNT(*) AS c FROM event_payloads WHERE trace_id=? AND type='artifact_revision'",
+            (trace_id,),
+        )
+        return r["c"] if r else 0
+
+    prev_count, stable_rounds = -1, 0
+    for _ in range(30):  # 30 × 3s = 90s 上限
+        _check_cancel(cancel_event)
+        count = _artifact_count()
+        if count > 0 and count == prev_count:
+            stable_rounds += 1
+            if stable_rounds >= 2:  # 连续两轮（6s）不变视为稳定
+                break
+        else:
+            stable_rounds = 0
+        prev_count = count
         time.sleep(3.0)
 
     deliveries = scorer.load_outline_deliveries(trace_id)

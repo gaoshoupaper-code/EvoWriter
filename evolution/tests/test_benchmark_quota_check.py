@@ -85,6 +85,17 @@ class QuotaCheckTest(unittest.TestCase):
         self.assertFalse(rule["passed"])
         self.assertEqual(rule["actual_total"], 2)
 
+    def test_fallback_handles_leading_slash_headers(self) -> None:
+        """拼接标题带前导斜杠（### /storyline/S01-…）时兜底计数不归零（pilot 修复）。"""
+        deliveries = {
+            "主线 storyline": (
+                "### /storyline/S01-主线.md\n\n内容\n\n### /storyline/S02-支线.md\n\n内容\n"
+            ),
+        }
+        rule = self.scorer.check_quota_attainment(_DEMAND_FULL, deliveries)
+        self.assertEqual(rule["status"], "checked_by_total")
+        self.assertEqual(rule["actual_total"], 2)
+
     def test_score_case_includes_rule_quota(self) -> None:
         """score_case 集成：结果含 rule_quota 字段（FR-005 ③，judge 全 mock）。"""
         fake = {"score": 4, "达标": ["…"], "不足": []}

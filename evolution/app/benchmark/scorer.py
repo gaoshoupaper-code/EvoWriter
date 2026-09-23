@@ -212,8 +212,9 @@ def check_quota_attainment(
             "gaps": status.gaps,
             "summary": status.summary_line(),
         }
-    # 兜底：数拼接文本里的 storyline/S{XX} 详情文件标题（总数口径）
-    file_count = len(re.findall(r"(?m)^### storyline/S\d{2}", storyline_content))
+    # 兜底：数拼接文本里的 storyline/S{XX} 详情文件标题（总数口径）。
+    # 拼接头格式为「### /storyline/S01-xxx.md」（logical_key 带前导斜杠），正则容错。
+    file_count = len(re.findall(r"(?m)^###\s*/?storyline/S\d{2}", storyline_content))
     actual_total = sum(
         len(re.findall(rf"(?m)^\|\s*S\d{{2}}\s*\|[^|]*\|\s*{t}", storyline_content))
         for t in LINE_TYPES

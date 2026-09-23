@@ -34,7 +34,9 @@ if not hasattr(sys.modules.get("platform"), "python_implementation"):
         sys.modules["platform"] = _mod_p
         _spec_p.loader.exec_module(_mod_p)
 
-sys.path.insert(0, str(_EXECUTOR_DIR))  # langchain 链 import executor venv 已装；app 不被此测试触碰
+# 注意：不得在此模块级插入 executor 目录到 sys.path——收集期插入会让后续
+# 测试模块的 `import app.*` 解析到 executor 的 app 包（pytest 先收集全部
+# 模块再执行）。本测试只依赖 langchain（venv）与 contracts，无需 executor。
 
 
 def _load(name: str, path: Path):

@@ -97,6 +97,15 @@ class ParseStorylineIndexTest(unittest.TestCase):
         self.assertIsNone(parse_storyline_index("# 只有核心\n\n无表"))
         self.assertIsNone(parse_storyline_index(""))
 
+    def test_wide_index_variant_counted(self) -> None:
+        """宽表变体（S{XX} 粘名字 + 多列）也按类型计数（pilot v14 实测形态）。"""
+        wide = (
+            "## 故事线一览表\n\n| S01-铁匠铺起点 | 铁匠铺起点 | 主线 | 摘要… | 角色 | 事件 | 时间 | 活跃 |\n"
+            "| S02-秩序囚徒 | 秩序囚徒 | 角色线 | 摘要… | 角色 | 事件 | 时间 | 活跃 |\n"
+        )
+        counts = parse_storyline_index(wide)
+        self.assertEqual(counts, {"主线": 1, "支线": 0, "角色线": 1, "暗线": 0})
+
 
 class CountFilesTest(unittest.TestCase):
     def test_storyline_file_pattern(self) -> None:

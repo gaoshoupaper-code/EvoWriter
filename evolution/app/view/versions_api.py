@@ -1,23 +1,24 @@
-"""versions API —— 版本谱系视图（去 DB 重构：谱系从 registry.json，reward 从 adapt_rounds）。
+"""versions API —— 版本谱系视图（数据源：Platform 账本，REQ-20260923-145931）。
 
 端点（/api/versions 前缀）：
-  GET /versions            版本列表（含谱系 + reward + 轮出处）
-  GET /versions/{version}  单版本详情（edits + reward）
+  GET /versions            版本列表（账本全量 + same_code_as/based_on 富化）
+  GET /versions/{version}  单版本详情（账本元数据；要素级 diff 见 upgrade-diff 端点）
 
-数据源分工（去 DB 重构）：
-  - 版本谱系/元信息 → registry.json（registry_repo）
-  - reward/轮出处 → adapt_rounds 表（进化过程数据，留 evolution.db）
+谱系语义（DEC-001/DEC-002）：
+- 账本版本号 = 发版流水号，同 commit 重复条目照单全收，same_code_as 标注最早持有者
+- 无 parent_version：based_on = git first-parent 链上最近账本版本（可与版本号倒挂）
+- 旧 adapt_rounds（reward/轮出处）富化随数据源切换一并退役——前端早已忽略该字段
+
+账本不可达返回 502（宁拒勿错，不回退冻结 registry，DEC-005）。
 """
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
 
-import app.core.db as db
-from app.versioning import registry_repo
+from app.versioning import platform_ledger
 
 logger = logging.getLogger("evolution.versions_api")
 
@@ -26,48 +27,17 @@ router = APIRouter(prefix="/versions", tags=["versions"])
 
 @router.get("")
 def list_versions(limit: int = 100, offset: int = 0) -> dict[str, Any]:
-    """版本列表（按版本号倒序），富化 reward + 出处的 adapt round。
-
-    谱系来自 registry.json；reward 从 adapt_rounds（进化过程数据）JOIN。
-    """
-    versions = registry_repo.list_versions()
-
-    # 取所有 shipped 轮（建立 version → reward/session 映射）
-    shipped_rows = db.query_all(
-        """SELECT shipped_version, session_id, round, candidate_scores, critic_verdict
-           FROM adapt_rounds WHERE round_outcome='shipped' AND shipped_version IS NOT NULL"""
-    ) or []
-    shipped_map: dict[int, dict] = {}
-    for r in shipped_rows:
-        v = r["shipped_version"]
-        reward = None
-        try:
-            scores = json.loads(r["candidate_scores"]) if r["candidate_scores"] else []
-            reward = max((s.get("reward", 0) for s in scores), default=None)
-        except Exception:
-            pass
-        shipped_map[v] = {"reward": reward, "source_session": r["session_id"], "source_round": r["round"]}
-
-    items = []
-    page = versions[offset: offset + limit]
-    for s in page:
-        v = s["version"]
-        meta = shipped_map.get(v, {})
-        items.append({
-            "version": v,
-            "parent_version": s.get("parent_version"),
-            "status": s.get("status"),
-            "change_summary": s.get("change_summary"),
-            "created_at": s.get("created_at"),
-            "reward": meta.get("reward"),
-            "source_session": meta.get("source_session") or s.get("source_session"),
-            "source_round": meta.get("source_round"),
-        })
+    """版本列表（按版本号倒序，账本富化条目）。账本不可达统一 502。"""
+    try:
+        versions = platform_ledger.list_versions()
+        production = platform_ledger.production_version_number()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     return {
-        "items": items,
+        "items": versions[offset: offset + limit],
         "total": len(versions),
-        "production_version": registry_repo.get_production_version_number(),
+        "production_version": production,
         "limit": limit,
         "offset": offset,
     }
@@ -75,56 +45,19 @@ def list_versions(limit: int = 100, offset: int = 0) -> dict[str, Any]:
 
 @router.get("/{version}")
 def get_version(version: int) -> dict[str, Any]:
-    """单版本详情（edits + reward，谱系来自 registry）。"""
-    snap = registry_repo.get_version(version)
-    if snap is None:
-        raise HTTPException(404, f"版本 v{version} 不存在")
+    """单版本详情（账本元数据 + 谱系标注）。不存在则 404，账本不可达 502。"""
+    try:
+        entry = platform_ledger.get_version(version)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"版本 v{version} 不存在")
 
-    # 找出处的 adapt round（reward + candidates 数据，进化过程数据留 DB）
-    round_row = db.query_one(
-        """SELECT session_id, round, candidates_json, candidate_scores, critic_verdict,
-                  baseline_version, baseline_scores
-           FROM adapt_rounds WHERE shipped_version=? ORDER BY round DESC LIMIT 1""",
-        (version,),
+    detail = dict(entry)
+    detail["is_bootstrap"] = (
+        entry["same_code_as"] is None and entry["based_on_status"] == "root"
     )
-
-    edits: list[dict[str, Any]] = []
-    reward: float | None = None
-    baseline_reward: float | None = None
-    critic_verdict: dict[str, Any] = {}
-    if round_row:
-        try:
-            cands = json.loads(round_row["candidates_json"]) if round_row["candidates_json"] else []
-            scores = json.loads(round_row["candidate_scores"]) if round_row["candidate_scores"] else []
-            critic_verdict = json.loads(round_row["critic_verdict"]) if round_row["critic_verdict"] else {}
-            ship_idx = critic_verdict.get("ship_idx", (critic_verdict.get("ranking") or [0])[0])
-            if 0 <= ship_idx < len(cands):
-                edits = cands[ship_idx].get("edits", [])
-            if 0 <= ship_idx < len(scores):
-                reward = scores[ship_idx].get("reward")
-            b_scores = json.loads(round_row["baseline_scores"]) if round_row["baseline_scores"] else {}
-            baseline_reward = max(
-                (s.get("overall", 0) for s in b_scores.values() if isinstance(s, dict) and not s.get("skipped")),
-                default=None,
-            )
-        except Exception:
-            logger.warning("解析 v%s 的 round 数据失败", version, exc_info=True)
-
-    return {
-        "version": version,
-        "parent_version": snap.get("parent_version"),
-        "status": snap.get("status"),
-        "change_summary": snap.get("change_summary"),
-        "created_at": snap.get("created_at"),
-        "is_bootstrap": round_row is None,
-        "edits": edits,
-        "reward": reward,
-        "baseline_reward": baseline_reward,
-        "baseline_version": round_row["baseline_version"] if round_row else None,
-        "critic_verdict": critic_verdict,
-        "source_session": round_row["session_id"] if round_row else snap.get("source_session"),
-        "source_round": round_row["round"] if round_row else None,
-    }
+    return detail
 
 
 __all__ = ["router"]

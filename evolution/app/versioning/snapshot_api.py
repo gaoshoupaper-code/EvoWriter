@@ -1,16 +1,17 @@
-"""snapshot API（去 DB 重构：数据源从 harness_snapshots 表 → registry.json）。
+"""snapshot API（数据源：Platform 账本；registry.json 已冻结退役）。
 
-提供整包级的版本查询 API。数据源是 harness 独立仓库内的 registry.json
-（版本注册表：版本列表 / 谱系 / production 指针）。
+提供整包级的版本查询 API。version→commit 与版本列表统一走 Platform 账本
+（platform_ledger，REQ-20260923-145931）；账本不可达返回 502（宁拒勿错，
+不回退冻结 registry——那是错误数据，DEC-005）。
 
 端点（/api/snapshots 前缀）：
-  GET  /snapshots                 列版本（按版本倒序，含 status）
+  GET  /snapshots                 列版本（按版本倒序，含 status/same_code_as/based_on）
   GET  /snapshots/production      当前 production 版本
   GET  /snapshots/{version}       指定版本元数据
   POST /snapshots/rollback        回滚（Phase A：重新晋升旧 commit，走 Platform）
 
-版本内容（源码文件）不在本端点返回——通过 /snapshots/{version}/elements 取
-（elements_api 从 git 读取真实源文件）。
+rollback 注意：目标版本解析仍读冻结 registry（无 UI 消费，REQ-20260923-145931
+风险清单记录在案）；对账本新版本（v9+）目标会 404，做回滚 UI 前必须先切账本。
 
 Phase A（REQ-20260919-202344）：registry.json 只读（Platform 账本是仲裁源）。
 rollback = 查本地 registry（只读）拿目标 version 的 commit → POST Platform
@@ -27,8 +28,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.core import db
-from app.versioning import registry_repo
 from app.trace.facts import append_release_event
+from app.versioning import platform_ledger, registry_repo, upgrade_diff
 
 router = APIRouter(prefix="/snapshots", tags=["snapshots"])
 
@@ -40,8 +41,15 @@ class RollbackRequest(BaseModel):
 
 @router.get("")
 def list_snapshots(status: str | None = None) -> list[dict[str, Any]]:
-    """列版本（按版本倒序）。可按 status 过滤（production/retired）。"""
-    versions = registry_repo.list_versions()
+    """列版本（按版本倒序，账本全量不去重 + 观测富化）。
+
+    可按 status 过滤（production/retired）。同 commit 条目带 same_code_as 标注，
+    非同代码条目带 based_on（git 最近账本祖先，可能与版本号倒挂）。
+    """
+    try:
+        versions = platform_ledger.list_versions()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     if status:
         versions = [v for v in versions if v["status"] == status]
     return versions
@@ -50,7 +58,11 @@ def list_snapshots(status: str | None = None) -> list[dict[str, Any]]:
 @router.get("/production")
 def get_production_snapshot() -> dict[str, Any]:
     """当前 production 版本（元数据）。无则 404。"""
-    snap = registry_repo.get_production_version()
+    try:
+        prod = platform_ledger.production_version_number()
+        snap = platform_ledger.get_version(prod) if prod is not None else None
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     if snap is None:
         raise HTTPException(status_code=404, detail="无 production 版本")
     return snap
@@ -135,8 +147,27 @@ def rollback_snapshot(body: RollbackRequest, request: Request) -> dict[str, Any]
 
 @router.get("/{version}")
 def get_snapshot(version: int) -> dict[str, Any]:
-    """指定版本元数据。不存在则 404。"""
-    snap = registry_repo.get_version(version)
+    """指定版本元数据（账本富化条目）。不存在则 404，账本不可达 502。"""
+    try:
+        snap = platform_ledger.get_version(version)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     if snap is None:
         raise HTTPException(status_code=404, detail=f"版本 v{version} 不存在")
     return snap
+
+
+@router.get("/{version}/upgrade-diff")
+def get_upgrade_diff(version: int) -> dict[str, Any]:
+    """升级总览实时 diff（要素变更摘要 + prompt 行级 hunks，FR-003）。
+
+    基线 = 「代码基于」版本（DEC-002/003）；同代码/根/计算失败（含 git 读取
+    异常，降级不缓存）→ changes 空 + base_kind 标注，前端显示对应占位，
+    不阻断五要素展示。账本不可达 502、版本不存在 404。
+    """
+    try:
+        return upgrade_diff.build_upgrade_diff(version)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

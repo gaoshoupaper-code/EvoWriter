@@ -840,14 +840,20 @@ export async function deleteTest(testId: string): Promise<{ status: string; dele
 //  Harness 要素（snapshots/harness-elements）
 // ════════════════════════════════════════════════════════════
 
+/** 账本版本条目（GET /api/snapshots；Platform 账本源，REQ-20260923-145931）。
+ *
+ * 账本版本号 = 发版流水号：同 commit 可出现多次（重复晋升/回滚演练），
+ * same_code_as 标注最早持有者；based_on = git 最近账本祖先（可与版本号倒挂）。
+ */
 export interface Snapshot {
   version: number;
-  parent_version: number | null;
-  commit_hash: string | null;
-  executable: boolean;
-  change_summary: string | null;
   status: string; // production | retired
+  change_summary: string; // 账本 note（可为空串）
   created_at: string;
+  commit: string;
+  same_code_as: number | null;
+  based_on: number | null;
+  based_on_status: "resolved" | "root" | "error";
 }
 
 export interface HarnessElementView {
@@ -949,7 +955,7 @@ export async function getSnapshotSource(version: number, path: string): Promise<
   );
 }
 
-// ── 版本详情（含升级 diff + 改动意图，来自 GET /api/versions/{version}） ──
+// ── 升级总览实时 diff（GET /api/snapshots/{version}/upgrade-diff，FR-003）──
 
 /** 行级 diff 的一个 hunk：equal/insert/delete 三种，无 replace（后端已拆为 del+ins） */
 export interface Hunk {
@@ -995,50 +1001,44 @@ export interface IntentItem {
   expected_down: string;
 }
 
-/** version_changes 表的投影：按 agent 聚合的客观 diff + 版本级主观意图 */
+/** 实时 diff 的按 agent 聚合投影（intent 恒 null：design_doc 意图管道已退役） */
 export interface VersionChanges {
   agents: { agent: string; diff: AgentDiff }[];
   intent: IntentItem[] | null;
 }
 
-/** GET /api/versions/{version} 响应（仅 harness 页需要的字段） */
-export interface VersionDetail {
-  version: number;
-  parent_version: number | null;
-  is_bootstrap: boolean;
-  change_summary: string | null;
-  changes: VersionChanges;
-}
+// ── 版本谱系列表（GET /api/versions，Platform 账本源）──
 
-export async function getVersionDetail(version: number): Promise<VersionDetail> {
-  return evoJson<VersionDetail>(`/api/versions/${version}`, { method: "GET" });
-}
-
-// ── 版本谱系列表（GET /api/versions）──
-// 注意：后端端点仍含旧 adapt 残留字段（reward/source_round/critic_verdict），
-// 此类型只取 registry 谱系字段，忽略 adapt 残留。完整 diff 待 version_changes 写入层修复后另做。
-
-/** 版本谱系单条（只用 registry 谱系字段） */
-export interface VersionListItem {
-  version: number;
-  parent_version: number | null;
-  status: string; // production | retired
-  change_summary: string | null;
-  created_at: string;
-  source_session: string | null;
-}
+/** 版本谱系单条（账本富化条目，字段同 Snapshot） */
+export type VersionListItem = Snapshot;
 
 /** GET /api/versions 响应 */
 export interface VersionsListResponse {
   items: VersionListItem[];
   total: number;
-  production_version: number;
+  production_version: number | null;
   limit: number;
   offset: number;
 }
 
 export async function getVersions(): Promise<VersionsListResponse> {
   return evoJson<VersionsListResponse>(`/api/versions?limit=200`, { method: "GET" });
+}
+
+/** GET /api/snapshots/{version}/upgrade-diff 响应 */
+export interface UpgradeDiffView {
+  version: number;
+  target_commit: string;
+  /** ancestor=正常对比 | same_code=同代码无差异 | root=初始版本 | error=基线解析失败 */
+  base_kind: "ancestor" | "same_code" | "root" | "error";
+  base_version: number | null;
+  base_commit: string | null;
+  same_code_as: number | null;
+  changes: VersionChanges;
+}
+
+export async function getUpgradeDiff(version: number): Promise<UpgradeDiffView> {
+  return evoJson<UpgradeDiffView>(`/api/snapshots/${version}/upgrade-diff`, { method: "GET" });
 }
 
 // ── 评测版本下拉（GET /api/benchmark/versions，Platform 账本源）──

@@ -1,12 +1,10 @@
-"""elements_api —— Harness 要素展示端点（去 DB 重构：数据源从 config → git 源文件）。
+"""elements_api —— Harness 要素展示端点（数据源：git 源文件 + Platform 账本）。
 
 从 harness 独立仓库的 git commit 读取真实源文件，投影成面向展示的结构化视图，
 供前端「Harness 要素」页渲染（Prompt/Skills/Tools/Middleware/Subagents 五要素）。
 
-数据源变更（去 DB 重构）：
-  旧：从 DB harness_snapshots.config_json 提取 agent 结构 + git show 读全文
-  新：完全从 git 仓库的目录结构推导 agent 结构 + git show 读全文
-  含义：展示的是真实运行的 agent（源文件），而非死代码 config 的投影。
+version→commit 解析走 Platform 账本（platform_ledger，REQ-20260923-145931）——
+registry.json 已冻结退役，账本是版本号的唯一活跃数据源。
 
 端点（/api/snapshots 前缀）：
   GET /snapshots/{version}/harness-elements          Harness 要素展示视图（含 agents + tools）
@@ -29,7 +27,7 @@ import yaml
 from fastapi import APIRouter, HTTPException, Query
 
 from app.core.git_ops import show_file
-from app.versioning import registry_repo
+from app.versioning import platform_ledger
 from app.versioning.constants import MEMORY_FILES, MEMORY_ROLE_ORDER, TOOL_SCOPE_MAP
 from app.versioning.middleware_projection import build_middleware_projection
 
@@ -78,8 +76,18 @@ _SUBAGENT_ROLE_MAP: dict[str, str] = {
 
 
 def _version_to_commit(version: int) -> str | None:
-    """Resolve a version only through its explicit immutable commit binding."""
-    return registry_repo.get_version_commit(version)
+    """Resolve a version to its immutable commit via the Platform ledger."""
+    return platform_ledger.resolve_commit(version)
+
+
+def _require_ledger_version(version: int) -> None:
+    """404 校验：版本必须存在于 Platform 账本；账本不可达转 502。"""
+    try:
+        entry = platform_ledger.get_version(version)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"版本 v{version} 不存在")
 
 
 def _list_files_at_commit(commit: str, subdir: str) -> list[str]:
@@ -330,9 +338,7 @@ def get_memory_elements(version: int) -> dict[str, Any]:
     与 /harness-elements 独立——记忆要素横跨三目录不属于任何 agent，集中返回。
     老版本无 NWM 重构时 elements 为空（非 404）。
     """
-    v = registry_repo.get_version(version)
-    if v is None:
-        raise HTTPException(status_code=404, detail=f"版本 v{version} 不存在")
+    _require_ledger_version(version)
     return _cached_build(version, _memory_cache, lambda: build_memory_elements_view(version))
 
 
@@ -343,9 +349,7 @@ def get_elements(version: int) -> dict[str, Any]:
     热路径：前端 harness 页进页面 + 切版本都会打这里。按 version 进程内缓存
     （commit 不可变，安全），避免每次 fork 几十个 git show 子进程。
     """
-    v = registry_repo.get_version(version)
-    if v is None:
-        raise HTTPException(status_code=404, detail=f"版本 v{version} 不存在")
+    _require_ledger_version(version)
     return _cached_build(version, _elements_cache, lambda: build_elements_view(version))
 
 
@@ -355,7 +359,10 @@ def get_source(
     path: str = Query(..., description="相对 harness 包根的文件路径，如 middleware/goal.py"),
 ) -> dict[str, Any]:
     """读指定版本指定文件的源码全文（middleware 懒加载用）。"""
-    commit = _version_to_commit(version)
+    try:
+        commit = _version_to_commit(version)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     if not commit:
         raise HTTPException(status_code=404, detail=f"版本 v{version} 无可执行 commit 绑定")
 

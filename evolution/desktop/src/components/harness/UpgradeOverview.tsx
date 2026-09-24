@@ -1,25 +1,42 @@
-import { useState } from "react";
-import type { VersionChanges, AgentDiff, IntentItem } from "@/lib/api";
+import type { UpgradeDiffView, AgentDiff } from "@/lib/api";
 import { AgentBadge } from "./AgentBadge";
 
 /**
- * 升级总览条（页面门面）。
+ * 升级总览条（页面门面，实时 git diff，REQ-20260923-145931 FR-003）。
  *
- * 选一个版本后，第一眼看到"这个版本相比父版本改了什么"：
- * - 客观摘要：遍历 changes.agents，每 agent 一行（prompt ±N 行 / skills ±N / middleware 增删改）
- * - 改动意图：design_doc 的 intent 列表，默认收起，可展开看 reason / expected_up / expected_down
- *
- * 首版本（无 parent）→ 显示"初始版本"占位，不渲染 diff。
+ * 选一个版本后，第一眼看到"这个版本相对代码基线改了什么"：
+ * - base_kind=ancestor：遍历 changes.agents，每 agent 一行
+ *   （prompt ±N 行 / skills ±N / middleware 增删改），基线版本号随标题展示
+ * - base_kind=same_code：同代码重复发版（如回滚演练），显示「代码同 vX，无差异」
+ * - base_kind=root：初始版本占位
+ * - base_kind=error 或 failed（diff 拉取失败）：变更计算失败占位（不阻断五要素展示）
  */
 export function UpgradeOverview({
-  changes,
-  isBootstrap,
+  diff,
+  failed = false,
 }: {
-  changes: VersionChanges | null;
-  isBootstrap: boolean;
+  diff: UpgradeDiffView | null;
+  failed?: boolean;
 }) {
-  // D7：首版本显示占位
-  if (isBootstrap) {
+  if (failed) {
+    return (
+      <div className="upgrade-overview">
+        <h3 className="upgrade-overview-title">📌 本版本升级</h3>
+        <p className="upgrade-bootstrap">变更计算失败（diff 拉取异常），要素展示不受影响。</p>
+      </div>
+    );
+  }
+
+  if (!diff) {
+    return (
+      <div className="upgrade-overview">
+        <h3 className="upgrade-overview-title">📌 本版本升级</h3>
+        <p className="upgrade-bootstrap">计算升级差异…</p>
+      </div>
+    );
+  }
+
+  if (diff.base_kind === "root") {
     return (
       <div className="upgrade-overview">
         <h3 className="upgrade-overview-title">📌 本版本升级</h3>
@@ -28,43 +45,60 @@ export function UpgradeOverview({
     );
   }
 
-  // 无 diff 数据（version_changes 表为空，或 agents 全空 + intent 为 null）
-  const hasAgents = changes && changes.agents.length > 0;
-  const hasIntent = changes && changes.intent && changes.intent.length > 0;
-  if (!hasAgents && !hasIntent) {
+  if (diff.base_kind === "same_code" && diff.same_code_as != null) {
     return (
       <div className="upgrade-overview">
         <h3 className="upgrade-overview-title">📌 本版本升级</h3>
-        <p className="upgrade-bootstrap">本版本无要素变更记录。</p>
+        <p className="upgrade-bootstrap">
+          代码同 v{diff.same_code_as}，与基线无差异（重复晋升 / 回滚类发版）。
+        </p>
+      </div>
+    );
+  }
+
+  if (diff.base_kind === "error") {
+    return (
+      <div className="upgrade-overview">
+        <h3 className="upgrade-overview-title">📌 本版本升级</h3>
+        <p className="upgrade-bootstrap">变更计算失败（基线版本解析异常），要素展示不受影响。</p>
+      </div>
+    );
+  }
+
+  const agents = diff.changes.agents;
+  if (agents.length === 0) {
+    return (
+      <div className="upgrade-overview">
+        <h3 className="upgrade-overview-title">
+          📌 本版本升级{diff.base_version != null && <span className="upgrade-base-tag">相对 v{diff.base_version}</span>}
+        </h3>
+        <p className="upgrade-bootstrap">本版本相对基线无要素变更。</p>
       </div>
     );
   }
 
   return (
     <div className="upgrade-overview">
-      <h3 className="upgrade-overview-title">📌 本版本升级</h3>
+      <h3 className="upgrade-overview-title">
+        📌 本版本升级{diff.base_version != null && <span className="upgrade-base-tag">相对 v{diff.base_version}</span>}
+      </h3>
 
       {/* 客观 diff 摘要 */}
-      {hasAgents && (
-        <div className="upgrade-summary-list">
-          {changes!.agents.map(({ agent, diff }) => (
-            <div key={agent} className="upgrade-summary-item">
-              <AgentBadge name={agent} />
-              <span className="upgrade-change-desc">{summarizeAgentDiff(diff)}</span>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* 改动意图（可折叠） */}
-      {hasIntent && <IntentSection intent={changes!.intent!} />}
+      <div className="upgrade-summary-list">
+        {agents.map(({ agent, diff: agentDiff }) => (
+          <div key={agent} className="upgrade-summary-item">
+            <AgentBadge name={agent} />
+            <span className="upgrade-change-desc">{summarizeAgentDiff(agentDiff)}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
 /**
  * 把单个 agent 的三要素 diff 压成一句人话摘要。
- * whole_agent 存在时只说整 agent 增删；否则分别说 prompt/skills/middleware。
+ * 否则分别说 prompt/skills/middleware。
  */
 function summarizeAgentDiff(diff: AgentDiff): string {
   if (diff.whole_agent === "added") return "新增 Agent";
@@ -95,50 +129,4 @@ function summarizeAgentDiff(diff: AgentDiff): string {
   }
 
   return parts.length ? parts.join("，") : "无变化";
-}
-
-/** 改动意图折叠区块：design_doc 的每条改动（target + desc + reason + expected） */
-function IntentSection({ intent }: { intent: IntentItem[] }) {
-  const [open, setOpen] = useState(false);
-
-  return (
-    <div className="intent-section">
-      <div className="intent-toggle" onClick={() => setOpen(!open)}>
-        <span>{open ? "▾" : "▸"}</span>
-        改动意图（{intent.length} 条）
-      </div>
-      {open && (
-        <div className="intent-list">
-          {intent.map((item, i) => (
-            <div key={i} className="intent-item">
-              <div className="intent-target">{item.target || "（未指定目标）"}</div>
-              <div className="intent-desc">{item.change_desc || "（无描述）"}</div>
-              {(item.reason || item.expected_up || item.expected_down) && (
-                <div className="intent-meta">
-                  {item.reason && (
-                    <span>
-                      <label>依据：</label>
-                      {item.reason}
-                    </span>
-                  )}
-                  {item.expected_up && (
-                    <span className="intent-up">
-                      <label>预期↑：</label>
-                      {item.expected_up}
-                    </span>
-                  )}
-                  {item.expected_down && (
-                    <span className="intent-down">
-                      <label>预期↓：</label>
-                      {item.expected_down}
-                    </span>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
 }

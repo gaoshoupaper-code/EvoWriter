@@ -98,8 +98,8 @@ def _list_files_at_commit(commit: str, subdir: str) -> list[str]:
         subdir: 子目录（如 "prompts"、"skills"、"middleware"）
     """
     try:
-        from app.core.git_ops import _git, work_dir
-        out = _git(["ls-tree", "-r", "--name-only", commit, subdir], work_dir())
+        from app.core.git_ops import _git, read_dir
+        out = _git(["ls-tree", "-r", "--name-only", commit, subdir], read_dir())
         return [f for f in out.splitlines() if f.strip()] if out.strip() else []
     except Exception:  # noqa: BLE001
         logger.debug("ls-tree 失败: %s @ %s", subdir, commit, exc_info=True)

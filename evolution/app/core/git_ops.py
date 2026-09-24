@@ -57,6 +57,16 @@ def work_dir() -> Path:
     return settings.harness_work_dir_path
 
 
+def read_dir() -> Path:
+    """只读历史查询的 git 目录（bare 仓库）。
+
+    bare 仓库是账本绑定 commit 的权威存储——发版可能直接推 bare 仓库
+    （如双架构实验的 v13/v14）而不经过工作克隆，work_dir 可能落后。
+    要素/谱系/diff 的只读 commit 查询必须走这里才能覆盖全部账本版本。
+    """
+    return settings.harness_bare_repo_path
+
+
 def has_changes() -> bool:
     """工作目录是否有未提交变更。"""
     out = _git(["status", "--porcelain"], work_dir())
@@ -203,7 +213,8 @@ def log_oneline(limit: int = 200) -> list[str]:
 def show_file(commit: str, file_path: str) -> str:
     """读取指定 commit 版本下的文件内容（git show <commit>:<path>）。
 
-    用于评估 Agent 读历史 snapshot 版本的源码要素（决策 V1）。
+    用于评估 Agent 与要素视图读历史 snapshot 版本的源码要素（决策 V1）。
+    读 bare 仓库（read_dir）——工作克隆可能缺最新发版 commit。
 
     Args:
         commit:    commit hash（snapshot 的 source_commit）
@@ -212,7 +223,7 @@ def show_file(commit: str, file_path: str) -> str:
     Returns:
         文件全文。文件不存在该 commit 时 raise RuntimeError。
     """
-    return _git(["show", f"{commit}:{file_path}"], work_dir())
+    return _git(["show", f"{commit}:{file_path}"], read_dir())
 
 
 def commit_file(file_path: str, content: str, message: str) -> str:

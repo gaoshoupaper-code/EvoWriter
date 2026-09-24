@@ -69,9 +69,9 @@ def _agent_skills(skills: list[dict[str, Any]], agent_name: str) -> list[str]:
 
 
 def _require_readable_commit(commit: str) -> None:
-    """校验 commit 本地可读（cat-file -e）。失败 raise——diff 路径严格失败。"""
-    from app.core.git_ops import _git, work_dir
-    _git(["cat-file", "-e", f"{commit}^{{commit}}"], work_dir())
+    """校验 commit 本地可读（cat-file -e，bare 仓库）。失败 raise——diff 路径严格失败。"""
+    from app.core.git_ops import _git, read_dir
+    _git(["cat-file", "-e", f"{commit}^{{commit}}"], read_dir())
 
 
 def _diff_processors(

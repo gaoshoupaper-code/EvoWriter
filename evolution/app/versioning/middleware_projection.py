@@ -36,14 +36,77 @@ _RUNTIME_MIDDLEWARE: dict[str, dict[str, Any]] = {
 def build_middleware_projection(
     package_sources: dict[str, str],
 ) -> dict[str, list[dict[str, Any]]]:
-    """Return the mounted middleware stack for every visible Agent."""
+    """Return the mounted middleware stack for every visible Agent.
+
+    布局自适应（REQ-20260923-145931 后续：v14 多 Agent 形态适配）：
+    - v14 多 Agent 架构（subagents/orchestrator.py 存在）：orchestrator +
+      3 领域代理 + reviewer 五泳道。middleware_factory(agent_name) 产出通用
+      骨架；orchestrator 追加 QuotaConvergence/RevisionLimit/ContextAssembler，
+      storyline 追加单线护栏，worldview/character 为纯通用骨架。
+    - v7 单故事专家架构（旧版本）：两泳道（storybuilding + reviewer）。
+    """
     catalog = _build_catalog(package_sources)
     root = package_sources.get("__init__.py", "")
 
-    # v7 单故事专家架构（REQ-20260920-150149 FR-103）：无 meta 编排，
-    # middleware_factory 产出的 common 栈即故事专家与 reviewer 的共同骨架。
+    # 两代架构共用：__init__.py 的 middleware_factory 产出各 agent 通用骨架。
     common = _extract_stack(root, "middleware_factory", "mw", group="base")
 
+    if package_sources.get("subagents/orchestrator.py"):
+        return _project_v14(package_sources, root, common, catalog)
+    return _project_v7(package_sources, root, common, catalog)
+
+
+def _project_v14(
+    package_sources: dict[str, str],
+    root: str,
+    common: list[dict[str, Any]],
+    catalog: dict[str, dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """v14 多 Agent 架构投影（orchestrator + worldview/character/storyline + reviewer）。"""
+    orchestrator_source = package_sources["subagents/orchestrator.py"]
+    orchestrator = _extract_stack(
+        orchestrator_source, "build_orchestrator_agent", "orchestrator_mw",
+        base=common, group="agent",
+    )
+    orchestrator = _resolve_conditional_mount(
+        orchestrator,
+        "ContextAssemblerMiddleware",
+        # __init__.assemble 调 build_orchestrator_agent 时传 context_file_paths
+        # （demand.md 表单直入）→ ContextAssembler 实挂
+        _call_supplies_keyword(root, "build_orchestrator_agent", "context_file_paths"),
+    )
+    storyline = _extract_stack(
+        orchestrator_source, "build_orchestrator_agent", "storyline_mw",
+        base=common, group="agent",
+    )
+    review_storybuilding = _extract_stack(
+        package_sources.get("subagents/reviewers/storybuilding.py", ""),
+        "build_storybuilding_reviewer",
+        "review_middleware",
+        base=common,
+        group="agent",
+    )
+    # 五泳道：领域代理中仅 storyline 追加护栏，worldview/character 为纯通用骨架
+    stacks = {
+        "orchestrator": orchestrator,
+        "worldview": [dict(mw) for mw in common],
+        "character": [dict(mw) for mw in common],
+        "storyline": storyline,
+        "storybuilding_review": review_storybuilding,
+    }
+    return {
+        agent: [_enrich_mount(mount, catalog) for mount in mounts]
+        for agent, mounts in stacks.items()
+    }
+
+
+def _project_v7(
+    package_sources: dict[str, str],
+    root: str,
+    common: list[dict[str, Any]],
+    catalog: dict[str, dict[str, Any]],
+) -> dict[str, list[dict[str, Any]]]:
+    """v7 单故事专家架构投影（两泳道，含 v7 之前的历史形态）。"""
     storybuilding = _extract_stack(
         package_sources.get("subagents/storybuilding.py", ""),
         "build_storybuilding_deep_subagent",

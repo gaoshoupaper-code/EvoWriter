@@ -73,14 +73,16 @@ class TestElementsViewConstants(unittest.TestCase):
     def test_two_lanes(self):
         from app.versioning import elements_api
 
-        names = [spec[0] for spec in elements_api._AGENT_SPECS]
+        # v7 布局静态映射（v14 布局经 _agent_specs_for_commit 目录推导，另有测试）
+        names = [spec[0] for spec in elements_api._AGENT_SPECS_V7]
         self.assertEqual(names, ["storybuilding", "storybuilding_review"])
-        kinds = [spec[1] for spec in elements_api._AGENT_SPECS]
+        kinds = [spec[1] for spec in elements_api._AGENT_SPECS_V7]
         self.assertEqual(kinds, ["story_expert", "reviewer"])
         self.assertEqual(
             elements_api._SUBAGENT_ROLE_MAP["storybuilding"], "故事专家（剧情大纲设计）"
         )
-        self.assertEqual(len(elements_api._ASSEMBLY_SOURCE_PATHS), 4)
+        # 装配源含 v14 orchestrator.py（旧版本无此文件，缺失即不进投影）
+        self.assertEqual(len(elements_api._ASSEMBLY_SOURCE_PATHS), 5)
 
     def test_projection_two_lanes_from_v7_package(self):
         from app.versioning.middleware_projection import build_middleware_projection

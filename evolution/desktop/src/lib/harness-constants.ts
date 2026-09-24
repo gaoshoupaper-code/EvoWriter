@@ -24,6 +24,11 @@ export const AGENT_LABELS: Record<string, string> = {
   interview: "需求访谈",
   storybuilding: "故事构建",
   storybuilding_review: "故事审查",
+  // v14 多 Agent 架构（REQ-20260922-162823）：orchestrator + 3 领域代理
+  orchestrator: "主控编排",
+  worldview: "世界观构建",
+  character: "人物构建",
+  storyline: "故事线构建",
   detail_outline: "细纲生成",
   detail_outline_review: "细纲审查",
   writing: "正文写作",

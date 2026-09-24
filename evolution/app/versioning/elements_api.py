@@ -59,17 +59,80 @@ def _cached_build(
 
 router = APIRouter(prefix="/snapshots", tags=["snapshots"])
 
-# subagent 机器名 → 中文角色名。
-# v7 单故事专家架构（REQ-20260920-150149 FR-103）：两泳道——
-# 故事专家（storybuilding，顶层）+ 审查器（storybuilding_review）。
-_AGENT_SPECS = [
-    ("storybuilding", "story_expert", "storybuilding_system.md"),
-    ("storybuilding_review", "reviewer", "storybuilding_review.md"),
+# ── Agent 结构：按版本布局探测（v7 静态映射 / v14 目录推导）──
+#
+# v14 多 Agent 架构（REQ-20260922-162823）：prompts/v14/orchestrator_system.md
+# 存在即判定 v14 布局，领域 agent 从 prompts/v14/domain_*.md 推导（不写死清单）；
+# 领域 agent 的 system prompt = common_rules.md + 分隔线 + 领域文件（镜像
+# subagents/orchestrator.py 的运行时拼接）。旧版本回退 v7 两泳道静态映射。
+
+# (name, kind, prompt_files)——prompt_files 为相对包根路径，多文件按序拼接
+_AGENT_SPECS_V7: list[tuple[str, str, tuple[str, ...]]] = [
+    ("storybuilding", "story_expert", ("prompts/storybuilding_system.md",)),
+    ("storybuilding_review", "reviewer", ("prompts/storybuilding_review.md",)),
 ]
+
+_V14_PROMPTS_DIR = "prompts/v14"
+_V14_ORCHESTRATOR_PROMPT = f"{_V14_PROMPTS_DIR}/orchestrator_system.md"
+# 领域 prompt 拼接分隔线，与 orchestrator.py 运行时拼接保持一致
+_PROMPT_JOINER = "\n\n---\n\n"
+
 _SUBAGENT_ROLE_MAP: dict[str, str] = {
     "storybuilding": "故事专家（剧情大纲设计）",
     "storybuilding_review": "故事审查",
+    "orchestrator": "主控编排（v14 多 Agent 架构）",
+    "worldview": "世界观构建",
+    "character": "人物构建",
+    "storyline": "故事线构建",
 }
+
+
+def _agent_specs_for_commit(
+    commit: str | None,
+) -> tuple[list[tuple[str, str, tuple[str, ...]]], str]:
+    """探测某 commit 的 Agent 结构布局。
+
+    Returns:
+        (specs, layout)：specs = [(name, kind, prompt_files)]，
+        layout ∈ v7 | v14。
+    """
+    if commit and _file_exists_at_commit(commit, _V14_ORCHESTRATOR_PROMPT):
+        specs: list[tuple[str, str, tuple[str, ...]]] = [
+            ("orchestrator", "orchestrator", (_V14_ORCHESTRATOR_PROMPT,)),
+        ]
+        # 领域 agent 从 domain_*.md 推导（排序保证稳定展示顺序）
+        domain_files = sorted(
+            f for f in _list_files_at_commit(commit, _V14_PROMPTS_DIR)
+            if f.startswith(f"{_V14_PROMPTS_DIR}/domain_") and f.endswith(".md")
+        )
+        for path in domain_files:
+            # prompts/v14/domain_worldview.md → worldview
+            name = path.rsplit("/", 1)[-1].removesuffix(".md").removeprefix("domain_")
+            specs.append((name, "domain", (f"{_V14_PROMPTS_DIR}/common_rules.md", path)))
+        specs.append(("storybuilding_review", "reviewer", ("prompts/storybuilding_review.md",)))
+        return specs, "v14"
+    return _AGENT_SPECS_V7, "v7"
+
+
+def _agent_skills(
+    skills: list[dict[str, Any]],
+    agent_name: str,
+    kind: str,
+    layout: str,
+) -> list[dict[str, Any]]:
+    """某 agent 的 skill 列表（按布局归属）。
+
+    v7：skills/{agent_name}/ 前缀归属（reviewer 无技能）。
+    v14：4 个技能经 compose_skills_backend 全部挂在 orchestrator 顶层
+    （SKILL_DIRS），领域 agent 与 reviewer 无直接技能。
+    """
+    if kind == "reviewer":
+        return []
+    if layout == "v14":
+        if agent_name != "orchestrator":
+            return []
+        return [s for s in skills if s["path"].startswith("skills/v14/")]
+    return [s for s in skills if s["path"].startswith(f"skills/{agent_name}")]
 
 
 # ── git 源文件读取辅助 ─────────────────────────────────────────
@@ -116,15 +179,21 @@ def _parse_frontmatter(text: str) -> dict[str, Any]:
     return yaml.safe_load(parts[1]) or {}
 
 
-def _read_prompt(commit: str | None, name: str) -> str:
-    """读 prompts/{name}.md 全文。commit=None 或读取失败返回空串。"""
+def _read_prompt(commit: str | None, prompt_path: str) -> str:
+    """读单条 prompt 文件全文（相对包根路径）。commit=None 或读取失败返回空串。"""
     if not commit:
         return ""
     try:
-        return show_file(commit, f"prompts/{name}")
+        return show_file(commit, prompt_path)
     except Exception:  # noqa: BLE001
-        logger.debug("prompt 读取失败: %s @ %s", name, commit)
+        logger.debug("prompt 读取失败: %s @ %s", prompt_path, commit)
         return ""
+
+
+def read_prompt_body(commit: str | None, prompt_files: tuple[str, ...]) -> str:
+    """按 spec 拼 agent 的 system prompt 全文（多文件 = 领域拼接，镜像运行时）。"""
+    parts = [_read_prompt(commit, path) for path in prompt_files]
+    return _PROMPT_JOINER.join(part for part in parts if part)
 
 
 def _build_skill_infos(commit: str | None) -> list[dict[str, Any]]:
@@ -159,6 +228,8 @@ _ASSEMBLY_SOURCE_PATHS = (
     "subagents/storybuilding.py",
     "subagents/factory.py",
     "subagents/reviewers/storybuilding.py",
+    # v14 多 Agent 架构装配源（旧版本无此文件，缺失即不进投影）
+    "subagents/orchestrator.py",
 )
 
 
@@ -225,7 +296,7 @@ def _build_tool_infos(commit: str | None) -> list[dict[str, Any]]:
 
 
 def build_elements_view(version: int) -> dict[str, Any]:
-    """从 git 仓库构建版本要素展示视图。
+    """从 git 仓库构建版本要素展示视图（Agent 结构按版本布局探测）。
 
     结构（对齐前端 HarnessElementsView 类型）：
       {
@@ -237,10 +308,12 @@ def build_elements_view(version: int) -> dict[str, Any]:
         "subagent_relations": [ {from, to, role}, ... ]
       }
 
-    agents 按 agent 分组（meta 第一，subagents 按固定装配顺序）；
-    tools 顶层平级——harness 的 tools/ 是全局平铺的，不属于任何 agent。
+    agents 顺序：v7 = 故事专家→审查器；v14 = orchestrator→领域（worldview/
+    character/storyline 按文件序）→审查器。tools 顶层平级——harness 的 tools/
+    是全局平铺的，不属于任何 agent。
     """
     commit = _version_to_commit(version)
+    specs, layout = _agent_specs_for_commit(commit)
     skills = _build_skill_infos(commit)
     middleware_stacks = _build_middleware_stacks(commit)
     tools = _build_tool_infos(commit)
@@ -249,21 +322,30 @@ def build_elements_view(version: int) -> dict[str, Any]:
         {
             "name": name,
             "kind": kind,
-            "prompt": {"body": _read_prompt(commit, prompt_file) if prompt_file else ""},
-            "skills": [
-                skill
-                for skill in skills
-                if kind != "reviewer" and skill["path"].startswith(f"skills/{name}")
-            ],
+            "prompt": {"body": read_prompt_body(commit, prompt_files)},
+            "skills": _agent_skills(skills, name, kind, layout),
             "middlewares": middleware_stacks.get(name, []),
         }
-        for name, kind, prompt_file in _AGENT_SPECS
+        for name, kind, prompt_files in specs
     ]
 
-    # v7 唯一委托关系：故事专家 → 审查器（无 meta 编排）
-    relations = [
-        {"from": "storybuilding", "to": "storybuilding_review", "role": _SUBAGENT_ROLE_MAP["storybuilding_review"]},
-    ]
+    if layout == "v14":
+        # v14 委托关系：orchestrator → 3 领域 + 审查（全部经 task 委托调度）
+        relations = [
+            {"from": "orchestrator", "to": spec[0],
+             "role": _SUBAGENT_ROLE_MAP.get(spec[0], spec[0])}
+            for spec in specs if spec[1] == "domain"
+        ]
+        relations.append({
+            "from": "orchestrator", "to": "storybuilding_review",
+            "role": _SUBAGENT_ROLE_MAP["storybuilding_review"],
+        })
+    else:
+        # v7 唯一委托关系：故事专家 → 审查器
+        relations = [
+            {"from": "storybuilding", "to": "storybuilding_review",
+             "role": _SUBAGENT_ROLE_MAP["storybuilding_review"]},
+        ]
 
     return {
         "version": version,

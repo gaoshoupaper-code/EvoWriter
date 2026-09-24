@@ -52,10 +52,40 @@ class ResolveBaseTest(unittest.TestCase):
 
 
 class ComputeAgentDiffsTest(unittest.TestCase):
-    """打桩要素构建：两个 commit 的快照 → agent diff 聚合。"""
+    """打桩要素构建：两侧 commit 快照 → agent diff 聚合（布局探测 + 并集对比）。"""
 
-    def _run(self, prompts, skills, stacks):
-        with patch.object(upgrade_diff, "_read_prompt", side_effect=lambda c, f: prompts[c][f]), \
+    V7_SPECS, _V7_LAYOUT = (
+        [
+            ("storybuilding", "story_expert", ("prompts/storybuilding_system.md",)),
+            ("storybuilding_review", "reviewer", ("prompts/storybuilding_review.md",)),
+        ],
+        "v7",
+    )
+    V14_SPECS, _V14_LAYOUT = (
+        [
+            ("orchestrator", "orchestrator", ("prompts/v14/orchestrator_system.md",)),
+            ("worldview", "domain",
+             ("prompts/v14/common_rules.md", "prompts/v14/domain_worldview.md")),
+            ("character", "domain",
+             ("prompts/v14/common_rules.md", "prompts/v14/domain_character.md")),
+            ("storyline", "domain",
+             ("prompts/v14/common_rules.md", "prompts/v14/domain_storyline.md")),
+            ("storybuilding_review", "reviewer", ("prompts/storybuilding_review.md",)),
+        ],
+        "v14",
+    )
+
+    def _run(self, prompts, skills, stacks,
+             base_specs=None, target_specs=None):
+        specs = {
+            "base": base_specs or (self.V7_SPECS, self._V7_LAYOUT),
+            "target": target_specs or (self.V7_SPECS, self._V7_LAYOUT),
+        }
+        with patch.object(upgrade_diff, "_agent_specs_for_commit",
+                          side_effect=lambda c: specs[c]), \
+             patch.object(upgrade_diff, "read_prompt_body",
+                          side_effect=lambda c, files: "\n\n---\n\n".join(
+                              prompts[c][f] for f in files)), \
              patch.object(upgrade_diff, "_build_skill_infos",
                           side_effect=lambda c: skills[c]), \
              patch.object(upgrade_diff, "_build_middleware_stacks",
@@ -64,8 +94,10 @@ class ComputeAgentDiffsTest(unittest.TestCase):
 
     def test_prompt_line_diff(self):
         prompts = {
-            "base": {"storybuilding_system.md": "l1\nl2\nl3", "storybuilding_review.md": "r"},
-            "target": {"storybuilding_system.md": "l1\nl2\nl3\nl4", "storybuilding_review.md": "r"},
+            "base": {"prompts/storybuilding_system.md": "l1\nl2\nl3",
+                     "prompts/storybuilding_review.md": "r"},
+            "target": {"prompts/storybuilding_system.md": "l1\nl2\nl3\nl4",
+                       "prompts/storybuilding_review.md": "r"},
         }
         skills = {"base": [], "target": []}
         stacks = {"base": {}, "target": {}}
@@ -77,8 +109,10 @@ class ComputeAgentDiffsTest(unittest.TestCase):
 
     def test_skills_added_removed(self):
         prompts = {
-            "base": {"storybuilding_system.md": "p", "storybuilding_review.md": "r"},
-            "target": {"storybuilding_system.md": "p", "storybuilding_review.md": "r"},
+            "base": {"prompts/storybuilding_system.md": "p",
+                     "prompts/storybuilding_review.md": "r"},
+            "target": {"prompts/storybuilding_system.md": "p",
+                       "prompts/storybuilding_review.md": "r"},
         }
         skills = {
             "base": [{"path": "skills/storybuilding/old"}, {"path": "skills/storybuilding/keep"}],
@@ -98,8 +132,10 @@ class ComputeAgentDiffsTest(unittest.TestCase):
                     "hooks": list(hooks), "optional": False}
 
         prompts = {
-            "base": {"storybuilding_system.md": "p", "storybuilding_review.md": "r"},
-            "target": {"storybuilding_system.md": "p", "storybuilding_review.md": "r"},
+            "base": {"prompts/storybuilding_system.md": "p",
+                     "prompts/storybuilding_review.md": "r"},
+            "target": {"prompts/storybuilding_system.md": "p",
+                       "prompts/storybuilding_review.md": "r"},
         }
         skills = {"base": [], "target": []}
         stacks = {
@@ -120,8 +156,10 @@ class ComputeAgentDiffsTest(unittest.TestCase):
                     "hooks": list(hooks), "optional": False}
 
         prompts = {
-            "base": {"storybuilding_system.md": "p", "storybuilding_review.md": "r"},
-            "target": {"storybuilding_system.md": "p", "storybuilding_review.md": "r"},
+            "base": {"prompts/storybuilding_system.md": "p",
+                     "prompts/storybuilding_review.md": "r"},
+            "target": {"prompts/storybuilding_system.md": "p",
+                       "prompts/storybuilding_review.md": "r"},
         }
         skills = {"base": [], "target": []}
         stacks = {
@@ -146,13 +184,51 @@ class ComputeAgentDiffsTest(unittest.TestCase):
 
     def test_no_change_excludes_agent(self):
         prompts = {
-            "base": {"storybuilding_system.md": "p", "storybuilding_review.md": "r"},
-            "target": {"storybuilding_system.md": "p", "storybuilding_review.md": "r"},
+            "base": {"prompts/storybuilding_system.md": "p",
+                     "prompts/storybuilding_review.md": "r"},
+            "target": {"prompts/storybuilding_system.md": "p",
+                       "prompts/storybuilding_review.md": "r"},
         }
         skills = {"base": [], "target": []}
         stacks = {"base": {}, "target": {}}
         diffs = self._run(prompts, skills, stacks)
         self.assertEqual(diffs, {})
+
+    def test_cross_layout_whole_agent_added_removed(self):
+        """v7 → v14 跨架构：旧专家整体退役、新 orchestrator/领域整体登场。"""
+        prompts = {
+            "base": {"prompts/storybuilding_system.md": "S\nS2",
+                     "prompts/storybuilding_review.md": "r",
+                     "prompts/v14/orchestrator_system.md": "ORCH",
+                     "prompts/v14/common_rules.md": "C",
+                     "prompts/v14/domain_worldview.md": "W",
+                     "prompts/v14/domain_character.md": "CH",
+                     "prompts/v14/domain_storyline.md": "SL"},
+            "target": {"prompts/storybuilding_system.md": "S\nS2",
+                       "prompts/storybuilding_review.md": "r",
+                       "prompts/v14/orchestrator_system.md": "ORCH",
+                       "prompts/v14/common_rules.md": "C",
+                       "prompts/v14/domain_worldview.md": "W",
+                       "prompts/v14/domain_character.md": "CH",
+                       "prompts/v14/domain_storyline.md": "SL"},
+        }
+        skills = {"base": [{"path": "skills/storybuilding/draft"}],
+                  "target": [{"path": "skills/v14/worldview-build"}]}
+        stacks = {"base": {"storybuilding": []}, "target": {"orchestrator": []}}
+
+        diffs = self._run(prompts, skills, stacks, target_specs=(self.V14_SPECS, self._V14_LAYOUT))
+
+        # 旧专家整体退役（whole_agent + prompt 全删）
+        self.assertEqual(diffs["storybuilding"]["whole_agent"], "removed")
+        self.assertEqual(diffs["storybuilding"]["prompt"]["summary"], {"added": 0, "removed": 2})
+        # 新架构 agent 整体登场（prompt 全插入）
+        for name in ("orchestrator", "worldview", "character", "storyline"):
+            self.assertEqual(diffs[name]["whole_agent"], "added", name)
+        self.assertEqual(diffs["orchestrator"]["prompt"]["summary"], {"added": 1, "removed": 0})
+        # 领域 prompt 是拼接体（"C\n\n---\n\nW" → 5 行全插入）
+        self.assertEqual(diffs["worldview"]["prompt"]["summary"], {"added": 5, "removed": 0})
+        # reviewer 两代都在 → 无 whole_agent，无变化则不出现
+        self.assertNotIn("storybuilding_review", diffs)
 
 
 class BuildUpgradeDiffTest(unittest.TestCase):

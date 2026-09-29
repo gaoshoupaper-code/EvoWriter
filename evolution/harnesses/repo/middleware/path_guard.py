@@ -14,14 +14,16 @@
 允许的写入路径白名单：
   - /character/<name>.md   — 角色档案文件
   - /outline.md            — 大纲文件
-  - /storyline.md          — 线纲索引（故事核心+故事线一览表）
-  - /storyline/<name>.md   — 故事线详情（每条一个文件）
+  - /storyline.md          — 故事线主产物（单文件：故事核心 + 一线一区块）
+  - /storyline/<name>.md   — 故事线详情（旧格式兼容；新产物不再写入此目录）
   - /worldview.md          — 世界观文件
   - /novel.md              — 小说正文文件
   - /chapter/<name>.md     — 正文章节文件
   - /review/<name>.md      — 审查报告文件（正文/细纲/故事构建审查产物）
   - /detail/<name>.md      — 细纲文件
   - /state_log.md          — 状态日志文件
+  （timeline.md / storyline_graph.md 为程序派生产物，由后端直写磁盘，
+   不经 agent 写入链路，不在白名单内）
 
 使用方式：
   在构建代理时传入 workspace_path（工作区根目录）和可选的额外白名单路径。
@@ -47,8 +49,8 @@ _FILESYSTEM_WRITE_TOOLS = {"write_file", "edit_file"}
 WRITING_WRITE_PATTERNS = (
     re.compile(r"^/character/[^/]+\.md$"),     # 角色档案
     re.compile(r"^/outline\.md$"),              # 总纲（锚点）
-    re.compile(r"^/storyline\.md$"),            # 线纲索引（故事核心+一览表）
-    re.compile(r"^/storyline/[^/]+\.md$"),      # 故事线详情（每条一个文件）
+    re.compile(r"^/storyline\.md$"),            # 故事线主产物（单文件：故事核心+线区块）
+    re.compile(r"^/storyline/[^/]+\.md$"),      # 故事线详情（旧格式兼容）
     re.compile(r"^/worldview\.md$"),            # 世界观
     re.compile(r"^/novel\.md$"),                # 小说正文
     re.compile(r"^/chapter/[^/]+\.md$"),        # 正文章节

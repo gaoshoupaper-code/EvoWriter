@@ -1,10 +1,12 @@
-"""benchmark 配比达成核对测试（REQ-20260922-162823 FR-005 / DEC-011/013）。"""
+"""benchmark 配比达成核对测试（REQ-20260930-002231 FR-012：单文件区块口径）。
+
+承接 REQ-20260922-162823 FR-005 / DEC-011/013 的三态语义：
+  skipped_minimal（demand 无配比）/ checked（区块头类型分布）/ checked_by_total（兜底总数）。
+"""
 
 from __future__ import annotations
 
-import os
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -26,29 +28,33 @@ _DEMAND_MINIMAL = """# 创作需求文档
 - **篇幅档位**：21-50章
 """
 
-_DELIVERIES_INDEX_OK = {
-    "主线 storyline": (
-        "### storyline.md\n\n## 故事线一览表\n\n"
-        "| ID | 名称 | 类型 | 状态 |\n|----|------|------|------|\n"
-        "| S01 | 主线一 | 主线 | 活跃 |\n| S02 | 主线二 | 主线 | 活跃 |\n"
-        "| S03 | 主线三 | 主线 | 活跃 |\n| S04 | 主线四 | 主线 | 活跃 |\n"
-        "| S05 | 主线五 | 主线 | 活跃 |\n| S06 | 支线一 | 支线 | 活跃 |\n"
-        "| S07 | 角色线一 | 角色线 | 活跃 |\n"
-    ),
+
+def _storyline_md(names: list[tuple[str, str]]) -> str:
+    """构造新格式 storyline.md 交付文本（### storyline.md 拼接头 + 线区块）。"""
+    blocks = "\n\n".join(
+        f"## {name} · {type_} · 活跃\n- 主要地点：某处\n- 全局走向：略\n\n"
+        f"| 时序 | 事件 | 类型 | 阶段 | 地点 | 角色 | 交汇 | 描述 |\n"
+        f"|------|------|------|------|------|------|------|------|\n"
+        f"| T1 | 事件一 | 冲突 | 发展 | 某处 | 某人 | | 略 |"
+        for name, type_ in names
+    )
+    return f"### storyline.md\n\n# 故事核心\n\n- Logline：略\n\n{blocks}\n"
+
+
+_DELIVERIES_OK = {
+    "主线 storyline": _storyline_md([
+        ("主线一", "主线"), ("主线二", "主线"), ("主线三", "主线"),
+        ("主线四", "主线"), ("主线五", "主线"),
+        ("支线一", "支线"), ("角色线一", "角色线"),
+    ]),
 }
 
-_DELIVERIES_INDEX_SHORT = {
-    "主线 storyline": (
-        "### storyline.md\n\n## 故事线一览表\n\n"
-        "| ID | 名称 | 类型 | 状态 |\n|----|------|------|------|\n"
-        "| S01 | 主线一 | 主线 | 活跃 |\n"
-    ),
+_DELIVERIES_SHORT = {
+    "主线 storyline": _storyline_md([("主线一", "主线")]),
 }
 
-_DELIVERIES_NO_INDEX = {
-    "主线 storyline": (
-        "### storyline/S01-主线.md\n\n内容略\n\n### storyline/S02-支线.md\n\n内容略\n"
-    ),
+_DELIVERIES_NO_BLOCKS = {
+    "主线 storyline": "### storyline.md\n\n# 故事核心\n\n- Logline：略\n（无任何线区块）",
 }
 
 
@@ -59,8 +65,8 @@ class QuotaCheckTest(unittest.TestCase):
         self.scorer = scorer
 
     def test_full_achieved(self) -> None:
-        """full 档达标：一览表 5主1支1角 → passed=True（FR-005）。"""
-        rule = self.scorer.check_quota_attainment(_DEMAND_FULL, _DELIVERIES_INDEX_OK)
+        """full 档达标：区块头 5主1支1角 → passed=True。"""
+        rule = self.scorer.check_quota_attainment(_DEMAND_FULL, _DELIVERIES_OK)
         self.assertEqual(rule["status"], "checked")
         self.assertTrue(rule["passed"])
         self.assertEqual(rule["target"]["主线"], 5)
@@ -69,39 +75,28 @@ class QuotaCheckTest(unittest.TestCase):
 
     def test_full_gap_reported(self) -> None:
         """未达标给差距明细。"""
-        rule = self.scorer.check_quota_attainment(_DEMAND_FULL, _DELIVERIES_INDEX_SHORT)
+        rule = self.scorer.check_quota_attainment(_DEMAND_FULL, _DELIVERIES_SHORT)
         self.assertFalse(rule["passed"])
         self.assertEqual(rule["gaps"], {"主线": 4, "支线": 1, "角色线": 1})
 
     def test_minimal_skipped(self) -> None:
         """minimal 档（配比留白）跳过核对（DEC-013）。"""
-        rule = self.scorer.check_quota_attainment(_DEMAND_MINIMAL, _DELIVERIES_INDEX_OK)
+        rule = self.scorer.check_quota_attainment(_DEMAND_MINIMAL, _DELIVERIES_OK)
         self.assertEqual(rule["status"], "skipped_minimal")
 
-    def test_index_missing_fallback_to_total(self) -> None:
-        """一览表不可解析时按 storyline 文件标题总数兜底。"""
-        rule = self.scorer.check_quota_attainment(_DEMAND_FULL, _DELIVERIES_NO_INDEX)
+    def test_no_blocks_fallback_to_total(self) -> None:
+        """无区块头时按总数口径兜底（count=0，真实反映解析不出任何线）。"""
+        rule = self.scorer.check_quota_attainment(_DEMAND_FULL, _DELIVERIES_NO_BLOCKS)
         self.assertEqual(rule["status"], "checked_by_total")
         self.assertFalse(rule["passed"])
-        self.assertEqual(rule["actual_total"], 2)
-
-    def test_fallback_handles_leading_slash_headers(self) -> None:
-        """拼接标题带前导斜杠（### /storyline/S01-…）时兜底计数不归零（pilot 修复）。"""
-        deliveries = {
-            "主线 storyline": (
-                "### /storyline/S01-主线.md\n\n内容\n\n### /storyline/S02-支线.md\n\n内容\n"
-            ),
-        }
-        rule = self.scorer.check_quota_attainment(_DEMAND_FULL, deliveries)
-        self.assertEqual(rule["status"], "checked_by_total")
-        self.assertEqual(rule["actual_total"], 2)
+        self.assertEqual(rule["actual_total"], 0)
 
     def test_score_case_includes_rule_quota(self) -> None:
-        """score_case 集成：结果含 rule_quota 字段（FR-005 ③，judge 全 mock）。"""
+        """score_case 集成：结果含 rule_quota 字段（judge 全 mock）。"""
         fake = {"score": 4, "达标": ["…"], "不足": []}
         with patch.object(self.scorer, "_score_dimension", return_value=fake):
             result = self.scorer.score_case(
-                _DEMAND_FULL, dict(_DELIVERIES_INDEX_OK, **{
+                _DEMAND_FULL, dict(_DELIVERIES_OK, **{
                     "人物 character": "c" * 300, "世界观 worldview": "w" * 300}),
             )
         self.assertIn("rule_quota", result)

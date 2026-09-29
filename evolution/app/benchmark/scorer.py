@@ -178,21 +178,23 @@ def load_outline_delivery_index(trace_id: str) -> list[dict[str, Any]]:
 def check_quota_attainment(
     demand_md: str, deliveries: dict[str, str],
 ) -> dict[str, Any]:
-    """规则项「配比达成核对」（REQ-20260922-162823 FR-005，代码判不走 LLM）。
+    """规则项「配比达成核对」（REQ-20260930-002231 FR-012，代码判不走 LLM）。
 
-    判定器 = contracts.storybuilding_quota（与两实验 harness 版本运行侧同一实现，
-    DEC-011）。三态：
+    判定器 = contracts.storybuilding_quota（与 harness 运行侧同一实现，「同一判定器」
+    原则沿用 DEC-011）。三态：
       - demand 无配比（minimal 档留白）→ status=skipped_minimal（DEC-013 软终止档）
-      - 配比可解析 → 按一览表类型分布核对，passed=各类型达标，附 target/actual/gaps
-      - 一览表不可解析 → 按 storyline 文件标题计数兜底（总数口径，无类型分布）
-    实际计数口径：deliveries 为三件套拼接文本，一览表行在「主线 storyline」组内，
-    storyline/S{XX} 详情文件以「### storyline/S{XX}-*.md」标题行出现。
+      - 配比可解析 → 按 storyline.md 线区块头类型分布核对，
+        passed=各类型达标，附 target/actual/gaps
+      - 区块头不可解析 → 按区块头总数兜底（总数口径，无类型分布；
+        区块头缺失时计数为 0，真实反映「解析不出任何线」）
+    实际计数口径：deliveries 为产物拼接文本，线区块头（``## {线名} · {类型} · {状态}``）
+    在「主线 storyline」组内（新格式单文件 storyline.md）。
     """
     from contracts.storybuilding_quota import (
-        LINE_TYPES,
+        count_line_block_headers,
         evaluate_quota,
         parse_demand_quota,
-        parse_storyline_index,
+        parse_storyline_blocks,
     )
 
     target = parse_demand_quota(demand_md)
@@ -200,7 +202,7 @@ def check_quota_attainment(
         return {"key": "rule_quota", "status": "skipped_minimal"}
 
     storyline_content = deliveries.get(_GROUP_STORYLINE[0], "")
-    by_type = parse_storyline_index(storyline_content)
+    by_type = parse_storyline_blocks(storyline_content)
     if by_type is not None:
         status = evaluate_quota(target, by_type)
         return {
@@ -212,13 +214,8 @@ def check_quota_attainment(
             "gaps": status.gaps,
             "summary": status.summary_line(),
         }
-    # 兜底：数拼接文本里的 storyline/S{XX} 详情文件标题（总数口径）。
-    # 拼接头格式为「### /storyline/S01-xxx.md」（logical_key 带前导斜杠），正则容错。
-    file_count = len(re.findall(r"(?m)^###\s*/?storyline/S\d{2}", storyline_content))
-    actual_total = sum(
-        len(re.findall(rf"(?m)^\|\s*S\d{{2}}\s*\|[^|]*\|\s*{t}", storyline_content))
-        for t in LINE_TYPES
-    ) or file_count
+    # 兜底：数线区块头总数（与类型分布同一正则——分布不可解析时通常为 0）。
+    actual_total = count_line_block_headers(storyline_content)
     target_total = target.total()
     return {
         "key": "rule_quota",
@@ -227,7 +224,7 @@ def check_quota_attainment(
         "target": target.as_dict(),
         "actual_total": actual_total,
         "gaps": {"总数": target_total - actual_total} if actual_total < target_total else {},
-        "summary": f"目标总额 {target_total}；实际 {actual_total}（一览表不可解析，按总数口径）",
+        "summary": f"目标总额 {target_total}；实际 {actual_total}（区块头不可解析，按总数口径）",
     }
 
 

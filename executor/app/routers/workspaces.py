@@ -160,7 +160,7 @@ def _classify_changes(changes, workspace_path: Path) -> set[str]:
         top = parts[0]
         if top in ("outline.md", "evaluation.md"):
             categories.add("outline")
-        elif top == "storyline.md" or (len(parts) > 1 and parts[0] == "storyline"):
+        elif top in ("storyline.md", "timeline.md") or (len(parts) > 1 and parts[0] == "storyline"):
             categories.add("storyline")
         elif top == "worldview.md":
             categories.add("worldview")
@@ -304,13 +304,15 @@ def get_workspace_storyline_graph(workspace_id: str, user: CurrentUser = Depends
             content.storylines = [
                 StorylineGraphStoryline(
                     id=sl.id, name=sl.name, type=sl.type, status=sl.status,
-                    direction=sl.direction, key_events=sl.key_events,
+                    direction=sl.direction, locations=sl.locations, key_events=sl.key_events,
                 ) for sl in data.storylines
             ]
             content.events = {
                 eid: StorylineGraphEvent(
-                    id=ev.id, name=ev.name, type=ev.type,
-                    storylines=list(ev.storylines), group=ev.group, doc_order=ev.doc_order,
+                    id=ev.id, name=ev.name, type=ev.type, stage=ev.stage,
+                    location=ev.location, characters=ev.characters,
+                    storylines=list(ev.storylines), t_num=ev.t_num,
+                    group=ev.group, doc_order=ev.doc_order,
                 ) for eid, ev in data.events.items()
             }
             content.t_map = dict(data.t_map)

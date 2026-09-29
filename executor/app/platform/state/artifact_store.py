@@ -42,6 +42,31 @@ def _read_text(path: Path) -> str:
         return path.read_text(encoding="gb18030", errors="replace")
 
 
+# 线区块头（与 contracts._BLOCK_HEADER_RE 同构）：## {线名} · {类型} · {状态}
+_LINE_BLOCK_HEADER = re.compile(
+    r"(?m)^##\s+([^#·•\n]+?)\s*[·•]\s*\**(主线|支线|角色线|暗线)\**(?:\s*[·•]|\s*$)"
+)
+
+
+def _has_line_blocks(markdown: str) -> bool:
+    """storyline.md 是否为新格式（含至少一个线区块头）。"""
+    return bool(markdown) and _LINE_BLOCK_HEADER.search(markdown) is not None
+
+
+def _split_line_blocks(markdown: str) -> list[tuple[str, str]]:
+    """把 storyline.md 按线区块拆分为 [(线名, 区块文本)]。
+
+    第一个区块头之前的内容（故事核心）不计入返回；区块文本从区块头行起
+    到下一个区块头（或文件尾）为止。
+    """
+    matches = list(_LINE_BLOCK_HEADER.finditer(markdown))
+    result: list[tuple[str, str]] = []
+    for i, m in enumerate(matches):
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(markdown)
+        result.append((m.group(1).strip().replace("**", ""), markdown[m.start():end].strip()))
+    return result
+
+
 class WritingArtifactStore:
     """写作产物文件读写（owner 限定的 workspace 目录）。
 
@@ -78,22 +103,42 @@ class WritingArtifactStore:
         return WorkspaceOutlineContent(workspace_id=workspace_id, markdown=markdown)
 
     def read_workspace_storyline(self, owner_id: str, workspace_id: str) -> WorkspaceStorylineContent | None:
+        """读故事线产物（REQ-20260930-002231 FR-013/014：双格式）。
+
+        v2（新格式）：storyline.md 含线区块头 → markdown 承载全文，entries 按区块拆分。
+        legacy（旧格式）：storyline/ 目录存在且单文件不含区块 → 维持旧读取行为。
+        两者并存时以单文件区块判定为准（新格式优先）。
+        """
         try:
             ws_path = self._require_ws_path(owner_id, workspace_id)
         except (KeyError, FileNotFoundError):
             return None
         index_path = ws_path / "storyline.md"
         index_markdown = _read_text(index_path) if index_path.exists() else ""
-        entries: list[StorylineEntry] = []
         storyline_dir = ws_path / "storyline"
+
+        if _has_line_blocks(index_markdown) or not storyline_dir.exists():
+            # v2：单文件即全部产物；entries 按线区块拆分（title=线名）。
+            # storyline/ 目录不存在时（新任务尚无产物 / 新格式）也归 v2。
+            entries = [
+                StorylineEntry(filename="storyline.md", title=title, markdown=block)
+                for title, block in _split_line_blocks(index_markdown)
+            ]
+            return WorkspaceStorylineContent(
+                workspace_id=workspace_id, format="v2", markdown=index_markdown,
+                index_markdown=index_markdown, entries=entries, file_count=len(entries),
+            )
+
+        # legacy：旧多文件格式（storyline/ 目录）——维持旧行为（FR-013 降级展示）
+        entries = []
         if storyline_dir.exists():
             for ap in sorted(storyline_dir.glob("*.md"), key=lambda p: p.name):
                 content = _read_text(ap).strip()
                 if content:
                     entries.append(StorylineEntry(filename=ap.name, title=ap.stem, markdown=content))
         return WorkspaceStorylineContent(
-            workspace_id=workspace_id, index_markdown=index_markdown,
-            entries=entries, file_count=len(entries),
+            workspace_id=workspace_id, format="legacy", markdown=index_markdown,
+            index_markdown=index_markdown, entries=entries, file_count=len(entries),
         )
 
     def read_workspace_storyline_graph(self, owner_id: str, workspace_id: str) -> WorkspaceStorylineGraphContent | None:

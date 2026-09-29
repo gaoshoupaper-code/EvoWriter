@@ -55,9 +55,18 @@ class StorylineEntry(BaseModel):
 
 
 class WorkspaceStorylineContent(BaseModel):
+    """故事线产物内容（REQ-20260930-002231 FR-014：双格式演进）。
+
+    format="v2"：storyline.md 单文件（故事核心 + 线区块）——markdown 承载全文，
+    entries 按线区块拆分（title=线名），index_markdown 同 markdown（兼容旧前端字段）。
+    format="legacy"：旧多文件格式（storyline/ 目录）——维持旧读取行为（FR-013 降级）。
+    """
+
     workspace_id: str
-    index_markdown: str
-    entries: list[StorylineEntry]
+    format: str = "v2"
+    markdown: str = ""
+    index_markdown: str = ""
+    entries: list[StorylineEntry] = Field(default_factory=list)
     file_count: int = 0
 
 
@@ -69,6 +78,7 @@ class StorylineGraphStoryline(BaseModel):
     type: str = ""
     status: str = ""
     direction: str = ""
+    locations: str = ""
     key_events: list[str] = Field(default_factory=list)
 
 
@@ -78,7 +88,11 @@ class StorylineGraphEvent(BaseModel):
     id: str
     name: str = ""
     type: str = ""
+    stage: str = ""
+    location: str = ""
+    characters: str = ""
     storylines: list[str] = Field(default_factory=list)
+    t_num: float = 0.0
     group: str = ""
     doc_order: int = 0
 

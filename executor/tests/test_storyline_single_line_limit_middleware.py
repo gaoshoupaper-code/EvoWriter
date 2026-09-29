@@ -17,11 +17,23 @@ from harness_current.middleware.storyline_single_line_limit import (
     StorylineSingleLineLimitMiddleware,
 )
 
+_HEADER_MAIN = "## 复仇线 · 主线 · 活跃"
+_HEADER_SUB = "## 神域线 · 支线 · 活跃"
 
-def _request(tool_name: str, file_path: str, call_id: str = "call_1") -> SimpleNamespace:
-    """构造模拟 ToolCallRequest：tool_call 为 dict（与真实请求结构一致）。"""
+
+def _request_write(file_path: str, content: str, call_id: str = "c1") -> SimpleNamespace:
     return SimpleNamespace(
-        tool_call={"name": tool_name, "args": {"file_path": file_path}, "id": call_id},
+        tool_call={"name": "write_file", "args": {"file_path": file_path, "content": content}, "id": call_id},
+    )
+
+
+def _request_edit(file_path: str, old: str, new: str, call_id: str = "c1") -> SimpleNamespace:
+    return SimpleNamespace(
+        tool_call={
+            "name": "edit_file",
+            "args": {"file_path": file_path, "old_string": old, "new_string": new},
+            "id": call_id,
+        },
     )
 
 
@@ -36,153 +48,213 @@ class _CallTracker:
         return "passed-through"
 
 
-class StorylineSingleLineLimitMiddlewareTest(unittest.TestCase):
-    def test_first_new_storyline_passes(self) -> None:
+def _seed_storyline(workspace: Path, headers: int = 1) -> None:
+    """预置 storyline.md（故事核心 + N 个线区块骨架）。"""
+    blocks = "\n\n".join(
+        [f"{_HEADER_MAIN if i == 0 else _HEADER_SUB}\n- 主要地点：某处\n- 全局走向：略"
+         for i in range(headers)]
+    )
+    (workspace / "storyline.md").write_text(
+        f"# 故事核心\n\n- Logline：略\n\n{blocks}\n", encoding="utf-8",
+    )
+
+
+class SingleLineLimitWriteTest(unittest.TestCase):
+    """write_file 整文件写入：按磁盘旧内容 vs 新内容的区块头数差计净增。"""
+
+    def test_initial_write_with_one_block_passes(self) -> None:
+        """初构：storyline.md 不存在，写入含 1 个主线区块 → 净增 1，放行计数 1。"""
         with tempfile.TemporaryDirectory() as tmpdir:
             mw = StorylineSingleLineLimitMiddleware(Path(tmpdir), max_new_lines=1)
             tracker = _CallTracker()
 
-            result = mw.wrap_tool_call(_request("write_file", "/storyline/S02-主线.md"), tracker)
+            content = f"# 故事核心\n\n- Logline：略\n\n{_HEADER_MAIN}\n- 主要地点：青云宗\n"
+            result = mw.wrap_tool_call(_request_write("/storyline.md", content), tracker)
 
             self.assertEqual(result, "passed-through")
             self.assertEqual(tracker.calls, 1)
             self.assertEqual(mw._new_line_count, 1)
 
-    def test_second_new_storyline_is_blocked(self) -> None:
+    def test_write_two_new_blocks_blocked(self) -> None:
+        """单次写入一次新增 2 个区块 → 超上限（1）拦截。"""
         with tempfile.TemporaryDirectory() as tmpdir:
             mw = StorylineSingleLineLimitMiddleware(Path(tmpdir), max_new_lines=1)
             tracker = _CallTracker()
 
-            mw.wrap_tool_call(_request("write_file", "/storyline/S02-主线.md", "c1"), tracker)
-            # 第 2 条不同文件 → 新增 → 超限拦截，handler 不应被调用
-            result = mw.wrap_tool_call(_request("write_file", "/storyline/S03-支线.md", "c2"), tracker)
+            content = f"# 故事核心\n\n{_HEADER_MAIN}\n\n{_HEADER_SUB}\n"
+            result = mw.wrap_tool_call(_request_write("/storyline.md", content), tracker)
 
             self.assertIsInstance(result, ToolMessage)
             self.assertIn("上限", result.content)
-            self.assertEqual(result.name, "write_file")
-            self.assertEqual(tracker.calls, 1)
-            self.assertEqual(mw._new_line_count, 2)
+            self.assertEqual(tracker.calls, 0)
 
-    def test_write_to_existing_storyline_passes_without_count(self) -> None:
+    def test_rewrite_with_same_block_count_passes_without_count(self) -> None:
+        """整文件重写但区块数不变（修订既有内容）→ 放行且不占额度。"""
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = Path(tmpdir)
-            (workspace / "storyline").mkdir()
-            (workspace / "storyline" / "S02-主线.md").write_text("已存在", encoding="utf-8")
-
+            _seed_storyline(workspace, headers=1)
             mw = StorylineSingleLineLimitMiddleware(workspace, max_new_lines=1)
             tracker = _CallTracker()
 
-            result = mw.wrap_tool_call(_request("write_file", "/storyline/S02-主线.md"), tracker)
+            content = f"# 故事核心\n\n- Logline：改写后的核心\n\n{_HEADER_MAIN}\n- 主要地点：另一处\n"
+            result = mw.wrap_tool_call(_request_write("/storyline.md", content), tracker)
 
             self.assertEqual(result, "passed-through")
             self.assertEqual(mw._new_line_count, 0)
 
-    def test_edit_file_passes(self) -> None:
+    def test_second_incremental_write_blocked(self) -> None:
+        """增量：磁盘 1 区块 → 新内容 2 区块（第 1 次放行）；再 2→3（第 2 次拦截）。"""
         with tempfile.TemporaryDirectory() as tmpdir:
-            mw = StorylineSingleLineLimitMiddleware(Path(tmpdir), max_new_lines=1)
+            workspace = Path(tmpdir)
+            _seed_storyline(workspace, headers=1)
+            mw = StorylineSingleLineLimitMiddleware(workspace, max_new_lines=1)
             tracker = _CallTracker()
 
-            result = mw.wrap_tool_call(_request("edit_file", "/storyline/S02-主线.md"), tracker)
-
-            self.assertEqual(result, "passed-through")
-            self.assertEqual(mw._new_line_count, 0)
-
-    def test_non_storyline_write_passes(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mw = StorylineSingleLineLimitMiddleware(Path(tmpdir), max_new_lines=1)
-            tracker = _CallTracker()
-
-            result = mw.wrap_tool_call(_request("write_file", "/worldview.md"), tracker)
-
-            self.assertEqual(result, "passed-through")
-            self.assertEqual(mw._new_line_count, 0)
-
-    def test_non_write_file_tool_passes(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mw = StorylineSingleLineLimitMiddleware(Path(tmpdir), max_new_lines=1)
-            tracker = _CallTracker()
-
-            result = mw.wrap_tool_call(_request("read_file", "/storyline/S02-主线.md"), tracker)
-
-            self.assertEqual(result, "passed-through")
-            self.assertEqual(mw._new_line_count, 0)
-
-    def test_timeline_md_not_counted_as_storyline(self) -> None:
-        """timeline.md 是全局时间线表，不是故事线——写它不应计入单线计数。
-
-        复现初构真实场景：agent 先写主线 S01-{名}.md，再写 timeline.md，
-        两者都应放行，且计数仍为 1（timeline 不占新增故事线额度）。
-        见需求基准 D3/D4。
-        """
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mw = StorylineSingleLineLimitMiddleware(Path(tmpdir), max_new_lines=1)
-            tracker = _CallTracker()
-
-            # 写主线（第 1 条故事线）→ 计数 1，放行
-            r1 = mw.wrap_tool_call(_request("write_file", "/storyline/S01-成长主线.md"), tracker)
+            content2 = f"# 故事核心\n\n{_HEADER_MAIN}\n\n{_HEADER_SUB}\n"
+            r1 = mw.wrap_tool_call(_request_write("/storyline.md", content2, "c1"), tracker)
             self.assertEqual(r1, "passed-through")
             self.assertEqual(mw._new_line_count, 1)
 
-            # 写 timeline.md → 非故事线，不计入，放行
-            r2 = mw.wrap_tool_call(_request("write_file", "/storyline/timeline.md"), tracker)
-            self.assertEqual(r2, "passed-through")
-            self.assertEqual(mw._new_line_count, 1)  # 计数不增长
+            _seed_storyline(workspace, headers=2)  # 模拟第 1 次写入已落盘
+            content3 = f"# 故事核心\n\n{_HEADER_MAIN}\n\n{_HEADER_SUB}\n\n{_HEADER_SUB}\n"
+            r2 = mw.wrap_tool_call(_request_write("/storyline.md", content3, "c2"), tracker)
+            self.assertIsInstance(r2, ToolMessage)
+            self.assertEqual(tracker.calls, 1)
 
-    def test_before_agent_resets_count_for_new_invocation(self) -> None:
-        """同一实例多调用周期：第 1 周期达上限被拦，before_agent 重置后第 2 周期重新放行。
 
-        覆盖真实装配盲区——子代理 graph 一次编译、会话内多次 task 复用同一中间件实例，
-        计数须按「每次子代理调用」重置，而非跨调用累积（这正是线上 bug 的根因）。
-        """
+class SingleLineLimitEditTest(unittest.TestCase):
+    """edit_file：按 new_string 与 old_string 的区块头数差计净增。"""
+
+    def test_edit_appending_new_block_passes(self) -> None:
+        """edit 在文末追加 1 个新区块 → 净增 1，放行计数 1。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            _seed_storyline(workspace, headers=1)
+            mw = StorylineSingleLineLimitMiddleware(workspace, max_new_lines=1)
+            tracker = _CallTracker()
+
+            old = "- 主要地点：某处\n- 全局走向：略"
+            new = old + f"\n\n{_HEADER_SUB}\n- 主要地点：九天神域\n- 全局走向：略"
+            result = mw.wrap_tool_call(_request_edit("/storyline.md", old, new), tracker)
+
+            self.assertEqual(result, "passed-through")
+            self.assertEqual(mw._new_line_count, 1)
+
+    def test_edit_modification_without_new_block_passes(self) -> None:
+        """edit 只改字段文本（无区块头变化）→ 放行不计数。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            _seed_storyline(workspace, headers=1)
+            mw = StorylineSingleLineLimitMiddleware(workspace, max_new_lines=1)
+            tracker = _CallTracker()
+
+            result = mw.wrap_tool_call(
+                _request_edit("/storyline.md", "- 全局走向：略", "- 全局走向：改写"),
+                tracker,
+            )
+            self.assertEqual(result, "passed-through")
+            self.assertEqual(mw._new_line_count, 0)
+
+    def test_edit_two_new_blocks_blocked(self) -> None:
+        """edit 一次塞进 2 个新区块 → 超上限拦截。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            _seed_storyline(workspace, headers=1)
+            mw = StorylineSingleLineLimitMiddleware(workspace, max_new_lines=1)
+            tracker = _CallTracker()
+
+            old = "- 全局走向：略"
+            new = (f"{_HEADER_MAIN}\n- 略\n\n{_HEADER_SUB}\n- 略\n\n- 全局走向：略")
+            result = mw.wrap_tool_call(_request_edit("/storyline.md", old, new), tracker)
+
+            self.assertIsInstance(result, ToolMessage)
+            self.assertEqual(tracker.calls, 0)
+
+
+class SingleLineLimitScopeTest(unittest.TestCase):
+    def test_non_storyline_file_passes(self) -> None:
+        """写其他文件（worldview/character 等）不受约束。"""
         with tempfile.TemporaryDirectory() as tmpdir:
             mw = StorylineSingleLineLimitMiddleware(Path(tmpdir), max_new_lines=1)
             tracker = _CallTracker()
 
-            # 调用周期 1（storybuilding 被父 agent task 委托一次）
-            mw.before_agent(state={}, runtime=None)
-            mw.wrap_tool_call(_request("write_file", "/storyline/S01-主线.md"), tracker)
-            blocked = mw.wrap_tool_call(_request("write_file", "/storyline/S02-支线.md"), tracker)
-            self.assertIsInstance(blocked, ToolMessage)
-            self.assertEqual(mw._new_line_count, 2)
-            self.assertEqual(tracker.calls, 1)  # 仅第 1 次真正放行到 handler
-
-            # 调用周期 2（再次委托）：before_agent 已重置，重新享有额度
-            mw.before_agent(state={}, runtime=None)
-            self.assertEqual(mw._new_line_count, 0)
-            result = mw.wrap_tool_call(_request("write_file", "/storyline/S03-支线.md"), tracker)
+            result = mw.wrap_tool_call(
+                _request_write("/worldview.md", f"# 世界观\n\n{_HEADER_MAIN}\n"), tracker,
+            )
             self.assertEqual(result, "passed-through")
-            self.assertEqual(mw._new_line_count, 1)
-            self.assertEqual(tracker.calls, 2)
+            self.assertEqual(mw._new_line_count, 0)
 
-
-class _AsyncCallTracker:
-    """异步 handler 记录器，用于断言 awrap_tool_call 的放行/拦截。"""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    async def __call__(self, request: object) -> str:
-        self.calls += 1
-        return "passed-through"
-
-
-class StorylineSingleLineLimitMiddlewareAsyncTest(unittest.IsolatedAsyncioTestCase):
-    async def test_abefore_agent_resets_count_for_new_invocation(self) -> None:
-        """异步路径（generate_stream → ainvoke → abefore_agent）：同样按调用周期重置。"""
+    def test_old_storyline_directory_write_passes(self) -> None:
+        """旧格式路径 storyline/S01-x.md 已不受约束（新格式下该目录不存在）。"""
         with tempfile.TemporaryDirectory() as tmpdir:
             mw = StorylineSingleLineLimitMiddleware(Path(tmpdir), max_new_lines=1)
-            tracker = _AsyncCallTracker()
+            tracker = _CallTracker()
 
-            await mw.abefore_agent(state={}, runtime=None)
-            await mw.awrap_tool_call(_request("write_file", "/storyline/S01.md"), tracker)
-            blocked = await mw.awrap_tool_call(_request("write_file", "/storyline/S02.md"), tracker)
+            result = mw.wrap_tool_call(
+                _request_write("/storyline/S01-旧格式.md", "x"), tracker,
+            )
+            self.assertEqual(result, "passed-through")
+            self.assertEqual(mw._new_line_count, 0)
+
+    def test_read_tool_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mw = StorylineSingleLineLimitMiddleware(Path(tmpdir), max_new_lines=1)
+            tracker = _CallTracker()
+
+            request = SimpleNamespace(
+                tool_call={"name": "read_file", "args": {"file_path": "/storyline.md"}, "id": "c1"},
+            )
+            result = mw.wrap_tool_call(request, tracker)
+            self.assertEqual(result, "passed-through")
+            self.assertEqual(mw._new_line_count, 0)
+
+    def test_before_agent_resets_count(self) -> None:
+        """同一实例多调用周期：before_agent 重置后重新享有额度。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workspace = Path(tmpdir)
+            _seed_storyline(workspace, headers=1)
+            mw = StorylineSingleLineLimitMiddleware(workspace, max_new_lines=1)
+            tracker = _CallTracker()
+
+            mw.before_agent(state={}, runtime=None)
+            old = "- 全局走向：略"
+            mw.wrap_tool_call(
+                _request_edit("/storyline.md", old, old + f"\n\n{_HEADER_SUB}\n- 略"), tracker,
+            )
+            _seed_storyline(workspace, headers=2)
+            blocked = mw.wrap_tool_call(
+                _request_edit("/storyline.md", old, old + f"\n\n{_HEADER_SUB}\n- 略2"), tracker,
+            )
             self.assertIsInstance(blocked, ToolMessage)
 
-            await mw.abefore_agent(state={}, runtime=None)
+            mw.before_agent(state={}, runtime=None)
             self.assertEqual(mw._new_line_count, 0)
-            result = await mw.awrap_tool_call(_request("write_file", "/storyline/S03.md"), tracker)
+            _seed_storyline(workspace, headers=2)
+            result = mw.wrap_tool_call(
+                _request_edit("/storyline.md", old, old + f"\n\n{_HEADER_SUB}\n- 略3"), tracker,
+            )
             self.assertEqual(result, "passed-through")
-            self.assertEqual(tracker.calls, 2)
+
+
+class SingleLineLimitAsyncTest(unittest.IsolatedAsyncioTestCase):
+    async def test_awrap_blocks_two_new_blocks(self) -> None:
+        """异步路径同样按区块净增拦截。"""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mw = StorylineSingleLineLimitMiddleware(Path(tmpdir), max_new_lines=1)
+
+            class _AsyncTracker:
+                def __init__(self) -> None:
+                    self.calls = 0
+
+                async def __call__(self, request: object) -> str:
+                    self.calls += 1
+                    return "passed-through"
+
+            tracker = _AsyncTracker()
+            content = f"# 故事核心\n\n{_HEADER_MAIN}\n\n{_HEADER_SUB}\n"
+            result = await mw.awrap_tool_call(_request_write("/storyline.md", content), tracker)
+            self.assertIsInstance(result, ToolMessage)
+            self.assertEqual(tracker.calls, 0)
 
 
 if __name__ == "__main__":

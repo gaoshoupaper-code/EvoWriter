@@ -1,16 +1,18 @@
-"""故事构建目标配比契约（REQ-20260922-162823 FR-004，DEC-011）。
+"""故事构建目标配比契约（REQ-20260930-002231 FR-006，区块头计数口径）。
 
-双架构实验（单 Agent 连续增量版 / 多 Agent 版）与 benchmark 评分侧共用的
-配比解析与核对逻辑——唯一实现放 contracts，两实验版本不得各自实现，
-保证终止语义一致（DEC-011「同一判定器」）。
+storybuilding 运行侧导航（QuotaConvergenceMiddleware）与 benchmark 评分侧共用
+的配比解析与核对逻辑——唯一实现放 contracts，两侧不得各自实现，
+保证终止语义一致（「同一判定器」原则沿用 DEC-011）。
 
 数据口径（与 golden 评测集 / demand 模板对齐）：
   - demand 核心层字段：``- **目标配比**（主线 / 支线 / 角色线 / 暗线）：主线5 / 支线1 / 角色线1 / 暗线0``
   - 承诺点兜底：``结构约束：篇幅 21-50 章；配比主线5 / 支线1 / 角色线1 / 暗线0。``
-  - storyline.md 一览表行：``| S01 | 名称 | 主线 | 活跃 |``（ID | 名称 | 类型 | 状态）
+  - storyline.md 区块头（唯一手写产物，一线一区块）：
+    ``## {线名} · {类型} · {状态}``，类型 ∈ 主线/支线/角色线/暗线；
+    类型词允许 **粗体** 包裹（Agent 手写变体先例），状态段允许缺失。
 
 minimal 档 demand 配比留白（无上述字段）→ ``parse_demand_quota`` 返回 None，
-调用方按 DEC-013 走软终止（agent 自判收束），本模块不做任何猜测填充。
+调用方走软终止（agent 自判收束），本模块不做任何猜测填充。
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-# 四种故事线类型的中文键（与 storyline.md 一览表「类型」列、demand 配比字段一致）
+# 四种故事线类型的中文键（与 storyline.md 区块头「类型」段、demand 配比字段一致）
 LINE_MAIN = "主线"
 LINE_SUB = "支线"
 LINE_CHAR = "角色线"
@@ -36,18 +38,12 @@ _QUOTA_COMMITMENT_RE = re.compile(
     r"配比\s*主线\s*(\d+)\s*[/／、]\s*支线\s*(\d+)\s*[/／、]\s*角色线\s*(\d+)\s*[/／、]\s*暗线\s*(\d+)"
 )
 
-# storyline.md 一览表数据行：标准四列 | S01 | 名称 | 主线 | 活跃 |；
-# 宽表变体 | S01-名字 | 名字 | 主线 | 摘要… |（多 Agent 版实测出现过——
-# 第一列 S{XX} 后粘名字，列数更多，类型词可能被 **粗体** 包裹）。
-# 两种都按「第 1 或第 3 列命中类型词」计类型。
-_INDEX_ROW_RE = re.compile(
-    r"^\s*\|\s*S\d{2}(?:[-–][^|]*)?\s*\|[^|]*\|\s*\**(" + "|".join(LINE_TYPES) + r")\**\s*\|",
-    re.MULTILINE,
+# storyline.md 线区块头：## {线名} · {类型} · {状态}
+# 只认二级标题（##）——事件表行、列表行、三级标题（###）一律不匹配；
+# 分隔符宽容 · 与 •，类型词允许粗体包裹，状态段允许缺失（行尾收尾）。
+_BLOCK_HEADER_RE = re.compile(
+    r"(?m)^##\s+[^#\n]*?[·•]\s*\**(" + "|".join(LINE_TYPES) + r")\**(?:\s*[·•]|\s*$)"
 )
-
-# storyline 详情文件（虚拟路径或物理文件名）：storyline/S01-xxx.md / S02-yyy.md
-# （[sS] 兼容调用方传入小写化路径；文件名规范为大写 S）
-_STORYLINE_FILE_RE = re.compile(r"(?:^|/)[sS]\d{2}[^/]*\.md$")
 
 # 人物档案路径：character/{名}.md
 _CHARACTER_FILE_RE = re.compile(r"(?:^|/)character/[^/]+\.md$")
@@ -99,7 +95,7 @@ def parse_demand_quota(demand_md: str) -> QuotaTarget | None:
 
     解析顺序：核心层「目标配比」字段优先；缺失时用承诺点「结构约束」行的
     配比兜底。两者都不可用（minimal 档留白、生产表单无配比）返回 None，
-    调用方按 DEC-013 走软终止——本函数不抛异常、不猜测默认值。
+    调用方走软终止——本函数不抛异常、不猜测默认值。
     """
     m = _QUOTA_FIELD_RE.search(demand_md) or _QUOTA_COMMITMENT_RE.search(demand_md)
     if m is None:
@@ -114,26 +110,26 @@ def parse_demand_quota(demand_md: str) -> QuotaTarget | None:
     )
 
 
-def parse_storyline_index(storyline_md_content: str) -> dict[str, int] | None:
-    """解析 storyline.md 一览表，按类型计实际故事线条数。
+def parse_storyline_blocks(md_content: str) -> dict[str, int] | None:
+    """解析 storyline.md 单文件，按线区块头类型词计实际条数。
 
-    一览表缺失或无 S{XX} 数据行时返回 None（调用方退回文件计数口径）。
+    无任何可识别区块头时返回 None（类型词不可识别 → 调用方软终止）。
     """
     counts = {t: 0 for t in LINE_TYPES}
     found = False
-    for m in _INDEX_ROW_RE.finditer(storyline_md_content):
+    for m in _BLOCK_HEADER_RE.finditer(md_content):
         counts[m.group(1)] += 1
         found = True
     return counts if found else None
 
 
-def count_storyline_files(keys) -> int:
-    """按文件路径计数故事线详情文件（storyline/S{XX}-*.md）。
+def count_line_block_headers(md_content: str) -> int:
+    """数 storyline.md 中的线区块头总数（不区分类型）。
 
-    一览表不可用时的兜底口径：只给总数，类型分布不可得（None 语义由
-    调用方处理）。接受任意可迭代路径/键序列。
+    供写入护栏（StorylineSingleLineLimitMiddleware）估算区块净增量使用——
+    判定器唯一原则：区块头正则不复制第二份。
     """
-    return sum(1 for k in keys if _STORYLINE_FILE_RE.search(str(k).strip().lower()))
+    return len(_BLOCK_HEADER_RE.findall(md_content))
 
 
 def count_character_files(keys) -> int:
@@ -145,33 +141,29 @@ def count_workspace(workspace_path: Path) -> dict[str, int | None]:
     """物理工作区实况计数（运行时判定入口）。
 
     Returns:
-        ``{"by_type": 一览表类型分布或 None, "line_files": S 文件总数,
+        ``{"by_type": storyline.md 区块头类型分布或 None, "lines": 线区块总数,
         "characters": 人物档案数}``
     """
     workspace_path = Path(workspace_path)
     storyline_md = workspace_path / "storyline.md"
-    by_type = None
+    by_type: dict[str, int] | None = None
+    lines = 0
     if storyline_md.exists():
-        by_type = parse_storyline_index(storyline_md.read_text(encoding="utf-8"))
-    storyline_dir = workspace_path / "storyline"
-    line_files = 0
-    if storyline_dir.is_dir():
-        line_files = sum(
-            1 for p in storyline_dir.iterdir()
-            if p.is_file() and _STORYLINE_FILE_RE.search("/" + p.name)
-        )
+        by_type = parse_storyline_blocks(storyline_md.read_text(encoding="utf-8"))
+        if by_type is not None:
+            lines = sum(by_type.values())
     character_dir = workspace_path / "character"
     characters = 0
     if character_dir.is_dir():
         characters = sum(1 for p in character_dir.iterdir() if p.is_file())
-    return {"by_type": by_type, "line_files": line_files, "characters": characters}
+    return {"by_type": by_type, "lines": lines, "characters": characters}
 
 
 def evaluate_quota(target: QuotaTarget, actual_by_type: dict[str, int]) -> QuotaStatus:
     """核对目标配比与实际类型分布。
 
     achieved 判定：各类型实际 >= 目标（目标 0 恒达标）。actual_by_type 允许
-    缺键（按 0 计）——一览表刚建好尚未列入全部线时不应误判超标。
+    缺键（按 0 计）——产物刚建好尚未写入全部线时不应误判超标。
     """
     actual = {t: int(actual_by_type.get(t, 0)) for t in LINE_TYPES}
     target_dict = target.as_dict()
@@ -193,9 +185,9 @@ __all__ = [
     "QuotaStatus",
     "QuotaTarget",
     "count_character_files",
-    "count_storyline_files",
+    "count_line_block_headers",
     "count_workspace",
     "evaluate_quota",
     "parse_demand_quota",
-    "parse_storyline_index",
+    "parse_storyline_blocks",
 ]

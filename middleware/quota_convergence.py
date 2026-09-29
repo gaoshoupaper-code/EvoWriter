@@ -97,7 +97,7 @@ class QuotaConvergenceMiddleware(AgentMiddleware):
             return HumanMessage(content=(
                 f"[配比导航 第{cycle}轮] 已达增量预算上限（{self.max_model_calls} 轮模型调用）。"
                 "立即停止新增故事线与人物，基于现有内容收尾："
-                "维护 storyline/timeline.md 一致性，按流程调用 review 审查并按需修订一次，然后返回。"
+                "核对 storyline.md 事件表时序号、交汇标注与线头字段完整，按流程调用 review 审查并按需修订一次，然后返回。"
                 "剩余配比差距视为配比让步（配比是上限而非必达）。"
             ))
 
@@ -109,7 +109,7 @@ class QuotaConvergenceMiddleware(AgentMiddleware):
             return HumanMessage(content=(
                 f"[配比导航 第{cycle}轮] {status.summary_line()}。"
                 "已达标：停止新增故事线与人物，进入收尾——"
-                "检查 storyline/timeline.md 与各线详情、一览表一致，"
+                "核对 storyline.md 事件表时序号、交汇标注与线头字段完整，"
                 "然后按流程调用 review 审查并按需修订一次，最后返回。"
             ))
 

@@ -1,46 +1,44 @@
-"""StorylineSingleLineLimitMiddleware — 单次单线生成硬上限中间件。
+"""StorylineSingleLineLimitMiddleware — 单次单线生成硬上限中间件（区块增量口径）。
 
 职责：
-  拦截 storybuilding 子代理的 write_file 调用，约束单次 storybuilding 子代理调用
-  最多新增 ``max_new_lines`` 条故事线（``storyline/*.md``）。超限则返回 ToolMessage
-  硬拦截，引导代理停止新增、基于现有内容收尾。
+  拦截 storybuilding 子代理对 ``/storyline.md`` 的 write_file / edit_file 调用，
+  约束单次 storybuilding 子代理调用最多新增 ``max_new_lines`` 个线区块。
+  超限则返回 ToolMessage 硬拦截，引导代理停止新增、基于现有内容收尾。
 
-设计依据（见 .claude/md/20260611_214939_storybuilding单线中间件设计.md）：
-  - ``FilesystemBackend.write`` 只创建新文件，对已存在文件返回 error；
-    ``edit`` 只能改已存在文件。故 write_file 到「不存在的 storyline 文件」= 新增。
-  - 计数对象 = ``/storyline/S{XX}-*.md`` 新增文件数（非写调用次数）：写入前查物理磁盘
-    ``.exists()`` 判定，已存在 = 非新增（放行），不存在 = 新增（计数，超限拦截）。
-    只认 S{XX} 开头的故事线文件——同目录 timeline.md 等非故事线文件不计入。
-  - 计数周期 = 每次 storybuilding 子代理调用（before_agent 在每次 task 调用开始时重置），与 ``RevisionLimitMiddleware`` 一致。
+口径（REQ-20260930-002231 FR-007，单文件产物结构）：
+  - 新增故事线 = storyline.md 中的线区块数（``## {线名} · {类型} · {状态}`` 区块头）
+    净增加，不再看 storyline/S{XX}-*.md 文件创建。
+  - write_file（整文件写入）：新内容区块头数 − 磁盘当前内容区块头数。
+  - edit_file（局部替换）：new_string 区块头数 − old_string 区块头数
+    （old_string 是磁盘文本的子串，其中的区块头被替换掉）。
+  - 净增 ≤ 0（修订/删减）一律放行且不占额度；净增 > 0 才计数，超限拦截。
+  - 计数周期 = 每次 storybuilding 子代理调用（before_agent 重置，v13 语义）；
+    ``reset_per_invocation=False`` 保留为运行级绝对上限语义（跨委托累计）。
 
-使用方式：
-  在 ``build_storybuilding_deep_subagent`` 构建时注入 storybuilding 子代理的 middleware 链。
-  ``max_new_lines``: 单次运行最大新增故事线数，默认 1。
+区块头计数复用 ``contracts.storybuilding_quota.count_line_block_headers``——
+判定器唯一，护栏与配比导航对「什么是一个线区块」的认定不漂移。
 """
 from __future__ import annotations
 
-import re
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+from contracts.storybuilding_quota import count_line_block_headers
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
 from .path_guard import normalize_workspace_write_path
 
-# 故事线详情文件虚拟路径：/storyline/S{XX}-<名>.md。只认 S{XX} 开头的故事线文件——
-# 同目录的 timeline.md（全局时间线表，并非故事线）因此不被计入（见需求基准 D3/D4）。
-# 宁严勿松：任何 S\d{2} 开头的 .md 都计入，避免漏算而绕过单线上限。
-_STORYLINE_FILE = re.compile(r"^/storyline/S\d{2}[^/]*\.md$")
+_STORYLINE_FILE = "/storyline.md"
 
 
 class StorylineSingleLineLimitMiddleware(AgentMiddleware):
-    """单次单线生成硬上限中间件。
+    """单次单线生成硬上限中间件（storyline.md 区块净增口径）。
 
-    拦截 write_file 到 ``storyline/*.md`` 的「新增」（文件写入前不存在），
-    实例生命周期内累计计数，超过 ``max_new_lines`` 返回 ToolMessage 阻止写入。
-    edit_file 与非 storyline 路径一概放行。
+  拦截 write_file / edit_file 到 ``/storyline.md`` 且线区块净增的调用，
+  实例生命周期内累计计数，超过 ``max_new_lines`` 返回 ToolMessage 阻止写入。
+  非 storyline.md 路径与区块数不增的写入一概放行。
     """
 
     def __init__(
@@ -49,12 +47,11 @@ class StorylineSingleLineLimitMiddleware(AgentMiddleware):
     ) -> None:
         """
         Args:
-            workspace_path:  工作区根目录绝对路径，用于把虚拟路径映射到物理磁盘查存在性。
-            max_new_lines:   计数周期内最大新增故事线数，默认 1。
+            workspace_path:  工作区根目录绝对路径，用于把虚拟路径映射到物理磁盘读旧内容。
+            max_new_lines:   计数周期内最大新增线区块数，默认 1。
             reset_per_invocation: True（v13 单专家语义）= 计数周期为「每次 task
-                委托」，before_agent 清零；False（v14 多 Agent 语义，REQ-20260922-162823）
-                = 计数跨委托累计，max_new_lines 成为**整个运行**的新增绝对上限
-                （新增判定靠磁盘存在性，与委托次数无关）。
+                委托」，before_agent 清零；False = 计数跨委托累计，
+                max_new_lines 成为整个运行的新增绝对上限。
         """
         self.workspace_path = workspace_path.resolve()
         self.max_new_lines = max_new_lines
@@ -64,11 +61,6 @@ class StorylineSingleLineLimitMiddleware(AgentMiddleware):
     # ------------------------------------------------------------------
     # 调用周期重置（子代理每次被 task 调用开始时触发）
     # ------------------------------------------------------------------
-    # 计数周期 = 「storybuilding 每被父 agent task 委托一次」（reset_per_invocation=True）。
-    # 子代理 graph 一次编译、会话内多次复用同一实例，必须靠 before_agent 在每次
-    # graph 执行开始时清零计数，否则额度会跨调用累积（见需求基准计数边界决策）。
-    # v14 多 Agent（False）：跨委托累计正是所需语义——orchestrator 可能多次委托
-    # storyline 代理加线，运行级绝对上限防止「每次委托重置后反复加线」失控。
 
     def before_agent(self, state: Any, runtime: Any) -> None:
         if self._reset_per_invocation:
@@ -99,20 +91,21 @@ class StorylineSingleLineLimitMiddleware(AgentMiddleware):
     # ------------------------------------------------------------------
 
     def _maybe_block(self, request: Any) -> ToolMessage | None:
-        """判定本次 write_file 是否构成「新增故事线」且超限。
+        """判定本次写入是否构成「新增线区块」且超限。
 
         Returns:
             ``ToolMessage`` 表示超限拦截；``None`` 表示放行。
 
         步骤：
-        1. 仅拦 write_file（edit_file 物理上无法新建文件，一概放行）。
-        2. 自行 normalize 路径（解耦对 PathGuard 执行顺序的依赖）；非法路径放行交 PathGuard。
-        3. 仅 storyline/*.md 受约束。
-        4. 写入前查物理磁盘 .exists()：已存在 = 非新增（放行）；不存在 = 新增（计数，超限拦截）。
+        1. 仅拦 write_file / edit_file（read 等一概放行）。
+        2. 自行 normalize 路径；非法路径放行交 PathGuard；非 /storyline.md 放行。
+        3. 估算线区块净增：write_file 按新内容 vs 磁盘旧内容；edit_file 按
+           new_string vs old_string。净增 ≤ 0 放行不计数。
+        4. 计数超限 → 拦截。
         """
         tool_call = getattr(request, "tool_call", {})
         tool_name = _mapping_value(tool_call, "name")
-        if tool_name != "write_file":
+        if tool_name not in ("write_file", "edit_file"):
             return None
 
         args = _mapping_value(tool_call, "args")
@@ -126,20 +119,37 @@ class StorylineSingleLineLimitMiddleware(AgentMiddleware):
             # 非法路径不归本中间件管，放行交 PathGuard 处理
             return None
 
-        if not _STORYLINE_FILE.match(normalized):
+        if normalized != _STORYLINE_FILE:
             return None
 
-        # 虚拟路径 → 物理路径查存在性（virtual_mode 文件真实落盘到 workspace_path）
-        physical = self.workspace_path / normalized.lstrip("/")
-        if physical.exists():
-            # 已存在 = 非新增（write_file 自身会返回 already-exists error，无需重复拦截）
+        delta = self._estimate_block_delta(tool_name, args)
+        if delta <= 0:
             return None
 
-        self._new_line_count += 1
+        self._new_line_count += delta
         if self._new_line_count <= self.max_new_lines:
             return None
 
         return self._limit_message(tool_call)
+
+    def _estimate_block_delta(self, tool_name: str, args: dict) -> int:
+        """估算本次写入造成的线区块净增加量（保守取向：估算不出按 0 放行）。"""
+        if tool_name == "write_file":
+            content = args.get("content")
+            if not isinstance(content, str):
+                return 0
+            physical = self.workspace_path / "storyline.md"
+            old_text = (
+                physical.read_text(encoding="utf-8") if physical.exists() else ""
+            )
+            return count_line_block_headers(content) - count_line_block_headers(old_text)
+
+        # edit_file：old_string 是磁盘文本子串，其区块头被替换为 new_string 的
+        old_string = args.get("old_string")
+        new_string = args.get("new_string")
+        if not isinstance(old_string, str) or not isinstance(new_string, str):
+            return 0
+        return count_line_block_headers(new_string) - count_line_block_headers(old_string)
 
     def _limit_message(self, tool_call: Any) -> ToolMessage:
         """构造达上限的拦截消息：停止新增 + 指示子代理在返回摘要中转述（解读A 可见性）。
@@ -156,15 +166,14 @@ class StorylineSingleLineLimitMiddleware(AgentMiddleware):
         if self._reset_per_invocation:
             limit_text = (
                 f"已达单次单线生成上限（{self.max_new_lines} 条 / 本轮 storybuilding）。"
-                "本次新增的故事线已写入，请停止创建更多故事线文件。"
+                "请停止在 storyline.md 中新增故事线区块（可继续修订既有内容）。"
                 "请在返回给父代理的摘要中明确注明：「本轮因达到单线生成上限，已跳过后续新增」，"
                 "再基于当前已有内容收尾返回。"
             )
         else:
-            # 运行级绝对上限（v14）：计数跨委托累计，后续任何委托都无法再新增
             limit_text = (
                 f"已达本次运行新增故事线上限（{self.max_new_lines} 条，跨全部委托累计）。"
-                "本次新增的故事线已写入，请停止创建更多故事线文件。"
+                "请停止在 storyline.md 中新增故事线区块（可继续修订既有内容）。"
                 "请在返回摘要中明确注明：「故事线新增额度已用尽，后续委托无法再新增」，"
                 "再基于当前已有内容收尾返回。"
             )

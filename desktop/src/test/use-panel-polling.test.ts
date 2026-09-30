@@ -45,7 +45,7 @@ function makeSetters(): PanelPollingSetters {
 const ENTRIES: StorylineEntry[] = [{ filename: "storyline.md", title: "复仇线", markdown: "## 复仇线" }];
 const PANORAMA: PanoramaEvent[] = [];
 const CHARACTERS: CharacterMarkdownFile[] = [
-  { filename: "林寒.md", title: "林寒", markdown: "# 林寒" },
+  { filename: "林寒.md", name: "林寒", markdown: "# 林寒" },
 ];
 
 describe("usePanelPolling 停前全量补拉", () => {

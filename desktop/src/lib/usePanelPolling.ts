@@ -81,46 +81,59 @@ export function usePanelPolling({
 
   // 一次轮询：根据当前面板拉对应接口并写 state。bootstrap 期间跳过（不写）。
   const pollOnce = async (panel: WorkspacePanel, workspaceId: string) => {
-    if (bootstrappingRef.current) return;
+    if (bootstrappingRef.current || panel === "chat") return;
     const s = settersRef.current;
     try {
-      switch (panel) {
-        case "script": {
-          // script 面板展示 storyline（含全景表数据 panorama，FR-003）。
-          const data = await fetchWorkspaceStoryline(workspaceId);
-          s.setStorylineMarkdown(data.index_markdown);
-          s.setStorylineEntries(data.entries);
-          s.setStorylinePanorama(data.panorama);
-          s.setStorylineFormat(data.format);
-          s.setActiveStorylineFilename((cur) => keepActiveFilename(cur, data.entries.map((e) => e.title)));
-          break;
-        }
-        case "characters": {
-          const data = await fetchWorkspaceCharacters(workspaceId);
-          s.setCharacters(data.characters);
-          s.setActiveCharacterFilename((cur) => keepActiveFilename(cur, data.characters.map((c) => c.filename)));
-          s.setCharactersLoading(false);
-          break;
-        }
-        case "worldview": {
-          const data = await fetchWorkspaceWorldview(workspaceId);
-          s.setWorldviewMarkdown(data.markdown);
-          s.setWorldviewLoading(false);
-          break;
-        }
-        default:
-          // chat：不轮询。
-          break;
-      }
+      await _pollPanel(panel, workspaceId, s);
     } catch {
       // 单次轮询失败静默处理——下一周期会重试，无需把 loading 置回 true（避免面板闪烁）。
     }
   };
 
+  // 单面板拉取与写 state（pollOnce 与 pollAllPanels 共用）。
+  const _pollPanel = async (
+    panel: Exclude<WorkspacePanel, "chat"> | "all",
+    workspaceId: string,
+    s: PanelPollingSetters,
+  ) => {
+    if (panel === "script" || panel === "all") {
+      // script 面板展示 storyline（含全景表数据 panorama，FR-003）。
+      const data = await fetchWorkspaceStoryline(workspaceId);
+      s.setStorylineMarkdown(data.index_markdown);
+      s.setStorylineEntries(data.entries);
+      s.setStorylinePanorama(data.panorama);
+      s.setStorylineFormat(data.format);
+      s.setActiveStorylineFilename((cur) => keepActiveFilename(cur, data.entries.map((e) => e.title)));
+    }
+    if (panel === "characters" || panel === "all") {
+      const data = await fetchWorkspaceCharacters(workspaceId);
+      s.setCharacters(data.characters);
+      s.setActiveCharacterFilename((cur) => keepActiveFilename(cur, data.characters.map((c) => c.filename)));
+      s.setCharactersLoading(false);
+    }
+    if (panel === "worldview" || panel === "all") {
+      const data = await fetchWorkspaceWorldview(workspaceId);
+      s.setWorldviewMarkdown(data.markdown);
+      s.setWorldviewLoading(false);
+    }
+  };
+
+  // 全量拉取：三个内容面板并行（任务结束时用，见停前补拉 effect）。
+  const pollAllPanels = async (workspaceId: string) => {
+    if (bootstrappingRef.current) return;
+    try {
+      await _pollPanel("all", workspaceId, settersRef.current);
+    } catch {
+      // 静默：与单次轮询一致，避免打断完成态 UI。
+    }
+  };
+
   useEffect(() => {
     // 无工作区、或面板不参与轮询、或未在生成中：什么都不做。
+    // 注意：这里不能写 prevLoadingRef——过渡检测归下方停前补拉 effect 独占，
+    // 本 effect 声明在前、会抢先写入新值，让停前补拉永远读不到 true→false 过渡
+    // （线上 bug：创作完成后产物面板不刷新，重启才可见）。
     if (!activeWorkspaceId || NON_POLL_PANELS.has(activePanel) || !loading) {
-      prevLoadingRef.current = loading;
       return;
     }
 
@@ -137,14 +150,17 @@ export function usePanelPolling({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activePanel, activeWorkspaceId, loading]);
 
-  // 独立的 effect：检测 loading true→false 过渡，做“停前补拉最后一次”。
+  // 独立的 effect：检测 loading true→false 过渡，做"停前补拉"。
   // 不能并入上面的 effect——上面 effect 在 loading=false 时会直接 return 不轮询，
-  // 这里专门负责“结束这一刻”的最终拉取。
+  // 这里专门负责"结束这一刻"的最终拉取。
   useEffect(() => {
     const wasLoading = prevLoadingRef.current;
     prevLoadingRef.current = loading;
-    if (wasLoading && !loading && activeWorkspaceId && !NON_POLL_PANELS.has(activePanel)) {
-      void pollOnce(activePanel, activeWorkspaceId);
+    // 结束时全量拉三件套（不限当前面板）：生成中用户多停在 chat（不参与轮询），
+    // 只补拉当前面板会让 script/characters/worldview 保持旧空数据，
+    // 直到下次 bootstrap（重启/切换工作区）才可见。
+    if (wasLoading && !loading && activeWorkspaceId) {
+      void pollAllPanels(activeWorkspaceId);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);

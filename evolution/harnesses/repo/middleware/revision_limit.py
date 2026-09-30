@@ -45,7 +45,7 @@ class RevisionLimitMiddleware(AgentMiddleware):
     def before_agent(self, state: Any, runtime: Any) -> None:
         self._revision_count = 0
 
-    def abefore_agent(self, state: Any, runtime: Any) -> None:
+    async def abefore_agent(self, state: Any, runtime: Any) -> None:
         self._revision_count = 0
 
     def _is_review_task(self, request: Any) -> bool:

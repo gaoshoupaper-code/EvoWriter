@@ -10,8 +10,7 @@
 // ── 阶段人话名（与 stage.ts 的 StageType 对应）──
 export const STAGE_DISPLAY_NAMES: Record<string, string> = {
   storybuilding: "构思故事",
-  "detail-outline": "规划章节",
-  writing: "动笔写作",
+  review: "审查修订",
   general: "收尾整理",
 };
 
@@ -29,30 +28,15 @@ export const THINKING_COPY: Record<string, string[]> = {
     "想想主角和世界观的设定...",
     "梳理一下故事的核心冲突...",
   ],
-  "detail-outline": [
-    "正在梳理章节脉络...",
-    "规划每一章的节奏和重点...",
-    "理一下情节的先后顺序...",
-  ],
-  writing: [
-    "酝酿一下文字的感觉...",
-    "想想这段怎么写更自然...",
+  review: [
+    "正在审查故事线的一致性...",
+    "核对事件的时序和归属...",
   ],
   general: [
     "整理一下收尾工作...",
     "做最后的检查和润色...",
   ],
 };
-
-// ── 写作态（writing）动态文案轮播池 ──
-export const WRITING_COPY = [
-  "好嘞，开写啦！",
-  "嗯，这段我想让节奏快一点...",
-  "写到这里感觉不错，继续...",
-  "让我润色一下这个细节...",
-  "嗯...这个转折得想想怎么写自然...",
-  "快好了，再写一点就收尾...",
-];
 
 // ── 交付仪式（delivering）文案 ──
 export const DELIVERY_COPY = [

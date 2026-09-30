@@ -1,4 +1,4 @@
-export type WorkspacePanel = "chat" | "characters" | "script" | "worldview" | "trace" | "storyline";
+export type WorkspacePanel = "chat" | "characters" | "script" | "worldview";
 
 export type Style = {
   style_id: string;
@@ -21,8 +21,6 @@ export type ScreenplayResponse = {
   logline: string;
   synopsis: string;
   beats: string[];
-  markdown: string;
-  evaluation_markdown: string;
 };
 
 export type ThreadSummary = {
@@ -45,11 +43,6 @@ export type WorkspaceSummary = {
   active_style_id: string | null;
 };
 
-export type WorkspaceOutlineContent = {
-  workspace_id: string;
-  markdown: string;
-};
-
 export type StorylineEntry = {
   filename: string;
   title: string;
@@ -58,69 +51,27 @@ export type StorylineEntry = {
 
 export type WorkspaceStorylineContent = {
   workspace_id: string;
+  format: string; // "v2"（单文件区块）| "legacy"（storyline/ 目录旧格式）
   index_markdown: string;
   entries: StorylineEntry[];
   file_count: number;
+  panorama: PanoramaEvent[]; // 跨线全景事件（仅 v2；legacy 为空数组，前端降级）
 };
 
-export type StorylineGraphStoryline = {
-  id: string;
-  name: string;
-  type: string;
-  status: string;
-  direction: string;
-  key_events: string[];
-};
-
-export type StorylineGraphEvent = {
-  id: string;
+// 大纲全景表事件行（FR-003/REQ-20260930-163019）：时序/所属线/事件/类型/角色/地点/描述
+export type PanoramaEvent = {
+  t: string;
   name: string;
   type: string;
   storylines: string[];
-  group: string;
-  doc_order: number;
-};
-
-export type WorkspaceStorylineGraphContent = {
-  workspace_id: string;
-  markdown: string;
-  storylines: StorylineGraphStoryline[];
-  events: Record<string, StorylineGraphEvent>;
-  t_map: Record<string, number>;
-  storyline_count: number;
-  event_count: number;
-  generated_at: string;
-  stale: boolean;
+  characters: string;
+  location: string;
+  desc: string;
 };
 
 export type WorkspaceWorldviewContent = {
   workspace_id: string;
   markdown: string;
-};
-
-export type DetailOutlineChapter = {
-  filename: string;
-  title: string;
-  markdown: string;
-};
-
-export type WorkspaceDetailOutlineContent = {
-  workspace_id: string;
-  chapters: DetailOutlineChapter[];
-  file_count: number;
-};
-
-// 与后端 WorkspaceNovelChaptersContent 同构：正文按章分文件，侧栏一条对应一个 md
-export type NovelChapter = {
-  filename: string;
-  title: string;
-  markdown: string;
-};
-
-export type WorkspaceNovelContent = {
-  workspace_id: string;
-  source: string;
-  chapters: NovelChapter[];
 };
 
 export type CharacterMarkdownFile = {
@@ -283,10 +234,7 @@ export type ToolStatus = {
   parentKey?: string;
   subagentName?: string;
   // P1 扩展（仅 task 工具有值）：供 stageFlow 生成阶段/章节焦点（D6/D7）
-  subagentType?: string; // storybuilding / detail-outline / writing / general-purpose
-  chapterIndex?: number | null;
-  totalChapters?: number | null;
-  wordCount?: number | null;
+  subagentType?: string; // storybuilding / general-purpose
   iteration?: number | null; // storybuilding 轮次 / 调用序
 };
 
@@ -300,7 +248,6 @@ export type ExecutionPhase =
   | "idle"
   | "booting"
   | "thinking"
-  | "writing"
   | "asking"
   | "delivering"
   | "failed"
@@ -382,10 +329,7 @@ export type CharacterGenerateResponse = {
 
 export type WorkspaceBootstrapResponse = {
   threads: ThreadSummary[];
-  outline: WorkspaceOutlineContent | null;
   storyline: WorkspaceStorylineContent | null;
-  detail_outline: WorkspaceDetailOutlineContent | null;
   characters: WorkspaceCharacterContent | null;
-  novel: WorkspaceNovelContent | null;
   worldview: WorkspaceWorldviewContent | null;
 };

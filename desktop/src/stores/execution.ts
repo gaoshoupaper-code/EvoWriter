@@ -68,20 +68,8 @@ function getTaskFocus(event: StreamEvent) {
   const data = event.data;
   return {
     subagentType: typeof data.subagent_type === "string" ? data.subagent_type : undefined,
-    chapterIndex: numOrNull(data.chapter_index),
-    totalChapters: numOrNull(data.total_chapters),
     iteration: numOrNull(data.iteration),
   };
-}
-
-function getWordCountPatch(event: StreamEvent): { wordCount?: number; chapterIndex?: number } {
-  const data = event.data;
-  const patch: { wordCount?: number; chapterIndex?: number } = {};
-  const wc = numOrNull(data.word_count);
-  if (wc != null) patch.wordCount = wc;
-  const ci = numOrNull(data.chapter_index);
-  if (ci != null) patch.chapterIndex = ci;
-  return patch;
 }
 
 // ── 工具状态机（从 home.tsx:135-253 迁移）──
@@ -111,9 +99,8 @@ function upsertRunningTool(tools: ToolStatus[] | undefined, event: StreamEvent) 
 function markToolComplete(tools: ToolStatus[] | undefined, event: StreamEvent) {
   const toolName = getToolName(event);
   const eventCallId = getToolCallId(event);
-  const patch = getWordCountPatch(event);
   const nextTools = [...(tools ?? [])];
-  const markDone = (tool: ToolStatus): ToolStatus => ({ ...tool, status: "done", ...patch });
+  const markDone = (tool: ToolStatus): ToolStatus => ({ ...tool, status: "done" });
 
   if (eventCallId) {
     for (let i = 0; i < nextTools.length; i++) {
@@ -135,7 +122,7 @@ function markToolComplete(tools: ToolStatus[] | undefined, event: StreamEvent) {
       return nextTools;
     }
   }
-  nextTools.push({ key: buildToolKey(toolName, "", nextTools.length), name: toolName, status: "done", ...patch });
+  nextTools.push({ key: buildToolKey(toolName, "", nextTools.length), name: toolName, status: "done" });
   return nextTools;
 }
 
@@ -665,7 +652,7 @@ async function performSubmit(
         messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
           ...message,
           status: "completed",
-          content: streamedText || finalData?.markdown?.trim() || `已生成《${finalData.session_name}》的故事材料，工作目录是 ${finalData.workspace_path}`,
+          content: streamedText || `已生成《${finalData.session_name}》的故事材料，工作目录是 ${finalData.workspace_path}`,
           contentFormat: "markdown",
         })),
       }));

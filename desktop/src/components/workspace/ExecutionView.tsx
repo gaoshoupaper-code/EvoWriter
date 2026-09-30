@@ -15,7 +15,6 @@ import type { StageFlow } from "@/lib/stage";
 import { derivePhaseFromMessage } from "@/lib/execution-phase";
 import { BootingView } from "./execution/BootingView";
 import { ThinkingView } from "./execution/ThinkingView";
-import { WritingProgress } from "./execution/WritingProgress";
 import { DeliveryCeremony } from "./execution/DeliveryCeremony";
 import { FailedView } from "./execution/FailedView";
 import { StoppedView } from "./execution/StoppedView";
@@ -43,8 +42,6 @@ export function ExecutionView({ message, loading, isLastAssistant, stageFlow, on
       return <BootingView />;
     case "thinking":
       return <ThinkingView message={message} stageFlow={stageFlow} />;
-    case "writing":
-      return <WritingProgress message={message} stageFlow={stageFlow} />;
     case "asking":
       // asking 态的 HITL UI 由 ChatPanel 外层渲染（InterviewOptions/ImageReviewCard）
       // ExecutionView 只负责执行过程反馈，asking 时不渲染额外内容

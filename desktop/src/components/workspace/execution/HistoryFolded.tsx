@@ -25,8 +25,6 @@ export function HistoryFolded({ stageFlow }: HistoryFoldedProps) {
   if (!stageFlow || stageFlow.stages.length === 0) return null;
 
   const totalDuration = formatDuration(stageFlow.totalDurationMs);
-  const writingStage = stageFlow.stages.find((s) => s.type === "storybuilding");
-  const totalWords = writingStage?.subSteps.reduce((sum, s) => sum + (s.wordCount ?? 0), 0) ?? null;
 
   return (
     <div className="yan-history" data-phase="history">
@@ -52,7 +50,6 @@ export function HistoryFolded({ stageFlow }: HistoryFoldedProps) {
             ))}
           </div>
           <div className="yan-history-stats">
-            {totalWords != null ? <span>{totalWords.toLocaleString()} 字</span> : null}
             {totalDuration != null ? <span>耗时 {totalDuration}</span> : null}
           </div>
         </div>

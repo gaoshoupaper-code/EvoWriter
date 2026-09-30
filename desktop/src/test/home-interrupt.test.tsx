@@ -42,12 +42,13 @@ const INTERRUPT_CHUNKS = encode([
   }),
 ]);
 
-// 第二次调用（resume）：final
+// 第二次调用（resume）：stream + final（FR-005/006：响应已无 markdown/evaluation_markdown 字段）
 const FINAL_CHUNKS = encode([
+  sseEvent("model_stream", { content: "正文完成" }),
   sseEvent("final", {
     mode: "screenplay", thread_id: "thread-1", workspace_id: "ws-1", session_name: "测试会话",
     workspace_path: "/test", title: "T", content: "正文完成", logline: "", synopsis: "",
-    beats: [], markdown: "正文完成", evaluation_markdown: "",
+    beats: [],
   }),
 ]);
 

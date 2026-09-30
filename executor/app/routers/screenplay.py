@@ -56,7 +56,8 @@ async def _event_generator(
                         break
         if final_data:
             response = ScreenplayGenerateResponse.model_validate(json.loads(final_data))
-            thread_store.artifacts.write_outline(owner_id or "", thread, response)
+            # FR-005（REQ-20260930-163019）：outline/evaluation 回写已退役，仅保留活跃时间更新
+            thread_store.artifacts.touch_thread(owner_id or "", thread)
         _log("sse_close", channel="generate", thread_id=payload.thread_id,
              ms=int((time.perf_counter() - start) * 1000))
     except BaseException as exc:

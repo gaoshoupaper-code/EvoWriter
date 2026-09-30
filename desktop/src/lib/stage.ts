@@ -9,9 +9,8 @@ export type StageType = "storybuilding" | "review" | "general";
 export interface StageSubStep {
   id: string; // task 节点 node_id（稳定唯一 key）
   toolCallId: string | null; // task 的 tool_call_id，匹配 message.tools
-  label: string; // "第3章" | "第2轮" | "任务N"
+  label: string; // "第2轮" | "任务N" | "审查 N"
   status: "running" | "completed" | "failed";
-  wordCount?: number | null; // D7: chapter 字数（仅 writing）
   summary?: string; // D4: task tool_output 截断
   durationMs?: number | null;
 }
@@ -24,7 +23,7 @@ export interface Stage {
   iteration?: { current: number; total?: number }; // storybuilding 轮次
   subSteps: StageSubStep[];
   summary?: string; // 阶段整体摘要（最后 subStep）
-  focusText?: string; // D6+D7: "正在写第3章·约800字"（仅 running）
+  focusText?: string; // 运行中焦点文案（如"故事专家正在构建大纲（第 2 轮）"）
   durationMs: number | null; // D8: 该阶段累计耗时
   agentTaskCount: number; // D9: 子代理任务数
   toolCallCount: number; // D9: 子代理内部工具调用数
@@ -150,14 +149,11 @@ function buildStage(
   toolCallCount: number,
 ): Stage {
   const subSteps: StageSubStep[] = tasks.map((tt, idx) => {
-    const tool = tt.callId ? toolByCallId.get(tt.callId) : undefined;
-    const chapterIndex = tool?.chapterIndex ?? null;
     return {
       id: tt.node.node_id,
       toolCallId: tt.callId,
-      label: subStepLabel(type, idx, chapterIndex),
+      label: subStepLabel(type, idx),
       status: nodeStatusToStep(tt.node),
-      wordCount: undefined,
       summary: tt.node.chain_summary ?? undefined,
       durationMs: tt.node.duration_ms ?? null,
     };
@@ -217,7 +213,7 @@ function aggregateStatus(statuses: Array<"running" | "completed" | "failed">): "
   return "completed";
 }
 
-function subStepLabel(type: StageType, idx: number, chapterIndex: number | null): string {
+function subStepLabel(type: StageType, idx: number): string {
   if (type === "review") return `审查 ${idx + 1}`;
   if (type === "storybuilding") return `第 ${idx + 1} 轮`;
   return `任务 ${idx + 1}`;
@@ -244,10 +240,6 @@ function buildFocusText(stage: Stage): string | undefined {
   return "正在执行辅助任务";
 }
 
-function extractChapterFromLabel(label: string): number | null {
-  const m = label.match(/第\s*(\d+)\s*章/);
-  return m ? Number(m[1]) : null;
-}
 
 function deriveFlowStatus(detail: TraceDetail, stages: Stage[]): StageFlow["status"] {
   if (detail.run.status === "failed") return "failed";

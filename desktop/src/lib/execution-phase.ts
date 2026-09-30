@@ -23,12 +23,6 @@ export function derivePhaseFromMessage(message: ChatMessage): ExecutionPhase {
   if (message.status === "failed") return "failed";
   if (message.status === "stopped") return "stopped";
 
-  // 有 writing subagent running → writing
-  const hasWriting = message.tools?.some(
-    (t) => t.status === "running" && t.subagentType === "writing",
-  );
-  if (hasWriting) return "writing";
-
   // 有任何 tool running → thinking
   const hasRunning = message.tools?.some((t) => t.status === "running");
   if (hasRunning) return "thinking";

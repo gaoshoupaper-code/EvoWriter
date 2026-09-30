@@ -9,6 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app.platform.state.artifact_store import WritingArtifactStore
+from app.routers.workspaces import _attach_panorama
 
 
 def _make_store(tmp_path: Path) -> WritingArtifactStore:
@@ -89,3 +90,41 @@ def test_missing_storyline_returns_empty_not_none(tmp_path: Path) -> None:
 def test_missing_workspace_returns_none(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     assert store.read_workspace_storyline("nobody", "nope") is None
+
+
+def test_v2_panorama_events(tmp_path: Path) -> None:
+    """FR-003（REQ-20260930-163019）：v2 storyline 路由层补全景事件（按时序排序、原 T 号）。
+
+    panorama 组装在路由层（_attach_panorama）——platform 层禁止依赖 domains 解析器
+    （分层规则 R1）。
+    """
+    ws = tmp_path / "owner1" / "ws3"
+    ws.mkdir(parents=True)
+    (ws / "storyline.md").write_text(_V2_MD, encoding="utf-8")
+
+    store = _make_store(tmp_path)
+    content = store.read_workspace_storyline("owner1", "ws3")
+    assert content is not None
+    content = _attach_panorama(content, ws)
+    assert len(content.panorama) == 1
+    ev = content.panorama[0]
+    assert ev.t == "T1"
+    assert ev.name == "灭门之夜"
+    assert ev.type == "冲突"
+    assert ev.storylines == ["复仇线"]
+    assert ev.characters == "林寒"
+    assert ev.location == "青云宗"
+
+
+def test_legacy_panorama_empty(tmp_path: Path) -> None:
+    """FR-003：legacy 旧格式不解析全景——panorama 保持空列表，前端降级为按线分区块视图。"""
+    ws = tmp_path / "owner1" / "ws4"
+    (ws / "storyline").mkdir(parents=True)
+    (ws / "storyline.md").write_text("# 旧索引\n", encoding="utf-8")
+    (ws / "storyline" / "S01-主线.md").write_text("### S01-主线 [主线]\n", encoding="utf-8")
+
+    store = _make_store(tmp_path)
+    content = store.read_workspace_storyline("owner1", "ws4")
+    assert content is not None
+    assert content.format == "legacy"
+    assert _attach_panorama(content, ws).panorama == []

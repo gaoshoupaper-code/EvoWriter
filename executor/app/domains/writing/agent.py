@@ -939,7 +939,6 @@ class MetaAgentService(BaseAgentService):
             "- 故事线产物只写 storyline.md 单文件（故事核心 + 一线一区块 + 事件表），"
             "不创建 storyline/ 目录，不手写 timeline.md（由程序自动派生）。\n"
             "- 人物档案写入 character/ 目录，世界观写入 worldview.md。\n"
-            "- 同步维护 outline.md（总纲，供前端总纲页签展示）。\n"
 
             "用户需求：\n"
             f"{request_text}\n\n"
@@ -980,8 +979,6 @@ class MetaAgentService(BaseAgentService):
             ),
             beats=beats,
         )
-        response.markdown = self._format_outline_markdown(response)
-        response.evaluation_markdown = self._format_mock_evaluation_markdown(response)
         return response
 
     def _extract_text(self, result: object) -> str:
@@ -1011,22 +1008,19 @@ class MetaAgentService(BaseAgentService):
         content: str,
         thread: ThreadSummary,
     ) -> ScreenplayGenerateResponse:
+        """收尾锚点检查（FR-007/REQ-20260930-163019）：只锚定 storyline.md。
+
+        v8 时代还强制要求 outline.md / evaluation.md——v9+ 单故事专家不产出
+        这两个文件，旧检查曾使全新工作目录的任务收尾必炸（DEC-008/009）。
+        """
         title = payload.fallback_title()
-        outline_path = Path(thread.workspace_path) / "outline.md"
-        if not outline_path.exists():
-            raise FileNotFoundError(f"Agent did not write outline.md: {outline_path}")
+        storyline_path = Path(thread.workspace_path) / "storyline.md"
+        if not storyline_path.exists():
+            raise FileNotFoundError(f"未产出故事线（storyline.md 缺失）: {storyline_path}")
 
-        markdown = outline_path.read_text(encoding="utf-8").strip()
-        if not markdown:
-            raise ValueError(f"Agent wrote an empty outline.md: {outline_path}")
-
-        evaluation_path = Path(thread.workspace_path) / "evaluation.md"
-        if not evaluation_path.exists():
-            raise FileNotFoundError(f"Agent did not write evaluation.md: {evaluation_path}")
-
-        evaluation_markdown = evaluation_path.read_text(encoding="utf-8").strip()
-        if not evaluation_markdown:
-            raise ValueError(f"Agent wrote an empty evaluation.md: {evaluation_path}")
+        storyline_markdown = storyline_path.read_text(encoding="utf-8").strip()
+        if not storyline_markdown:
+            raise ValueError(f"未产出故事线（storyline.md 为空）: {storyline_path}")
 
         return ScreenplayGenerateResponse(
             mode="live",
@@ -1036,62 +1030,7 @@ class MetaAgentService(BaseAgentService):
             workspace_path=thread.workspace_path,
             title=title,
             content=content,
-            markdown=markdown,
-            evaluation_markdown=evaluation_markdown,
         )
-
-    def _format_outline_markdown(self, response: ScreenplayGenerateResponse) -> str:
-        beat_lines = "\n".join(
-            f"{index}. {beat}" for index, beat in enumerate(response.beats, start=1)
-        )
-        return (
-            f"# {response.title}\n\n"
-            f"## 故事核心\n\n"
-            f"一句话故事：{response.logline}\n\n"
-            f"故事前提：待补充\n\n"
-            f"核心主题：待补充\n\n"
-            f"类型与基调：待补充\n\n"
-            f"## 结构骨架\n\n"
-            f"结构类型：三幕式\n\n"
-            f"关键转折点：\n{beat_lines}\n\n"
-            f"高潮设计：待补充\n\n"
-            f"## 主线：{response.title}\n\n"
-            f"### 第一段：开端\n\n"
-            f"发生了什么：{response.beats[0] if response.beats else '待补充'}\n"
-            f"走向：\n如何衔接：\n\n"
-            f"### 第二段：推动\n\n"
-            f"发生了什么：{response.beats[1] if len(response.beats) > 1 else '待补充'}\n"
-            f"走向：\n如何衔接：\n\n"
-            f"### 第三段：转折\n\n"
-            f"发生了什么：{response.beats[2] if len(response.beats) > 2 else '待补充'}\n"
-            f"走向：\n如何衔接：\n\n"
-            f"### 第四段：低谷\n\n"
-            f"发生了什么：{response.beats[3] if len(response.beats) > 3 else '待补充'}\n"
-            f"走向：\n如何衔接：\n\n"
-            f"### 第五段：高潮与结局\n\n"
-            f"发生了什么：{response.beats[4] if len(response.beats) > 4 else '待补充'}\n"
-            f"走向：\n如何衔接：\n"
-        )
-
-    def _format_mock_evaluation_markdown(self, response: ScreenplayGenerateResponse) -> str:
-        return (
-            "# 大纲评估报告\n\n"
-            "## 总体结论\n\n"
-            "Mock 模式下的大纲具备基础五段式结构，主角目标、代价和转变方向清晰。"
-            "但具体角色动机、关系压力和关键场景仍偏概括，进入正式创作前建议补充更细的角色选择与情节铺垫。\n\n"
-            "## 评分\n\n"
-            "- 总分：76/100\n"
-            "- 修改建议：建议修改\n\n"
-            "## 核心问题\n\n"
-            "1. 问题：角色行动的具体触发点还不够明确。\n"
-            "   - 影响：后续分场时可能出现角色被剧情推着走的问题。\n"
-            "   - 证据：关键节点以功能性概述为主，缺少具体选择和代价。\n\n"
-            "## 修改建议\n\n"
-            "优先补充主角在推动、转折和低谷处的具体选择，让每个剧情节点由人物欲望和关系压力自然引出。\n\n"
-            "## 给 outline 子代理的修订指令\n\n"
-            "围绕主角的核心恐惧与欲望，补充每个关键节点中的具体行动、阻力、代价和人物关系变化。\n"
-        )
-
 
 def _sse(event_type: str, payload: object) -> str:
     """Format a single Server-Sent Event line."""

@@ -10,7 +10,6 @@
 - 构造时接收 thread，内部持有 active_tasks（task 元信息）/ subagent_call_counts（调用计数）。
 - on_event 既做事件转换（A 类），也在 task 结束时触发后端副作用（B 类）：
     - storybuilding 完成 → 派生流程图（写盘，_on_storybuilding_done）
-    - writing 章节完成 → 算字数塞 tool_output（回流 SSE，_on_writing_chapter_done）
 - 副作用抽成私有方法，缓解 on_event 的可测试性（可单独 mock 验证）。
 
 为什么副作用留在 sink 而非 middleware（D8 验证结论）：
@@ -41,74 +40,6 @@ _CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五":
               "六": 6, "七": 7, "八": 8, "九": 9}
 
 
-def _cn_to_int(text: str) -> int | None:
-    """中文数字转整数（支持 十/百，如"二十三"→23）。无法解析返回 None。"""
-    if not text:
-        return None
-    total = 0
-    section = 0
-    for ch in text:
-        if ch in _CN_DIGITS:
-            section = _CN_DIGITS[ch]
-        elif ch == "十":
-            section = section if section else 1
-            total += section * 10
-            section = 0
-        elif ch == "百":
-            section = section if section else 1
-            total += section * 100
-            section = 0
-        else:
-            return None
-    return total + section if (total or section) else None
-
-
-def _cn_or_int(token: str) -> int | None:
-    """将 "3" 或 "二十三" 统一转为整数。"""
-    token = token.strip()
-    if token.isdigit():
-        return int(token)
-    return _cn_to_int(token)
-
-
-def _extract_chapter_index(description: str) -> int | None:
-    """从 task 描述中正则提取章节号（D6）。支持 "第3章" / "第三章" / "chapter 3" 等。"""
-    if not description:
-        return None
-    m = re.search(r"第\s*([0-9一二三四五六七八九十百]+)\s*章", description)
-    if m:
-        return _cn_or_int(m.group(1))
-    m = re.search(r"chapter[\s\-_]*([0-9]+)", description, re.IGNORECASE)
-    if m:
-        return int(m.group(1))
-    return None
-
-
-def _count_total_chapters(workspace_path: Path) -> int | None:
-    """总章数 = detail/chapter-*.md 的最大编号（D6）。"""
-    detail_dir = workspace_path / "detail"
-    if not detail_dir.exists():
-        return None
-    nums: list[int] = []
-    for path in detail_dir.glob("chapter-*.md"):
-        m = re.search(r"chapter-(\d+)", path.name)
-        if m:
-            nums.append(int(m.group(1)))
-    return max(nums) if nums else None
-
-
-def _count_chapter_words(workspace_path: Path, chapter_index: int) -> int | None:
-    """读 chapter/chapter-XX.md 算去空白字符数（D7 焦点文案字数）。"""
-    chapter_dir = workspace_path / "chapter"
-    for name in (f"chapter-{chapter_index:02d}.md", f"chapter-{chapter_index}.md"):
-        path = chapter_dir / name
-        if path.exists():
-            try:
-                text = path.read_text(encoding="utf-8")
-            except OSError:
-                return None
-            return len(re.sub(r"\s", "", text))
-    return None
 
 
 def _extract_subagent_name(args: object) -> str:
@@ -282,24 +213,16 @@ class WritingEventSink:
             if tool_name == "task":
                 args = tc.get("args", {}) or {}
                 sub = _extract_subagent_name(args)
-                description = str(args.get("description", "") or "")
                 self._subagent_call_counts[sub] = self._subagent_call_counts.get(sub, 0) + 1
                 call_ordinal = self._subagent_call_counts[sub]
-                chapter_index = _extract_chapter_index(description)
-                total_chapters = await asyncio.to_thread(_count_total_chapters, self._workspace_path)
-                # writing 章节号降级：正则失败时按 writing 调用序推断（D6）
-                if sub == "writing" and chapter_index is None:
-                    chapter_index = call_ordinal
+                # FR-004：v8 章节统计（chapter_index/total_chapters，detail//chapter/ 目录）
+                # 已随细纲/正文链路退役——单故事专家只有轮次（iteration）语义。
                 if call_id:
                     self._active_tasks[call_id] = {
                         "name": sub,
-                        "chapter_index": chapter_index,
-                        "total_chapters": total_chapters,
                         "iteration": call_ordinal,
                     }
                 call_payload["subagent_type"] = sub
-                call_payload["chapter_index"] = chapter_index
-                call_payload["total_chapters"] = total_chapters
                 call_payload["iteration"] = call_ordinal
             frames.append(_sse("tool_call", call_payload))
         return frames
@@ -331,10 +254,6 @@ class WritingEventSink:
 
         if finished_subagent == "storybuilding":
             await self._on_storybuilding_done()
-        elif finished_subagent == "writing":
-            chapter_index = task_meta.get("chapter_index")
-            if chapter_index:
-                await self._on_writing_chapter_done(chapter_index, output_payload)
 
     async def _on_storybuilding_done(self) -> None:
         """storybuilding 完成后派生流程图（写盘副作用）。
@@ -344,29 +263,6 @@ class WritingEventSink:
         仅保留 generate_storyline_graph 派生 mermaid 流程图（确定性纯后端，失败吞掉不阻断）。
         """
         await asyncio.to_thread(generate_storyline_graph, self._workspace_path)
-
-    async def _on_writing_chapter_done(self, chapter_index: int, output_payload: dict[str, Any]) -> None:
-        """writing 章节完成后算字数 + 章节正文抽取入库（D7 + NWM Causal Publish Flow）。
-
-        两个副作用：
-          1. 算字数塞进 output_payload（随 tool_output 推前端，D7）
-          2. 章节正文抽取 typed records 入 memory.db（Causal Publish Flow，FR-002 抽触发器复用）
-
-        抽取是 asyncio.to_thread 异步执行，失败由 ingestion.py 写 .memory_unhealthy flag，
-        下一次 memory_recall 检测到则降级全量注入（D-R5-1），不阻断 SSE 流。
-        """
-        word_count = await asyncio.to_thread(_count_chapter_words, self._workspace_path, chapter_index)
-        if word_count is not None:
-            output_payload["word_count"] = word_count
-            output_payload["chapter_index"] = chapter_index
-        # NWM Causal Publish Flow：extract → embed → store（FR-002 抽触发器，生产/A/B 复用同一逻辑）
-        # 抽取器未启用时 trigger_chapter_ingestion 内部直接 return（记忆功能关闭）
-        # FR-002：self._ingestion_cb 在 __init__ 构造一次（含 status 字段，CON-001 必填）。
-        await asyncio.to_thread(
-            trigger_chapter_ingestion,
-            self._workspace_path, self._workspace_id, chapter_index,
-            self._ingestion_cb,
-        )
 
 
 def _make_ingestion_publish_callback(trace_recorder, trace_id: str | None):
@@ -406,7 +302,9 @@ def trigger_chapter_ingestion(
 ) -> None:
     """章节完成后触发逐章抽取入库（FR-002 抽触发器，生产路径与 A/B 路径复用）。
 
-    NWM Causal Publish Flow：extract → embed → store。从 WritingEventSink._on_writing_chapter_done
+    NWM Causal Publish Flow：extract → embed → store。原由 WritingEventSink 的章节完成钩子触发；
+    v8 章节链路退役后（FR-004/REQ-20260930-163019）暂无 SSE 侧触发点，保留为记忆子系统入口
+    （恢复多 Agent 或记忆系统改造时重接）
     解耦出纯粹的"章节抽取入库"副作用，供生产路径（经 sink 包装）和 A/B 路径（stream 循环
     在 super-step 边界检测到新章节后直接调用）复用同一逻辑，避免分叉。
 

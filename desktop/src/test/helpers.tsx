@@ -154,13 +154,13 @@ export async function resetStores() {
   });
   useTraceStore.setState({
     traceRuns: [], activeTraceId: "", liveTraceId: "", traceDetail: null,
-    historyDetails: new Map(), traceLoading: false, deletingTraceId: "",
+    historyDetails: new Map(), traceLoading: false,
   });
   useContentStore.setState({
-    outlineMarkdown: "", outlineLoading: false,
     characters: [], charactersLoading: false, activeCharacterFilename: "",
     worldviewMarkdown: "", worldviewLoading: false,
-    storylineMarkdown: "", storylineEntries: [], activeStorylineFilename: "",
+    storylineMarkdown: "", storylineEntries: [], storylinePanorama: [],
+    storylineFormat: "v2", activeStorylineFilename: "",
   });
 }
 

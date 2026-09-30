@@ -3,7 +3,7 @@
 验证从 agent.py 抽离的 WritingEventSink：
 - 事件转换：on_chat_model_end → model_output，on_tool_error → tool_error 等。
 - task 调度元信息：on_chain_start(task) 记录 active_tasks。
-- 领域副作用：storybuilding task 结束触发流程图生成；writing task 结束算字数。
+- 领域副作用：storybuilding task 结束触发 timeline 派生（FR-004：v8 章节统计链路已退役）。
 
 不测完整 SSE 流（那需要真实 agent），只测 sink 对单个事件的处理产出。
 """
@@ -15,52 +15,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
-from app.domains.writing.events import (
-    WritingEventSink,
-    _extract_chapter_index,
-    _cn_to_int,
-    _count_chapter_words,
-)
+from app.domains.writing.events import WritingEventSink
 
 
 def _make_thread(workspace_path: str = "/tmp/ws") -> SimpleNamespace:
     """构造带 workspace_path 的伪 thread 对象。"""
     return SimpleNamespace(workspace_path=workspace_path)
-
-
-class TestChapterIndexExtraction(unittest.TestCase):
-    """章节号正则提取（D6）。"""
-
-    def test_arabic_numeral(self):
-        self.assertEqual(_extract_chapter_index("请写第3章"), 3)
-
-    def test_chinese_numeral(self):
-        self.assertEqual(_extract_chapter_index("请写第三章"), 3)
-
-    def test_chinese_two_digit(self):
-        self.assertEqual(_extract_chapter_index("第二十三章"), 23)
-
-    def test_chapter_english(self):
-        self.assertEqual(_extract_chapter_index("write chapter 5"), 5)
-
-    def test_no_match(self):
-        self.assertIsNone(_extract_chapter_index("继续写作"))
-
-
-class TestCnToInt(unittest.TestCase):
-    """中文数字转整数。"""
-
-    def test_simple(self):
-        self.assertEqual(_cn_to_int("五"), 5)
-
-    def test_ten(self):
-        self.assertEqual(_cn_to_int("十"), 10)
-
-    def test_tens(self):
-        self.assertEqual(_cn_to_int("二十三"), 23)
-
-    def test_hundreds(self):
-        self.assertEqual(_cn_to_int("一百"), 100)
 
 
 class TestWritingEventSinkBasicEvents(unittest.TestCase):
@@ -148,21 +108,6 @@ class TestWritingEventSinkTaskSideEffects(unittest.TestCase):
         with patch("app.domains.writing.events.generate_storyline_graph") as mock_graph:
             frames = asyncio.run(sink.on_event(event))
             mock_graph.assert_called_once_with(Path("/tmp/ws"))
-
-    def test_writing_task_end_computes_word_count(self):
-        """writing task 结束 → 算字数塞进 tool_output 帧。"""
-        sink = WritingEventSink(_make_thread("/tmp/ws"))
-        sink._active_tasks["call-2"] = {"name": "writing", "chapter_index": 3}
-        event = {
-            "event": "on_tool_end", "name": "task",
-            "data": {"output": "done", "input": {"id": "call-2"}},
-        }
-        with patch("app.domains.writing.events._count_chapter_words", return_value=1234):
-            frames = asyncio.run(sink.on_event(event))
-            self.assertEqual(len(frames), 1)
-            self.assertIn("tool_output", frames[0])
-            self.assertIn("1234", frames[0])
-            self.assertIn("chapter_index", frames[0])
 
     def test_non_task_tool_end_no_side_effect(self):
         """非 task 工具结束 → 无副作用，仅 tool_output 帧。"""

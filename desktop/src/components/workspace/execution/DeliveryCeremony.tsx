@@ -28,11 +28,10 @@ function formatDuration(ms: number | null | undefined): string | null {
 export function DeliveryCeremony({ message, stageFlow }: DeliveryCeremonyProps) {
   const deliveryLine = useMemo(() => pickRandom(DELIVERY_COPY).text, []);
 
-  // 从 stageFlow 派生摘要
+  // 从 stageFlow 派生摘要（FR-004：v8 章数/字数展示已随细纲正文链路退役，仅保留耗时与轮次）
   const totalDuration = formatDuration(stageFlow?.totalDurationMs);
   const writingStage = stageFlow?.stages.find((s) => s.type === "storybuilding");
-  const totalWords = writingStage?.subSteps.reduce((sum, s) => sum + (s.wordCount ?? 0), 0) ?? null;
-  const chapterCount = writingStage?.subSteps.length ?? null;
+  const iterationCount = writingStage?.subSteps.length ?? null;
 
   return (
     <div className="yan-delivery" data-phase="delivering">
@@ -41,13 +40,10 @@ export function DeliveryCeremony({ message, stageFlow }: DeliveryCeremonyProps) 
         <span className="yan-delivery-title">{deliveryLine}</span>
       </div>
 
-      {(totalWords != null || chapterCount != null || totalDuration != null) && (
+      {(iterationCount != null || totalDuration != null) && (
         <div className="yan-delivery-summary">
-          {chapterCount != null && chapterCount > 0 ? (
-            <span className="yan-delivery-stat">{chapterCount} 章正文</span>
-          ) : null}
-          {totalWords != null ? (
-            <span className="yan-delivery-stat">{totalWords.toLocaleString()} 字</span>
+          {iterationCount != null && iterationCount > 0 ? (
+            <span className="yan-delivery-stat">{iterationCount} 轮构建</span>
           ) : null}
           {totalDuration != null ? (
             <span className="yan-delivery-stat">耗时 {totalDuration}</span>

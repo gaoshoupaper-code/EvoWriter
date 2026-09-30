@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CharacterGenerateRequest, CharacterGenerateResponse, CheckpointState, InitResponse, Style, ThreadSummary, TraceDetail, TraceRunSummary, WorkspaceBootstrapResponse, WorkspaceCharacterContent, WorkspaceDetailOutlineContent, WorkspaceNovelContent, WorkspaceOutlineContent, WorkspaceStorylineContent, WorkspaceWorldviewContent, WorkspaceStorylineGraphContent, WorkspaceSummary } from "./types";
+import type { CharacterGenerateRequest, CharacterGenerateResponse, CheckpointState, InitResponse, Style, ThreadSummary, TraceDetail, TraceRunSummary, WorkspaceBootstrapResponse, WorkspaceCharacterContent, WorkspaceStorylineContent, WorkspaceWorldviewContent, WorkspaceSummary } from "./types";
 
 /**
  * 桌面端所有请求走 Rust 中继（设计文档 S4/S5）：
@@ -495,10 +495,6 @@ export async function deleteThread(threadId: string) {
   return parseJsonResponse<{ status: string; deleted: string }>(response);
 }
 
-export async function fetchWorkspaceOutline(workspaceId: string) {
-  const response = await apiFetch(`${API_BASE_URL}/api/workspaces/${workspaceId}/outline`);
-  return parseJsonResponse<WorkspaceOutlineContent>(response);
-}
 
 export async function fetchWorkspaceWorldview(workspaceId: string) {
   const response = await apiFetch(`${API_BASE_URL}/api/workspaces/${workspaceId}/worldview`);
@@ -510,25 +506,13 @@ export async function fetchWorkspaceStoryline(workspaceId: string) {
   return parseJsonResponse<WorkspaceStorylineContent>(response);
 }
 
-export async function fetchWorkspaceStorylineGraph(workspaceId: string) {
-  const response = await apiFetch(`${API_BASE_URL}/api/workspaces/${workspaceId}/storyline-graph`);
-  return parseJsonResponse<WorkspaceStorylineGraphContent>(response);
-}
 
-export async function fetchWorkspaceDetailOutline(workspaceId: string) {
-  const response = await apiFetch(`${API_BASE_URL}/api/workspaces/${workspaceId}/detail-outline`);
-  return parseJsonResponse<WorkspaceDetailOutlineContent>(response);
-}
 
 export async function fetchWorkspaceCharacters(workspaceId: string) {
   const response = await apiFetch(`${API_BASE_URL}/api/workspaces/${workspaceId}/characters`);
   return parseJsonResponse<WorkspaceCharacterContent>(response);
 }
 
-export async function fetchWorkspaceNovel(workspaceId: string) {
-  const response = await apiFetch(`${API_BASE_URL}/api/workspaces/${workspaceId}/novel`);
-  return parseJsonResponse<WorkspaceNovelContent>(response);
-}
 
 
 export async function fetchThreadTraces(threadId: string) {
@@ -541,13 +525,6 @@ export async function fetchTraceDetail(threadId: string, traceId: string) {
   return parseJsonResponse<TraceDetail>(response);
 }
 
-export async function deleteTrace(threadId: string, traceId: string) {
-  const response = await apiFetch(`${API_BASE_URL}/api/threads/${threadId}/traces/${traceId}`, {
-    method: "DELETE",
-  });
-
-  return parseJsonResponse<{ status: string; deleted: string }>(response);
-}
 
 export async function stopScreenplay(threadId: string, traceId: string) {
   // D-停止真生效：后端 request_user_stop（设 reason 标记）+ cancel_run_task（真 task.cancel）。
@@ -629,10 +606,6 @@ export async function activateStyle(workspaceId: string, styleId: string | null)
   return parseJsonResponse<WorkspaceSummary>(response);
 }
 
-export async function fetchThreadOutline(threadId: string) {
-  const response = await apiFetch(`${API_BASE_URL}/api/threads/${threadId}/outline`);
-  return parseJsonResponse<WorkspaceOutlineContent>(response);
-}
 
 export async function generateCharacter(payload: CharacterGenerateRequest) {
   const response = await apiFetch(`${API_BASE_URL}/api/character/generate`, {

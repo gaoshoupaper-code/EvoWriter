@@ -29,17 +29,14 @@ import {
 
 // 内容面板数据类型（bootstrap/switchWorkspace 返回，供 contentStore 消费）
 export interface ContentData {
-  outlineMarkdown: string;
   storylineMarkdown: string;
   storylineEntries: { filename: string; title: string; markdown: string }[];
+  storylinePanorama: { t: string; name: string; type: string; storylines: string[]; characters: string; location: string; desc: string }[];
+  storylineFormat: string;
   activeStorylineFilename: string;
   worldviewMarkdown: string;
-  detailOutlineChapters: { filename: string; title: string; markdown: string }[];
-  activeDetailChapterFilename: string;
   characters: { filename: string; name: string; markdown: string }[];
   activeCharacterFilename: string;
-  novelChapters: { filename: string; title: string; markdown: string }[];
-  activeNovelFilename: string;
 }
 
 type ThemeMode = "light" | "dark";
@@ -195,9 +192,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       const workspace = await createWorkspaceRequest(title, get().newWorkspaceDomain);
       set({
         threads: [], activeThreadId: "",
-        outlineMarkdown: "", storylineMarkdown: "", storylineEntries: [], activeStorylineFilename: "",
-        worldviewMarkdown: "", detailOutlineChapters: [], activeDetailChapterFilename: "",
-        characters: [], activeCharacterFilename: "", novelChapters: [], activeNovelFilename: "",
+        storylineMarkdown: "", storylineEntries: [], activeStorylineFilename: "",
+        worldviewMarkdown: "",
+        characters: [], activeCharacterFilename: "",
         workspaces: [workspace, ...get().workspaces],
         activeWorkspaceId: workspace.workspace_id,
         newWorkspaceName: "失忆编剧大纲",
@@ -357,17 +354,14 @@ async function loadWorkspaceData(
     });
 
     const content: ContentData = {
-      outlineMarkdown: data.outline?.markdown || "",
       storylineMarkdown: data.storyline?.index_markdown || "",
       storylineEntries: data.storyline?.entries || [],
-      activeStorylineFilename: data.storyline?.entries[0]?.filename || "",
+      storylinePanorama: data.storyline?.panorama || [],
+      storylineFormat: data.storyline?.format || "v2",
+      activeStorylineFilename: "",
       worldviewMarkdown: data.worldview?.markdown || "",
-      detailOutlineChapters: data.detail_outline?.chapters || [],
-      activeDetailChapterFilename: data.detail_outline?.chapters[0]?.filename || "",
       characters: data.characters?.characters || [],
       activeCharacterFilename: data.characters?.characters[0]?.filename || "",
-      novelChapters: data.novel?.chapters || [],
-      activeNovelFilename: data.novel?.chapters[0]?.filename || "",
     };
     return content;
   } catch (err) {

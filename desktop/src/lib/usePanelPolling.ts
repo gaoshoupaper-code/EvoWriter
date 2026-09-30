@@ -1,26 +1,17 @@
 
 import { useEffect, useRef } from "react";
-import type {
-  CharacterMarkdownFile,
-  DetailOutlineChapter,
-  NovelChapter,
-  StorylineEntry,
-} from "./types";
+import type { CharacterMarkdownFile, PanoramaEvent, StorylineEntry } from "./types";
 import type { WorkspacePanel } from "./types";
 import {
   fetchWorkspaceCharacters,
-  fetchWorkspaceDetailOutline,
-  fetchWorkspaceNovel,
-  fetchWorkspaceOutline,
   fetchWorkspaceStoryline,
   fetchWorkspaceWorldview,
 } from "./api";
 
 const POLL_INTERVAL_MS = 2000;
 
-// 不参与轮询的面板：chat 走独立 /generate/stream（聊天区不动）；
-// storyline/trace 是自管数据的独立组件，不依赖本 Hook 维护的内容 state。
-const NON_POLL_PANELS: ReadonlySet<WorkspacePanel> = new Set(["chat", "storyline", "trace"]);
+// 不参与轮询的面板：chat 走独立 /generate/stream（聊天区不动）。
+const NON_POLL_PANELS: ReadonlySet<WorkspacePanel> = new Set(["chat"]);
 
 /**
  * 内容面板的 setter 集合。签名刻意与 page.tsx 里 useState 返回的 setter 对齐，
@@ -32,6 +23,8 @@ export interface PanelPollingSetters {
 
   setStorylineMarkdown: (s: string) => void;
   setStorylineEntries: (e: StorylineEntry[]) => void;
+  setStorylinePanorama: (e: PanoramaEvent[]) => void;
+  setStorylineFormat: (v: string) => void;
   setActiveStorylineFilename: (fn: (cur: string) => string) => void;
 
 
@@ -41,9 +34,6 @@ export interface PanelPollingSetters {
 
   setWorldviewMarkdown: (s: string) => void;
   setWorldviewLoading: (b: boolean) => void;
-
-  setOutlineMarkdown: (s: string) => void;
-  setOutlineLoading: (b: boolean) => void;
 }
 
 export interface UsePanelPollingParams {
@@ -67,7 +57,7 @@ function keepActiveFilename(current: string, filenames: string[]): string {
  *
  * 行为规约（对应需求/设计的冻结决策）：
  * - 仅 loading=true（生成中）时轮询；否则不发起任何请求。
- * - 仅轮询当前打开的面板；chat/storyline/trace 不参与。
+ * - 仅轮询当前打开的面板；chat 不参与。
  * - bootstrapping=true 时跳过当前周期（bootstrap 为权威源，避免切换工作区状态闪烁），
  *   但不取消定时器，等 bootstrap 结束后自然恢复。
  * - activePanel / activeWorkspaceId 变化时立即拉一次（切换即拉），再起 2s 周期。
@@ -96,20 +86,13 @@ export function usePanelPolling({
     try {
       switch (panel) {
         case "script": {
-          // script 面板展示 storyline（markdown），同时顺带更新 outline（chat 辅助显示）。
+          // script 面板展示 storyline（含全景表数据 panorama，FR-003）。
           const data = await fetchWorkspaceStoryline(workspaceId);
           s.setStorylineMarkdown(data.index_markdown);
           s.setStorylineEntries(data.entries);
-          s.setActiveStorylineFilename((cur) => keepActiveFilename(cur, data.entries.map((e) => e.filename)));
-          try {
-            const outline = await fetchWorkspaceOutline(workspaceId);
-            if (outline?.markdown !== undefined) {
-              s.setOutlineMarkdown(outline.markdown);
-              s.setOutlineLoading(false);
-            }
-          } catch {
-            // outline 顺带拉取失败不影响 script 主面板，吞掉。
-          }
+          s.setStorylinePanorama(data.panorama);
+          s.setStorylineFormat(data.format);
+          s.setActiveStorylineFilename((cur) => keepActiveFilename(cur, data.entries.map((e) => e.title)));
           break;
         }
         case "characters": {
@@ -126,7 +109,7 @@ export function usePanelPolling({
           break;
         }
         default:
-          // chat/storyline/trace：不轮询。
+          // chat：不轮询。
           break;
       }
     } catch {

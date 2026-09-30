@@ -6,12 +6,10 @@
  * 轮询逻辑保留在 usePanelPolling hook（它直接读这个 store 的 setter）。
  */
 import { create } from "zustand";
-import type { CharacterMarkdownFile, StorylineEntry } from "../lib/types";
+import type { CharacterMarkdownFile, PanoramaEvent, StorylineEntry } from "../lib/types";
 import type { ContentData } from "./workspace";
 
 interface ContentState {
-  outlineMarkdown: string;
-  outlineLoading: boolean;
   characters: CharacterMarkdownFile[];
   charactersLoading: boolean;
   activeCharacterFilename: string;
@@ -19,26 +17,26 @@ interface ContentState {
   worldviewLoading: boolean;
   storylineMarkdown: string;
   storylineEntries: StorylineEntry[];
+  storylinePanorama: PanoramaEvent[];
+  storylineFormat: string;
   activeStorylineFilename: string;
 
   // actions
   setContentData: (data: ContentData) => void;
   clearContent: () => void;
-  setOutlineMarkdown: (v: string) => void;
   setStorylineMarkdown: (v: string) => void;
   setStorylineEntries: (v: StorylineEntry[]) => void;
+  setStorylinePanorama: (v: PanoramaEvent[]) => void;
+  setStorylineFormat: (v: string) => void;
   setActiveStorylineFilename: (v: string) => void;
   setWorldviewMarkdown: (v: string) => void;
   setCharacters: (v: CharacterMarkdownFile[]) => void;
   setActiveCharacterFilename: (v: string) => void;
-  setOutlineLoading: (v: boolean) => void;
   setCharactersLoading: (v: boolean) => void;
   setWorldviewLoading: (v: boolean) => void;
 }
 
 export const useContentStore = create<ContentState>((set) => ({
-  outlineMarkdown: "",
-  outlineLoading: false,
   characters: [],
   charactersLoading: false,
   activeCharacterFilename: "",
@@ -46,13 +44,16 @@ export const useContentStore = create<ContentState>((set) => ({
   worldviewLoading: false,
   storylineMarkdown: "",
   storylineEntries: [],
+  storylinePanorama: [],
+  storylineFormat: "v2",
   activeStorylineFilename: "",
 
   setContentData: (data) =>
     set({
-      outlineMarkdown: data.outlineMarkdown,
       storylineMarkdown: data.storylineMarkdown,
       storylineEntries: data.storylineEntries,
+      storylinePanorama: data.storylinePanorama,
+      storylineFormat: data.storylineFormat,
       activeStorylineFilename: data.activeStorylineFilename,
       worldviewMarkdown: data.worldviewMarkdown,
       characters: data.characters,
@@ -61,23 +62,24 @@ export const useContentStore = create<ContentState>((set) => ({
 
   clearContent: () =>
     set({
-      outlineMarkdown: "",
       storylineMarkdown: "",
       storylineEntries: [],
+      storylinePanorama: [],
+      storylineFormat: "v2",
       activeStorylineFilename: "",
       worldviewMarkdown: "",
       characters: [],
       activeCharacterFilename: "",
     }),
 
-  setOutlineMarkdown: (v) => set({ outlineMarkdown: v }),
   setStorylineMarkdown: (v) => set({ storylineMarkdown: v }),
   setStorylineEntries: (v) => set({ storylineEntries: v }),
+  setStorylinePanorama: (v) => set({ storylinePanorama: v }),
+  setStorylineFormat: (v) => set({ storylineFormat: v }),
   setActiveStorylineFilename: (v) => set({ activeStorylineFilename: v }),
   setWorldviewMarkdown: (v) => set({ worldviewMarkdown: v }),
   setCharacters: (v) => set({ characters: v }),
   setActiveCharacterFilename: (v) => set({ activeCharacterFilename: v }),
-  setOutlineLoading: (v) => set({ outlineLoading: v }),
   setCharactersLoading: (v) => set({ charactersLoading: v }),
   setWorldviewLoading: (v) => set({ worldviewLoading: v }),
 }));

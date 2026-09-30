@@ -19,7 +19,6 @@ from app.schemas.screenplay import (
     ThreadCreateRequest,
     ThreadSummary,
     ThreadUpdateRequest,
-    WorkspaceOutlineContent,
 )
 from app.platform.trace import TraceDetail, TraceRunSummary
 
@@ -72,14 +71,6 @@ async def delete_thread(thread_id: str, user: CurrentUser = Depends(current_user
     await get_agent_service().delete_thread_checkpoint(thread_id, owner_id=user.user_id)
     await get_character_service().delete_thread_checkpoint(thread_id)
     return {"status": "ok", "deleted": thread_id}
-
-
-@router.get("/threads/{thread_id}/outline", response_model=WorkspaceOutlineContent)
-def get_thread_outline(thread_id: str, user: CurrentUser = Depends(current_user)) -> WorkspaceOutlineContent:
-    content = get_thread_store().artifacts.read_thread_outline(user.user_id, thread_id)
-    if content is None:
-        raise HTTPException(status_code=404, detail="Thread not found")
-    return content
 
 
 @router.get("/threads/{thread_id}/checkpoint", response_model=CheckpointState)

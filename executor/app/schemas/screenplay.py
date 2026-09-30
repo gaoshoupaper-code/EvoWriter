@@ -43,15 +43,26 @@ class ThreadSummary(BaseModel):
     user_id: str = "unknown"
 
 
-class WorkspaceOutlineContent(BaseModel):
-    workspace_id: str
-    markdown: str
-
-
 class StorylineEntry(BaseModel):
     filename: str
     title: str
     markdown: str
+
+
+class PanoramaEvent(BaseModel):
+    """大纲全景表事件行（FR-003/DEC-005：时序/所属线/事件/类型/角色/地点/描述）。
+
+    t = 原始时序号文本（T1 / T12.5，保留插入语义——DEC-010）；
+    storylines = 全部参与线名（多条 = 交汇事件，DEC-010）。
+    """
+
+    t: str = ""
+    name: str = ""
+    type: str = ""
+    storylines: list[str] = Field(default_factory=list)
+    characters: str = ""
+    location: str = ""
+    desc: str = ""
 
 
 class WorkspaceStorylineContent(BaseModel):
@@ -60,6 +71,8 @@ class WorkspaceStorylineContent(BaseModel):
     format="v2"：storyline.md 单文件（故事核心 + 线区块）——markdown 承载全文，
     entries 按线区块拆分（title=线名），index_markdown 同 markdown（兼容旧前端字段）。
     format="legacy"：旧多文件格式（storyline/ 目录）——维持旧读取行为（FR-013 降级）。
+    panorama：跨线全景事件列表（FR-003/REQ-20260930-163019，仅 v2 有值——
+    legacy 旧格式不解析，前端降级为按线分区块视图）。
     """
 
     workspace_id: str
@@ -68,89 +81,12 @@ class WorkspaceStorylineContent(BaseModel):
     index_markdown: str = ""
     entries: list[StorylineEntry] = Field(default_factory=list)
     file_count: int = 0
-
-
-class StorylineGraphStoryline(BaseModel):
-    """故事线（= 图中一列泳道）。"""
-
-    id: str
-    name: str = ""
-    type: str = ""
-    status: str = ""
-    direction: str = ""
-    locations: str = ""
-    key_events: list[str] = Field(default_factory=list)
-
-
-class StorylineGraphEvent(BaseModel):
-    """事件节点。storylines 多条 = 交汇事件。"""
-
-    id: str
-    name: str = ""
-    type: str = ""
-    stage: str = ""
-    location: str = ""
-    characters: str = ""
-    storylines: list[str] = Field(default_factory=list)
-    t_num: float = 0.0
-    group: str = ""
-    doc_order: int = 0
-
-
-class WorkspaceStorylineGraphContent(BaseModel):
-    """故事线流程图内容（派生 markdown + 结构化数据）。
-
-    storylines/events/t_map = 结构化数据，供前端 reactflow 自定义布局
-    （按 t_map 统一纵轴对齐时间，主线居中贯穿、支线左右并行）。
-    markdown = 完整 storyline_graph.md 文本（备查）。
-    stale = 本次读取是否触发了按需重生成。
-    """
-
-    workspace_id: str
-    markdown: str
-    storylines: list[StorylineGraphStoryline] = Field(default_factory=list)
-    events: dict[str, StorylineGraphEvent] = Field(default_factory=dict)
-    t_map: dict[str, int] = Field(default_factory=dict)
-    storyline_count: int = 0
-    event_count: int = 0
-    generated_at: str = ""
-    stale: bool = False
+    panorama: list[PanoramaEvent] = Field(default_factory=list)
 
 
 class WorkspaceWorldviewContent(BaseModel):
     workspace_id: str
     markdown: str
-
-
-class DetailOutlineChapter(BaseModel):
-    filename: str
-    title: str
-    markdown: str
-
-
-class WorkspaceDetailOutlineContent(BaseModel):
-    workspace_id: str
-    chapters: list[DetailOutlineChapter]
-    file_count: int = 0
-
-
-class WorkspaceNovelContent(BaseModel):
-    workspace_id: str
-    markdown: str
-    source: str = "novel.md"
-    chapter_count: int = 0
-
-
-class WorkspaceNovelChapter(BaseModel):
-    filename: str
-    title: str
-    markdown: str
-
-
-class WorkspaceNovelChaptersContent(BaseModel):
-    workspace_id: str
-    source: str = "novel.md"
-    chapters: list[WorkspaceNovelChapter]
 
 
 class CharacterMarkdownFile(BaseModel):
@@ -205,8 +141,6 @@ class ScreenplayGenerateResponse(BaseModel):
     logline: str = ""
     synopsis: str = ""
     beats: list[str] = Field(default_factory=list)
-    markdown: str = ""
-    evaluation_markdown: str = ""
 
 
 class InitResponse(BaseModel):
@@ -216,11 +150,11 @@ class InitResponse(BaseModel):
 
 
 class WorkspaceBootstrapResponse(BaseModel):
-    """GET /api/workspaces/{id}/bootstrap — 选中工作区后一次性返回全部面板数据。"""
+    """GET /api/workspaces/{id}/bootstrap — 选中工作区后一次性返回全部面板数据。
+
+    FR-004/005（REQ-20260930-163019）：outline/detail_outline/novel 已随 v8 产物链路退役。
+    """
     threads: list[ThreadSummary]
-    outline: WorkspaceOutlineContent | None = None
     storyline: WorkspaceStorylineContent | None = None
-    detail_outline: WorkspaceDetailOutlineContent | None = None
     characters: WorkspaceCharacterContent | None = None
-    novel: WorkspaceNovelChaptersContent | None = None
     worldview: WorkspaceWorldviewContent | None = None

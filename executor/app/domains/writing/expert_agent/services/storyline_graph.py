@@ -1,15 +1,16 @@
-"""StorylineGraph — 从 storyline.md（单文件区块格式）派生泳道图 + 全景时间轴。
+"""StorylineGraph — 从 storyline.md（单文件区块格式）派生 timeline 与全景事件数据。
 
-纯后端、确定性生成（不依赖 LLM 画图）：
+纯后端、确定性生成（不依赖 LLM）：
   读 workspace/storyline.md（故事核心 + 一线一区块 + 事件表）→ 解析线/事件/交汇
-  → 按事件「时序」列的 T 号排序 → 生成 mermaid 泳道图（storyline_graph.md）
-  与全景时间轴（timeline.md）。
+  → 按事件「时序」列的 T 号排序 → 生成全景时间轴（timeline.md，agent 只读上下文）
+  与跨线全景事件列表（前端大纲全景表数据源）。
 
-设计契约（REQ-20260930-002231，承接 .claude/md/20260611_164126_故事线流程图设计.md）：
+设计契约（REQ-20260930-002231 建立，REQ-20260930-163019 FR-002 收敛）：
   - 直接操作 workspace 真实磁盘，绕过 agent 的 virtual fs / 权限系统（agent 权限零改动）；
-  - storyline.md 只读不改；mermaid 语法由代码生成，100% 正确；
-  - 解析失败 → 跳过 + 日志，绝不抛异常（派生视图不能拖累编故事主流程）；
-  - 旧格式（storyline/ 目录多文件）不再解析——降级返回 None（DEC-011）。
+  - storyline.md 只读不改；派生失败 → 跳过 + 日志，绝不抛异常（派生视图不能拖累编故事主流程）；
+  - 旧格式（storyline/ 目录多文件）不再解析——降级返回 None；
+  - 泳道图（storyline_graph.md）已停产——泳道页签随 FR-002 下线，timeline.md 因
+    harness prompt 将其列为 agent 只读产物而保留派生。
 
 解析依据 storybuilding_system.md 规范格式（线区块头 `## {线名} · {类型} · {状态}`
 + 线头两字段 + 事件表 `| 时序 | 事件 | 类型 | 阶段 | 地点 | 角色 | 交汇 | 描述 |`），
@@ -42,34 +43,6 @@ _T_NUM = re.compile(r"^[Tt]?\s*(\d+(?:\.\d+)?)\s*$")
 _TABLE_HEADER_HINT = re.compile(r"^\|.*时序.*\|.*事件.*\|")
 _TABLE_SEPARATOR = re.compile(r"^\|[\s|:-]+\|$")
 
-# 故事线类型 → mermaid classDef 别名 / 配色。按「包含」匹配。
-# 顺序敏感：先判暗线（复合标注里若含「暗线」视为暗线阶段），再主线/支线/角色。
-_TYPE_RULES: list[tuple[str, str, str]] = [
-    ("暗线", "laneDark", "#9b9b9b"),
-    ("主线", "laneMain", "#4a90d9"),
-    ("支线", "laneSub", "#7ac17a"),
-    ("角色", "laneChar", "#d98a4a"),
-]
-
-
-def _classify_type(type_text: str) -> tuple[str, str]:
-    """返回 (classDef 别名, 配色)。未命中给默认灰。"""
-    for keyword, alias, color in _TYPE_RULES:
-        if keyword in type_text:
-            return alias, color
-    return "laneOther", "#cccccc"
-
-
-def _sanitize_label(text: str) -> str:
-    """mermaid 节点/子图标签内不能出现双引号、换行、方括号（会破坏 ["..."] 语法）。"""
-    return (
-        text.replace('"', "'")
-        .replace("\n", " ")
-        .replace("[", "(")
-        .replace("]", ")")
-        .strip()
-    )
-
 
 def _split_cells(row: str) -> list[str]:
     return [c.strip() for c in row.strip().strip("|").split("|")]
@@ -92,13 +65,14 @@ class Event:
     characters: str = ""
     storylines: tuple[str, ...] = ()  # 全部参与线名（主属线 + 交汇线），多条=交汇事件
     t_num: float = 0.0  # 时序号数值（T1 → 1.0；T12.5 → 12.5；缺时序按 0 兜底）
+    t_raw: str = ""  # 时序号原文（"T1"/"T12.5"）——全景表按原文展示（DEC-010）
     desc: str = ""
     doc_order: int = 0  # 在 storyline.md 中的行号（解析兜底与稳定 tiebreak）
 
 
 @dataclass
 class Storyline:
-    """一条故事线（= 图中的一列泳道）。"""
+    """一条故事线。"""
 
     id: str  # 线名（名称即锚点）
     name: str  # 同 id
@@ -207,6 +181,8 @@ def _parse_storyline_md(text: str) -> tuple[list[Storyline], dict[str, Event]]:
             ev.desc = ev.desc or cell(cells, "描述")
             if t_match:
                 ev.t_num = float(t_match.group(1))
+            if t_raw:
+                ev.t_raw = ev.t_raw or t_raw
             # 主属线 = 事件行所在区块；交汇线补充进参与线集合
             members = [current_line, *cross_names]
             seen: list[str] = []
@@ -253,84 +229,7 @@ def _assign_global_t(events: dict[str, Event]) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
-# mermaid 泳道图生成
-# ---------------------------------------------------------------------------
-
-
-def _build_mermaid(
-    storylines: list[Storyline], events: dict[str, Event], t_map: dict[str, int]
-) -> str:
-    """生成 flowchart TD 竖向泳道图。
-
-    结构要点：
-      - 每条故事线一个 subgraph（一列泳道）；事件节点定义在其主属泳道（事件行所在区块）；
-      - 每条线按事件序列连边；同泳道实线 `-->`=时间先后，跨泳道虚线 `-.->`=交汇；
-      - 交汇节点（属≥2 线）用红色粗边框 class 高亮，覆盖线底色以突出。
-    """
-    # mermaid 节点 id 必须是 ASCII 标识符——名称即锚点后改用序号 id，label 承载名称
-    node_id: dict[str, str] = {}
-    for rank, ev in enumerate(sorted(events.values(), key=lambda e: e.doc_order), start=1):
-        node_id[ev.id] = f"e{rank}"
-    lane_id: dict[str, str] = {}
-    for i, sl in enumerate(storylines):
-        lane_id[sl.id] = f"s{i}"
-
-    # 主属泳道：事件行所在区块的线（storylines[0]）
-    primary_lane = {eid: ev.storylines[0] for eid, ev in events.items() if ev.storylines}
-
-    lines = ["flowchart TD"]
-
-    # classDef：每种出现过的故事线类型一套配色 + 交汇高亮
-    seen_alias: dict[str, str] = {}
-    for sl in storylines:
-        alias, color = _classify_type(sl.type)
-        seen_alias.setdefault(alias, color)
-    for alias, color in seen_alias.items():
-        lines.append(f"  classDef {alias} fill:{color},color:#fff,stroke:#333,stroke-width:1px")
-    lines.append("  classDef cross fill:#fff3e6,color:#000,stroke:#e8470b,stroke-width:3px")
-
-    # 节点：定义在各自主属泳道内
-    for sl in storylines:
-        lines.append(f"  subgraph {lane_id[sl.id]} [\"{_sanitize_label(sl.name + ' · ' + sl.type)}\"]")
-        for eid in sl.key_events:
-            if primary_lane.get(eid) != sl.id:
-                continue  # 只在主属泳道定义一次，避免 mermaid 节点重复归属报错
-            ev = events[eid]
-            t = t_map.get(eid, 0)
-            label = f"T{t:02d}·{ev.name}·{ev.type or '—'}"
-            lines.append(f"    {node_id[eid]}[\"{_sanitize_label(label)}\"]")
-        lines.append("  end")
-
-    # 边：每条线按事件序列连接（跨泳道自然形成交汇拓扑）
-    for sl in storylines:
-        prev: str | None = None
-        for eid in sl.key_events:
-            if eid not in events:
-                continue
-            if prev is not None:
-                arrow = (
-                    "-->"
-                    if primary_lane.get(prev) == sl.id == primary_lane.get(eid)
-                    else "-.->"
-                )
-                lines.append(f"  {node_id[prev]} {arrow} {node_id[eid]}")
-            prev = eid
-
-    # 样式应用：先按主属泳道类型上色，交汇节点再用 cross 覆盖（突出交汇）
-    for sl in storylines:
-        alias, _ = _classify_type(sl.type)
-        for eid in sl.key_events:
-            if primary_lane.get(eid) == sl.id and len(events[eid].storylines) < 2:
-                lines.append(f"  class {node_id[eid]} {alias}")
-    for eid, ev in events.items():
-        if len(ev.storylines) >= 2 and eid in primary_lane:
-            lines.append(f"  class {node_id[eid]} cross")
-
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# 全景时间轴（timeline.md 派生）
+# 全景时间轴（timeline.md 派生，agent 只读上下文）
 # ---------------------------------------------------------------------------
 
 
@@ -358,66 +257,18 @@ def build_timeline_markdown(
 
 
 # ---------------------------------------------------------------------------
-# 组装 storyline_graph.md
-# ---------------------------------------------------------------------------
-
-
-def _build_legend(storylines: list[Storyline]) -> str:
-    seen: list[tuple[str, str]] = []
-    done: set[str] = set()
-    for sl in storylines:
-        alias, color = _classify_type(sl.type)
-        if alias not in done:
-            done.add(alias)
-            label = next((k for k, a, _ in _TYPE_RULES if a == alias), "其他")
-            seen.append((label, color))
-
-    lines = ["## 图例", ""]
-    lines.append("- `T##` = 故事内时间顺序（全局连续，由小到大）")
-    lines.append("- 每列 `subgraph` = 一条故事线（泳道）")
-    lines.append("- 实线 `-->` = 同线时间先后；虚线 `-.->` = 跨线交汇")
-    lines.append("- 红色粗边框节点 = 交汇事件（同时属于多条故事线）")
-    for label, color in seen:
-        lines.append(f"- {label}：{color}")
-    return "\n".join(lines)
-
-
-def _build_synopsis(storylines: list[Storyline]) -> str:
-    """本卷脉络：拼接各故事线「全局走向」（代码无法润色，仅按线汇总）。"""
-    parts = []
-    for sl in storylines:
-        direction = sl.direction or "（暂无全局走向）"
-        type_label = sl.type or "未分类"
-        parts.append(f"**{sl.name}（{type_label}）**：{direction}")
-    return "\n\n".join(parts) if parts else "（未解析到故事线）"
-
-
-def _compose_markdown(
-    storylines: list[Storyline], events: dict[str, Event], t_map: dict[str, int]
-) -> str:
-    return (
-        "# 故事线流程图\n\n"
-        f"{_build_legend(storylines)}\n\n"
-        f"## 本卷脉络\n\n{_build_synopsis(storylines)}\n\n"
-        "## 流程图\n\n"
-        f"```mermaid\n{_build_mermaid(storylines, events, t_map)}\n```\n"
-    )
-
-
-# ---------------------------------------------------------------------------
 # 公共入口
 # ---------------------------------------------------------------------------
 
 
 @dataclass
 class StorylineGraphData:
-    """故事线图的结构化数据（供前端展示 / 按需生成复用）。
+    """storyline.md 的结构化解析结果。
 
-    markdown  = 完整 storyline_graph.md 文本（图例 + 本卷脉络 + mermaid），第一步前端渲染用；
-    storylines/events/t_map = 结构化数据，备第二步（剧情内时间 / 并行对齐）使用。
+    timeline_markdown = 全景时间轴文本（timeline.md 派生源，agent 只读上下文）；
+    storylines/events/t_map = 结构化数据（全景表/内部消费）。
     """
 
-    markdown: str
     timeline_markdown: str
     storylines: list[Storyline]
     events: dict[str, Event]
@@ -428,7 +279,7 @@ def _read_text(path: Path) -> str:
     """读取文件文本，UTF-8 失败时回退 GB18030（GBK 超集）。
 
     agent 在中文 Windows 下偶尔会写入 GBK 字节，严格 UTF-8 解码会抛 UnicodeDecodeError，
-    让 storyline-graph 按需生成时整个端点 500。与 thread_store._read_text 保持一致的容错策略。
+    让派生链路整体失败。与 thread_store._read_text 保持一致的容错策略。
     """
     try:
         return path.read_text(encoding="utf-8")
@@ -437,7 +288,7 @@ def _read_text(path: Path) -> str:
 
 
 def build_storyline_graph_data(workspace_path: Path) -> StorylineGraphData | None:
-    """解析 storyline.md（单文件）→ 结构化图数据 + 泳道图/全景 markdown。
+    """解析 storyline.md（单文件）→ 结构化数据 + timeline markdown。
 
     确定性、纯后端。无产物、旧格式（无区块）或解析失败返回 None
     （派生视图，绝不因自身问题上抛）。
@@ -451,7 +302,6 @@ def build_storyline_graph_data(workspace_path: Path) -> StorylineGraphData | Non
             return None
         t_map = _assign_global_t(events)
         return StorylineGraphData(
-            markdown=_compose_markdown(storylines, events, t_map),
             timeline_markdown=build_timeline_markdown(storylines, events, t_map),
             storylines=storylines,
             events=events,
@@ -462,26 +312,36 @@ def build_storyline_graph_data(workspace_path: Path) -> StorylineGraphData | Non
         return None
 
 
-def is_stale(workspace_path: Path) -> bool:
-    """派生产物（storyline_graph.md / timeline.md）相对源文件是否缺失或过期。
+def build_panorama_events(workspace_path: Path) -> list[Event] | None:
+    """跨线全景事件列表（FR-003 大纲全景表数据源）。
 
-    判定：任一派生产物不存在，或 storyline.md 的 mtime 晚于任一派生产物。
+    全部故事线的事件按时序号升序合并（tiebreak=文档出现序），每事件带：
+    t_raw（原 T 号）、storylines（交汇=全部参与线）、type/characters/location/desc。
+    无产物、旧格式或解析失败返回 None——调用方据此降级，不抛异常。
+    """
+    data = build_storyline_graph_data(workspace_path)
+    if data is None:
+        return None
+    return sorted(data.events.values(), key=lambda e: (e.t_num, e.doc_order))
+
+
+def is_stale(workspace_path: Path) -> bool:
+    """派生产物（timeline.md）相对源文件是否缺失或过期。
+
+    判定：timeline.md 不存在，或 storyline.md 的 mtime 晚于它。
     供「读取时按需生成」兜底——源文件变了就重生成，保证视图与数据一致。
     """
-    graph_path = workspace_path / "storyline_graph.md"
     timeline_path = workspace_path / "timeline.md"
     source = workspace_path / "storyline.md"
     if not source.exists():
         return False  # 无源文件（storybuilding 尚未产出）——不触发生成
-    artifacts = [p for p in (graph_path, timeline_path) if p.exists()]
-    if len(artifacts) < 2:
+    if not timeline_path.exists():
         return True
-    source_mtime = source.stat().st_mtime
-    return any(source_mtime > p.stat().st_mtime for p in artifacts)
+    return source.stat().st_mtime > timeline_path.stat().st_mtime
 
 
 def generate_storyline_graph(workspace_path: Path) -> None:
-    """从 workspace/storyline.md 派生 storyline_graph.md（泳道图）+ timeline.md（全景）。
+    """从 workspace/storyline.md 派生 timeline.md（全景时间轴，agent 只读上下文）。
 
     确定性、纯后端。任何解析异常都吞掉并打日志——派生视图，
     绝不因自身问题阻断 storybuilding 主流程。
@@ -491,12 +351,10 @@ def generate_storyline_graph(workspace_path: Path) -> None:
         # 无源文件（常态静默）或旧格式/解析失败（build 内部已打日志）——不覆盖既有产物
         return
     try:
-        graph_path = workspace_path / "storyline_graph.md"
-        graph_path.write_text(data.markdown, encoding="utf-8")
         timeline_path = workspace_path / "timeline.md"
         timeline_path.write_text(data.timeline_markdown, encoding="utf-8")
         print(
-            f"[storyline_graph] 已生成 {graph_path.name} + {timeline_path.name}"
+            f"[storyline_graph] 已生成 {timeline_path.name}"
             f"（{len(data.storylines)} 故事线 / {len(data.events)} 事件 / T01–T{len(data.t_map):02d}）"
         )
     except Exception as exc:  # noqa: BLE001 — 派生视图：写盘失败不上抛

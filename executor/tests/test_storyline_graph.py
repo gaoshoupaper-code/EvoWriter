@@ -1,6 +1,8 @@
-"""storyline_graph 服务测试：单文件区块格式的解析 / 泳道图 / 全景派生（REQ-20260930-002231）。
+"""storyline_graph 服务测试：单文件区块格式的解析 / timeline 派生 / 全景数据。
 
 样本：storyline.md 单文件，1 主线 + 1 支线，4 事件（时序含小数插入），1 交汇。
+REQ-20260930-163019 FR-002/003：泳道图（storyline_graph.md）停产，模块职责收敛为
+解析 + timeline.md（agent 上下文）+ 全景事件数据（前端大纲全景表数据源）。
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ import time
 from pathlib import Path
 
 from app.domains.writing.expert_agent.services.storyline_graph import (
+    build_panorama_events,
     build_storyline_graph_data,
     build_timeline_markdown,
     generate_storyline_graph,
@@ -65,8 +68,32 @@ def test_build_parses_blocks_events_and_intersection(tmp_path: Path) -> None:
     assert ev.stage == "发展"
     assert ev.location == "青云宗"
     assert ev.characters == "林寒"
-    # markdown 含 mermaid 代码块
-    assert "```mermaid" in data.markdown
+    # FR-002：泳道图已停产，派生产物只剩 timeline
+    assert "全景时间轴" in data.timeline_markdown
+
+
+def test_build_panorama_events(tmp_path: Path) -> None:
+    """FR-003/DEC-005/010：全景事件按时序排序，t_raw 保留原始 T 号（含小数插入），
+    交汇事件 storylines 含全部参与线，剧情字段齐全。"""
+    _write_sample(tmp_path)
+    events = build_panorama_events(tmp_path)
+    assert events is not None
+    assert [ev.name for ev in events] == ["灭门之夜", "初次相遇", "祭祖大典的闯入", "主线收束"]
+    assert [ev.t_raw for ev in events] == ["T1", "T2", "T2.5", "T3"]
+    cross = events[2]
+    assert list(cross.storylines) == ["复仇线", "感情线"]
+    assert cross.desc == "当众闯坛，两线同时改写。"
+    assert cross.characters == "林寒"
+    first = events[0]
+    assert first.type == "冲突"
+    assert first.location == "青云宗"
+
+
+def test_build_panorama_events_returns_none_on_missing_or_legacy(tmp_path: Path) -> None:
+    """无 storyline.md 或旧格式（无线区块）：返回 None（前端降级，不抛异常）。"""
+    assert build_panorama_events(tmp_path) is None
+    (tmp_path / "storyline.md").write_text("# 故事线一览表\n\n无区块。\n", encoding="utf-8")
+    assert build_panorama_events(tmp_path) is None
 
 
 def test_t_numbers_read_directly_and_reranked(tmp_path: Path) -> None:
@@ -105,12 +132,13 @@ def test_build_timeline_markdown(tmp_path: Path) -> None:
     assert "家破人亡" not in md
 
 
-def test_generate_writes_graph_and_timeline(tmp_path: Path) -> None:
+def test_generate_writes_timeline_only(tmp_path: Path) -> None:
+    """FR-002：派生只产 timeline.md（agent 上下文）；storyline_graph.md 停产。"""
     _write_sample(tmp_path)
     assert is_stale(tmp_path) is True
     generate_storyline_graph(tmp_path)
-    assert (tmp_path / "storyline_graph.md").exists()
     assert (tmp_path / "timeline.md").exists()
+    assert not (tmp_path / "storyline_graph.md").exists()
     assert is_stale(tmp_path) is False
 
 
@@ -141,4 +169,4 @@ def test_old_format_returns_none(tmp_path: Path) -> None:
 def test_missing_products_returns_none(tmp_path: Path) -> None:
     assert build_storyline_graph_data(tmp_path) is None
     generate_storyline_graph(tmp_path)  # 无产物：不抛、不写
-    assert not (tmp_path / "storyline_graph.md").exists()
+    assert not (tmp_path / "timeline.md").exists()

@@ -6,10 +6,8 @@ import { CharactersPanel } from "@/components/workspace/CharactersPanel";
 import { ChatPanel } from "@/components/workspace/ChatPanel";
 import { ConfirmDialog } from "@/components/workspace/ConfirmDialog";
 import { ScriptPanel } from "@/components/workspace/ScriptPanel";
-import { StorylinePanel } from "@/components/workspace/StorylinePanel";
 import { Sidebar } from "@/components/workspace/Sidebar";
 import { TopBar } from "@/components/workspace/TopBar";
-import { TracePanel } from "@/components/workspace/TracePanel";
 import { WorldviewPanel } from "@/components/workspace/WorldviewPanel";
 import { API_BASE_URL, apiFetch, trackCopy } from "@/lib/api";
 import { projectStageFlow } from "@/lib/stage";
@@ -73,13 +71,8 @@ export default function Home() {
   const activeTraceId = useTraceStore((s) => s.activeTraceId);
   const traceDetail = useTraceStore((s) => s.traceDetail);
   const historyDetails = useTraceStore((s) => s.historyDetails);
-  const traceLoading = useTraceStore((s) => s.traceLoading);
-  const deletingTraceId = useTraceStore((s) => s.deletingTraceId);
-  const stoppingTraceId = useTraceStore((s) => s.stoppingTraceId);
 
   // contentStore
-  const outlineMarkdown = useContentStore((s) => s.outlineMarkdown);
-  const outlineLoading = useContentStore((s) => s.outlineLoading);
   const characters = useContentStore((s) => s.characters);
   const charactersLoading = useContentStore((s) => s.charactersLoading);
   const activeCharacterFilename = useContentStore((s) => s.activeCharacterFilename);
@@ -87,6 +80,8 @@ export default function Home() {
   const worldviewLoading = useContentStore((s) => s.worldviewLoading);
   const storylineMarkdown = useContentStore((s) => s.storylineMarkdown);
   const storylineEntries = useContentStore((s) => s.storylineEntries);
+  const storylinePanorama = useContentStore((s) => s.storylinePanorama);
+  const storylineFormat = useContentStore((s) => s.storylineFormat);
   const activeStorylineFilename = useContentStore((s) => s.activeStorylineFilename);
 
   const aiDisabled = !hasApiKey;
@@ -96,8 +91,6 @@ export default function Home() {
   );
   const writingDomain = activeWorkspace?.domain !== "image";
   const workspacePath = activeWorkspace?.workspace_path ?? activeThread?.workspace_path;
-  const result = useExecutionStore((s) => s.result);
-  const currentOutlineMarkdown = result?.thread_id === activeThreadId && result.markdown?.trim() ? result.markdown : outlineMarkdown;
 
   // ── 注入 executionDeps（连接三个 store）──
   // 只在首次挂载时注入一次。deps 引用的是 store 的 getState/setState，始终拿到最新值。
@@ -246,8 +239,8 @@ export default function Home() {
       setCharactersLoading: (v) => useContentStore.getState().setCharactersLoading(v),
       setWorldviewMarkdown: (v) => useContentStore.getState().setWorldviewMarkdown(v),
       setWorldviewLoading: (v) => useContentStore.getState().setWorldviewLoading(v),
-      setOutlineMarkdown: (v) => useContentStore.getState().setOutlineMarkdown(v),
-      setOutlineLoading: (v) => useContentStore.getState().setOutlineLoading(v),
+      setStorylinePanorama: (v) => useContentStore.getState().setStorylinePanorama(v),
+      setStorylineFormat: (v) => useContentStore.getState().setStorylineFormat(v),
     },
   });
 
@@ -343,10 +336,6 @@ export default function Home() {
     }
   }
 
-  async function handleDeleteTrace(traceId: string) {
-    await useTraceStore.getState().deleteTrace(activeThreadId, traceId);
-  }
-
   function handleLogout() {
     useWorkspaceStore.getState().handleLogout(navigate);
   }
@@ -420,8 +409,9 @@ export default function Home() {
           <ScriptPanel
             storylineMarkdown={storylineMarkdown}
             storylineEntries={storylineEntries}
+            storylinePanorama={storylinePanorama}
+            storylineFormat={storylineFormat}
             activeStorylineFilename={activeStorylineFilename}
-            loading={outlineLoading}
             onSelectStoryline={(f) => useContentStore.getState().setActiveStorylineFilename(f)}
           />
         ) : null}
@@ -439,26 +429,7 @@ export default function Home() {
           <WorldviewPanel workspacePath={workspacePath} markdown={worldviewMarkdown} loading={worldviewLoading} />
         ) : null}
 
-        {activePanel === "storyline" ? <StorylinePanel workspaceId={activeWorkspaceId} /> : null}
 
-        {activePanel === "trace" ? (
-          <TracePanel
-            runs={traceRuns}
-            detail={traceDetail}
-            activeTraceId={activeTraceId}
-            loading={traceLoading}
-            hasActiveThread={Boolean(activeThreadId)}
-            deletingTraceId={deletingTraceId}
-            stoppingTraceId={stoppingTraceId}
-            onSelectTrace={(id) => useTraceStore.getState().setActiveTraceId(id)}
-            onDeleteTrace={handleDeleteTrace}
-            onStopTrace={(id) => {
-              if (activeThreadId) {
-                void useTraceStore.getState().stopTrace(activeThreadId, id);
-              }
-            }}
-          />
-        ) : null}
       </AppShell>
 
       {workspaceCreateOpen ? (

@@ -5,6 +5,7 @@ import { setUnauthorizedHandler } from "@/lib/api";
 import Login from "@/pages/login";
 import EvolutionConfigPage from "@/pages/config/EvolutionConfigPage";
 import ExecutorConfigPage from "@/pages/config/ExecutorConfigPage";
+import JudgeGroupPage from "@/pages/config/JudgeGroupPage";
 import Monitor from "@/pages/monitor";
 import Evolve from "@/pages/evolve";
 import ReviewReport from "@/pages/review-report";
@@ -68,9 +69,11 @@ function App() {
           <Route path="/benchmark" element={<Navigate to="/bench" replace />} />
           <Route path="/dataset" element={<Navigate to="/bench/dataset" replace />} />
 
-          {/* 配置拆两个（D17），老 /config 重定向到 /config/evolution 保兼容 */}
+          {/* 配置拆两个（D17），老 /config 重定向到 /config/evolution 保兼容；
+              评测组页 REQ-20260930-162207/DEC-010 */}
           <Route path="/config/evolution" element={<EvolutionConfigPage />} />
           <Route path="/config/executor" element={<ExecutorConfigPage />} />
+          <Route path="/config/judge-groups" element={<JudgeGroupPage />} />
           <Route path="/config" element={<Navigate to="/config/evolution" replace />} />
 
           {/* 管理后台嵌套 Layout（D11 + D13），仅超管可见（守卫在 Shell.tsx 菜单层） */}

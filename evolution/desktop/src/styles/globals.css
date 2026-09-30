@@ -12796,6 +12796,24 @@ html[data-theme="dark"] .point-chosen { color: var(--teal); }
 }
 .bench-reason-absent { font-size: 11px; color: var(--evo-ink-muted, #999); }
 
+/* 明细：组评分 per-judge 理由分组（REQ-20260930-162207 DEC-006：默认折叠） */
+.bench-judge-blocks { display: flex; flex-direction: column; gap: 6px; margin: 8px 0; }
+.bench-judge-block {
+  border: 1px solid rgba(128, 128, 128, 0.14); border-radius: 6px;
+  padding: 4px 10px; background: rgba(128, 128, 128, 0.02);
+}
+.bench-judge-block summary {
+  cursor: pointer; display: flex; align-items: center; gap: 8px;
+  font-size: 12px; list-style: revert;
+}
+.bench-judge-name { font-weight: 600; }
+.bench-judge-model { font-size: 11px; color: var(--evo-ink-muted, #999); }
+.bench-judge-score { font-weight: 700; font-size: 12px; margin-left: auto; }
+.bench-judge-score.bench-dim-low { color: #c94f5e; }
+.bench-judge-score.bench-dim-mid { color: #b7791f; }
+.bench-judge-score.bench-dim-high { color: var(--teal, #3a9a7e); }
+.bench-judge-absent { font-size: 11px; color: #b7791f; margin-left: auto; }
+
 /* 明细：seed 并排对比（DEC-010：极差 ≥2 高亮） */
 .bench-seed-compare { margin: 10px 0; }
 .bench-seed-compare h5 { margin: 0 0 6px; font-size: 12px; }

@@ -1,13 +1,19 @@
-"""评测 API（REQ-20260919-172934，评测主链路；REQ-20260920-104714 增强）。
+"""评测 API（REQ-20260919-172934，评测主链路；REQ-20260920-104714 增强；
+评测组 REQ-20260930-162207）。
 
 端点：
-  POST /api/benchmark/run              触发评测批次（手动，含 3 seed 展开；并发度可选，FR-001）
-  POST /api/benchmark/rerun-golden     golden 升级后重跑最近 K=3（D8/D18）
+  POST /api/benchmark/run              触发评测批次（手动，含 3 seed 展开；并发度可选，FR-001；
+                                       评测组必选，REQ-20260930-162207/FR-002）
+  POST /api/benchmark/rerun-golden     golden 升级后重跑最近 K=3（D8/D18，沿用最近批次评测组）
   GET  /api/benchmark/rubric           评分标准全文只读（FR-002）
-  GET  /api/benchmark/judges           judge 候选列表 + 同源标记（FR-003）
+  GET  /api/benchmark/judges           judge 候选列表 + 同源标记（FR-003；组页成员选择器用）
+  GET  /api/benchmark/judge-groups     评测组列表（成员含配置详情与同家族标记，FR-001）
+  POST /api/benchmark/judge-groups     创建评测组（成员 1~5，FR-001）
+  PUT  /api/benchmark/judge-groups/{id} 整组更新（改名 + 全量替换成员）
+  DELETE /api/benchmark/judge-groups/{id} 删除组
   GET  /api/benchmark/versions         版本下拉数据源（Platform 账本；registry.json 已冻结退役）
   GET  /api/benchmark/leaderboard      跨版本对比（按 golden_revision）
-  GET  /api/benchmark/batches/{id}     查批次状态
+  GET  /api/benchmark/batches/{id}     查批次状态（含评测组快照）
   GET  /api/benchmark/batches/{id}/report   弱点报告（FR-005）
   POST /api/benchmark/batches/{id}/stop     停止批次（REQ-20260920-192126/FR-001）
   POST /api/benchmark/compare          两批次 CI 三态对比（FR-004）
@@ -36,20 +42,26 @@ class RunRequest(BaseModel):
     seeds: int = runner.DEFAULT_SEEDS  # 每 case 独立重复次数（DEC-013）
     # 批次内并发执行的行数上限（FR-001/DEC-004，AC-001：默认 3）
     concurrency: Literal[1, 3, 5] = runner.DEFAULT_CONCURRENCY
-    # 指定 judge 配置（FR-003/DEC-005）；None=默认解析（eval 优先，降级 evolution）
-    judge_config_id: int | None = None
+    # 评测组 ID（REQ-20260930-162207/FR-002/DEC-004：一律走组，单 judge 用
+    # 1 人组）；缺省 0 视为未选择，触发拒绝
+    judge_group_id: int = 0
 
 
 @router.post("/run")
 def trigger_run(req: RunRequest) -> dict[str, Any]:
     """手动触发评测批次。"""
+    if not req.judge_group_id:
+        raise HTTPException(
+            status_code=400,
+            detail="请先选择评测组（在「配置 → 评测组」页创建，触发时选择）",
+        )
     versions = req.versions
     if versions is None and req.version is not None:
         versions = [req.version]
     try:
         batch_id = runner.trigger_run(
             versions=versions, case_ids=req.case_ids, seeds=req.seeds,
-            concurrency=req.concurrency, judge_config_id=req.judge_config_id,
+            concurrency=req.concurrency, judge_group_id=req.judge_group_id,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -177,6 +189,104 @@ def list_judges() -> dict[str, Any]:
         "degraded": resolved["degraded"],
     }
     return {"judges": judges, "default": default}
+
+
+# ── 评测组管理（REQ-20260930-162207/FR-001/DEC-001、010、011）──
+
+
+def _enrich_member(config_id: int) -> dict[str, Any]:
+    """组成员的展示信息（配置详情 + 同家族标记，DEC-011 逐成员告警数据源）。
+
+    成员引用因联动删除（DEC-005）正常不会悬空；配置行意外缺失时
+    stale=True 供前端标注（不阻塞组列表）。
+    """
+    import app.core.db as db
+
+    from app.benchmark import manifest as bench_manifest
+
+    safe = db.LlmConfigsRepository.get_safe_by_id(config_id)
+    if safe is None:
+        return {
+            "config_id": config_id, "name": f"#{config_id}", "model": "",
+            "scope": "", "is_active": False, "has_key": False,
+            "same_family_as_executor": False, "stale": True,
+        }
+    return {
+        "config_id": config_id,
+        "name": safe.get("name") or f"#{config_id}",
+        "model": safe.get("model") or "",
+        "scope": safe.get("scope") or "",
+        "is_active": bool(safe.get("is_active")),
+        "has_key": bool(safe.get("has_key")),
+        "same_family_as_executor": bench_manifest.same_family_as_executor(safe.get("model") or ""),
+        "stale": False,
+    }
+
+
+@router.get("/judge-groups")
+def list_judge_groups() -> dict[str, Any]:
+    """评测组列表（FR-001；成员含配置详情与同家族标记）。"""
+    import app.core.db as db
+
+    groups = []
+    for g in db.JudgeGroupsRepository.list_all():
+        groups.append({
+            "id": g["id"],
+            "name": g["name"],
+            "created_at": g["created_at"],
+            "updated_at": g["updated_at"],
+            "members": [_enrich_member(m["config_id"]) for m in g["members"]],
+        })
+    return {"groups": groups}
+
+
+class JudgeGroupCreateRequest(BaseModel):
+    """创建评测组（FR-001：成员 1~5，仅 eval/evolution scope 候选）。"""
+    name: str
+    member_config_ids: list[int]
+
+
+@router.post("/judge-groups")
+def create_judge_group(req: JudgeGroupCreateRequest) -> dict[str, Any]:
+    import app.core.db as db
+
+    try:
+        group_id = db.JudgeGroupsRepository.create(
+            name=req.name.strip(), member_config_ids=req.member_config_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"group_id": group_id, "status": "created"}
+
+
+class JudgeGroupUpdateRequest(BaseModel):
+    """整组更新（改名 + 全量替换成员）。"""
+    name: str
+    member_config_ids: list[int]
+
+
+@router.put("/judge-groups/{group_id}")
+def update_judge_group(group_id: int, req: JudgeGroupUpdateRequest) -> dict[str, Any]:
+    import app.core.db as db
+
+    try:
+        ok = db.JudgeGroupsRepository.update(
+            group_id, name=req.name.strip(), member_config_ids=req.member_config_ids,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not ok:
+        raise HTTPException(status_code=404, detail="评测组不存在")
+    return {"status": "updated"}
+
+
+@router.delete("/judge-groups/{group_id}")
+def delete_judge_group(group_id: int) -> dict[str, Any]:
+    import app.core.db as db
+
+    if not db.JudgeGroupsRepository.delete(group_id):
+        raise HTTPException(status_code=404, detail="评测组不存在")
+    return {"status": "deleted"}
 
 
 @router.get("/batches")

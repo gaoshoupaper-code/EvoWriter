@@ -261,6 +261,54 @@ def _get_stop_reason(conn: Any, batch_id: str) -> str | None:
     return row["stop_reason"] if row else None
 
 
+# ── 批次评测组快照（REQ-20260930-162207/FR-002/DEC-008）──────
+
+
+def set_batch_judge(batch_id: str, group: dict[str, Any]) -> None:
+    """建批时落评测组快照（组名 + 成员指纹；行级 judge_fp 存组合指纹）。"""
+    import json
+
+    db.execute(
+        "INSERT OR REPLACE INTO benchmark_batch_judge (batch_id, group_json) VALUES (?, ?)",
+        (batch_id, json.dumps(group, ensure_ascii=False)),
+    )
+
+
+def get_batch_judge(batch_id: str) -> dict[str, Any] | None:
+    """批次评测组快照；无记录（历史批次）返回 None。"""
+    import json
+
+    row = db.query_one(
+        "SELECT group_json FROM benchmark_batch_judge WHERE batch_id=?", (batch_id,)
+    )
+    if not row:
+        return None
+    try:
+        parsed = json.loads(row["group_json"])
+        return parsed if isinstance(parsed, dict) else None
+    except (ValueError, TypeError):
+        return None
+
+
+def get_latest_judge_snapshot() -> dict[str, Any] | None:
+    """最近一次批次的评测组快照（golden 升级重跑的默认组，TD of 162207）。
+
+    按建批写入顺序取最新；无任何组批次返回 None。
+    """
+    import json
+
+    row = db.query_one(
+        "SELECT group_json FROM benchmark_batch_judge ORDER BY rowid DESC LIMIT 1"
+    )
+    if not row:
+        return None
+    try:
+        parsed = json.loads(row["group_json"])
+        return parsed if isinstance(parsed, dict) else None
+    except (ValueError, TypeError):
+        return None
+
+
 # ── 查询 ────────────────────────────────────────────────────
 
 
@@ -308,14 +356,18 @@ def get_recent_batches(limit: int = 20) -> list[dict[str, Any]]:
                   MAX(r.rubric_version) AS rubric_version,
                   MAX(r.judge_fp) AS judge_fp,
                   MAX(r.concurrency) AS concurrency,
-                  m.stop_reason AS stop_reason
+                  m.stop_reason AS stop_reason,
+                  j.group_json AS judge_group_json
            FROM benchmark_runs r
            LEFT JOIN benchmark_batch_meta m ON m.batch_id = r.batch_id
+           LEFT JOIN benchmark_batch_judge j ON j.batch_id = r.batch_id
            GROUP BY r.batch_id
            ORDER BY trigger_at DESC
            LIMIT ?""",
         (limit,),
     )
+    import json
+
     batches: list[dict[str, Any]] = []
     for row in rows:
         done, failed, cancelled = row["done"], row["failed"], row["cancelled"]
@@ -325,6 +377,14 @@ def get_recent_batches(limit: int = 20) -> list[dict[str, Any]]:
             stop_reason=row["stop_reason"],
         )
         avg_raw = row["avg_raw"]
+        group_raw = row["judge_group_json"]
+        judge_group = None
+        if group_raw:
+            try:
+                parsed = json.loads(group_raw)
+                judge_group = parsed if isinstance(parsed, dict) else None
+            except (ValueError, TypeError):
+                judge_group = None
         batches.append({
             "batch_id": row["batch_id"],
             "status": status,
@@ -340,6 +400,7 @@ def get_recent_batches(limit: int = 20) -> list[dict[str, Any]]:
             "concurrency": row["concurrency"],
             "triggered_at": row["trigger_at"],
             "stop_reason": row["stop_reason"],
+            "judge_group": judge_group,
         })
     return batches
 
@@ -376,6 +437,7 @@ def get_batch(batch_id: str) -> dict[str, Any]:
         "golden_revision": rows[0]["golden_revision"],
         "concurrency": rows[0].get("concurrency", 1) if "concurrency" in rows[0].keys() else 1,
         "stop_reason": stop_reason,
+        "judge_group": get_batch_judge(batch_id),
         "results": [_row_to_dict(r) for r in rows],
     }
 
@@ -554,4 +616,5 @@ __all__ = [
     "stop_batch", "get_stop_reason",
     "get_batch", "get_recent_batches", "count_batches", "get_leaderboard", "get_recent_versions",
     "list_batch_runs",
+    "set_batch_judge", "get_batch_judge", "get_latest_judge_snapshot",
 ]

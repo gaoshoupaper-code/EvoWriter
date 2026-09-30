@@ -94,10 +94,12 @@ class QuotaCheckTest(unittest.TestCase):
     def test_score_case_includes_rule_quota(self) -> None:
         """score_case 集成：结果含 rule_quota 字段（judge 全 mock）。"""
         fake = {"score": 4, "达标": ["…"], "不足": []}
+        single_judge = [{"config_id": 1, "name": "单评", "model": "m", "fingerprint": "f"}]
         with patch.object(self.scorer, "_score_dimension", return_value=fake):
             result = self.scorer.score_case(
                 _DEMAND_FULL, dict(_DELIVERIES_OK, **{
                     "人物 character": "c" * 300, "世界观 worldview": "w" * 300}),
+                single_judge,
             )
         self.assertIn("rule_quota", result)
         self.assertEqual(result["rule_quota"]["status"], "checked")

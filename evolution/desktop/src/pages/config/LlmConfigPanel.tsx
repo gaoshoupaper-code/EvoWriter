@@ -7,6 +7,7 @@ import {
   deleteLlmConfig,
   activateLlmConfig,
   testLlmConfig,
+  listJudgeGroups,
   type LlmConfigScope,
   type LlmConfigItem,
   type LlmConfigTestResult,
@@ -137,7 +138,24 @@ export default function LlmConfigPanel({ scope }: LlmConfigPanelProps) {
   }
 
   async function handleDelete(item: LlmConfigItem) {
-    if (!confirm(`确认删除配置「${item.name}」？此操作不可撤销。`)) return;
+    // 删除联动提示（DEC-005 of 162207）：确认框列明受影响的评测组；
+    // 后端删配置时自动从组剔除成员、组空自动删组。组列表读失败退化为普通确认。
+    let affectedNote = "";
+    try {
+      const { groups } = await listJudgeGroups();
+      const affected = groups.filter((g) =>
+        g.members.some((m) => m.config_id === item.id),
+      );
+      if (affected.length > 0) {
+        affectedNote = `\n将影响评测组：${affected.map((g) => `「${g.name}」`).join("")}` +
+          (affected.some((g) => g.members.length <= 1)
+            ? "（仅剩该成员的组会被一并删除）"
+            : "");
+      }
+    } catch {
+      // 评测组接口不可用（如 executor 页无权限场景）不影响删除本身
+    }
+    if (!confirm(`确认删除配置「${item.name}」？此操作不可撤销。${affectedNote}`)) return;
     try {
       await deleteLlmConfig(item.id);
       toast.success("已删除");

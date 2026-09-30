@@ -1269,6 +1269,8 @@ export interface BenchmarkBatchSummary {
   concurrency: number | null;
   triggered_at: string | null;
   stop_reason?: "user_stop" | "auto_fail" | null;
+  /** 评测组快照（REQ-20260930-162207/FR-002；历史批次为 null，DEC-008 分派依据）。 */
+  judge_group?: JudgeGroupSnapshot | null;
 }
 
 /** 弱点报告（FR-005；标签命中已随词表下线，REQ-20260921-210038 DEC-009）。 */
@@ -1316,13 +1318,14 @@ export interface BenchmarkCompare {
   dimensions?: Record<string, Record<string, { mean: number | null; n: number }>>;
 }
 
-/** 触发评测批次（FR-003；并发度/judge 选择为 REQ-20260920-104714 增强）。 */
+/** 触发评测批次（FR-003；并发度为 REQ-20260920-104714 增强；
+ * 评测组必选 REQ-20260930-162207/FR-002——单 judge 用法迁移为建 1 人组）。 */
 export async function runBenchmark(payload: {
   version?: number;
   versions?: number[];
   seeds?: number;
   concurrency?: 1 | 3 | 5;
-  judge_config_id?: number;
+  judge_group_id: number;
   /** case 子集（REQ-20260921-135543 DEC-008：空/缺省 = 全量 golden） */
   case_ids?: string[];
 }): Promise<{ batch_id: string; status: string; progress: Record<string, number>; golden_revision: string }> {
@@ -1397,6 +1400,60 @@ export async function listJudgeCandidates(): Promise<{
   return evoJson("/api/benchmark/judges", { method: "GET" });
 }
 
+// ── 评测组（REQ-20260930-162207/FR-001/DEC-001、004、011）────
+
+/** 组成员展示信息（配置详情 + 同家族标记 + 悬空标注）。 */
+export interface JudgeGroupMemberInfo {
+  config_id: number;
+  name: string;
+  model: string;
+  scope: string;
+  is_active: boolean;
+  has_key: boolean;
+  /** 与 executor 被测模型同家族（DEC-011：组页成员黄条告警数据源）。 */
+  same_family_as_executor: boolean;
+  /** 配置行意外缺失（联动删除后正常不会出现；防御性展示）。 */
+  stale?: boolean;
+}
+
+export interface JudgeGroupInfo {
+  id: number;
+  name: string;
+  members: JudgeGroupMemberInfo[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export async function listJudgeGroups(): Promise<{ groups: JudgeGroupInfo[] }> {
+  return evoJson("/api/benchmark/judge-groups", { method: "GET" });
+}
+
+export async function createJudgeGroup(payload: {
+  name: string;
+  member_config_ids: number[];
+}): Promise<{ group_id: number; status: string }> {
+  return evoJson("/api/benchmark/judge-groups", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function updateJudgeGroup(
+  groupId: number,
+  payload: { name: string; member_config_ids: number[] },
+): Promise<{ status: string }> {
+  return evoJson(`/api/benchmark/judge-groups/${groupId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function deleteJudgeGroup(groupId: number): Promise<{ status: string }> {
+  return evoJson(`/api/benchmark/judge-groups/${groupId}`, { method: "DELETE" });
+}
+
 /** golden 受控新增结果（FR-004/AC-007）。 */
 export interface GoldenCaseCreateResult {
   case_id: string;
@@ -1433,10 +1490,43 @@ export interface BenchmarkRunScores {
   /**
    * 两段式理由（rubric v4，REQ-20260921-210038 DEC-006）。
    * 旧批次（v3 及更早）为字符串或不存在的双轨格式——渲染层按类型分派。
+   * 组评分批次（162207 DEC-006）顶层不再输出，理由按 judge 分组于 judge_group。
    */
   reasons?: Record<string, string | { 达标: string[]; 不足: string[] }>;
   overall?: number;
   rule_delivery?: { key?: string; passed?: boolean | null; problems?: string[] };
+  /** 组评分明细（REQ-20260930-162207/DEC-008：字段存在即组批次，前端按此分派）。 */
+  judge_group?: JudgeGroupDetail;
+}
+
+/** 批次评测组快照成员（建批时落库，DEC-008；组行删改不影响历史批次解读）。 */
+export interface JudgeGroupSnapshotMember {
+  config_id: number;
+  name: string;
+  model: string;
+  fingerprint?: string | null;
+}
+
+export interface JudgeGroupSnapshot {
+  group_id: number | null;
+  group_name: string;
+  members: JudgeGroupSnapshotMember[];
+}
+
+/** 组评分 per-judge 明细成员（DEC-002/006：原始整数分 + 两段理由全量；null = 该维缺席）。 */
+export interface JudgeScoreMember {
+  config_id: number;
+  name: string;
+  model: string;
+  fingerprint?: string | null;
+  scores: Record<string, number | null>;
+  reasons: Record<string, { 达标: string[]; 不足: string[] } | null>;
+}
+
+export interface JudgeGroupDetail {
+  group_id: number | null;
+  group_name: string;
+  members: JudgeScoreMember[];
 }
 
 /** 批次单行（case×seed）明细（REQ-20260921-114943 FR-001/FR-004）。 */

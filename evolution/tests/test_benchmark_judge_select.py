@@ -127,11 +127,16 @@ class JudgeCandidatesTest(JudgeTestBase):
 
 
 class JudgeSelectionTest(JudgeTestBase):
-    """AC-004/005：触发时指定 judge 的指纹与无效拒绝。"""
+    """FR-002 of REQ-20260930-162207：触发选组、组快照落批、无效组拒绝。"""
 
     def setUp(self):
         super().setUp()
         self.db.execute("DELETE FROM llm_configs")
+
+    def _make_group(self, config_ids, name="评审团"):
+        return self.db.JudgeGroupsRepository.create(
+            name=name, member_config_ids=list(config_ids),
+        )
 
     def _trigger(self, **kwargs):
         """调 runner.trigger_run（mock 掉后台派发与 golden 依赖）。"""
@@ -142,105 +147,105 @@ class JudgeSelectionTest(JudgeTestBase):
             batch_id = runner.trigger_run(versions=[1], case_ids=["case-a"], **kwargs)
         return batch_id, mock_dispatch.call_args
 
-    def test_selected_judge_fingerprint_recorded(self):
-        """选择必须真实生效：seed 两个配置，选非默认的，断言指纹=所选且≠默认
-        （只 seed 一个时所选与默认恒等，参数被静默丢弃也测不出——review #4）。"""
-        from app.benchmark import manifest as bench_manifest
-
-        _seed_config(self.db, "eval", model="glm-4.7")   # 首条，自动激活=默认
-        cfg_id = _seed_config(self.db, "eval", model="kimi-k2")  # 第二条，非激活
-
-        batch_id, dispatch_args = self._trigger(judge_config_id=cfg_id)
-        self.assertEqual(dispatch_args.args[2], cfg_id,
-                         "judge_config_id 必须透传到批次派发（FR-003 链路）")
-
-        selected_fp = bench_manifest.resolve_judge_config(cfg_id)["fingerprint"]
-        default_fp = bench_manifest.resolve_judge_config()["fingerprint"]
-        self.assertNotEqual(selected_fp, default_fp, "前置：所选与默认必须是不同配置")
-        rows = self.db.query_all("SELECT judge_fp FROM benchmark_runs WHERE batch_id=?", (batch_id,))
-        self.assertTrue(rows)
-        self.assertEqual({r["judge_fp"] for r in rows}, {selected_fp},
-                         "批次应记录所选 judge 的指纹（而非默认解析）")
-
-    def test_default_judge_when_not_selected(self):
+    def test_group_snapshot_and_combined_fp_recorded(self):
+        """选组必须真实生效：批次记录组快照 + 组合指纹（AC-003）。"""
         from app.benchmark import manifest as bench_manifest
         from app.benchmark import repo as bench_repo
 
-        _seed_config(self.db, "eval", model="glm-4.7")
+        cfg_a = _seed_config(self.db, "eval", model="glm-4.7")
+        cfg_b = _seed_config(self.db, "eval", model="kimi-k2")
+        group_id = self._make_group([cfg_a, cfg_b])
 
-        batch_id, _ = self._trigger()
+        batch_id, dispatch_args = self._trigger(judge_group_id=group_id)
 
-        expected_fp = bench_manifest.resolve_judge_config()["fingerprint"]
-        rows = self.db.query_all("SELECT judge_fp FROM benchmark_runs WHERE batch_id=?", (batch_id,))
-        self.assertEqual({r["judge_fp"] for r in rows}, {expected_fp},
-                         "未选择时应记录默认解析 judge 的指纹")
+        snapshot = dispatch_args.args[2]
+        self.assertEqual(snapshot["group_id"], group_id, "组快照必须透传到批次派发")
+        self.assertEqual(
+            [m["config_id"] for m in snapshot["members"]], [cfg_a, cfg_b],
+        )
 
-    def test_nonexistent_config_rejected(self):
-        from app.benchmark import runner
+        expected_fp = bench_manifest.judge_group_fingerprint(snapshot["members"])
+        rows = self.db.query_all(
+            "SELECT judge_fp FROM benchmark_runs WHERE batch_id=?", (batch_id,),
+        )
+        self.assertTrue(rows)
+        self.assertEqual(
+            {r["judge_fp"] for r in rows}, {expected_fp},
+            "行级 judge_fp 应记录组组合指纹",
+        )
 
+        stored = bench_repo.get_batch_judge(batch_id)
+        self.assertEqual(stored["group_id"], group_id)
+        self.assertEqual(stored["group_name"], "评审团")
+        batch = bench_repo.get_batch(batch_id)
+        self.assertEqual(batch["judge_group"]["group_id"], group_id)
+
+    def test_no_group_rejected(self):
+        """DEC-004：一律走组——未指定评测组直接拒绝。"""
         _seed_config(self.db, "eval", model="glm-4.7")
         with self.assertRaises(ValueError) as ctx:
-            self._trigger(judge_config_id=9999)
-        self.assertIn("9999", str(ctx.exception), "错误信息应指明配置 ID")
+            self._trigger()
+        self.assertIn("评测组", str(ctx.exception))
 
-    def test_executor_scope_config_rejected(self):
-        """DEC-010 判评分离：executor 生产模型配置不得被选为 judge（review #9）。"""
-        exec_id = _seed_config(self.db, "executor", model="deepseek-chat")
+    def test_nonexistent_group_rejected(self):
         _seed_config(self.db, "eval", model="glm-4.7")
-
         with self.assertRaises(ValueError) as ctx:
-            self._trigger(judge_config_id=exec_id)
-        self.assertIn(str(exec_id), str(ctx.exception))
+            self._trigger(judge_group_id=999)
+        self.assertIn("999", str(ctx.exception), "错误信息应指明组 ID")
 
-    def test_empty_base_url_or_model_rejected(self):
-        """AC-005：base_url / model 为空同样拒绝（此前只测了缺 key，review #10）。"""
-        _seed_config(self.db, "eval", model="glm-4.7")
-        for field in ("base_url", "model"):
+    def test_member_config_invalidated_after_creation_rejected(self):
+        """建组后成员配置被清空（key/base_url/model）→ 触发拒绝，不产生半配置批次。"""
+        for field in ("base_url", "model", "api_key_enc"):
             with self.subTest(field=field):
                 cfg_id = _seed_config(self.db, "eval", model="kimi-k2")
+                group_id = self._make_group([cfg_id], name=f"评审团-{field}")
                 self.db.execute(
                     f"UPDATE llm_configs SET {field}='' WHERE id=?", (cfg_id,)
                 )
-                with self.assertRaises(ValueError):
-                    self._trigger(judge_config_id=cfg_id)
+                with self.assertRaises(ValueError) as ctx:
+                    self._trigger(judge_group_id=group_id)
+                self.assertIn(str(cfg_id), str(ctx.exception))
 
     def test_trigger_spawns_worker_without_event_loop(self):
         """review P0 回归：sync 上下文（无 event loop）直接调 trigger_run 不得炸，
-        且派发线程参数完整（并发度 + judge_config_id）。"""
+        且派发线程参数完整（并发度 + 组快照）。"""
         from unittest.mock import patch
 
         from app.benchmark import runner
 
-        _seed_config(self.db, "eval", model="glm-4.7")
+        cfg = _seed_config(self.db, "eval", model="glm-4.7")
+        group_id = self._make_group([cfg])
         started = threading.Event()
         captured: dict = {}
 
-        def fake_dispatch(batch_id, concurrency, judge_config_id):
+        def fake_dispatch(batch_id, concurrency, group_snapshot):
             captured.update(batch_id=batch_id, concurrency=concurrency,
-                            judge_config_id=judge_config_id)
+                            group_snapshot=group_snapshot)
             started.set()
 
-        with patch.object(runner, "_dispatch_batch", fake_dispatch),              patch.object(runner, "_get_production_version", return_value=None):
-            batch_id = runner.trigger_run(versions=[1], case_ids=["case-a"])
+        with patch.object(runner, "_dispatch_batch", fake_dispatch),             patch.object(runner, "_get_production_version", return_value=None):
+            batch_id = runner.trigger_run(
+                versions=[1], case_ids=["case-a"], judge_group_id=group_id,
+            )
 
         self.assertTrue(started.is_set(), "trigger_run 必须在无 event loop 的同步上下文里完成派发")
         self.assertEqual(captured["batch_id"], batch_id)
         self.assertEqual(captured["concurrency"], 3)
-        self.assertIsNone(captured["judge_config_id"])
+        self.assertEqual(captured["group_snapshot"]["group_id"], group_id)
 
     def test_config_without_key_rejected(self):
-        from app.benchmark import runner
-
+        """组内成员缺 key：建组后 key 被清 → 触发拒绝（触发时校验成员完整）。"""
         cfg_id = _seed_config(self.db, "eval", model="glm-4.7")
+        group_id = self._make_group([cfg_id])
         self.db.execute("UPDATE llm_configs SET api_key_enc=NULL WHERE id=?", (cfg_id,))
 
         with self.assertRaises(ValueError) as ctx:
-            self._trigger(judge_config_id=cfg_id)
+            self._trigger(judge_group_id=group_id)
         self.assertIn(str(cfg_id), str(ctx.exception))
 
 
 class ScoreChainTest(JudgeTestBase):
-    """FR-003：score_case 透传 config_id 到 llm.chat（五次按维调用均携带）。"""
+    """FR-003：score_case 透传成员 config_id 到 llm.chat（维×judge 调用均携带）。"""
 
     def test_score_case_passes_config_id(self):
         import json
@@ -250,13 +255,14 @@ class ScoreChainTest(JudgeTestBase):
         deliveries = {"主线 storyline": "x" * 300, "人物 character": "y" * 300, "世界观 worldview": "z" * 300}
         # 单维契约（rubric v4）：score + 两段理由
         raw = json.dumps({"score": 5, "达标": ["承诺点全部兑现"], "不足": ["未发现不足"]})
+        judges = [{"config_id": 42, "name": "选中项", "model": "m", "fingerprint": "f"}]
         with patch.object(scorer.llm, "chat", return_value=raw) as m:
-            scorer.score_case("demand", deliveries, judge_config_id=42)
+            scorer.score_case("demand", deliveries, judges)
 
         self.assertEqual(m.call_count, 5, "五维应各触发一次 judge 调用")
         for call in m.call_args_list:
             self.assertEqual(call.kwargs.get("config_id"), 42,
-                             "score_case 应把 judge_config_id 透传给每次 llm.chat")
+                             "score_case 应把成员 config_id 透传给每次 llm.chat")
 
 
 if __name__ == "__main__":

@@ -207,6 +207,74 @@ class _Unconfigured(RuntimeError):
     pass
 
 
+# ── 评测组解析（REQ-20260930-162207/FR-002/DEC-001、004）─────
+
+
+def resolve_judge_group(group_id: int) -> dict[str, Any]:
+    """解析评测组为可执行成员快照（建批时采集，DEC-008 快照语义）。
+
+    成员逐个经 resolve_judge_config 校验（存在 + eval/evolution scope +
+    api_key/base_url/model 完整）；任一成员无效 → valid=False（调用方拒绝
+    触发，不产生半配置批次，沿用 FR-003 单 judge 时代的拒绝语义）。
+
+    Returns: {
+      valid: bool,
+      problem: str | None,          # valid=False 时给可定位错误
+      group_id: int | None,
+      group_name: str,
+      members: [{config_id, name, model, fingerprint}],
+      combined_fp: str,             # 成员指纹排序聚合（行级 judge_fp）
+    }
+    """
+    group = db.JudgeGroupsRepository.get(group_id)
+    if group is None:
+        return _invalid_group(f"评测组 #{group_id} 不存在", group_id)
+    members_cfg = group.get("members") or []
+    if not members_cfg:
+        return _invalid_group(f"评测组「{group['name']}」为空", group_id)
+
+    members: list[dict[str, Any]] = []
+    for m in members_cfg:
+        config_id = m["config_id"]
+        safe = db.LlmConfigsRepository.get_safe_by_id(config_id)
+        resolved = resolve_judge_config(config_id)
+        if safe is None or resolved["fingerprint"] == "unconfigured":
+            name = (safe or {}).get("name") or f"#{config_id}"
+            return _invalid_group(
+                f"评测组「{group['name']}」成员 {name}(#{config_id}) 配置无效"
+                "（不存在或缺 api_key/base_url/model），请到「评测组」页修正",
+                group_id,
+            )
+        members.append({
+            "config_id": config_id,
+            "name": safe.get("name") or f"#{config_id}",
+            "model": resolved["model"],
+            "fingerprint": resolved["fingerprint"],
+        })
+
+    return {
+        "valid": True,
+        "problem": None,
+        "group_id": group_id,
+        "group_name": group["name"],
+        "members": members,
+        "combined_fp": judge_group_fingerprint(members),
+    }
+
+
+def judge_group_fingerprint(members: list[dict[str, Any]]) -> str:
+    """组合指纹 = 成员指纹排序后聚合（写入行级 judge_fp，批次列表兼容展示）。"""
+    fps = sorted(str(m["fingerprint"]) for m in members)
+    return _sha16("|".join(fps)) if fps else "unconfigured"
+
+
+def _invalid_group(problem: str, group_id: int | None) -> dict[str, Any]:
+    return {
+        "valid": False, "problem": problem, "group_id": group_id,
+        "group_name": "", "members": [], "combined_fp": "unconfigured",
+    }
+
+
 def _model_family(model: str) -> str:
     """按模型名前缀粗判家族（与 model_factory._model_family 同口径）。"""
     lower = model.lower()
@@ -251,6 +319,8 @@ __all__ = [
     "llm_snapshot_fingerprint",
     "binding_manifest_fingerprint",
     "resolve_judge_config",
+    "resolve_judge_group",
+    "judge_group_fingerprint",
     "same_family_as_executor",
     "judge_same_family_warning",
 ]

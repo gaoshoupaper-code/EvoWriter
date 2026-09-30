@@ -349,6 +349,16 @@ def init_db() -> None:
                 stopped_at  TEXT NOT NULL
             );
 
+            -- benchmark_batch_judge：批次评测组快照（REQ-20260930-162207/FR-002/DEC-008）。
+            -- 建批时落一份组快照 JSON（组名 + 成员指纹），批次详情/报告展示用；
+            -- 组行后续被删改不影响历史批次解读（DEC-005 快照语义）。与
+            -- benchmark_batch_meta 分表：meta 的 stop_reason NOT NULL 且两处都
+            -- INSERT OR IGNORE，混存会让先写的行吞掉后写的终止记录。
+            CREATE TABLE IF NOT EXISTS benchmark_batch_judge (
+                batch_id   TEXT PRIMARY KEY,              -- FK benchmark_runs.batch_id（逻辑外键）
+                group_json TEXT NOT NULL                  -- {group_id, group_name, members:[...]}
+            );
+
             -- reflection_library：失败 trace 自动归纳的反思库（决策 A8/D19，Reflexion/ExpeL 式）。
             -- eval_agent 完成后若 badcase → 归纳失败模式 → 写本表。
             -- 进化 Agent 启动时按评估问题分类查询，注入上下文。
@@ -386,6 +396,28 @@ def init_db() -> None:
             -- scope 列，若此处建 ON(scope,is_active) 会因列不存在而崩，进而连累整个
             -- executescript 让服务起不来（2026-07-18 启动崩溃根因）。索引统一由
             -- _migrate_llm_configs_scope 幂等管理（确保 scope 列已存在后再建）。
+
+            -- judge_groups：评测组（REQ-20260930-162207/DEC-001）。
+            -- 一个组 = 1~5 个 judge 候选配置的组合；触发批次时整批使用该组
+            -- （DEC-004：1 人组 = 现状单评）。成员仅限 eval/evolution scope
+            -- （判评分离，DEC-010），API/仓库层校验。成员配置被删时联动剔除、
+            -- 组空自动删组（DEC-005）；批次只存组快照，不实时引用组行。
+            CREATE TABLE IF NOT EXISTS judge_groups (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                name        TEXT NOT NULL UNIQUE,             -- 组名（用户起，如「三人评审团」）
+                created_at  TEXT NOT NULL,
+                updated_at  TEXT NOT NULL
+            );
+            -- judge_group_members：组成员（config_id → llm_configs.id）。
+            -- 删除联动由 JudgeGroupsRepository.remove_member_everywhere 在
+            -- LlmConfigsRepository.delete 内调用（DEC-005），不依赖 FK CASCADE。
+            CREATE TABLE IF NOT EXISTS judge_group_members (
+                group_id    INTEGER NOT NULL,                 -- FK judge_groups.id
+                config_id   INTEGER NOT NULL,                 -- FK llm_configs.id
+                position    INTEGER NOT NULL DEFAULT 0,       -- 成员展示顺序
+                PRIMARY KEY (group_id, config_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_jgm_config ON judge_group_members(config_id);
 
             -- user_cache：executor 用户列表的本地缓存（trace 历史观测功能）。
             -- evolution 不维护用户主数据，定时从 executor /internal/users 拉取，
@@ -1744,6 +1776,8 @@ class LlmConfigsRepository:
         """删除配置。若删的是激活项且该 scope 下还有其它行 → 自动激活同 scope id 最小的一条。
 
         注意：scope 归属由被删行的 scope 字段决定，自动补激活也只在同 scope 内进行。
+        评测组联动（DEC-005 of REQ-20260930-162207）：先剔除所有组的该成员、
+        删空组，再删配置——同一事务内完成，不产生悬空引用。
         Returns:
             True 表示命中行已删；False 表示 id 不存在。
         """
@@ -1765,6 +1799,8 @@ class LlmConfigsRepository:
                 ).fetchone()
                 if nxt:
                     conn.execute("UPDATE llm_configs SET is_active = 1 WHERE id = ?", (nxt[0],))
+            # 评测组删除联动（DEC-005）：剔除成员 + 删空组。_lock 为 RLock，锁内重入安全
+            JudgeGroupsRepository.remove_member_everywhere(id)
             conn.commit()
             return True
 
@@ -1787,6 +1823,177 @@ class LlmConfigsRepository:
             conn.execute("UPDATE llm_configs SET is_active = 1 WHERE id = ?", (id,))
             conn.commit()
             return True
+
+
+class JudgeGroupsRepository:
+    """评测组访问层（REQ-20260930-162207/FR-001/DEC-001、004、005、010）。
+
+    组 = 1~5 个 judge 候选配置（llm_configs）的命名组合，触发批次时整批使用。
+    约束：
+      - 成员数 1~5（DEC-004：1 人组 = 现状单评特例，5 人上限防成本失控）
+      - 成员配置必须存在且 scope ∈ {eval, evolution}（判评分离，DEC-010）
+      - 组名唯一
+      - 删除配置联动剔除成员、组空自动删组（DEC-005，由
+        LlmConfigsRepository.delete 在同一事务内调用）
+    批次侧只存组快照（组名 + 成员指纹 JSON），不实时引用组行——组被删/改
+    不影响历史批次解读（DEC-005 系统后果）。
+    """
+
+    MIN_MEMBERS = 1
+    MAX_MEMBERS = 5
+    ALLOWED_SCOPES = ("eval", "evolution")
+
+    @staticmethod
+    def list_all() -> list[dict[str, Any]]:
+        """全部组（含成员，按 position 排序）。
+
+        Returns: [{id, name, members: [{config_id, position}], created_at, updated_at}]
+        """
+        conn = get_conn()
+        groups = [
+            dict(r) for r in conn.execute(
+                "SELECT id, name, created_at, updated_at FROM judge_groups ORDER BY id ASC"
+            ).fetchall()
+        ]
+        members: dict[int, list[dict[str, Any]]] = {}
+        for r in conn.execute(
+            "SELECT group_id, config_id, position FROM judge_group_members "
+            "ORDER BY group_id ASC, position ASC"
+        ).fetchall():
+            members.setdefault(r["group_id"], []).append(
+                {"config_id": r["config_id"], "position": r["position"]}
+            )
+        for g in groups:
+            g["members"] = members.get(g["id"], [])
+        return groups
+
+    @staticmethod
+    def get(group_id: int) -> dict[str, Any] | None:
+        """单组（含成员）；不存在返回 None。"""
+        conn = get_conn()
+        row = conn.execute(
+            "SELECT id, name, created_at, updated_at FROM judge_groups WHERE id=?",
+            (group_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        group = dict(row)
+        group["members"] = [
+            {"config_id": r["config_id"], "position": r["position"]}
+            for r in conn.execute(
+                "SELECT config_id, position FROM judge_group_members "
+                "WHERE group_id=? ORDER BY position ASC",
+                (group_id,),
+            ).fetchall()
+        ]
+        return group
+
+    @staticmethod
+    def create(*, name: str, member_config_ids: list[int]) -> int:
+        """建组（校验成员数/重名/成员 scope），返回组 id。任一校验失败抛 ValueError。"""
+        _validate_members(member_config_ids)
+        now = datetime.now(UTC).isoformat()
+        conn = get_conn()
+        with _lock:
+            dup = conn.execute(
+                "SELECT 1 FROM judge_groups WHERE name=?", (name,)
+            ).fetchone()
+            if dup:
+                raise ValueError(f"评测组名「{name}」已存在")
+            cur = conn.execute(
+                "INSERT INTO judge_groups (name, created_at, updated_at) VALUES (?, ?, ?)",
+                (name, now, now),
+            )
+            group_id = cur.lastrowid
+            _write_members(conn, group_id, member_config_ids)
+            conn.commit()
+            return group_id
+
+    @staticmethod
+    def update(group_id: int, *, name: str, member_config_ids: list[int]) -> bool:
+        """整组更新（改名 + 全量替换成员）；组不存在返回 False。"""
+        _validate_members(member_config_ids)
+        now = datetime.now(UTC).isoformat()
+        conn = get_conn()
+        with _lock:
+            dup = conn.execute(
+                "SELECT 1 FROM judge_groups WHERE name=? AND id<>?", (name, group_id)
+            ).fetchone()
+            if dup:
+                raise ValueError(f"评测组名「{name}」已存在")
+            cur = conn.execute(
+                "UPDATE judge_groups SET name=?, updated_at=? WHERE id=?",
+                (name, now, group_id),
+            )
+            if cur.rowcount == 0:
+                return False
+            conn.execute("DELETE FROM judge_group_members WHERE group_id=?", (group_id,))
+            _write_members(conn, group_id, member_config_ids)
+            conn.commit()
+            return True
+
+    @staticmethod
+    def delete(group_id: int) -> bool:
+        """删组（成员行一并清理）；组不存在返回 False。"""
+        conn = get_conn()
+        with _lock:
+            cur = conn.execute("DELETE FROM judge_groups WHERE id=?", (group_id,))
+            conn.execute("DELETE FROM judge_group_members WHERE group_id=?", (group_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+    @staticmethod
+    def remove_member_everywhere(config_id: int) -> list[str]:
+        """删除联动（DEC-005）：从所有组剔除该成员，组空自动删组。
+
+        不自行 commit——在 LlmConfigsRepository.delete 的锁与事务内调用
+        （_lock 为 RLock，锁内重入安全），与配置删除同事务提交。
+        返回被自动删除的组名（空组消失，供日志/提示）。
+        """
+        conn = get_conn()
+        with _lock:
+            conn.execute(
+                "DELETE FROM judge_group_members WHERE config_id=?", (config_id,)
+            )
+            empty = conn.execute(
+                """SELECT g.id, g.name FROM judge_groups g
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM judge_group_members m WHERE m.group_id = g.id
+                   )"""
+            ).fetchall()
+            for row in empty:
+                conn.execute("DELETE FROM judge_groups WHERE id=?", (row["id"],))
+            return [row["name"] for row in empty]
+
+
+def _validate_members(member_config_ids: list[int]) -> None:
+    """组成员校验（FR-001 失败语义）：数量 1~5、无重复、存在且 scope 合法。"""
+    ids = list(member_config_ids)
+    if not (JudgeGroupsRepository.MIN_MEMBERS <= len(ids) <= JudgeGroupsRepository.MAX_MEMBERS):
+        raise ValueError(
+            f"评测组成员数须为 {JudgeGroupsRepository.MIN_MEMBERS}~"
+            f"{JudgeGroupsRepository.MAX_MEMBERS} 个（当前 {len(ids)} 个）"
+        )
+    if len(set(ids)) != len(ids):
+        raise ValueError("评测组成员不得重复")
+    for cid in ids:
+        row = get_conn().execute(
+            "SELECT scope FROM llm_configs WHERE id=?", (cid,)
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"成员配置 #{cid} 不存在")
+        if row["scope"] not in JudgeGroupsRepository.ALLOWED_SCOPES:
+            raise ValueError(
+                f"成员配置 #{cid} 是 {row['scope']} scope，不得作 judge（判评分离）"
+            )
+
+
+def _write_members(conn: sqlite3.Connection, group_id: int, member_config_ids: list[int]) -> None:
+    """按传入顺序写成员行（position 从 0 递增）。"""
+    conn.executemany(
+        "INSERT INTO judge_group_members (group_id, config_id, position) VALUES (?, ?, ?)",
+        [(group_id, cid, pos) for pos, cid in enumerate(member_config_ids)],
+    )
 
 
 def _row_to_safe(row: dict[str, Any]) -> dict[str, Any]:

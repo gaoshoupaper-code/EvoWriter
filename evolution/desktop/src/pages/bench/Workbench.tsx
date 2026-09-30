@@ -8,21 +8,21 @@ import {
   listBenchmarkBatches,
   stopBenchmark,
   getBenchmarkVersions,
-  listJudgeCandidates,
+  listJudgeGroups,
   getDatasetCases,
   getLeaderboard,
   type BenchmarkBatchSummary,
   type BenchmarkVersionItem,
   type DatasetCase,
-  type JudgeCandidate,
-  type JudgeDefault,
+  type JudgeGroupInfo,
   type LeaderboardResponse,
 } from "@/lib/api";
 
 /**
  * 评测工作台（REQ-20260921-135543 FR-002/FR-003）。
  *
- * 发起评测（版本/seed/并发/judge + case 子集勾选，DEC-008）+
+ * 发起评测（版本/seed/并发/评测组 + case 子集勾选，DEC-008；组评分
+ * REQ-20260930-162207/FR-002 触发必选评测组）+
  * 批次列表监控（5s 轮询、停止、跳批次详情）+ 版本趋势 tab（DEC-017）。
  * 弱点报告与 case 明细已迁批次详情页（DEC-006）。
  */
@@ -38,9 +38,9 @@ export default function BenchWorkbench() {
   const [versions, setVersions] = useState<BenchmarkVersionItem[]>([]);
   const [productionVersion, setProductionVersion] = useState<number | null>(null);
 
-  const [judges, setJudges] = useState<JudgeCandidate[]>([]);
-  const [judgeDefault, setJudgeDefault] = useState<JudgeDefault | null>(null);
-  const [judgeConfigId, setJudgeConfigId] = useState<number | "">("");
+  // 评测组（FR-002 of 162207：一律走组；DEC-004 单评 = 建 1 人组）
+  const [judgeGroups, setJudgeGroups] = useState<JudgeGroupInfo[]>([]);
+  const [judgeGroupId, setJudgeGroupId] = useState<number | "">("");
 
   // case 子集勾选（DEC-008：空选 = 全量 golden）
   const [goldenCases, setGoldenCases] = useState<DatasetCase[]>([]);
@@ -52,17 +52,16 @@ export default function BenchWorkbench() {
   const [loading, setLoading] = useState(true);
   const [stoppingId, setStoppingId] = useState<string | null>(null);
 
-  const selectedJudge = judges.find((j) => j.config_id === judgeConfigId) ?? null;
-  const judgeSameFamily = selectedJudge?.same_family_as_executor === true;
+  const selectedGroup = judgeGroups.find((g) => g.id === judgeGroupId) ?? null;
+  const sameFamilyMembers = (selectedGroup?.members ?? []).filter(
+    (m) => m.same_family_as_executor,
+  );
 
   useEffect(() => {
-    listJudgeCandidates()
-      .then((resp) => {
-        setJudges(resp.judges);
-        setJudgeDefault(resp.default);
-      })
+    listJudgeGroups()
+      .then((resp) => setJudgeGroups(resp.groups))
       .catch(() => {
-        // 候选加载失败不阻塞页面：judge 下拉退化为「默认」一项
+        // 组列表加载失败不阻塞页面：下拉显示为空并提示到配置页创建
       });
     getBenchmarkVersions()
       .then((resp) => {
@@ -111,23 +110,29 @@ export default function BenchWorkbench() {
   }
 
   async function handleRun() {
+    if (judgeGroupId === "") {
+      toast.error("请先选择评测组（在「配置 → 评测组」页创建）");
+      return;
+    }
     setStarting(true);
     try {
       const payload: {
         seeds: number;
         concurrency: 1 | 3 | 5;
-        judge_config_id?: number;
+        judge_group_id: number;
         version?: number;
         case_ids?: string[];
-      } = { seeds, concurrency };
+      } = { seeds, concurrency, judge_group_id: judgeGroupId };
       const v = versionInput.trim();
       if (v) payload.version = Number(v);
-      if (judgeConfigId !== "") payload.judge_config_id = judgeConfigId;
       if (selectedCases.size > 0) payload.case_ids = [...selectedCases];
       const resp = await runBenchmark(payload);
       const scope = selectedCases.size > 0 ? `${selectedCases.size} 个 case` : "全量 golden";
+      const groupNote = selectedGroup
+        ? `评测组「${selectedGroup.name}」${selectedGroup.members.length} 人 · `
+        : "";
       toast.success(
-        `评测批次已触发：${resp.batch_id.slice(0, 8)}（${scope} × ${resp.progress.total} 行，并发 ${concurrency}）`,
+        `评测批次已触发：${resp.batch_id.slice(0, 8)}（${groupNote}${scope} × ${resp.progress.total} 行，并发 ${concurrency}）`,
       );
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "触发评测失败");
@@ -212,21 +217,22 @@ export default function BenchWorkbench() {
             </select>
           </label>
           <label className="test-field">
-            <span>评测器 judge（空 = 默认解析）</span>
+            <span>评测组（评审团，维度分 = 成员均分）</span>
             <select
               className="evolve-select"
-              value={judgeConfigId}
-              onChange={(e) => setJudgeConfigId(e.target.value === "" ? "" : Number(e.target.value))}
+              value={judgeGroupId}
+              onChange={(e) => setJudgeGroupId(e.target.value === "" ? "" : Number(e.target.value))}
               disabled={starting}
             >
               <option value="">
-                {judgeDefault
-                  ? `默认（${judgeDefault.model || "未配置"} · ${judgeDefault.degraded ? "降级 evolution" : judgeDefault.scope}）`
-                  : "默认"}
+                {judgeGroups.length === 0
+                  ? "未创建评测组——到「配置 → 评测组」页创建"
+                  : "请选择评测组"}
               </option>
-              {judges.map((j) => (
-                <option key={j.config_id} value={j.config_id} disabled={!j.has_key}>
-                  {j.name}（{j.model} · {j.scope}）{!j.has_key ? " — 缺 key 不可用" : ""}
+              {judgeGroups.map((g) => (
+                <option key={g.id} value={g.id}>
+                  {g.name}（{g.members.length} 人 ·{" "}
+                  {g.members.map((m) => m.model || m.name).join(" / ") || "无成员"}）
                 </option>
               ))}
             </select>
@@ -271,10 +277,11 @@ export default function BenchWorkbench() {
           )}
         </div>
 
-        {judgeSameFamily && (
+        {sameFamilyMembers.length > 0 && (
           <div className="bench-judge-warn">
-            判评分离告警：所选 judge（{selectedJudge?.model}）与被测写作模型同家族，
-            评测存在自我偏好风险（分数可能系统性偏高）。建议换不同家族的模型。
+            判评分离告警：评测组成员（{sameFamilyMembers.map((m) => m.model).join("、")}）
+            与被测写作模型同家族，评测存在自我偏好风险（分数可能系统性偏高）。
+            建议换不同家族的模型。
           </div>
         )}
       </section>

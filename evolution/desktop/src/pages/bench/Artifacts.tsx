@@ -479,6 +479,7 @@ function RunSplit({
                 dim={dim}
                 value={value}
                 reason={scores!.reasons?.[dim]}
+                judgeGroup={scores!.judge_group}
                 onJump={jumpToDelivery}
               />
             ))}

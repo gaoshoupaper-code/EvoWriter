@@ -36,6 +36,9 @@ export default function BenchBatchDetail() {
   const [comparing, setComparing] = useState(false);
   const [compare, setCompare] = useState<BenchmarkCompare | null>(null);
 
+  // 本批次的评测组快照（FR-002 of 162207：详情页展示组名与成员；旧批次为 null）
+  const currentGroup = batches.find((b) => b.batch_id === batchId)?.judge_group ?? null;
+
   const loadReport = useCallback(async () => {
     if (!batchId) return;
     setReportLoading(true);
@@ -92,7 +95,14 @@ export default function BenchBatchDetail() {
     <div className="bench-page bench-batch-detail">
       <header className="page-header">
         <h1>批次详情 · <span className="mono">{batchId.slice(0, 8)}</span></h1>
-        <p className="page-desc">弱点报告 · case 明细 · 版本对比</p>
+        <p className="page-desc">
+          弱点报告 · case 明细 · 版本对比
+          {currentGroup
+            ? ` · 评测组「${currentGroup.group_name}」（${currentGroup.members
+                .map((m) => m.model || m.name)
+                .join(" / ")}，维度分 = 成员均分）`
+            : ""}
+        </p>
       </header>
 
       {/* 弱点报告（FR-004） */}

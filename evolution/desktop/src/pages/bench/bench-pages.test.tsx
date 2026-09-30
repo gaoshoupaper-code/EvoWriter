@@ -28,6 +28,10 @@ vi.mock("@/lib/api", () => ({
   compareBatches: vi.fn(),
   getBenchmarkRubric: vi.fn(),
   listJudgeCandidates: vi.fn(),
+  listJudgeGroups: vi.fn(),
+  createJudgeGroup: vi.fn(),
+  updateJudgeGroup: vi.fn(),
+  deleteJudgeGroup: vi.fn(),
   rerunGolden: vi.fn(),
   createGoldenCase: vi.fn(),
   getDatasetCases: vi.fn(),
@@ -99,6 +103,16 @@ function setupCommonMocks() {
     judges: [],
     default: { scope: "eval", model: "test-model", fingerprint: "fp", degraded: false },
   });
+  // 评测组默认一组（REQ-20260930-162207/FR-002：触发必选组）
+  api.listJudgeGroups.mockResolvedValue({
+    groups: [{
+      id: 1, name: "评审团",
+      members: [{
+        config_id: 11, name: "glm", model: "glm-4.7", scope: "eval",
+        is_active: true, has_key: true, same_family_as_executor: false,
+      }],
+    }],
+  });
   api.getDatasetCases.mockResolvedValue({ cases: [], total: 0 });
 }
 
@@ -138,7 +152,15 @@ describe("Shell 导航（AC-001）", () => {
 // ── AC-003/004/005：工作台 ──
 
 describe("工作台（AC-003/004/005）", () => {
-  it("勾选 case 子集后触发，payload 携带所选 case_ids", async () => {
+  /** 触发前先选评测组（FR-002 of 162207：一律走组）。 */
+  async function selectJudgeGroup() {
+    fireEvent.change(
+      await screen.findByRole("combobox", { name: /评测组/ }),
+      { target: { value: "1" } },
+    );
+  }
+
+  it("勾选 case 子集后触发，payload 携带所选 case_ids 与评测组", async () => {
     api.getDatasetCases.mockResolvedValue({
       cases: [
         { case_id: "case-001", title: "热血升级", layer: "golden", source_trace_id: null, demand_revision: null, promoted_at: null, created_by: "manual", has_reference: false },
@@ -154,6 +176,7 @@ describe("工作台（AC-003/004/005）", () => {
       </MemoryRouter>,
     );
 
+    await selectJudgeGroup();
     // 打开勾选器
     fireEvent.click(await screen.findByText(/选择 case 子集/));
     const boxes = await screen.findAllByRole("checkbox");
@@ -163,6 +186,18 @@ describe("工作台（AC-003/004/005）", () => {
     await waitFor(() => expect(api.runBenchmark).toHaveBeenCalled());
     const payload = api.runBenchmark.mock.calls[0][0];
     expect(payload.case_ids).toEqual(["case-001"]);
+    expect(payload.judge_group_id).toBe(1);
+  });
+
+  it("未选评测组时触发被拦截（不发起请求）", async () => {
+    render(
+      <MemoryRouter>
+        <Workbench />
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByText(/触发全量评测/));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(api.runBenchmark).not.toHaveBeenCalled();
   });
 
   it("不勾选触发 = 全量（payload 无 case_ids）", async () => {
@@ -172,9 +207,11 @@ describe("工作台（AC-003/004/005）", () => {
         <Workbench />
       </MemoryRouter>,
     );
+    await selectJudgeGroup();
     fireEvent.click(await screen.findByText(/触发全量评测/));
     await waitFor(() => expect(api.runBenchmark).toHaveBeenCalled());
     expect(api.runBenchmark.mock.calls[0][0].case_ids).toBeUndefined();
+    expect(api.runBenchmark.mock.calls[0][0].judge_group_id).toBe(1);
   });
 
   it("批次列表渲染进度，趋势 tab 渲染五维均分列", async () => {
@@ -355,6 +392,138 @@ describe("批次详情（AC-006/007/008/009/010）", () => {
 
     expect(await screen.findByText("样本不足")).toBeInTheDocument();
     expect(screen.getByText(/有效评分不足/)).toBeInTheDocument();
+  });
+});
+
+// ── 组评分展示（REQ-20260930-162207/FR-005/AC-006、AC-007）──
+
+describe("维度卡组评分（AC-006/007）", () => {
+  const judgeGroup = {
+    group_id: 1,
+    group_name: "三人评审团",
+    members: [
+      {
+        config_id: 11, name: "glm", model: "glm-4.7", fingerprint: "a",
+        scores: { 需求兑现: 5 }, reasons: { 需求兑现: { 达标: ["glm 达标理由"], 不足: ["未发现不足"] } },
+      },
+      {
+        config_id: 22, name: "kimi", model: "kimi-k2", fingerprint: "b",
+        scores: { 需求兑现: 2 }, reasons: { 需求兑现: { 达标: ["kimi 达标理由"], 不足: ["kimi 不足理由"] } },
+      },
+      {
+        // 该维缺席（评分失败，DEC-003）
+        config_id: 33, name: "deepseek", model: "deepseek-v3", fingerprint: "c",
+        scores: { 需求兑现: null }, reasons: { 需求兑现: null },
+      },
+    ],
+  };
+
+  it("judge 极差 ≥2 高亮 + 悬停显示各 judge 分；理由按 judge 折叠分组；缺席标注", async () => {
+    const { DimensionCard } = await import("@/components/bench/ScoreDetail");
+    render(
+      <DimensionCard
+        dim="需求兑现"
+        value={3.5}
+        judgeGroup={judgeGroup}
+        onJump={() => {}}
+      />,
+    );
+    // 分歧高亮（5 vs 2 极差 3 ≥2）：分数徽章带不稳定类（DEC-007）
+    const scoreBadge = document.querySelector(".bench-dim-score");
+    expect(scoreBadge).toBeTruthy();
+    expect(scoreBadge!.classList.contains("bench-seed-unstable")).toBe(true);
+    expect(scoreBadge!.textContent).toContain("3.5/5");
+    expect(scoreBadge!.getAttribute("title")).toContain("glm: 5");
+    expect(scoreBadge!.getAttribute("title")).toContain("deepseek: 缺席");
+    // per-judge 分组默认折叠（DEC-006）：3 个折叠块均在
+    const blocks = document.querySelectorAll(".bench-judge-block");
+    expect(blocks.length).toBe(3);
+    // 缺席标注（DEC-003）
+    expect(screen.getByText(/缺席（评分失败，未计入均分）/)).toBeInTheDocument();
+    // 展开一个 judge 看到其两段理由
+    blocks[1].querySelector("summary")!.dispatchEvent(new MouseEvent("click"));
+    expect(await screen.findByText("kimi 达标理由")).toBeInTheDocument();
+    expect(screen.getByText("kimi 不足理由")).toBeInTheDocument();
+  });
+
+  it("极差 <2 不高亮；旧数据（无 judgeGroup）走原两段理由路径（AC-007 回归）", async () => {
+    const { DimensionCard } = await import("@/components/bench/ScoreDetail");
+    const { container } = render(
+      <div>
+        <DimensionCard
+          dim="设定自洽"
+          value={3.0}
+          judgeGroup={{
+            group_id: 1, group_name: "二人组",
+            members: [
+              { config_id: 1, name: "a", model: "m1", scores: { 设定自洽: 3 }, reasons: { 设定自洽: { 达标: ["x"], 不足: ["y"] } } },
+              { config_id: 2, name: "b", model: "m2", scores: { 设定自洽: 3 }, reasons: { 设定自洽: { 达标: ["x"], 不足: ["y"] } } },
+            ],
+          }}
+          onJump={() => {}}
+        />
+        <DimensionCard
+          dim="人物塑造"
+          value={4}
+          reason={{ 达标: ["旧数据达标"], 不足: ["旧数据不足"] }}
+          onJump={() => {}}
+        />
+      </div>,
+    );
+    const badges = container.querySelectorAll(".bench-dim-score");
+    expect(badges[0]!.classList.contains("bench-seed-unstable")).toBe(false);
+    // 旧路径：无 judge 分组块，理由直接展开
+    expect(container.querySelectorAll(".bench-judge-block").length).toBe(2); // 仅组卡有
+    expect(screen.getByText("旧数据达标")).toBeInTheDocument();
+    expect(screen.getByText("旧数据不足")).toBeInTheDocument();
+  });
+});
+
+// ── 评测组页（REQ-20260930-162207/FR-001/AC-001）──
+
+describe("评测组页（AC-001）", () => {
+  it("列表渲染组与成员；无组时引导创建", async () => {
+    const judgeGroupModule = await import("@/pages/config/JudgeGroupPage");
+    const JudgeGroupPage = judgeGroupModule.default;
+    api.listJudgeGroups.mockResolvedValue({ groups: [] });
+    api.listJudgeCandidates.mockResolvedValue({
+      judges: [
+        { config_id: 11, name: "glm", model: "glm-4.7", base_url: "http://x", scope: "eval", is_active: true, has_key: true, same_family_as_executor: false },
+        { config_id: 22, name: "kimi", model: "kimi-k2", base_url: "http://y", scope: "evolution", is_active: false, has_key: true, same_family_as_executor: true },
+      ],
+      default: { scope: "eval", model: "glm-4.7", fingerprint: "fp", degraded: false },
+    });
+    render(
+      <MemoryRouter>
+        <JudgeGroupPage />
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(/还没有评测组/)).toBeInTheDocument();
+
+    // 新建：选 2 个成员 + 同家族标记可见（DEC-011）
+    fireEvent.click(screen.getByText("+ 新建评测组"));
+    const boxes = await screen.findAllByRole("checkbox");
+    fireEvent.click(boxes[0]);
+    fireEvent.click(boxes[1]);
+    expect(screen.getByText(/⚠ 同家族/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/三人评审团/), { target: { value: "评审团" } });
+    api.createJudgeGroup.mockResolvedValue({ group_id: 1, status: "created" });
+    api.listJudgeGroups.mockResolvedValue({
+      groups: [{
+        id: 1, name: "评审团",
+        members: [
+          { config_id: 11, name: "glm", model: "glm-4.7", scope: "eval", is_active: true, has_key: true, same_family_as_executor: false },
+          { config_id: 22, name: "kimi", model: "kimi-k2", scope: "evolution", is_active: false, has_key: true, same_family_as_executor: true },
+        ],
+      }],
+    });
+    fireEvent.click(screen.getByText("保存"));
+    await waitFor(() => expect(api.createJudgeGroup).toHaveBeenCalled());
+    expect(api.createJudgeGroup.mock.calls[0][0]).toEqual({
+      name: "评审团", member_config_ids: [11, 22],
+    });
+    expect(await screen.findByText("2 人")).toBeInTheDocument();
   });
 });
 

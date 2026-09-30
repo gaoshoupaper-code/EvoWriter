@@ -1,13 +1,17 @@
 import { useMemo } from "react";
 
 import { groupsForDimension } from "@/components/bench/DeliveriesView";
-import type { BenchmarkRunRow } from "@/lib/api";
+import type { BenchmarkRunRow, JudgeGroupDetail } from "@/lib/api";
 
 /**
  * 行评分共享组件（REQ-20260923-131103 FR-004：产物页与批次详情页复用）。
  *
  * 从 CaseRunsPanel 抽出：五维概览条、维度卡片（两段理由/旧版兼容/交付跳转）、
  * seed 对比表、状态标签。渲染口径与批次详情页完全一致，无双标。
+ *
+ * 组评分（REQ-20260930-162207/FR-005）：judgeGroup 存在时维度卡改为
+ * per-judge 理由分组（DEC-006 默认折叠）+ judge 极差 ≥2 高亮（DEC-007，
+ * 与 seed 极差同口径）+ 缺席标注（DEC-003）；旧数据走原渲染路径。
  */
 
 export const STATUS_LABEL: Record<string, string> = {
@@ -19,7 +23,8 @@ export const STATUS_LABEL: Record<string, string> = {
   cancelled: "已取消",
 };
 
-/** seed 间同维极差达到该值视为不稳定（1-5 分制下 2 分 = 跨档波动）。 */
+/** seed 间同维极差达到该值视为不稳定（1-5 分制下 2 分 = 跨档波动）。
+ *  judge 间分歧高亮沿用同一阈值（DEC-007 of 162207）。 */
 export const UNSTABLE_SPREAD = 2;
 
 /** 分数 → 红/黄/绿色阶类名（≤2 红、≤3 黄、其余绿）。 */
@@ -48,29 +53,114 @@ export function ScoreOverview({ scores }: { scores: Record<string, number> }) {
   );
 }
 
+/** 单套两段理由块（组评分 per-judge 分组与旧版单套共用渲染）。 */
+function ReasonLists({ reason }: { reason: { 达标: string[]; 不足: string[] } }) {
+  return (
+    <div className="bench-dim-reasons">
+      <div className="bench-dim-reason-list bench-dim-reason-met">
+        <span className="bench-dim-reason-label">✓ 达标</span>
+        <ul>
+          {reason.达标.map((item, i) => (
+            <li key={i}>{item}</li>
+          ))}
+        </ul>
+      </div>
+      <div className="bench-dim-reason-list bench-dim-reason-flaw">
+        <span className="bench-dim-reason-label">⚠ 不足</span>
+        <ul>
+          {reason.不足.map((item, i) => (
+            <li key={i}>{item}</li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 /**
- * 维度卡片：分值 + 两段理由（达标/不足）默认展开分色（DEC-011 of REQ-20260921-210038）。
- * 旧批次理由为字符串（v3 及更早）→ 原样展示并标「旧版理由」；无理由 → 占位说明。
+ * 维度卡片：分值 + 理由。三条渲染路径（DEC-008 of 162207 按字段存在性分派）：
+ * 1. judgeGroup 存在（组评分批次）：per-judge 分组折叠 + 分歧高亮 + 缺席标注
+ * 2. reason 为对象（v4 单 judge 旧批次）：两段理由展开分色
+ * 3. reason 为字符串/缺失（v3 及更早）：旧版理由原样展示
  */
 export function DimensionCard({
   dim,
   value,
   reason,
+  judgeGroup,
   onJump,
 }: {
   dim: string;
   value: number;
   reason?: string | { 达标: string[]; 不足: string[] };
+  /** 组评分明细（存在即组批次；旧批次不传走原路径）。 */
+  judgeGroup?: JudgeGroupDetail | null;
   onJump: (hint: string | null) => void;
 }) {
   const hint = groupsForDimension(dim);
+
+  // judge 间分歧（DEC-007）：同维极差 ≥2 高亮；悬停显示各 judge 原始分
+  const dimJudges = useMemo(
+    () =>
+      (judgeGroup?.members ?? []).map((m) => ({
+        name: m.name,
+        model: m.model,
+        score: m.scores?.[dim],
+        reason: m.reasons?.[dim] ?? null,
+      })),
+    [judgeGroup, dim],
+  );
+  const presentScores = dimJudges
+    .map((d) => d.score)
+    .filter((s): s is number => typeof s === "number");
+  const spread =
+    presentScores.length >= 2
+      ? Math.max(...presentScores) - Math.min(...presentScores)
+      : null;
+  const judgeUnstable = spread != null && spread >= UNSTABLE_SPREAD;
+  const hoverDetail =
+    dimJudges.length > 0
+      ? dimJudges
+          .map((d) => `${d.name}: ${typeof d.score === "number" ? d.score : "缺席"}`)
+          .join(" / ")
+      : undefined;
+
   return (
     <div className="bench-dim-card">
       <div className="bench-dim-head">
         <span className="bench-dim-name">{dim}</span>
-        <span className={`bench-dim-score ${scoreClass(value)}`}>{value}/5</span>
+        <span
+          className={`bench-dim-score ${scoreClass(value)} ${judgeUnstable ? "bench-seed-unstable" : ""}`}
+          title={hoverDetail}
+        >
+          {value.toFixed(1)}/5
+          {judgeUnstable && `（judge 极差 ${spread!.toFixed(0)}）`}
+        </span>
       </div>
-      {reason == null ? (
+
+      {dimJudges.length > 0 ? (
+        // 组评分：理由按 judge 分组、默认折叠（DEC-006）；缺席 judge 标注（DEC-003）
+        <div className="bench-judge-blocks">
+          {dimJudges.map((d, i) => (
+            <details key={i} className="bench-judge-block">
+              <summary>
+                <span className="bench-judge-name">{d.name}</span>
+                <span className="bench-judge-model">{d.model}</span>
+                {typeof d.score === "number" ? (
+                  <span className={`bench-judge-score ${scoreClass(d.score)}`}>{d.score}/5</span>
+                ) : (
+                  <span className="bench-judge-absent">缺席（评分失败，未计入均分）</span>
+                )}
+              </summary>
+              {d.reason ? (
+                <ReasonLists reason={d.reason} />
+              ) : (
+                <p className="bench-reason-absent">该维缺席，无理由。</p>
+              )}
+            </details>
+          ))}
+        </div>
+      ) : reason == null ? (
         <p className="bench-reason-absent">旧版规则评分，未生成理由</p>
       ) : typeof reason === "string" ? (
         <div className="bench-dim-reasons">
@@ -80,24 +170,7 @@ export function DimensionCard({
           </p>
         </div>
       ) : (
-        <div className="bench-dim-reasons">
-          <div className="bench-dim-reason-list bench-dim-reason-met">
-            <span className="bench-dim-reason-label">✓ 达标</span>
-            <ul>
-              {reason.达标.map((item, i) => (
-                <li key={i}>{item}</li>
-              ))}
-            </ul>
-          </div>
-          <div className="bench-dim-reason-list bench-dim-reason-flaw">
-            <span className="bench-dim-reason-label">⚠ 不足</span>
-            <ul>
-              {reason.不足.map((item, i) => (
-                <li key={i}>{item}</li>
-              ))}
-            </ul>
-          </div>
-        </div>
+        <ReasonLists reason={reason} />
       )}
       <button
         type="button"

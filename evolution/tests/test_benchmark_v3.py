@@ -166,7 +166,13 @@ class ValidateDimJudgementTest(unittest.TestCase):
 
 
 class ScoreCaseTest(unittest.TestCase):
-    """score_case 五维并发独立调用；失败维仅重试该维 1 次（mock llm.chat）。"""
+    """score_case 维×judge 并发独立调用；失败维仅重试该维 1 次（mock llm.chat）。
+
+    REQ-20260930-162207 组评分改造后 score_case 必须传评测组成员；
+    本组用例固定 1 人组（单评特例，语义与改造前一致）。
+    """
+
+    SINGLE_JUDGE = [{"config_id": 1, "name": "单评", "model": "mock-model", "fingerprint": "fp"}]
 
     @staticmethod
     def _dim_response(score=4):
@@ -204,7 +210,7 @@ class ScoreCaseTest(unittest.TestCase):
         deliveries = {"主线 storyline": "x" * 250, "人物 character": "y" * 250, "世界观 worldview": "z" * 250}
         with patch.object(scorer.llm, "chat", side_effect=fake_chat):
             try:
-                result = scorer.score_case("需求", deliveries)
+                result = scorer.score_case("需求", deliveries, self.SINGLE_JUDGE)
             except Exception as exc:  # noqa: BLE001 - 测试需捕获任意上抛类型
                 result = exc
         from collections import Counter
@@ -219,13 +225,15 @@ class ScoreCaseTest(unittest.TestCase):
         self.assertNotIsInstance(result, Exception)
         self.assertEqual(sorted(calls.elements()), sorted(rubric_v3.DIMENSION_KEYS))
         self.assertEqual(set(result["scores"]), set(rubric_v3.DIMENSION_KEYS))
-        # 两段理由结构（DEC-006）+ 无 tags 字段（DEC-009）
+        # per-judge 两段理由入 judge_group 明细（DEC-006 of 162207）+ 无 tags 字段
+        member = result["judge_group"]["members"][0]
         for key in rubric_v3.DIMENSION_KEYS:
             self.assertEqual(
-                result["reasons"][key],
+                member["reasons"][key],
                 {"达标": ["承诺点均兑现"], "不足": ["配角交代潦草"]},
             )
         self.assertNotIn("tags", result)
+        self.assertNotIn("reasons", result, "顶层不再输出理由（组批次按 judge 分组）")
         self.assertEqual(result["overall"], 4.0)
         self.assertEqual(result["rubric_version"], rubric_v3.RUBRIC_VERSION)
 

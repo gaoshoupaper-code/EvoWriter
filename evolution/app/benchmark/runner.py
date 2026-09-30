@@ -53,6 +53,12 @@ DEFAULT_SEEDS = 3
 # runner 层只做下界保护——直接调用方（rerun_golden 等）不受取值集合约束）
 DEFAULT_CONCURRENCY = 3
 
+# 组评分 judge 并发闸门（DEC-009 of REQ-20260930-162207）：全批次在途 judge
+# 调用总量上限。改造前峰值 = 3 worker × 5 维 = 15 路；组评分自然并发为
+# 15×N（N=组人数），第三方端点限流风险陡增——封顶回 15，组人数只增加批次
+# 时长，不增加限流/止损风险。生成（executor）调用不受此闸门约束。
+JUDGE_MAX_CONCURRENCY = 15
+
 # 评分重试在 score_case 内按维度进行（DEC-013：单维 1+1 次）；
 # 行级不再整体重试——任一维重试用尽即整行 failed，error 含维度名。
 
@@ -124,7 +130,8 @@ def trigger_run(
     case_ids: list[str] | None = None,
     seeds: int = DEFAULT_SEEDS,
     concurrency: int = DEFAULT_CONCURRENCY,
-    judge_config_id: int | None = None,
+    judge_group_id: int | None = None,
+    group_snapshot: dict[str, Any] | None = None,
 ) -> str:
     """触发一个评测批次（同步建表，异步执行）。返回 batch_id。
 
@@ -133,8 +140,10 @@ def trigger_run(
         case_ids: 要跑的 case；None=golden 全 case
         seeds: 每 case 独立重复次数（DEC-013 默认 3）
         concurrency: 批次内并发执行的行数上限（FR-001/DEC-004 默认 3）
-        judge_config_id: 指定 judge 配置（FR-003/DEC-005）；None=默认解析
-            （eval scope 激活项，降级 evolution）
+        judge_group_id: 评测组 ID（REQ-20260930-162207/FR-002；DEC-004 一律
+            走组——单 judge 用法迁移为建 1 人组）
+        group_snapshot: 已解析的组快照（内部复用入口：golden 升级重跑传最近
+            批次的组快照，组行可能已被删改，不重新解析）
     """
     # 默认：当前 production 版本
     if versions is None:
@@ -157,25 +166,26 @@ def trigger_run(
     if locked and not revision.verify_golden_intact(locked):
         logger.warning("golden 内容与锁定 revision 不一致（可能被篡改），仍用锁定值跑")
 
-    # 评分配置指纹（DEC-012/015：建批时采集 judge 指纹 + rubric 版本；
-    # FR-003：config_id 指定时校验该配置完整，无效即拒——不产生半配置批次）
-    judge_cfg = bench_manifest.resolve_judge_config(judge_config_id)
-    if judge_cfg["fingerprint"] == "unconfigured":
-        if judge_config_id is not None:
-            raise ValueError(
-                f"所选 judge 配置 #{judge_config_id} 无效（不存在或缺 api_key/base_url/model），"
-                "请在「进化端模型」页检查后再试"
+    # 评测组解析（FR-002/DEC-008：建批时采集组快照 + 组合指纹；成员逐个校验
+    # 完整，任一无效即拒——不产生半配置批次，沿用 FR-003 拒绝语义）
+    if group_snapshot is None:
+        if judge_group_id is None:
+            raise ValueError("未指定评测组：请先在「评测组」页创建，触发时选择")
+        resolved = bench_manifest.resolve_judge_group(judge_group_id)
+        if not resolved["valid"]:
+            raise ValueError(resolved["problem"])
+        group_snapshot = {
+            "group_id": resolved["group_id"],
+            "group_name": resolved["group_name"],
+            "members": resolved["members"],
+        }
+    judge_fp = bench_manifest.judge_group_fingerprint(group_snapshot["members"])
+    for member in group_snapshot["members"]:
+        if bench_manifest.same_family_as_executor(member["model"]):
+            logger.warning(
+                "判评分离告警：评测组成员 %s(%s) 与 executor 被测模型同家族，"
+                "评测存在自我偏好风险（arXiv:2502.01534）", member["name"], member["model"],
             )
-        raise ValueError(
-            "评测 judge LLM 未配置：请在桌面端「进化端模型」页配置（eval 或 evolution scope）"
-        )
-    if judge_cfg.get("degraded"):
-        logger.warning("eval scope 未配置，judge 降级使用 evolution scope 配置")
-    if bench_manifest.same_family_as_executor(judge_cfg["model"]):
-        logger.warning(
-            "判评分离告警：judge 模型 %s 与 executor 被测模型同家族，"
-            "评测存在自我偏好风险（arXiv:2502.01534）", judge_cfg["model"],
-        )
 
     batch_id = bench_repo.create_batch(
         case_ids=case_ids,
@@ -183,35 +193,51 @@ def trigger_run(
         golden_revision=golden_revision,
         seeds=seeds,
         rubric_version=rubric_v3.RUBRIC_VERSION,
-        judge_fp=judge_cfg["fingerprint"],
+        judge_fp=judge_fp,
         concurrency=concurrency,
     )
+    bench_repo.set_batch_judge(batch_id, group_snapshot)
 
     # 后台执行（不阻塞）。直接起 daemon 线程——本函数在 FastAPI sync 端点
     # （线程池 worker）里被调，无 running event loop，asyncio.create_task 会抛
     # RuntimeError（review P0：触发即 500、批次永久卡 running）。
-    _dispatch_batch(batch_id, concurrency, judge_config_id)
-    logger.info("评测批次 %s 已触发，后台执行（并发 %d）", batch_id, concurrency)
+    _dispatch_batch(batch_id, concurrency, group_snapshot)
+    logger.info(
+        "评测批次 %s 已触发，后台执行（并发 %d，评测组「%s」%d 人）",
+        batch_id, concurrency, group_snapshot.get("group_name") or "-",
+        len(group_snapshot["members"]),
+    )
     return batch_id
 
 
-def _dispatch_batch(batch_id: str, concurrency: int, judge_config_id: int | None) -> None:
+def _dispatch_batch(
+    batch_id: str, concurrency: int, group_snapshot: dict[str, Any] | None,
+) -> None:
     """起后台线程执行批次（trigger_run 唯一的派发出口，测试 seam）。"""
     import threading
 
     threading.Thread(
         target=_run_batch_sync,
-        args=(batch_id, concurrency, judge_config_id),
+        args=(batch_id, concurrency, group_snapshot),
         daemon=True, name=f"bench-runner-{batch_id[:8]}",
     ).start()
 
 
 def trigger_golden_upgrade_rerun(k: int = 3) -> str:
-    """golden 升级后重跑最近 K 个版本（D8/D18/D20）。"""
+    """golden 升级后重跑最近 K 个版本（D8/D18/D20）。
+
+    评测组沿用最近一次批次的组快照（组行可能已被删改，快照不受影响）；
+    从未跑过组批次时拒绝——golden 重跑必须与历史口径可比。
+    """
     versions = bench_repo.get_recent_versions(k)
     if not versions:
         raise ValueError("无可用快照版本")
-    return trigger_run(versions=versions)
+    snapshot = bench_repo.get_latest_judge_snapshot()
+    if snapshot is None:
+        raise ValueError(
+            "尚无历史评测组可沿用：请先在评测工作台选择评测组手动触发一次"
+        )
+    return trigger_run(versions=versions, group_snapshot=snapshot)
 
 
 # ── 后台执行 ────────────────────────────────────────────────
@@ -220,25 +246,30 @@ def trigger_golden_upgrade_rerun(k: int = 3) -> str:
 def _run_batch_sync(
     batch_id: str,
     concurrency: int = DEFAULT_CONCURRENCY,
-    judge_config_id: int | None = None,
+    group_snapshot: dict[str, Any] | None = None,
 ) -> None:
     """并发执行批次：concurrency 个 worker 各自原子抢占 pending 行直到取空。
 
     抢占经 claim_next_pending（单条 UPDATE...RETURNING，锁内原子），多 worker
     不会取到同一行；单行失败由 _worker_loop 记 failed/退回重试，不传染其他行。
-    judge_config_id 为全批次统一 judge（FR-003），None=评分走默认 scope 解析。
+    group_snapshot 为建批时解析的评测组快照（FR-002，全批次统一）。
+    judge_gate（DEC-009）：全批次共享的 judge 并发闸门，评分调用经此限流。
     批次级取消事件与连续失败计数随批次生命周期创建/清理。
     """
     cancel_event = threading.Event()
     with _cancel_lock:
         _cancel_events[batch_id] = cancel_event
+    judge_gate = threading.Semaphore(JUDGE_MAX_CONCURRENCY)
     streak = _FailStreak()
     workers = max(1, concurrency)
-    logger.info("开始执行 benchmark 批次 %s（并发 %d）", batch_id, workers)
+    logger.info(
+        "开始执行 benchmark 批次 %s（并发 %d，judge 并发上限 %d）",
+        batch_id, workers, JUDGE_MAX_CONCURRENCY,
+    )
     threads = [
         threading.Thread(
             target=_worker_loop,
-            args=(batch_id, judge_config_id, cancel_event, streak),
+            args=(batch_id, group_snapshot, judge_gate, cancel_event, streak),
             daemon=True, name=f"bench-{batch_id[:8]}-{i}",
         )
         for i in range(workers)
@@ -257,7 +288,8 @@ def _run_batch_sync(
 
 def _worker_loop(
     batch_id: str,
-    judge_config_id: int | None = None,
+    group_snapshot: dict[str, Any] | None = None,
+    judge_gate: threading.Semaphore | None = None,
     cancel_event: threading.Event | None = None,
     streak: _FailStreak | None = None,
 ) -> None:
@@ -270,7 +302,9 @@ def _worker_loop(
         if row is None:
             return
         try:
-            _execute_one(row, judge_config_id, cancel_event=cancel_event)
+            _execute_one(
+                row, group_snapshot, judge_gate=judge_gate, cancel_event=cancel_event,
+            )
             streak.record_success()
         except _BatchCancelled as exc:
             # 批次停止：尽力叫停 executor 侧生成任务，手中行转 cancelled 后退出
@@ -324,11 +358,12 @@ def _stop_executor_task(task_id: str) -> None:
 
 def _execute_one(
     row: dict[str, Any],
-    judge_config_id: int | None = None,
+    group_snapshot: dict[str, Any] | None = None,
     *,
+    judge_gate: threading.Semaphore | None = None,
     cancel_event: threading.Event | None = None,
 ) -> None:
-    """执行单行：调 executor → 轮询 → 评测评分 → 回填指纹 → 写结果。
+    """执行单行：调 executor → 轮询 → 组评分 → 回填指纹 → 写结果。
 
     轮询与评分等待点检查批次取消（_BatchCancelled 上抛由 worker 收尾）；
     行状态写入均有终态守卫，取消后迟到写入不会覆盖 cancelled。
@@ -382,9 +417,12 @@ def _execute_one(
         )
         logger.warning("评测行 %d trace=%s 无 Platform 绑定，manifest 记 unbound", run_id, trace_id)
 
-    # 5. 评测评分（等 trace 摄入完成后再评；judge_config_id 为本批次统一 judge，FR-003）
+    # 5. 组评分（等 trace 摄入完成后再评；group_snapshot 为本批次评测组快照，FR-002）
     _check_cancel(cancel_event)
-    scores = _score_with_retry(demand_md, trace_id, judge_config_id, cancel_event=cancel_event)
+    scores = _score_with_retry(
+        demand_md, trace_id, group_snapshot,
+        judge_gate=judge_gate, cancel_event=cancel_event,
+    )
     bench_repo.set_result(
         run_id,
         eval_id=None,
@@ -505,13 +543,16 @@ def _poll_until_done(
 
 
 def _score_with_retry(
-    demand_md: str, trace_id: str, judge_config_id: int | None = None,
+    demand_md: str, trace_id: str, group_snapshot: dict[str, Any] | None = None,
+    *,
+    judge_gate: threading.Semaphore | None = None,
     cancel_event: threading.Event | None = None,
 ) -> dict[str, Any] | None:
-    """评测评分：直读 ArtifactRevision 三件套 + rubric v4 按维 judge（FR-002/003）。
+    """组评分：直读 ArtifactRevision 三件套 + rubric v4 维×judge（FR-002/003）。
 
-    重试语义（DEC-013）：单维失败在 score_case 内重试该维 1 次；任一维重试
-    用尽即整行上抛（DimensionScoreError，message 含维度名 → 行 failed）。
+    重试语义（DEC-013 + DEC-003 of 162207）：单 judge 单维失败在 score_case
+    内重试 1 次，仍败按缺席记账；同维法定人数不足即整行上抛
+    （DimensionScoreError，message 含维度名 → 行 failed）。
     先等 trace 摄入完成（runs 表出现终态），再等产物事件数稳定（连续两轮
     轮询 artifact_revision 计数不变）——大 trace（多 Agent 连续增量 138+
     产物事件）的 ingestion 分批搬运慢于 runs 终态写入，只等终态会在半截
@@ -553,7 +594,13 @@ def _score_with_retry(
         raise RuntimeError(f"trace {trace_id} 无大纲三件套产物（ArtifactRevision）")
 
     _check_cancel(cancel_event)
-    return scorer.score_case(demand_md, deliveries, judge_config_id=judge_config_id)
+    return scorer.score_case(
+        demand_md, deliveries,
+        group_snapshot["members"] if group_snapshot else [],
+        group_id=group_snapshot.get("group_id") if group_snapshot else None,
+        group_name=group_snapshot.get("group_name", "") if group_snapshot else "",
+        judge_gate=judge_gate,
+    )
 
 
 __all__ = [

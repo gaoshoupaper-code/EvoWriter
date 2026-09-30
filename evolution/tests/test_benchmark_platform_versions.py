@@ -131,11 +131,12 @@ class ApiVersionsTest(unittest.TestCase):
         bench_api = self._api()
         from fastapi import HTTPException
 
+        # 评测组必选（REQ-20260930-162207）：给足组 ID，聚焦账本不可达路径
         with patch.object(
             runner, "_get_production_version", side_effect=RuntimeError("Platform 账本不可达")
         ):
             with self.assertRaises(HTTPException) as ctx:
-                bench_api.trigger_run(bench_api.RunRequest())
+                bench_api.trigger_run(bench_api.RunRequest(judge_group_id=1))
         self.assertEqual(ctx.exception.status_code, 502)
 
 

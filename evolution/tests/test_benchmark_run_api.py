@@ -57,6 +57,7 @@ class TriggerRunResponseTest(unittest.TestCase):
         )
         req = benchmark_api.RunRequest(
             versions=[7], case_ids=["case-001"], seeds=1, concurrency=1,
+            judge_group_id=1,
         )
         # 只 patch 触发入口（避免真实线程池），批次读取走真库
         with patch.object(benchmark_api.runner, "trigger_run", return_value=batch_id):

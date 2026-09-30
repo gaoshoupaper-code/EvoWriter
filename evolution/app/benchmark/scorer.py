@@ -1,12 +1,17 @@
-"""评测评分引擎（REQ-20260919-172934 / FR-002/003，TD-002；v4 重构 REQ-20260921-210038）。
+"""评测评分引擎（REQ-20260919-172934 / FR-002/003，TD-002；v4 重构 REQ-20260921-210038；
+组评分 REQ-20260930-162207）。
 
 评测评分链路（benchmark 唯一主链路）：
   1. load_outline_deliveries：从 ArtifactRevision 事件直读大纲三件套
      （不走卷宗编译、不走 eval_agent 旧直评路径——DEC-006 休眠链路零依赖）
   2. score_case：rubric v4 按维独立 judge 调用（五维并发，DEC-010）→
      两段理由校验（DEC-002/006）→ 规则项判定
-  3. 单维失败仅重试该维 1 次，仍败上抛 DimensionScoreError（DEC-013），
-     调用方按行级 failed 处理
+  3. 单维失败仅重试该维 1 次，仍败按法定人数降级（DEC-013 of 172934 +
+     DEC-003 of 162207：同维成功 judge ≥2 出分，不足则 DimensionScoreError）
+
+组评分（REQ-20260930-162207）：score_case 收评测组成员列表（≥1 个 judge），
+按 维 × judge 并发调用；维度分 = 成功 judge 均分保留 1 位小数（DEC-002），
+per-judge 原始分与两段理由全量入 judge_group 明细块（DEC-006/008）。
 
 轻量可信读取（TD-002）：只做 content_hash 自校验，不做卷宗级 event 全链校验——
 评测消费的是冻结产物内容，可信链校验是卷宗（已休眠）的职责。
@@ -17,6 +22,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -298,23 +304,33 @@ def _validate_dim_judgement(judgement: dict[str, Any], dim_key: str) -> None:
 
 def _score_dimension_once(
     dim: dict[str, Any], demand_md: str, deliveries: dict[str, str],
-    judge_config_id: int | None,
+    config_id: int | None, judge_gate: threading.Semaphore | None,
 ) -> dict[str, Any]:
-    """单维 judge 调用 + 解析 + 校验（一次尝试）。"""
+    """单维 judge 调用 + 解析 + 校验（一次尝试）judge_gate 限在途调用数。"""
     messages = [
         {"role": "system", "content": rubric_v3.build_judge_dim_system_prompt(dim)},
         {"role": "user", "content": rubric_v3.build_judge_user_prompt(demand_md, deliveries)},
     ]
     # 300s：judge 非流式输出单维 JSON；输入含大纲三件套全文，与 executor/
     # evolution 侧 300s 先例对齐（deepseek 兼容端点 120s 常态撞线的既有教训）。
-    raw = llm.chat(
-        messages,
-        temperature=0.0,
-        timeout=300.0,
-        phase=f"benchmark_score:{dim['key']}",
-        scope="eval",
-        config_id=judge_config_id,
-    )
+
+    def _call() -> str:
+        return llm.chat(
+            messages,
+            temperature=0.0,
+            timeout=300.0,
+            phase=f"benchmark_score:{dim['key']}",
+            scope="eval",
+            config_id=config_id,
+        )
+
+    # DEC-009 of 162207：批次级 judge 并发闸门（None=不限，直调/测试）。
+    # 只包住网络调用段，解析/校验不占闸门名额。
+    if judge_gate is not None:
+        with judge_gate:
+            raw = _call()
+    else:
+        raw = _call()
     judgement = _parse_response(raw)
     _validate_dim_judgement(judgement, dim["key"])
     return judgement
@@ -322,17 +338,18 @@ def _score_dimension_once(
 
 def _score_dimension(
     dim: dict[str, Any], demand_md: str, deliveries: dict[str, str],
-    judge_config_id: int | None,
+    config_id: int | None, judge_gate: threading.Semaphore | None,
 ) -> dict[str, Any]:
-    """单维评分：失败仅重试该维 1 次（DEC-013），仍败上抛 DimensionScoreError。"""
+    """单 judge 单维评分：失败仅重试 1 次（DEC-013），仍败上抛（调用方按缺席记账）。"""
     last_error: Exception | None = None
     for attempt in range(1, _DIM_ATTEMPTS + 1):
         try:
-            return _score_dimension_once(dim, demand_md, deliveries, judge_config_id)
+            return _score_dimension_once(dim, demand_md, deliveries, config_id, judge_gate)
         except Exception as exc:
             last_error = exc
             logger.warning(
-                "评分维度「%s」第 %d 次尝试失败: %s", dim["key"], attempt, exc,
+                "评分维度「%s」(judge config=%s) 第 %d 次尝试失败: %s",
+                dim["key"], config_id, attempt, exc,
             )
     raise DimensionScoreError(
         f"维度「{dim['key']}」评分重试用尽（{_DIM_ATTEMPTS} 次）: {last_error}"
@@ -340,47 +357,117 @@ def _score_dimension(
 
 
 def score_case(
-    demand_md: str, deliveries: dict[str, str], judge_config_id: int | None = None,
+    demand_md: str, deliveries: dict[str, str], judges: list[dict[str, Any]],
+    *,
+    group_id: int | None = None,
+    group_name: str = "",
+    judge_gate: threading.Semaphore | None = None,
 ) -> dict[str, Any]:
-    """对一个 case 的一次生成产物评分（5 次按维 judge 调用并发 + 规则项判定）。
+    """对一个 case 的一次生成产物，用评测组评分（维 × judge 并发 + 规则项判定）。
 
-    judge_config_id（FR-003）：指定 judge 配置（触发时下拉选择的）；
-    None=默认解析（llm.chat scope=eval，未配置降级 evolution）。
+    judges（REQ-20260930-162207/FR-003）：评测组成员快照，每项含
+    config_id / name / model / fingerprint（runner 建批时解析传入）。
+    judge_gate（DEC-009）：批次级并发闸门，限制在途 judge 调用总数。
+    group_id/group_name：写入 judge_group 明细块的组标识（DEC-008）。
+
+    聚合口径（DEC-002）：维度分 = 同维成功 judge 均分保留 1 位小数；
+    overall = 各维均分（沿用历史算法）。judge 原始输出仍校验 0-5 整数
+    与两段理由契约——小数只出现在聚合层。
+
+    法定人数（DEC-003/004）：同维成功 judge ≥2 出分（1 人组退化为 ≥1，
+    即现状单评语义）；不足则上抛 DimensionScoreError → 行级 failed。
 
     Returns: {
       rubric_version, calibration, anchor_status,
-      scores: {维度: 分}, reasons: {维度: {达标: [...], 不足: [...]}}（DEC-006）,
-      overall: 有效维度均分（score>0 参与）,
-      rule_delivery: {passed, problems},
-      rule_quota: 配比达成核对（REQ-20260922-162823 FR-005；minimal 档 skipped_minimal）,
+      scores: {维度: 均分 1 位小数}, overall: 各维均分,
+      rule_delivery / rule_quota: 规则项（代码判定，不走 LLM）,
+      judge_group: {group_id, group_name, members: [
+        {config_id, name, model, fingerprint,
+         scores: {维度: 原始整数分 | None(缺席)},
+         reasons: {维度: {达标/不足} | None(缺席)}}]}（DEC-006/008）
     }
-    Raises: DimensionScoreError（单维重试用尽，含维度名）；调用方按行级 failed 处理。
+    顶层不再输出 reasons——组批次理由按 judge 分组存于 judge_group（DEC-006）。
+    Raises: DimensionScoreError（法定人数不足，message 含维度名与缺席 judge）。
     """
-    with ThreadPoolExecutor(max_workers=len(rubric_v3.DIMENSIONS)) as pool:
-        futures = {
-            dim["key"]: pool.submit(
-                _score_dimension, dim, demand_md, deliveries, judge_config_id,
-            )
-            for dim in rubric_v3.DIMENSIONS
-        }
-        judgements = {key: fut.result() for key, fut in futures.items()}
+    if not judges:
+        raise ValueError("评测组成员列表为空（DEC-004：1~5 个 judge）")
+    quorum = 2 if len(judges) >= 2 else 1
 
-    scores = {key: judgements[key]["score"] for key in rubric_v3.DIMENSION_KEYS}
-    reasons = {
-        key: {"达标": judgements[key]["达标"], "不足": judgements[key]["不足"]}
-        for key in rubric_v3.DIMENSION_KEYS
-    }
+    pairs = [(judge, dim) for judge in judges for dim in rubric_v3.DIMENSIONS]
+    judgements: dict[tuple[int, str], dict[str, Any]] = {}
+    errors: dict[tuple[int, str], Exception] = {}
+    with ThreadPoolExecutor(max_workers=min(len(pairs), 15)) as pool:
+        futures = {
+            (judge["config_id"], dim["key"]): pool.submit(
+                _score_dimension, dim, demand_md, deliveries,
+                judge["config_id"], judge_gate,
+            )
+            for judge, dim in pairs
+        }
+        for key, fut in futures.items():
+            try:
+                judgements[key] = fut.result()
+            except Exception as exc:
+                errors[key] = exc
+
+    scores: dict[str, float] = {}
+    for dim_key in rubric_v3.DIMENSION_KEYS:
+        ok_scores = [
+            judgements[(judge["config_id"], dim_key)]["score"]
+            for judge in judges
+            if (judge["config_id"], dim_key) in judgements
+        ]
+        if len(ok_scores) < quorum:
+            absent = [
+                f"{judge['name']}(config={judge['config_id']})"
+                for judge in judges
+                if (judge["config_id"], dim_key) not in judgements
+            ]
+            absent_str = ", ".join(absent) or "无"
+            reason = errors.get((judges[0]["config_id"], dim_key))
+            raise DimensionScoreError(
+                f"维度「{dim_key}」法定人数不足（成功 {len(ok_scores)}/{len(judges)}，"
+                f"法定 ≥{quorum}；缺席 judge：{absent_str}）："
+                f"{reason or '全部 judge 失败'}"
+            )
+        scores[dim_key] = round(sum(ok_scores) / len(ok_scores), 1)
+
     valid = [v for v in scores.values() if v > 0]
     overall = round(sum(valid) / len(valid), 2) if valid else 0.0
+
+    members = []
+    for judge in judges:
+        mem_scores: dict[str, Any] = {}
+        mem_reasons: dict[str, Any] = {}
+        for dim_key in rubric_v3.DIMENSION_KEYS:
+            judgement = judgements.get((judge["config_id"], dim_key))
+            mem_scores[dim_key] = judgement["score"] if judgement else None
+            mem_reasons[dim_key] = (
+                {"达标": judgement["达标"], "不足": judgement["不足"]}
+                if judgement else None
+            )
+        members.append({
+            "config_id": judge["config_id"],
+            "name": judge["name"],
+            "model": judge["model"],
+            "fingerprint": judge.get("fingerprint"),
+            "scores": mem_scores,
+            "reasons": mem_reasons,
+        })
+
     return {
         "rubric_version": rubric_v3.RUBRIC_VERSION,
         "calibration": rubric_v3.CALIBRATION_STATUS,
         "anchor_status": rubric_v3.ANCHOR_DRAFT_STATUS,
         "scores": scores,
-        "reasons": reasons,
         "overall": overall,
         "rule_delivery": check_delivery_complete(deliveries),
         "rule_quota": check_quota_attainment(demand_md, deliveries),
+        "judge_group": {
+            "group_id": group_id,
+            "group_name": group_name,
+            "members": members,
+        },
     }
 
 

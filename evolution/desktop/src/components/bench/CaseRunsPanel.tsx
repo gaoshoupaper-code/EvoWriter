@@ -330,13 +330,15 @@ function RunDetail({
       {/* 五维概览（DEC-009：条形，扫一眼） */}
       <ScoreOverview scores={scores.scores} />
 
-      {/* 维度卡片（DEC-011 of REQ-20260921-210038：两段理由默认展开分色 + 关联交付跳转） */}
+      {/* 维度卡片（DEC-011 of REQ-20260921-210038：两段理由默认展开分色 + 关联交付跳转；
+          组评分批次传 judgeGroup → per-judge 分组 + 分歧高亮，162207/FR-005） */}
       {Object.entries(scores.scores).map(([dim, value]) => (
         <DimensionCard
           key={dim}
           dim={dim}
           value={value}
           reason={scores.reasons?.[dim]}
+          judgeGroup={scores.judge_group}
           onJump={onJumpDelivery}
         />
       ))}

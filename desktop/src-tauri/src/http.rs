@@ -120,6 +120,9 @@ pub async fn http_request(
     }
 
     let resp = req
+        // 普通请求的请求级超时（原 Client 全局 300s 的等价替代，
+        // 仅排除流式请求——流式由 stream_request 单独放宽）。
+        .timeout(std::time::Duration::from_secs(300))
         .send()
         .await
         .map_err(|e| format!("请求失败: {e}"))?;
@@ -187,6 +190,9 @@ pub async fn stream_request(
 
     // 发请求，拿 stream。send() 返回 Response，bytes_stream() 给 chunk 迭代器。
     let resp = req
+        // SSE 总时长兜底：写作生成经常超过 5 分钟，不能用普通请求的 300s；
+        // 1h 只防"连接死挂永不返回"，正常生成不受限。
+        .timeout(std::time::Duration::from_secs(3600))
         .send()
         .await
         .map_err(|e| {

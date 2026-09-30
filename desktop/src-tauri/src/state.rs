@@ -149,9 +149,11 @@ fn build_client(jar: Arc<std::sync::RwLock<cookie_store::CookieStore>>) -> reqwe
         // 连接建立超时：网络不通/服务器宕机时快速失败（10s），
         // 避免 fetchMeOrNull 等探测请求卡住前端登录守卫。
         .connect_timeout(std::time::Duration::from_secs(10))
-        // 总超时：覆盖普通请求（SSE 流式请求在 stream_request 里单独处理，
-        // 但共用 Client 无法完全区分——300s 足够覆盖大部分长生成场景）。
-        .timeout(std::time::Duration::from_secs(300))
+        // 不设 Client 级总超时：SSE 长生成流与普通请求共用此 Client，
+        // 全局超时会把超过时限的写作流拦腰掐断（曾因 300s 全局超时，
+        // 所有 >5min 的生成任务断流、前端收不到产物）。
+        // 普通请求由 http_request 按 300s 请求级超时兜底；
+        // 流式请求由 stream_request 用更长的请求级超时兜底。
         .build()
         .expect("failed to build reqwest client")
 }

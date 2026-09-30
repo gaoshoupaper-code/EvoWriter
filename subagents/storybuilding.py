@@ -32,6 +32,9 @@ from ..middleware.quota_convergence import (
     DEFAULT_MAX_MODEL_CALLS,
     QuotaConvergenceMiddleware,
 )
+from ..middleware.storyline_contract_guard import (
+    StorylineContractGuardMiddleware,
+)
 from ..middleware.storyline_integrity import (
     StorylineIntegrityMiddleware,
 )
@@ -160,6 +163,10 @@ def build_storybuilding_deep_subagent(
     ))
     # 写入完整性护栏（REQ-20260930-002231 FR-011）：单文件增量编辑防丢线区块/事件
     storybuilding_middleware.append(StorylineIntegrityMiddleware(workspace_root))
+    # 结构契约运行时护栏（REQ-20260930-194437 FR-003/004/005/007）：
+    #   契约规则范围化校验（仅新增/变更区块）+ 名称唯一全局 + 事件数量模板
+    #   （非交汇口径）+ 最终结局不可改 + 防死循环强制收尾与拦截日志
+    storybuilding_middleware.append(StorylineContractGuardMiddleware(workspace_root))
     storybuilding_middleware.append(QuotaConvergenceMiddleware(
         workspace_root,
         quota_target,
@@ -219,7 +226,9 @@ def build_storybuilding_deep_subagent(
         subagent_middleware=primary_spec.get("middleware"),
         backend=backend,
         artifact_paths=[workspace_root / "storyline.md"],
-        max_revisions=2,
+        # review 全流程只调用 1 次（REQ-20260930-194437 FR-006：
+        # 参数与提示词「单次审查」口径对齐，原值 2 是代码与提示词漂移）
+        max_revisions=1,
         skills=skills,
         checkpointer=checkpointer,
     )

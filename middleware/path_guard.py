@@ -11,17 +11,13 @@
   4. Windows 绝对路径会自动转换为虚拟路径（需在工作区内）
   5. 运行时可通过 allowed_write_paths 参数动态扩展白名单
 
-允许的写入路径白名单：
+允许的写入路径白名单（v9+ 单故事专家产物集，REQ-20260930-194437 FR-008）：
   - /character/<name>.md   — 角色档案文件
-  - /outline.md            — 大纲文件
   - /storyline.md          — 故事线主产物（单文件：故事核心 + 一线一区块）
-  - /storyline/<name>.md   — 故事线详情（旧格式兼容；新产物不再写入此目录）
   - /worldview.md          — 世界观文件
-  - /novel.md              — 小说正文文件
-  - /chapter/<name>.md     — 正文章节文件
-  - /review/<name>.md      — 审查报告文件（正文/细纲/故事构建审查产物）
-  - /detail/<name>.md      — 细纲文件
-  - /state_log.md          — 状态日志文件
+  - /review/<name>.md      — 审查报告文件（reviewer 共用本护栏，需写报告）
+  v8 旧路径（outline.md / novel.md / chapter/ / detail/ / state_log.md /
+  storyline/ 目录）已全部移除——越权写章节类风险的根因之一，写入即被硬拦。
   （timeline.md / storyline_graph.md 为程序派生产物，由后端直写磁盘，
    不经 agent 写入链路，不在白名单内）
 
@@ -43,20 +39,14 @@ from langchain_core.messages import ToolMessage
 # 需要拦截的文件系统写入工具名称
 _FILESYSTEM_WRITE_TOOLS = {"write_file", "edit_file"}
 
-# 允许的写入路径正则白名单（虚拟路径格式，如 /outline.md）。
+# 允许的写入路径正则白名单（虚拟路径格式，如 /storyline.md）。
 # 导出为 WRITING_WRITE_PATTERNS，供 writing domain 显式传入（DD6a 参数化）。
 # 历史别名 _ALLOWED_WRITE_PATHS 保留，兼容旧引用。
 WRITING_WRITE_PATTERNS = (
     re.compile(r"^/character/[^/]+\.md$"),     # 角色档案
-    re.compile(r"^/outline\.md$"),              # 总纲（锚点）
-    re.compile(r"^/storyline\.md$"),            # 故事线主产物（单文件：故事核心+线区块）
-    re.compile(r"^/storyline/[^/]+\.md$"),      # 故事线详情（旧格式兼容）
-    re.compile(r"^/worldview\.md$"),            # 世界观
-    re.compile(r"^/novel\.md$"),                # 小说正文
-    re.compile(r"^/chapter/[^/]+\.md$"),        # 正文章节
-    re.compile(r"^/review/[^/]+\.md$"),         # 审查报告（正文/细纲/故事构建）
-    re.compile(r"^/detail/[^/]+\.md$"),         # 细纲
-    re.compile(r"^/state_log\.md$"),            # 状态日志
+    re.compile(r"^/storyline\.md$"),           # 故事线主产物（单文件：故事核心+线区块）
+    re.compile(r"^/worldview\.md$"),           # 世界观
+    re.compile(r"^/review/[^/]+\.md$"),        # 审查报告（reviewer 共用本护栏）
 )
 _ALLOWED_WRITE_PATHS = WRITING_WRITE_PATTERNS  # 向后兼容别名
 

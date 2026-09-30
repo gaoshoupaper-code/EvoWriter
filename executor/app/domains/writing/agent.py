@@ -879,6 +879,9 @@ class MetaAgentService(BaseAgentService):
             # 兜底清理 task 注册（正常/异常/CancelledError 三路都走到）。
             # _cleanup_run_state 也会兜底，但这里更早执行避免泄漏窗口。
             self.trace_recorder.unregister_run_task(trace.trace_id)
+            # 终态兜底（第四路）：except 分支之外离开（生成器被 close/GC 等）时
+            # run 会停在 running，进化端永久显示"执行中"——按断连补写 cancelled。
+            self.trace_recorder.finalize_orphan_run(thread, trace.trace_id)
 
     def _trace_updates(self, trace_queue) -> list[str]:
         trace_events = _drain_trace_queue(trace_queue)

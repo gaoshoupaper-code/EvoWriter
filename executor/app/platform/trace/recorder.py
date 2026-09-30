@@ -675,6 +675,23 @@ class TraceRecorder:
         self._finalize_run(thread, trace_id, "cancelled", duration_ms, error_message)
         return event
 
+    def finalize_orphan_run(self, thread: ThreadSummary, trace_id: str) -> None:
+        """generate_stream finally 兜底：run 仍停在 running 时补写 cancelled 终态。
+
+        CancelledError 的 except 三路分流（user_stop / awaiting_input 保持 /
+        断连取消）之外还有第四路：生成器被 close/GC（GeneratorExit）或取消
+        异常在中途被拦截转写时，except 分支不执行，run 永久停在 running——
+        进化端观测会一直显示"执行中"（EVD-009 的三状态分裂孤儿）。
+        finally 保证执行，在这里按 client_disconnect 补写终态。
+        已终态收尾的（_sequences 已清）与 awaiting_input（等 resume）不补写。
+        """
+        if trace_id not in self._sequences:
+            return
+        run = self.find_run_by_trace_id(trace_id)
+        if run is None or run.status != "running":
+            return
+        self.cancel_run(thread, trace_id, reason="client_disconnect")
+
     def _fail_run(self, thread: ThreadSummary, trace_id: str, error_message: str) -> TraceLogEvent:
         duration_ms = self._duration_ms(trace_id)
         event = self.append_event(

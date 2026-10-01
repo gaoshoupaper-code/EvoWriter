@@ -230,13 +230,17 @@ def write_change_log(
 # ── design_doc 从进化点表生成（Phase 2B，决策 T3/U）──────────────
 
 
-def generate_design_doc_from_points(session_id: str) -> str | None:
+def generate_design_doc_from_points(session_id: str, agent_id: str | None = None) -> str | None:
     """从 accepted 进化点表生成 design_doc.md（拍板时调用，决策 T3/U）。
 
     对话式共创下，进化点的权威源是 evolve_points 表（Agent 通过
     propose/update/reject 工具维护）。用户拍板后（POST /finalize），
     从 accepted 状态的进化点导出 design_doc.md，供 review-report /
     publish_session / registry 流程使用——保持向后兼容。
+
+    Agent 绑定模式（REQ-20261001-131018 FR-008/010）：传 agent_id 时取
+    Agent 名下全部 accepted 进化点（跨会话累积——本次拍板覆盖 Agent 级共识）；
+    不传（旧链路）按 session 取。
 
     每个 accepted 进化点映射为 design_doc.changes 的一条：
         - target ← point.target
@@ -248,14 +252,18 @@ def generate_design_doc_from_points(session_id: str) -> str | None:
     同时回填 point.design_ref（1-based change 序号）。
 
     Args:
-        session_id: 进化 session id
+        session_id: 进化 session id（design_doc 归属）
+        agent_id: 进化 Agent id（跨会话取 accepted；None = 按 session 取）
 
     Returns:
         design_doc.md 路径；无 accepted 进化点返回 None（finalize 应先校验）。
     """
     from app.evolve.evolve_repo import EvolvePointsRepo
 
-    accepted = EvolvePointsRepo.list_by_status(session_id, "accepted")
+    if agent_id:
+        accepted = EvolvePointsRepo.list_by_agent_status(agent_id, "accepted")
+    else:
+        accepted = EvolvePointsRepo.list_by_status(session_id, "accepted")
     if not accepted:
         return None
 

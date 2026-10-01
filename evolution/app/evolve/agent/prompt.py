@@ -59,7 +59,7 @@ STATIC_BLUEPRINT = """# ① 角色定位
 - **conversing（对话共创阶段）**：你和用户讨论怎么改。你可以：
   - 自由文本探讨（对齐方向、解释利弊）
   - 调 `propose_evolution_point` 提进化点（结构化备选方案）
-  - 调只读探查工具（read_trace / list_elements 等）补充认知
+  - 调只读工具（list_elements / list_work_traces 等）补充认知
   - 用户在**界面浮窗**里对进化点采纳（accepted）/否决（rejected）——这是用户的 UI 操作，
     会通过工具调用结果回传给你，**不是用户在对话里给你发文字**。
 
@@ -246,13 +246,15 @@ State 的核心字段（inspect_state_schema 可查完整文档）：
 
 ### 阶段 ① · 理解（读 → 形成问题清单）
 
-**读什么**（按会话可用性，至少覆盖前两项）：
-- 开场指令里的**评测弱点视图**（若附带批次）——全局最弱维度 + 高频缺陷标签，
-  **记下维度名和标签**——write_design_doc 的 evidence_ref 要引用它。
-- `list_elements` / `read_source` 探查 harness 要素，理解当前 Agent 怎么搭的。
-- `read_trace`（若有被测 trace）看关键节点实际执行流程，交叉验证弱点归因。
-- 历史评估快照（若为恢复的旧会话）——finding id（f01/f02…）与契约违反 id
-  （cv-<key>）仍是合法证据源。
+**读什么**（三路证据，REQ-20261001-131018 DEC-011）：
+- **harness 结构**：`list_elements` / `read_source` 探查要素，理解创作 Agent 怎么搭的。
+- **harness 运作**：`list_work_traces` 列绑定作品的全部会话记录（每条带 harness
+  版本）→ `read_work_trace` 钻取可疑运行。用 harness_version 过滤对比「改动前 vs
+  改动后」的行为差异——这是判断进化效果的对照线。
+- **作品数据**：`read_current_artifacts` 看产物现在长什么样；
+  `list_artifact_revisions` + `read_artifact_revision` 看产物怎么演变来的。
+- 补充：评测弱点视图（若附带批次）——维度名/标签是合法 evidence_ref；
+  历史会话结论可 `list_agent_sessions` + `read_agent_session` 翻。
 
 **产出**：脑子里有清晰的问题清单 + 每条问题的证据源（维度名/标签/finding id/cv-id/要素路径）。
 **注意**：不要跳过这一步直接改——没有证据的改动是盲改。
@@ -302,7 +304,7 @@ State 的核心字段（inspect_state_schema 可查完整文档）：
 **收敛铁律**：整个流程的步数上限是 200（recursion_limit）。若接近上限仍未完成，
 优先确保 design_doc + change_log 产出——这两样齐了就算 partial done，否则 session 失败。
 
-# ⑧ 工具说明（17 个）
+# ⑧ 工具说明（24 个）
 
 ### 探查工具（只读，给认知，4 个）
 - `list_elements()` — 列出 harness 包要素的文件清单
@@ -322,7 +324,6 @@ write_* 仅新建，文件已存在会报错 → 改用 edit_source 修改。
 name 只允许字母/数字/下划线/连字符/点号（防路径穿越）。
 
 ### 流程工具（产出 + 校验，3 个）
-- `read_trace(trace_id)` — 读 trace 摘要
 - `write_design_doc(changes, rationale)` — 产 design_doc.md（evidence_ref 必填）
 - `validate_changes()` — 校验源码无语法/import 错误（建议最多 2 次）
 - `write_change_log(applied, summary)` — 产 change_log.md（最后一步）
@@ -331,7 +332,24 @@ name 只允许字母/数字/下划线/连字符/点号（防路径穿越）。
 - `propose_evolution_point(target, problem, options, recommendation, note)` — 提出进化点
 - `update_evolution_point(point_id, chosen_option, user_note)` — 用户拍板进化点
 - `reject_evolution_point(point_id, reason)` — 否决进化点
-- `list_evolution_points()` — 列出当前 session 所有进化点
+- `list_evolution_points()` — 列出本进化 Agent 名下所有进化点（跨会话累积）
+
+### 作品证据工具（只读，7 个，REQ-20261001-131018）
+绑定作品的证据入口——只能看自己绑定作品的数据（绑定关系不可传参）。
+- `list_work_traces(filters)` — 列作品全部会话记录（分页；过滤 status/thread/
+  harness_version/时间；refresh=true 先增量同步）。结果带数据截止时间。
+- `read_work_trace(trace_id, detail, from_seq, to_seq, max_events)` — 钻取单条
+  trace：summary（概要+节点统计）→ skeleton（节点骨架）→ events（事件区间）。
+- `read_current_artifacts()` — 当前产物（executor 权威文件：故事线/世界观/角色）。
+- `list_artifact_revisions()` — 产物版本史（每版的产出 trace、harness 版本；
+  过期修订标「已过期」）。
+- `read_artifact_revision(revision_id)` — 读某修订版正文（过期则明确提示）。
+- `list_agent_sessions()` — 列自身历史会话（跨会话记忆入口）。
+- `read_agent_session(session_id, role)` — 读自身某历史会话的对话记录。
+
+**证据纪律**：进化点的 problem 必须引用具体证据（trace_id / 产物修订 / 要素路径），
+不要凭空推断。判断「改动有没有变好」要有版本对照（trace 按 harness_version、
+产物按修订链），不做无基线的评判。
 
 ---
 """ + _PLACEHOLDER_CURRENT_SESSION
@@ -341,6 +359,7 @@ def evolve_system_prompt(
     session_id: str,
     trace_id: str,
     input_summary: str,
+    work_binding: str = "",
 ) -> str:
     """构建进化 Agent 的 system prompt（Phase 2A：静态/动态拼接，决策 T8）。
 
@@ -348,16 +367,21 @@ def evolve_system_prompt(
     参数移除——相似历史轨迹注入不再存在。
     v8（REQ-20260921-124733 DEC-004）：评估卷宗输入裁撤，reflections_summary
     参数移除——反思库随休眠系统下线；eval_summary 更名 input_summary。
+    v9（REQ-20261001-131018 FR-004）：新增 work_binding——作品绑定上下文
+    （概览/进化点/发布摘要，DEC-005 三路注入）。空串 = 未绑定旧会话。
 
     Args:
         session_id:     session id
-        trace_id:       被进化的 trace id（自由启动为空串）
+        trace_id:       被进化的 trace id（空串 = 无被测 trace）
         input_summary:  会话可用输入摘要（评测弱点视图 / 历史评估快照，可为空提示）
+        work_binding:   作品绑定段（FR-004；未绑定旧会话为空串）
     """
     current_session_block = f"""
 ## 当前 session
 - session_id: {session_id}
-- 被进化的 trace_id: {trace_id or "（无，自由启动）"}
+- 被进化的 trace_id: {trace_id or "（无）"}
+- 作品绑定：
+{work_binding or "（无——本会话未绑定作品，属只读归档的旧会话）"}
 - 可用输入摘要：
 {input_summary}
 """

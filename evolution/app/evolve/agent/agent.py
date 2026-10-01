@@ -14,8 +14,8 @@
       backend=FilesystemBackend(...),          # 写工具落盘
   )
 
-输入：自由启动（无必填业务输入）；可选评测弱点视图（ctx.eval_snapshot.benchmark_report）
-     + Agent 探查 harness 要素 + 用户对话共创（REQ-20260921-124733 DEC-004）
+输入：Agent 绑定作品（REQ-20261001-131018）——作品 trace/产物是主证据；
+     可选评测弱点视图（ctx.eval_snapshot.benchmark_report）+ Agent 探查 harness 要素 + 用户对话共创
 产出：harnesses/repo/ 代码改动 + design_doc.md + change_log.md → 待审（pending_review）
 """
 from __future__ import annotations
@@ -140,7 +140,7 @@ async def _run_agent_streamed(
 #   - 进化点工具：propose/update/reject（浮窗权威状态 + 对话可见）
 #   - 落地工具：write_*/edit_source（落地进度，finalizing 阶段可见）
 #   - 校验工具：validate_changes（落地结果）
-# 其他工具（read_trace/list_elements 等只读探查）不落消息，
+# 其他工具（list_work_traces/list_elements 等只读探查）不落消息，
 # 避免污染对话历史。
 _MESSAGE_TOOLS = frozenset({
     # 进化点工具
@@ -319,6 +319,7 @@ async def build_evolve_agent(ctx: EvolveContext):
         session_id=ctx.session_id,
         trace_id=ctx.trace_id,
         input_summary=_format_input_summary(ctx),
+        work_binding=_format_work_binding(ctx),
     )
 
     # middleware：禁框架 fs + 产出约束 + 自观测 trace
@@ -365,7 +366,7 @@ async def run_inspect_round(ctx: EvolveContext, trace_id: str) -> dict[str, Any]
       2. status = running（FlowGuard 不拦，探查工具 + 设计工具可用）
       3. Agent 自动跑：探查 harness 要素（+ 若有被测 trace / 评测弱点视图则一并看）→ 发开场白
          （开场白里总结评估 + 提出本次要讨论的问题，决策 J）
-      4. Agent 调 read_trace / inspect_* 完成探查后，
+      4. Agent 调证据工具（list_work_traces 等）与 inspect_* 完成探查后，
          自然结束（不进入落地，因为没用户对话）
       5. 探查完成 → status 转 conversing，等用户第一条消息
 
@@ -405,26 +406,37 @@ async def run_inspect_round(ctx: EvolveContext, trace_id: str) -> dict[str, Any]
             "本次会话附带数据集评测全局弱点视图（多 case 聚合，来源评测批次 "
             f"{benchmark_report.get('batch_id')}，校准状态 {benchmark_report.get('calibration')}）：\n"
             f"{_json.dumps(benchmark_report.get('weakest_dimensions', []), ensure_ascii=False, indent=1)}\n"
-            "该视图是本次进化最重要的证据输入——全局弱在哪维，"
-            "探查与设计都应围绕它展开。\n\n"
+            "该视图是本次进化的补充证据输入（本会话已绑定作品，作品数据是主证据）。\n\n"
         )
 
-    trace_section = (
-        f"被测 trace_id={trace_id}。\n" if trace_id
-        else "本次进化无被测 trace 输入（自由启动）。\n"
-    )
+    if ctx.agent_id:
+        work_section = (
+            f"你（进化 Agent）绑定了作品 workspace_id={ctx.workspace_id}——本次进化的主证据源。\n"
+            f"本阶段任务：\n"
+            f"1. 调 list_elements / read_source 探查 harness 包要素，理解创作 Agent 当前怎么搭\n"
+            f"2. 翻看绑定作品的证据：列出作品会话记录（trace）概览、读关键 trace 的骨架、\n"
+            f"   查作品当前产物与版本史——找出真实使用中暴露的问题（失败、反复重试、产物缺陷）\n"
+            f"3. 探查完后，给用户发一条开场白——总结 harness 结构发现 + 作品使用数据发现\n"
+            f"   （+ 若附带评测弱点视图则一并总结），提出本次进化要讨论的核心方向\n\n"
+            f"重要约束：\n"
+            f"- 不要在本阶段调 write_design_doc / write_* / edit_source（落地工具）\n"
+            f"- 不要急于 propose 进化点——先让用户了解全貌，再逐个讨论\n"
+            f"- 进化点的问题描述要引用具体 trace/产物证据，不要凭空推断\n"
+        )
+    else:
+        work_section = (
+            f"本阶段任务：\n"
+            f"1. 调 list_elements / read_source 探查 harness 包要素，理解 Agent 当前怎么搭\n"
+            f"3. 探查完后，给用户发一条开场白——总结探查发现与（若附带）评测弱点，"
+            f"提出本次进化要讨论的核心方向（不要直接 propose 进化点，先让用户了解全貌）\n\n"
+            f"重要约束：\n"
+            f"- 不要在本阶段调 write_design_doc / write_* / edit_source（落地工具）\n"
+            f"- 不要急于 propose 进化点——先让用户了解发现，再逐个讨论\n"
+        )
     user_input = (
-        f"请开始进化流程的探查阶段。{trace_section}case_id={ctx.case_id}。\n"
+        f"请开始进化流程的探查阶段。case_id={ctx.case_id}。\n"
         f"{benchmark_section}"
-        f"本阶段任务：\n"
-        f"1. 调 list_elements / read_source 探查 harness 包要素，理解 Agent 当前怎么搭\n"
-        + (f"2. 调 read_trace 看实际执行流程（关注暴露弱点维度的关键节点）\n" if trace_id else "")
-        + f"3. 探查完后，给用户发一条开场白——总结探查发现与（若附带）评测弱点，"
-        f"提出本次进化要讨论的核心方向（不要直接 propose 进化点，先让用户了解全貌）\n\n"
-        f"重要约束：\n"
-        f"- 不要在本阶段调 write_design_doc / write_* / edit_source（落地工具）\n"
-        f"- 不要急于 propose 进化点——先让用户了解发现，再逐个讨论\n"
-        f"- 开场白里清晰说明：发现了什么问题、你建议讨论哪些方向、让用户决定从哪开始"
+        f"{work_section}"
     )
 
     try:
@@ -543,16 +555,22 @@ async def run_finalize_round(ctx: EvolveContext) -> dict[str, Any]:
     from app.evolve.docs import generate_design_doc_from_points
     from app.evolve.evolve_repo import EvolvePointsRepo
 
-    # 前置：必须有 accepted 进化点
-    if EvolvePointsRepo.count_accepted(ctx.session_id) == 0:
+    # 前置：必须有 accepted 进化点（Agent 绑定模式按 Agent 取——跨会话累积，FR-008）
+    if ctx.agent_id:
+        accepted_count = EvolvePointsRepo.count_accepted_by_agent(ctx.agent_id)
+    else:
+        accepted_count = EvolvePointsRepo.count_accepted(ctx.session_id)
+    if accepted_count == 0:
         return {
             "status": "failed",
             "error": "拍板失败：没有 accepted 进化点（至少需要 1 个）",
             "session_id": ctx.session_id,
         }
 
-    # 从 accepted 进化点生成 design_doc
-    design_path = generate_design_doc_from_points(ctx.session_id)
+    # 从 accepted 进化点生成 design_doc（Agent 模式下覆盖 Agent 级共识）
+    design_path = generate_design_doc_from_points(
+        ctx.session_id, agent_id=ctx.agent_id or None,
+    )
     if not design_path:
         return {
             "status": "failed",
@@ -579,7 +597,10 @@ async def run_finalize_round(ctx: EvolveContext) -> dict[str, Any]:
     logger.info("session %s: finalize round 启动", ctx.session_id)
 
     # system 触发消息：指示 Agent 按 design_doc 落地
-    accepted = EvolvePointsRepo.list_by_status(ctx.session_id, "accepted")
+    if ctx.agent_id:
+        accepted = EvolvePointsRepo.list_by_agent_status(ctx.agent_id, "accepted")
+    else:
+        accepted = EvolvePointsRepo.list_by_status(ctx.session_id, "accepted")
     user_input = (
         f"用户已拍板 {len(accepted)} 个进化点，design_doc 已生成：{design_path}\n"
         f"现在进入落地阶段。请：\n"
@@ -630,6 +651,65 @@ async def run_finalize_round(ctx: EvolveContext) -> dict[str, Any]:
 
 
 # ── prompt 摘要辅助（从 driver/agent.py 搬来）─────────────────────
+
+
+def _format_work_binding(ctx: EvolveContext) -> str:
+    """把作品绑定上下文格式化成 system prompt 的「作品绑定」段（FR-004/DEC-005）。
+
+    三路内容：作品概览（开场快照）+ 既有进化点清单（动态取，含状态）+
+    历次发布摘要（动态取）。旧会话（未绑定）返回空串。
+    """
+    if not ctx.agent_id:
+        return ""
+    from app.evolve import db as ev_db
+    from app.evolve.evolve_repo import EvolvePointsRepo
+
+    wc = ctx.work_context or {}
+    overview = wc.get("overview") or {}
+    stats = wc.get("trace_stats") or {}
+    art_stats = wc.get("artifact_stats") or {}
+    lines: list[str] = []
+    if overview:
+        lines.append(
+            f"- 作品「{overview.get('title', '?')}」"
+            f"（owner: {overview.get('owner_username', '?')}，"
+            f"写作会话 {overview.get('session_count', 0)} 个）"
+        )
+    else:
+        # FR-004 失败语义：概览拉取失败降级注明，不阻断
+        lines.append("- 作品概览暂缺（executor 拉取失败，可用证据工具自行探查）")
+    lines.append(
+        f"- 已摄入会话记录(trace) {stats.get('total', 0)} 条"
+        f"（完成 {stats.get('completed', 0)} / 失败 {stats.get('failed', 0)}），"
+        f"产物版本 {art_stats.get('revisions', 0)} 个"
+        f"（{art_stats.get('logical_keys', 0)} 类）"
+    )
+
+    # 既有进化点（动态——跨会话累积，会话 2 能看到会话 1 的点，FR-008）
+    points = EvolvePointsRepo.list_by_agent(ctx.agent_id)
+    if points:
+        by_status: dict[str, int] = {}
+        for p in points:
+            by_status[p["status"]] = by_status.get(p["status"], 0) + 1
+        stat_desc = "、".join(f"{k} {v}" for k, v in by_status.items())
+        lines.append(f"- 既有进化点 {len(points)} 个（{stat_desc}）：")
+        for p in points[:10]:
+            lines.append(
+                f"  • [{p['status']}] {p['target']}: {p['problem'][:60]}"
+            )
+    else:
+        lines.append("- 既有进化点：无（本 Agent 名下尚未提出）")
+
+    # 历次发布摘要（动态）
+    published = [
+        s for s in ev_db.list_sessions_by_agent(ctx.agent_id, limit=50)
+        if s.get("status") == "published"
+    ]
+    if published:
+        lines.append(f"- 历次发布 {len(published)} 次（最近一次 {published[0].get('updated_at', '?')}）")
+    else:
+        lines.append("- 历次发布：无（本 Agent 尚未发布过 harness 改动）")
+    return "\n".join(lines)
 
 
 def _format_input_summary(ctx: EvolveContext) -> str:

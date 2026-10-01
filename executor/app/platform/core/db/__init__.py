@@ -976,6 +976,23 @@ class WorkspaceRepository:
             result.append(d)
         return result
 
+    def list_all(self) -> list[dict]:
+        """跨 owner 列全部作品（evolution 内部绑定选择用，REQ-20261001-131018 DEC-008）。
+
+        带 owner_username——进化管理端选作品时显示所属用户。
+        """
+        rows = self.db.conn.execute(
+            """SELECT w.*, u.username AS owner_username
+               FROM workspaces w LEFT JOIN users u ON u.user_id = w.owner_id
+               ORDER BY w.updated_at DESC""",
+        ).fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            d["session_count"] = self._session_count(d["workspace_id"])
+            result.append(d)
+        return result
+
     def touch(self, workspace_id: str, owner_id: str) -> bool:
         with self.db.transaction() as conn:
             cur = conn.execute(

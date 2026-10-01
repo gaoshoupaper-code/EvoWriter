@@ -31,17 +31,26 @@ from app.config.api import _VALID_SCOPES, _normalize_scope  # noqa: E402
 from app.core.settings import settings  # noqa: E402
 
 
+_old_db = settings.evolution_db
+
+
 def setUpModule() -> None:
+    # 隔离修复（REQ-20261001-131018 验证闭合）：settings 是导入期单例，此前未把
+    # evolution_db 指回本模块临时库——全量组合下会读写到别的模块残留的库，
+    # llm_configs 串味导致 ac008 偶发失败（干净树特定组合可复现）。对齐
+    # test_evolve_smoke 的既有模式：setUp 绑自己的库，tearDown 还原。
+    settings.evolution_db = _tmp_db.name
     db._conn = None
     db.init_db()
-    # settings 是导入期单例，跨测试模块共享。LlmConfigsRepository.create 走加密路径
-    # 需要 master key——这里直接在单例上设值，并清 db 的 key 缓存，避免被先跑的模块污染。
+    # LlmConfigsRepository.create 走加密路径需要 master key——直接在单例上设值，
+    # 并清 db 的 key 缓存，避免被先跑的模块污染。
     settings.evolution_master_key = settings.evolution_master_key or "a" * 64
     db._master_key_cache = None
 
 
 def tearDownModule() -> None:
     db._conn = None
+    settings.evolution_db = _old_db
     try:
         os.unlink(_tmp_db.name)
     except OSError:

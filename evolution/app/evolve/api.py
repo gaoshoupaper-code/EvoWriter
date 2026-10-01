@@ -32,6 +32,7 @@ from app.core import db
 from app.evolve import db as ev_db
 from app.evolve.ctx import (
     ACTIVE_STATUSES,
+    LANDING_STATUSES,
     STATUS_CONVERSING,
     STATUS_FINALIZING,
     STATUS_RUNNING,
@@ -82,9 +83,9 @@ def get_recorder() -> EvolutionTraceRecorder | None:
 
 
 class EvolveStartRequest(BaseModel):
-    """进化启动请求（自由启动，REQ-20260921-124733 DEC-004）。
+    """进化会话启动请求（Agent 绑定模式，REQ-20261001-131018 DEC-002）。
 
-    评估卷宗前置已随休眠评估系统裁撤：无必填业务输入即可启动进化。
+    会话必须挂在进化 Agent（绑作品）下创建；自由启动入口已退役。
     """
 
     # FR-005（REQ-20260921-124733）：可选附带评测批次 id，inspect round 注入全局弱点视图。
@@ -101,26 +102,52 @@ class EvolveStartResponse(BaseModel):
 # ── 触发 ────────────────────────────────────────────────────
 
 
-@router.post("/evolve/start-converse", response_model=EvolveStartResponse, status_code=202)
-async def evolve_start_converse(req: EvolveStartRequest) -> EvolveStartResponse:
-    """触发对话式共创进化（Phase 3，决策 T2/T10；自由启动，DEC-004）。
+@router.post(
+    "/evolve/agents/{agent_id}/sessions",
+    response_model=EvolveStartResponse,
+    status_code=202,
+)
+async def start_agent_session(
+    agent_id: str, req: EvolveStartRequest
+) -> EvolveStartResponse:
+    """在进化 Agent 下开启新会话（FR-002，DEC-002 入口统一）。
 
-    无前置业务输入；内部走 inspect round（探查 + Agent 开场白），
-    跑完后 status 自动转 conversing，等用户在对话区发消息（POST /messages）。
+    流程：
+      1. Agent 存在 + active + 作品未被删（FR-009：已删则拒绝开新会话）
+      2. 组装开场注入快照（FR-004/DEC-005：作品概览 + trace/产物规模；
+         概览拉取失败降级不阻断）
+      3. 后台跑 inspect round（探查 + 开场白 → 转 conversing）
+
+    探查/对话阶段可与其他会话并行（DEC-004）；落地互斥在 finalize 端点校验。
     """
-    active = _find_active_session()
-    if active:
+    from app.evolve import agents_repo
+
+    agent = agents_repo.get(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail=f"进化 Agent {agent_id} 不存在")
+    if agent.get("status") != "active":
         raise HTTPException(
             status_code=409,
-            detail=(
-                f"当前有未结束的进化会话（session {active['session_id']}，状态 {active['status']}），"
-                f"请先发布/丢弃/取消后再启动新进化"
-            ),
+            detail=f"进化 Agent 已归档，无法开新会话（先恢复或另建 Agent）",
+        )
+    if agent.get("work_deleted_at"):
+        raise HTTPException(
+            status_code=409,
+            detail="绑定作品已被删除，无法开新会话（DEC-010；已有会话可继续基于历史数据分析）",
         )
 
-    session_id, ctx = _prepare_evolve_session()
+    work_context = _assemble_work_context(agent)
+    if work_context.get("probe") == "missing":
+        # 探测发现作品已删（列表缓存未标记的场景）——补标记并拒绝
+        agents_repo.mark_work_deleted(agent_id)
+        raise HTTPException(
+            status_code=409,
+            detail="绑定作品已被删除，无法开新会话（DEC-010）",
+        )
 
-    # FR-006：附带评测批次时注入全局弱点视图（降级不阻断）
+    session_id, ctx = _prepare_evolve_session(agent, work_context)
+
+    # FR-006（REQ-20260921-124733）：附带评测批次时注入全局弱点视图（降级不阻断）
     if req.benchmark_batch_id:
         from app.benchmark import report as bench_report
         summary = bench_report.build_summary_for_evolve(req.benchmark_batch_id)
@@ -143,8 +170,8 @@ async def evolve_start_converse(req: EvolveStartRequest) -> EvolveStartResponse:
     _running_tasks[session_id] = task
 
     logger.info(
-        "进化 session 启动（对话式，自由启动）: session=%s benchmark_batch=%s",
-        session_id, req.benchmark_batch_id,
+        "进化 session 启动（Agent=%s 作品=%s）: session=%s benchmark_batch=%s",
+        agent_id, agent.get("workspace_id"), session_id, req.benchmark_batch_id,
     )
     return EvolveStartResponse(
         session_id=session_id, trace_id=ctx.trace_id,
@@ -152,8 +179,68 @@ async def evolve_start_converse(req: EvolveStartRequest) -> EvolveStartResponse:
     )
 
 
-def _prepare_evolve_session() -> tuple[str, EvolveContext]:
-    """创建进化会话 + 构建上下文（自由启动，无前置业务输入，DEC-004）。"""
+def _assemble_work_context(agent: dict[str, Any]) -> dict[str, Any]:
+    """组装开场注入快照（FR-004/DEC-005）：作品概览 + trace/产物规模。
+
+    概览来自 executor（不可达时降级注明缺失，不阻断会话——FR-004 失败语义）；
+    规模统计来自进化侧已摄入数据。进化点清单与发布摘要不入快照（prompt 组装时
+    动态取，保证新鲜）。
+    """
+    from app.evolve.executor_client import (
+        ExecutorUnavailableError,
+        WorkNotFoundError,
+        fetch_workspace,
+    )
+
+    overview: dict[str, Any] | None = None
+    probe = "ok"
+    try:
+        overview = fetch_workspace(agent["workspace_id"])
+    except WorkNotFoundError:
+        probe = "missing"
+    except ExecutorUnavailableError as exc:
+        probe = "unreachable"
+        logger.warning(
+            "Agent %s 开场概览拉取失败（降级注入，不阻断）: %s",
+            agent["agent_id"], exc,
+        )
+
+    # trace 规模（排除进化端自观测 trace——workspace 固定为 'evolution'，天然隔离）
+    trace_row = db.query_one(
+        """SELECT COUNT(*) AS total,
+                  SUM(CASE WHEN status IN ('failed','interrupted') THEN 1 ELSE 0 END) AS failed,
+                  SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed
+           FROM runs
+           WHERE workspace_id = ? AND run_purpose NOT LIKE 'evolution%'""",
+        (agent["workspace_id"],),
+    )
+    # 产物修订规模（进化侧摄入的版本史）
+    artifact_row = db.query_one(
+        """SELECT COUNT(DISTINCT a.logical_key) AS keys, COUNT(r.artifact_revision_id) AS revisions
+           FROM artifacts a LEFT JOIN artifact_revisions r ON r.artifact_id = a.artifact_id
+           WHERE a.workspace_id = ?""",
+        (agent["workspace_id"],),
+    )
+    return {
+        "probe": probe,
+        "overview": overview,
+        "workspace_id": agent["workspace_id"],
+        "trace_stats": {
+            "total": trace_row["total"] if trace_row else 0,
+            "completed": trace_row["completed"] or 0 if trace_row else 0,
+            "failed": trace_row["failed"] or 0 if trace_row else 0,
+        },
+        "artifact_stats": {
+            "logical_keys": artifact_row["keys"] or 0 if artifact_row else 0,
+            "revisions": artifact_row["revisions"] or 0 if artifact_row else 0,
+        },
+    }
+
+
+def _prepare_evolve_session(
+    agent: dict[str, Any], work_context: dict[str, Any],
+) -> tuple[str, EvolveContext]:
+    """创建进化会话 + 构建上下文（Agent 绑定模式，DEC-002）。"""
     if get_recorder() is None:
         raise HTTPException(status_code=503, detail={
             "message": "Trace recorder unavailable; evolution was not started",
@@ -161,7 +248,9 @@ def _prepare_evolve_session() -> tuple[str, EvolveContext]:
             "missing_fields": ["trace_recorder"],
         })
     session_id = uuid.uuid4().hex[:12]
-    ev_db.create_session(session_id, case_id="")
+    ev_db.create_session(
+        session_id, case_id="", agent_id=agent["agent_id"], work_context=work_context,
+    )
     ctx = _build_evolve_ctx(session_id)
     return session_id, ctx
 
@@ -199,31 +288,54 @@ async def _run_round_bg(
         _running_tasks.pop(ctx.session_id, None)
 
 
-def _find_active_session() -> dict[str, Any] | None:
-    """查是否有活跃的进化 session（决策 G 单会话锁）。
+def _find_landing_session(exclude_session_id: str | None = None) -> dict[str, Any] | None:
+    """查占用落地通道的会话（DEC-004：聊天并行、落地排队）。
 
-    活跃 = status ∈ ACTIVE_STATUSES（running/conversing/finalizing/pending_review）。
-    返回 session dict（含 session_id + status），无活跃返回 None。
+    落地通道 = status ∈ LANDING_STATUSES（finalizing / pending_review）的会话，
+    全局唯一。harness 工作目录与发布链共享一份，落地必须串行；探查/对话
+    阶段（running/conversing）不受此限，可跨 Agent 多会话并行。
+
+    Returns:
+        占用方 session dict（含 session_id/agent_id/status），无占用返回 None。
     """
     sessions = ev_db.list_sessions(limit=50)
     for s in sessions:
-        if isinstance(s, dict) and s.get("status") in ACTIVE_STATUSES:
-            return s
+        if not isinstance(s, dict) or s.get("status") not in LANDING_STATUSES:
+            continue
+        if exclude_session_id and s.get("session_id") == exclude_session_id:
+            continue
+        return s
     return None
 
 
 def _build_evolve_ctx(session_id: str) -> EvolveContext:
-    """构建进化上下文（自由启动：无被测 trace、无评估输入，DEC-004）。
+    """构建进化上下文（Agent 绑定模式：从 session 行取 Agent/作品/注入快照）。
 
-    业务证据来源改为：可选的评测弱点视图（start_converse 注入
-    eval_snapshot.benchmark_report）+ Agent 探查所见 + 用户对话。
+    业务证据来源：开场注入快照（work_context，DEC-005）+ 可选评测弱点视图
+    （benchmark_report）+ Agent 探查所见 + 用户对话。
     """
     ctx = EvolveContext(session_id=session_id)
     ctx.recorder = get_recorder()
-    ctx.trace_id = ""  # 自由启动无被测 trace；自观测录像走 trace_id_self
+    ctx.trace_id = ""  # 无被测 trace；自观测录像走 trace_id_self
     ctx.origin_layer = None
     ctx.eval_snapshot = {}
+    _bind_agent_fields(ctx)
     return ctx
+
+
+def _bind_agent_fields(ctx: EvolveContext) -> None:
+    """从 session 行回填 Agent 绑定字段（agent_id/workspace_id/work_context）。"""
+    session = ev_db.get_session(ctx.session_id)
+    if not session:
+        return
+    ctx.agent_id = session.get("agent_id") or ""
+    ctx.workspace_id = ""
+    ctx.work_context = session.get("work_context") or {}
+    if ctx.agent_id:
+        from app.evolve import agents_repo
+        agent = agents_repo.get(ctx.agent_id)
+        if agent:
+            ctx.workspace_id = agent.get("workspace_id") or ""
 
 
 def _resolve_origin_layer(trace_id: str) -> str | None:
@@ -280,10 +392,10 @@ def get_messages(session_id: str, after_seq: int | None = None) -> dict[str, Any
 
 @router.get("/evolve/sessions/{session_id}/points")
 def get_points(session_id: str) -> dict[str, Any]:
-    """列出 session 的进化点清单（决策 M/T7，右侧浮窗数据源）。
+    """列出进化点清单（决策 M/T7，右侧浮窗数据源）。
 
-    返回全部进化点（含 proposed/accepted/rejected 状态），按 seq 升序。
-    前端浮窗据此渲染状态图标 + 双向高亮联动（决策 N）。
+    Agent 绑定模式（FR-008）：返回该会话所属 Agent 名下全部进化点（跨会话
+    累积——会话 1 提的点在会话 2 的浮窗同样可见）。旧会话按 session 返回。
 
     Returns:
         {points: [EvolvePoint, ...], accepted_count: <int>}
@@ -293,7 +405,10 @@ def get_points(session_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"session {session_id} 不存在")
 
     from app.evolve.evolve_repo import EvolvePointsRepo
-    points = EvolvePointsRepo.list_by_session(session_id)
+    if session.get("agent_id"):
+        points = EvolvePointsRepo.list_by_agent(session["agent_id"])
+    else:
+        points = EvolvePointsRepo.list_by_session(session_id)
     accepted_count = sum(1 for p in points if p.get("status") == "accepted")
     return {"points": points, "accepted_count": accepted_count}
 
@@ -303,6 +418,27 @@ def list_sessions(limit: int = 50) -> dict[str, Any]:
     """列出进化 session（最新在前）。"""
     sessions = ev_db.list_sessions(limit=limit)
     return {"sessions": sessions, "total": len(sessions)}
+
+
+@router.get("/evolve/landing-channel")
+def get_landing_channel() -> dict[str, Any]:
+    """落地通道占用状态（FR-003：进化页呈现谁在占用、处于什么阶段）。
+
+    Returns:
+        {occupied: bool, occupier: {session_id, agent_id, status} | None}
+    """
+    occupier = _find_landing_session()
+    return {
+        "occupied": occupier is not None,
+        "occupier": (
+            {
+                "session_id": occupier["session_id"],
+                "agent_id": occupier.get("agent_id"),
+                "status": occupier["status"],
+            }
+            if occupier else None
+        ),
+    }
 
 
 @router.get("/evolve/sessions/{session_id}")
@@ -867,8 +1003,14 @@ async def send_message(session_id: str, req: EvolveMessageRequest) -> dict[str, 
             status_code=409,
             detail=(
                 f"session 状态为 {session.get('status')}，"
-                f"只有 conversing 可发消息（启动会话调 /start-converse）"
+                f"只有 conversing 可发消息（启动会话调 Agent 会话入口）"
             ),
+        )
+    # 未绑定旧会话只读（FR-002/DEC-002）：agent_id 为空 = 自由启动时代遗留
+    if not session.get("agent_id"):
+        raise HTTPException(
+            status_code=403,
+            detail="未绑定的旧进化会话已归档为只读（DEC-002），请在进化 Agent 下开新会话",
         )
     # FR-006 / EDGE-005：并发 round 保护——上一轮 converse/finalize 未完成时拒绝新消息，
     # 避免孤儿 task + checkpoint 竞态。
@@ -942,15 +1084,41 @@ async def finalize_session(session_id: str) -> dict[str, Any]:
             status_code=409,
             detail=(
                 f"session 状态为 {session.get('status')}，"
-                f"只有 conversing 可拍板（先 /start-converse + 对话）"
+                f"只有 conversing 可拍板（先开 Agent 会话 + 对话）"
             ),
+        )
+    # 未绑定旧会话只读（FR-002/DEC-002）：不允许再触发落地
+    if not session.get("agent_id"):
+        raise HTTPException(
+            status_code=403,
+            detail="未绑定的旧进化会话已归档为只读（DEC-002），不能拍板落地",
         )
     # FR-006 / EDGE-005：并发 round 保护——converse 未完成时拒绝拍板，避免孤儿 task。
     _reject_if_round_running(session_id, "拍板")
 
-    # 校验至少 1 个 accepted 进化点（决策 C/A）
+    # FR-003 / DEC-004：落地通道全局互斥——finalizing/pending_review 独占
+    # harness 工作目录与发布链。被占时明确拒绝并告知占用方（不静默排队）。
+    landing_occupier = _find_landing_session(exclude_session_id=session_id)
+    if landing_occupier:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"落地通道被占用：会话 {landing_occupier['session_id']} "
+                    f"处于 {landing_occupier['status']}，请先发布或丢弃该会话"
+                ),
+                "occupied_by_session_id": landing_occupier["session_id"],
+                "occupied_by_status": landing_occupier["status"],
+                "occupied_by_agent_id": landing_occupier.get("agent_id"),
+            },
+        )
+
+    # 校验至少 1 个 accepted 进化点（Agent 绑定模式按 Agent 取——跨会话累积，FR-008）
     from app.evolve.evolve_repo import EvolvePointsRepo
-    accepted_count = EvolvePointsRepo.count_accepted(session_id)
+    if session.get("agent_id"):
+        accepted_count = EvolvePointsRepo.count_accepted_by_agent(session["agent_id"])
+    else:
+        accepted_count = EvolvePointsRepo.count_accepted(session_id)
     if accepted_count == 0:
         raise HTTPException(
             status_code=400,
@@ -1028,6 +1196,7 @@ def _rebuild_ctx_from_db(session_id: str) -> EvolveContext | None:
     ctx.session_status = session.get("status") or STATUS_RUNNING
     ctx.thread_id = session_id  # thread_id 始终 = session_id（决策 T1）
     ctx.eval_snapshot = {}
+    _bind_agent_fields(ctx)
 
     # 历史会话（阶段 D 绑定过评估卷宗）：直读旧表回填快照，保对话上下文连续
     bound_eval_dossier_id = session.get("bound_eval_dossier_id")

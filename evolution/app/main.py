@@ -39,6 +39,7 @@ from app.view.active import router as active_api_router
 from app.view.events import router as events_router
 from app.view.agent_package import router as agent_package_router
 from app.evolve.api import router as evolve_router
+from app.evolve.agents_api import router as agents_router
 from app.tests.api import router as tests_router
 from app.view.versions_api import router as versions_router
 from app.dataset.api import router as dataset_router
@@ -149,6 +150,8 @@ app.include_router(events_router, prefix="/api")
 app.include_router(agent_package_router, prefix="/api")
 # 进化端单进化 Agent：手动触发 + 查询 + SSE（替换旧 adapt 4 阶段）
 app.include_router(evolve_router, prefix="/api")
+# 进化 Agent 实体 CRUD（作品绑定，REQ-20261001-131018）
+app.include_router(agents_router, prefix="/api")
 # 手动单次测试入口（数据集选择 + Agent 版本选择 + 独立测试记录，D-Q9）
 app.include_router(tests_router, prefix="/api")
 # 评估 Agent（三功能解耦：评估从进化流水线抽离为独立顶层 Agent，S1/S7）

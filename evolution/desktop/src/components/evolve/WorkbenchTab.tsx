@@ -7,11 +7,14 @@ import {
   getEvolvePoints,
   getEvolveSession,
   getEvolveSessionEventsSince,
+  getLandingChannel,
   listBenchmarkBatches,
+  listEvolveAgents,
   sendEvolveMessage,
-  startEvolveConverse,
+  startEvolveAgentSession,
   stopEvolve,
   type BenchmarkBatchSummary,
+  type EvolveAgent,
   type EvolveMessage,
   type EvolvePoint,
   type EvolveSession,
@@ -23,9 +26,14 @@ import PointsDrawer from "./PointsDrawer";
  * 进化工作台 Tab（决策 F/N/C，2026-07-20 重构为两栏）。
  *
  * 两栏布局：
- *   中：对话区（ConversationPanel）—— 启动入口 / 对话流 / 输入框
+ *   中：对话区（ConversationPanel）—— Agent 选择/启动入口 / 对话流 / 输入框
  *   右：进化点浮窗（PointsDrawer）—— 实时状态 + 拍板按钮
  * （原左侧历史会话已移到独立「进化历史」Tab，本组件不再维护 sessions 列表）
+ *
+ * Agent 绑定模式（REQ-20261001-131018 DEC-002/003）：
+ *   - 启动入口两段式：先选/建进化 Agent（绑作品），再开会话；自由启动退役
+ *   - selectedAgentId 持久化 localStorage（跨刷新记住常用 Agent）
+ *   - 落地通道占用横幅（FR-003：聊天并行、落地排队——占用时提示，可照常对话）
  *
  * 跨 tab 选中联动（DD4）：
  *   - initialSessionId：URL ?session=xxx 解析出的 id（EvolvePage 透传）
@@ -33,7 +41,7 @@ import PointsDrawer from "./PointsDrawer";
  *   - useEffect([initialSessionId])：id 变化时自动选中（有 initialSession 直接用，否则按 id 拉详情）
  *
  * 数据流：
- *   - 启动会话 → start-converse → 订阅 Pull 事件流 → 拉取 messages + points
+ *   - 选 Agent → 开会话 → 订阅 Pull 事件流 → 拉取 messages + points
  *   - 用户发消息 → POST /messages → Pull 推 Agent 回复（持久化 + 增量拉取）
  *   - 进化点状态变更 → proposal 事件 → 刷新 points
  *   - 用户拍板 → POST /finalize → finalizing → 完成后自动跳 review-report（决策 AA）
@@ -42,6 +50,8 @@ import PointsDrawer from "./PointsDrawer";
  *   - 浮窗点击进化点 → highlightedPointId（滚动对话到该点讨论位置）
  *   - 对话区 hover/点击卡片 → 同一 state 反向高亮浮窗
  */
+const AGENT_STORAGE_KEY = "evolve.selectedAgentId";
+
 export default function WorkbenchTab({
   initialSessionId,
   initialSession,
@@ -56,6 +66,13 @@ export default function WorkbenchTab({
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [selectedStatus, setSelectedStatus] = useState<string | null>(null);
 
+  // 进化 Agent（REQ-20261001-131018）
+  const [agents, setAgents] = useState<EvolveAgent[]>([]);
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() =>
+    localStorage.getItem(AGENT_STORAGE_KEY),
+  );
+  const [landingOccupied, setLandingOccupied] = useState(false);
+
   // 对话 + 进化点
   const [messages, setMessages] = useState<EvolveMessage[]>([]);
   const [points, setPoints] = useState<EvolvePoint[]>([]);
@@ -68,7 +85,7 @@ export default function WorkbenchTab({
   const [highlightedPointId, setHighlightedPointId] = useState<string | null>(null);
   const streamCancelRef = useRef<(() => void) | null>(null);
 
-  // ── 轮询：评测批次列表（启动入口用）────────────────────────
+  // ── 轮询：评测批次 + Agent 列表 + 落地通道 ─────────────────
   // 只列已完成（done/partial）批次——弱点视图只对完成批次有意义
   const refreshBatches = useCallback(async () => {
     const resp = await listBenchmarkBatches(20).catch(() => null);
@@ -77,14 +94,36 @@ export default function WorkbenchTab({
     }
   }, []);
 
+  const refreshAgents = useCallback(async () => {
+    const resp = await listEvolveAgents().catch(() => null);
+    if (resp) setAgents(resp.agents);
+  }, []);
+
+  const refreshLandingChannel = useCallback(async () => {
+    const resp = await getLandingChannel().catch(() => null);
+    if (resp) setLandingOccupied(resp.occupied);
+  }, []);
+
   useEffect(() => {
     void refreshBatches();
-    const timer = setInterval(refreshBatches, 10000);
+    void refreshAgents();
+    void refreshLandingChannel();
+    const timer = setInterval(() => {
+      void refreshBatches();
+      void refreshAgents();
+      void refreshLandingChannel();
+    }, 10000);
     return () => {
       clearInterval(timer);
       streamCancelRef.current?.();
     };
-  }, [refreshBatches]);
+  }, [refreshBatches, refreshAgents, refreshLandingChannel]);
+
+  const handleSelectAgent = useCallback((agentId: string | null) => {
+    setSelectedAgentId(agentId);
+    if (agentId) localStorage.setItem(AGENT_STORAGE_KEY, agentId);
+    else localStorage.removeItem(AGENT_STORAGE_KEY);
+  }, []);
 
   // ── 拉取会话详情（messages + points）────────────────────────
   // 拉取进化点（独立于消息——proposal 事件时只刷进化点，避免覆盖流式 token）
@@ -155,15 +194,15 @@ export default function WorkbenchTab({
     }
   }, [initialSessionId, initialSession, selectSession, selectedSessionId]);
 
-  // ── 启动新会话（对话式入口，自由启动 DEC-004）───────────────
-  // benchmarkBatchId 可选：附带时 Agent 先看全局弱点视图
-  async function handleStart(benchmarkBatchId: string | null) {
+  // ── 在 Agent 下开新会话（DEC-002 入口统一绑作品）─────────────
+  // benchmarkBatchId 可选：附带时 Agent 把评测弱点视图作为补充证据
+  async function handleStart(agentId: string, benchmarkBatchId: string | null) {
     setStarting(true);
     setMessages([]);
     setPoints([]);
     setAcceptedCount(0);
     try {
-      const resp = await startEvolveConverse(benchmarkBatchId);
+      const resp = await startEvolveAgentSession(agentId, benchmarkBatchId);
       setSelectedSessionId(resp.session_id);
       setSelectedStatus("running");
       toast.success(`进化已启动：${resp.session_id.slice(0, 8)}`);
@@ -380,16 +419,27 @@ export default function WorkbenchTab({
 
   return (
     <div className="evolve-workbench">
+      {/* 落地通道占用横幅（FR-003/DEC-004：聊天并行、落地排队） */}
+      {landingOccupied && (
+        <div className="landing-channel-banner">
+          落地通道占用中——另一会话正在落地/待审。对话不受影响；拍板需先等通道释放（发布或丢弃占用会话）。
+        </div>
+      )}
       {/* 中：对话区（原左侧历史已移到独立「进化历史」Tab）*/}
       <ConversationPanel
         selectedSessionId={selectedSessionId}
         status={selectedStatus}
         messages={messages}
         points={points}
+        agents={agents}
+        selectedAgentId={selectedAgentId}
         batches={batches}
         starting={starting}
         stopping={stopping}
+        landingOccupied={landingOccupied}
         highlightedPointId={highlightedPointId}
+        onSelectAgent={handleSelectAgent}
+        onAgentsChanged={() => void refreshAgents()}
         onStart={handleStart}
         onSend={handleSend}
         onStop={handleStop}

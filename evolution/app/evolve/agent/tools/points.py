@@ -98,6 +98,7 @@ def make_points_tools() -> list:
                 options=options_dicts,
                 recommendation=recommendation or None,
                 note=note or None,
+                agent_id=ctx.agent_id or None,
             )
             # Phase 5 协议：emit proposal 事件供前端浮窗实时同步（决策 B/M）
             ctx.emit_step(
@@ -147,8 +148,8 @@ def make_points_tools() -> list:
             point = EvolvePointsRepo.get_by_id(point_id)
             if point is None:
                 return f"进化点 {point_id} 不存在"
-            if point["session_id"] != ctx.session_id:
-                return f"进化点 {point_id} 不属于当前 session"
+            if not _point_owned_by_ctx(point, ctx):
+                return f"进化点 {point_id} 不属于当前进化 Agent"
             if not (0 <= chosen_option < len(point["options"])):
                 return (
                     f"chosen_option {chosen_option} 越界——"
@@ -201,8 +202,8 @@ def make_points_tools() -> list:
             point = EvolvePointsRepo.get_by_id(point_id)
             if point is None:
                 return f"进化点 {point_id} 不存在"
-            if point["session_id"] != ctx.session_id:
-                return f"进化点 {point_id} 不属于当前 session"
+            if not _point_owned_by_ctx(point, ctx):
+                return f"进化点 {point_id} 不属于当前进化 Agent"
 
             updated = EvolvePointsRepo.reject(point_id, user_note=reason or None)
             ctx.emit_step(
@@ -222,27 +223,33 @@ def make_points_tools() -> list:
 
     @tool
     def list_evolution_points() -> str:
-        """列出当前 session 的所有进化点（含状态）。
+        """列出当前进化 Agent 名下的所有进化点（跨会话累积，含状态）。
 
-        用于你（Agent）在对话中回顾已讨论的进化点——避免重复 propose、
+        用于你（Agent）在对话中回顾已讨论的进化点——包括以前会话提出的
+        （跨会话累积，本次会话可继续更新/使用），避免重复 propose、
         检查哪些还没表态。
 
         Returns:
-            进化点清单（按提出顺序）。每个点含 seq/target/status/已选方案。
+            进化点清单（按提出顺序）。每个点含 seq/target/status/已选方案/来源会话。
         """
         ctx = get_tool_context()
         if ctx is None:
             return "错误：session 未初始化"
 
-        points = EvolvePointsRepo.list_by_session(ctx.session_id)
+        if ctx.agent_id:
+            points = EvolvePointsRepo.list_by_agent(ctx.agent_id)
+        else:
+            points = EvolvePointsRepo.list_by_session(ctx.session_id)
         if not points:
-            return "当前 session 还没有提出任何进化点。"
+            return "当前进化 Agent 名下还没有提出任何进化点。"
 
         lines = [f"共 {len(points)} 个进化点："]
         status_icon = {"proposed": "○", "accepted": "✓", "rejected": "✗"}
         for p in points:
             icon = status_icon.get(p["status"], "?")
             line = f"  {icon} #{p['seq']} [{p['status']}] {p['target']}"
+            if ctx.agent_id and p.get("session_id") != ctx.session_id:
+                line += f"（来自早前会话 {p['session_id']}）"
             if p["status"] == "accepted" and p["chosen_option"] is not None:
                 chosen = p["options"][p["chosen_option"]]["description"] if p["chosen_option"] < len(p["options"]) else "?"
                 line += f" → 方案：{chosen}"
@@ -255,6 +262,17 @@ def make_points_tools() -> list:
         reject_evolution_point,
         list_evolution_points,
     ]
+
+
+def _point_owned_by_ctx(point: dict[str, Any], ctx: Any) -> bool:
+    """进化点归属校验（FR-008 跨会话累积）。
+
+    Agent 绑定模式：点挂 Agent 名下，同一 Agent 的任何会话都可更新/否决
+    （会话 2 可以接着改会话 1 提的点）。旧链路（无 agent_id）：按 session 匹配。
+    """
+    if ctx.agent_id:
+        return point.get("agent_id") == ctx.agent_id
+    return point.get("session_id") == ctx.session_id
 
 
 __all__ = ["make_points_tools"]

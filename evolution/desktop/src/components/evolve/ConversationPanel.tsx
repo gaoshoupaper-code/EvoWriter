@@ -1,12 +1,18 @@
 import { useEffect, useRef, useState } from "react";
-import type { BenchmarkBatchSummary, EvolveMessage, EvolvePoint } from "@/lib/api";
+import type {
+  BenchmarkBatchSummary,
+  EvolveAgent,
+  EvolveMessage,
+  EvolvePoint,
+} from "@/lib/api";
+import AgentLaunchCard from "./AgentLaunchCard";
 import EvolveMessageBubble from "./EvolveMessageBubble";
 
 /**
  * 中部对话区（决策 J/K/L/X）。
  *
  * 三种视图状态：
- *   - idle（无选中会话）：显示启动入口（选 trace + 启动按钮）
+ *   - idle（无选中会话）：显示启动入口（AgentLaunchCard——选/建进化 Agent 后开会话）
  *   - conversing / running / finalizing：显示对话流 + 输入框（conversing 可输入）
  *   - terminal（published/discarded/failed/cancelled）：只读对话流
  *
@@ -24,11 +30,16 @@ interface Props {
   status: string | null;
   messages: EvolveMessage[];
   points: EvolvePoint[];
+  agents: EvolveAgent[];
+  selectedAgentId: string | null;
   batches: BenchmarkBatchSummary[];
   starting: boolean;
   stopping: boolean;
+  landingOccupied: boolean;
   highlightedPointId: string | null; // 来自浮窗点击
-  onStart: (benchmarkBatchId: string | null) => void;
+  onSelectAgent: (agentId: string | null) => void;
+  onAgentsChanged: () => void;
+  onStart: (agentId: string, benchmarkBatchId: string | null) => void;
   onSend: (content: string) => void;
   onStop: () => void;
   onPointHover: (pointId: string | null) => void;
@@ -39,16 +50,20 @@ export default function ConversationPanel({
   status,
   messages,
   points,
+  agents,
+  selectedAgentId,
   batches,
   starting,
   stopping,
+  landingOccupied,
   highlightedPointId,
+  onSelectAgent,
+  onAgentsChanged,
   onStart,
   onSend,
   onStop,
   onPointHover,
 }: Props) {
-  const [selectedBatchId, setSelectedBatchId] = useState("");
   const [input, setInput] = useState("");
   const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -75,44 +90,19 @@ export default function ConversationPanel({
     return () => clearTimeout(timer);
   }, [highlightedPointId, messages, onPointHover]);
 
-  // ── idle 视图：启动入口 ────────────────────────────────────
+  // ── idle 视图：启动入口（Agent 选择 + 开会话）──────────────
   if (!selectedSessionId) {
     return (
-      <section className="conversation-panel idle">
-        <div className="start-card">
-          <div className="start-icon">🧬</div>
-          <h2 className="start-title">启动一次进化共创</h2>
-          <p className="start-subtitle">
-            自由启动，无前置输入。附带评测批次可让 Agent 先看全局弱点视图
-            （最弱维度 + 高频缺陷），再探查要素，然后和你一起讨论怎么改。
-          </p>
-          <div className="start-form">
-            <select
-              className="trace-select"
-              value={selectedBatchId}
-              onChange={(e) => setSelectedBatchId(e.target.value)}
-              disabled={starting || batches.length === 0}
-            >
-              <option value="">
-                {batches.length === 0 ? "暂无评测批次（可不附带）" : "附带评测批次（可选）…"}
-              </option>
-              {batches.map((b) => (
-                <option key={b.batch_id} value={b.batch_id}>
-                  批次 {b.batch_id.slice(0, 8)}… · v{b.harness_version ?? "?"} · {b.status}
-                </option>
-              ))}
-            </select>
-            <button
-              type="button"
-              className="start-btn"
-              disabled={starting}
-              onClick={() => onStart(selectedBatchId || null)}
-            >
-              {starting ? "启动中…" : "启动进化"}
-            </button>
-          </div>
-        </div>
-      </section>
+      <AgentLaunchCard
+        agents={agents}
+        selectedAgentId={selectedAgentId}
+        batches={batches}
+        starting={starting}
+        landingOccupied={landingOccupied}
+        onSelectAgent={onSelectAgent}
+        onAgentsChanged={onAgentsChanged}
+        onStart={onStart}
+      />
     );
   }
 

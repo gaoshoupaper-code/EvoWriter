@@ -235,6 +235,7 @@ class EvolvePointsRepo:
         options: list[dict[str, Any]],
         recommendation: str | None = None,
         note: str | None = None,
+        agent_id: str | None = None,
     ) -> dict[str, Any]:
         """Agent 提出一个新进化点（status=proposed）。
 
@@ -244,6 +245,7 @@ class EvolvePointsRepo:
             options: 备选方案数组 [{description, pros, cons, expected_impact}, ...]
             recommendation: 推荐哪个 option + 理由（自由文本）
             note: Agent 补充说明
+            agent_id: 归属进化 Agent（跨会话累积，REQ-20261001-131018 FR-008；旧链路 NULL）
         Returns:
             完整进化点 dict（含 id / seq / status=proposed / created_at）。
         """
@@ -258,12 +260,12 @@ class EvolvePointsRepo:
         db.execute(
             """INSERT INTO evolve_points
                (id, session_id, seq, target, problem, options, recommendation, note,
-                status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?)""",
+                status, agent_id, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?)""",
             (
                 point_id, session_id, seq, target, problem,
                 json.dumps(options, ensure_ascii=False),
-                recommendation, note, now,
+                recommendation, note, agent_id, now,
             ),
         )
         # 进化点一对一归属（需求 20260731 REQ-01.3/DEC-20/AC-33）：
@@ -284,6 +286,7 @@ class EvolvePointsRepo:
             "accepted_at": None,
             "design_ref": None,
             "created_at": now,
+            "agent_id": agent_id,
         }
 
     @staticmethod
@@ -373,7 +376,7 @@ class EvolvePointsRepo:
         """按 id 查单个进化点。"""
         row = db.query_one(
             """SELECT id, session_id, seq, target, problem, options, recommendation, note,
-                      status, chosen_option, user_note, accepted_at, design_ref, created_at
+                      status, chosen_option, user_note, accepted_at, design_ref, created_at, agent_id
                FROM evolve_points WHERE id = ?""",
             (point_id,),
         )
@@ -384,7 +387,7 @@ class EvolvePointsRepo:
         """按 seq 升序列出 session 的全部进化点（浮窗数据源）。"""
         rows = db.query_all(
             """SELECT id, session_id, seq, target, problem, options, recommendation, note,
-                      status, chosen_option, user_note, accepted_at, design_ref, created_at
+                      status, chosen_option, user_note, accepted_at, design_ref, created_at, agent_id
                FROM evolve_points
                WHERE session_id = ?
                ORDER BY seq ASC""",
@@ -397,7 +400,7 @@ class EvolvePointsRepo:
         """按 status 过滤列出进化点（如查 accepted 用于拍板）。"""
         rows = db.query_all(
             """SELECT id, session_id, seq, target, problem, options, recommendation, note,
-                      status, chosen_option, user_note, accepted_at, design_ref, created_at
+                      status, chosen_option, user_note, accepted_at, design_ref, created_at, agent_id
                FROM evolve_points
                WHERE session_id = ? AND status = ?
                ORDER BY seq ASC""",
@@ -411,6 +414,47 @@ class EvolvePointsRepo:
         row = db.query_one(
             "SELECT COUNT(*) AS c FROM evolve_points WHERE session_id = ? AND status = 'accepted'",
             (session_id,),
+        )
+        return row["c"] if row else 0
+
+    # ── Agent 维度（跨会话累积，REQ-20261001-131018 DEC-003/FR-008）──
+
+    @staticmethod
+    def list_by_agent(agent_id: str) -> list[dict[str, Any]]:
+        """按 seq 升序列出 Agent 名下全部进化点（跨会话累积——会话 2 可见会话 1 提的点）。
+
+        仅命中带 agent_id 的行；旧会话的进化点（agent_id NULL）不属于任何 Agent，
+        随旧会话只读归档（DEC-002）。
+        """
+        rows = db.query_all(
+            """SELECT id, session_id, seq, target, problem, options, recommendation, note,
+                      status, chosen_option, user_note, accepted_at, design_ref, created_at, agent_id
+               FROM evolve_points
+               WHERE agent_id = ?
+               ORDER BY created_at, seq ASC""",
+            (agent_id,),
+        )
+        return [EvolvePointsRepo._row_to_dict(r) for r in rows]
+
+    @staticmethod
+    def list_by_agent_status(agent_id: str, status: str) -> list[dict[str, Any]]:
+        """按 status 过滤列出 Agent 名下进化点（finalize 取 accepted 用，FR-010）。"""
+        rows = db.query_all(
+            """SELECT id, session_id, seq, target, problem, options, recommendation, note,
+                      status, chosen_option, user_note, accepted_at, design_ref, created_at, agent_id
+               FROM evolve_points
+               WHERE agent_id = ? AND status = ?
+               ORDER BY created_at, seq ASC""",
+            (agent_id, status),
+        )
+        return [EvolvePointsRepo._row_to_dict(r) for r in rows]
+
+    @staticmethod
+    def count_accepted_by_agent(agent_id: str) -> int:
+        """统计 Agent 名下 accepted 进化点数（拍板启用条件：≥1，跨会话）。"""
+        row = db.query_one(
+            "SELECT COUNT(*) AS c FROM evolve_points WHERE agent_id = ? AND status = 'accepted'",
+            (agent_id,),
         )
         return row["c"] if row else 0
 
@@ -432,6 +476,7 @@ class EvolvePointsRepo:
             "accepted_at": row.get("accepted_at"),
             "design_ref": row.get("design_ref"),
             "created_at": row["created_at"],
+            "agent_id": row.get("agent_id"),
         }
 
 

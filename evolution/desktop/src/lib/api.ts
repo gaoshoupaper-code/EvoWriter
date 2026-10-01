@@ -534,6 +534,8 @@ export interface EvolveSession {
   baseline_score: number | null;
   candidate_score: number | null;
   report_json: string | null;
+  agent_id?: string | null; // 归属进化 Agent（REQ-20261001-131018；null=未绑定旧会话只读）
+  work_context?: Record<string, any> | null; // 开场注入快照（详情接口）
   created_at: string;
   updated_at: string | null;
   eval_ref: string | null;
@@ -542,6 +544,93 @@ export interface EvolveSession {
   design_doc?: DesignDoc | null;
   change_log?: ChangeLog | null;
   eval_snapshot?: EvalSnapshot | null;
+}
+
+// ── 进化 Agent 实体（REQ-20261001-131018 DEC-003/008/009/010）──
+
+/** 可绑作品（GET /api/evolve/workspaces，代理 executor 全平台列表） */
+export interface BindableWorkspace {
+  workspace_id: string;
+  title: string;
+  domain: string | null;
+  owner_user_id: string;
+  owner_username: string | null;
+  session_count: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface EvolveAgent {
+  agent_id: string;
+  name: string;
+  workspace_id: string;
+  status: "active" | "archived";
+  work_deleted_at: string | null;
+  created_at: string;
+  updated_at: string | null;
+  session_count?: number;
+  published_count?: number;
+}
+
+export interface EvolveAgentDetail extends EvolveAgent {
+  work_probe: "ok" | "missing" | "unreachable";
+  work_overview: BindableWorkspace | null;
+  work_deleted: boolean;
+  sessions: EvolveSession[];
+}
+
+export async function listBindableWorkspaces(): Promise<{
+  workspaces: BindableWorkspace[];
+  total: number;
+}> {
+  return evoJson(`/api/evolve/workspaces`, { method: "GET" });
+}
+
+export async function listEvolveAgents(
+  includeArchived = false,
+): Promise<{ agents: EvolveAgent[]; total: number }> {
+  return evoJson(
+    `/api/evolve/agents${includeArchived ? "?include_archived=true" : ""}`,
+    { method: "GET" },
+  );
+}
+
+export async function getEvolveAgent(agentId: string): Promise<EvolveAgentDetail> {
+  return evoJson<EvolveAgentDetail>(`/api/evolve/agents/${agentId}`, { method: "GET" });
+}
+
+/** 创建进化 Agent。作品已被绑定时后端 409，detail 含占用方信息（DEC-009）。 */
+export async function createEvolveAgent(
+  name: string,
+  workspaceId: string,
+): Promise<EvolveAgent> {
+  return evoJson(`/api/evolve/agents`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, workspace_id: workspaceId }),
+  });
+}
+
+export async function renameEvolveAgent(agentId: string, name: string): Promise<EvolveAgent> {
+  return evoJson(`/api/evolve/agents/${agentId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+}
+
+export async function archiveEvolveAgent(agentId: string): Promise<{ agent_id: string; status: string }> {
+  return evoJson(`/api/evolve/agents/${agentId}/archive`, { method: "POST" });
+}
+
+/** 落地通道占用状态（FR-003：聊天并行、落地排队）。 */
+export interface LandingChannelState {
+  occupied: boolean;
+  occupier: { session_id: string; agent_id: string | null; status: string } | null;
+}
+
+export async function getLandingChannel(): Promise<LandingChannelState> {
+  return evoJson(`/api/evolve/landing-channel`, { method: "GET" });
 }
 
 // ── 审查视图数据类型（D1：get_session 内联）──────────────────────
@@ -719,13 +808,12 @@ export async function getEvolveSystemPrompt(): Promise<EvolveSystemPrompt> {
   return evoJson<EvolveSystemPrompt>(`/api/evolve/system-prompt`, { method: "GET" });
 }
 
-/** 对话式启动进化（决策 T2，inspect round + 转 conversing） */
-/** 启动对话式进化（阶段 D：按评估卷宗启动，永久绑定） */
-export async function startEvolveConverse(
+/** 在进化 Agent 下启动新会话（REQ-20261001-131018 DEC-002：入口统一绑作品） */
+export async function startEvolveAgentSession(
+  agentId: string,
   benchmarkBatchId?: string | null,
 ): Promise<{ session_id: string; trace_id: string; status: string }> {
-  // 自由启动（DEC-004）：无必填业务输入；benchmark_batch_id 可选附带弱点视图
-  return evoJson(`/api/evolve/start-converse`, {
+  return evoJson(`/api/evolve/agents/${agentId}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(

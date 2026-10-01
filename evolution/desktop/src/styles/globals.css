@@ -12913,3 +12913,140 @@ html[data-theme="dark"] .point-chosen { color: var(--teal); }
   .bench-run-split { grid-template-columns: 1fr; }
   .bench-run-score { position: static; max-height: none; }
 }
+
+/* ── 进化 Agent 绑定 UI（REQ-20261001-131018 DEC-002/003/008/009/010）── */
+
+/* 落地通道占用横幅（FR-003：聊天并行、落地排队） */
+.landing-channel-banner {
+  grid-column: 1 / -1;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--amber, #b45309) 12%, var(--panel-soft));
+  color: var(--amber-ink, #92400e);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* Agent 档案摘要行（启动卡内） */
+.agent-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  margin: 4px 0 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.agent-summary-line code { font-size: 11px; }
+.agent-summary-actions { display: inline-flex; gap: 10px; margin-left: 6px; }
+.link-btn {
+  border: none;
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  color: var(--teal);
+  cursor: pointer;
+  text-decoration: underline;
+}
+.link-btn.danger { color: var(--danger, #dc2626); }
+
+/* 徽章（作品已删除 / 未绑定只读） */
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.6;
+  border: 1px solid var(--line-strong);
+  background: var(--panel-soft);
+  color: var(--muted);
+}
+.badge-danger {
+  border-color: var(--danger, #dc2626);
+  background: color-mix(in srgb, var(--danger, #dc2626) 12%, var(--panel));
+  color: var(--danger, #dc2626);
+  font-weight: 600;
+}
+
+.start-hint {
+  margin: 10px 0 0;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.start-hint.danger { color: var(--danger, #dc2626); }
+
+.start-btn.secondary {
+  background: var(--panel-solid);
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+}
+
+/* 新建 Agent 对话框 */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(0, 0, 0, 0.42);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.modal-card {
+  width: min(440px, calc(100vw - 48px));
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 22px 24px;
+  box-shadow: var(--shadow-soft);
+  text-align: left;
+}
+.modal-title {
+  margin: 0 0 6px;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.modal-hint {
+  margin: 0 0 16px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.6;
+}
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 14px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.modal-field input,
+.modal-field select {
+  padding: 9px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel-solid);
+  font-size: 13px;
+  color: var(--ink);
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* HistoryTab 分组头（未绑定归档区） */
+.history-group-header {
+  max-width: 720px;
+  margin: 14px 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+  border-top: 1px dashed var(--line-strong);
+  padding-top: 10px;
+}
+.session-list.archived .session-item { opacity: 0.72; }
+/* 横幅插在两栏之上时，工作台网格改为两行（横幅行 + 内容行） */
+.evolve-workbench { grid-template-rows: auto minmax(0, 1fr); }

@@ -223,11 +223,33 @@ def init_db() -> None:
                 candidate_eval_path TEXT,                   -- candidate 评估诊断文档路径
                 report_json        TEXT,                    -- 对比报告 JSON
                 benchmark_batch_id TEXT,                    -- 会话消费的评测批次（FR-006，REQ-20260919-172934）
+                agent_id           TEXT,                    -- 归属进化 Agent（REQ-20261001-131018；旧会话 NULL=未绑定区只读）
+                work_context_json  TEXT,                    -- 开场注入快照 JSON（作品概览+trace/产物规模，DEC-005；旧会话 NULL）
                 created_at         TEXT NOT NULL,
                 updated_at         TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_es_session ON evolve_sessions(session_id);
             CREATE INDEX IF NOT EXISTS idx_es_case ON evolve_sessions(case_id);
+
+            -- evolve_agents：进化 Agent 实体（REQ-20261001-131018 DEC-003）。
+            -- Agent = 绑定作品的长期进化负责人：一个 Agent 绑一个作品（1:1，DEC-009），
+            -- 一个 Agent 下可开多个 evolve_sessions（会话挂 agent_id）。
+            -- active 状态下 workspace_id 唯一由 partial unique index 保证（并发创建兜底）；
+            -- 归档（status=archived）释放绑定，作品可再绑新 Agent（DEC-010）。
+            -- work_deleted_at：executor 确认作品不存在时写入的粘性标记（DEC-010）。
+            CREATE TABLE IF NOT EXISTS evolve_agents (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id         TEXT NOT NULL UNIQUE,          -- uuid hex
+                name             TEXT NOT NULL,
+                workspace_id     TEXT NOT NULL,                 -- 绑定作品（executor workspace）
+                status           TEXT NOT NULL DEFAULT 'active', -- active / archived
+                work_deleted_at  TEXT,                          -- 作品删除标记时间；NULL=未删
+                created_at       TEXT NOT NULL,
+                updated_at       TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_ea_workspace ON evolve_agents(workspace_id);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_ea_active_workspace
+                ON evolve_agents(workspace_id) WHERE status = 'active';
 
             -- manual_tests：手动单次测试记录（决策 D3/D5/D-Q7）
             -- 一次手动测试 = 选数据集 + 选 Agent 版本 → 跑一次 → 一条 trace。
@@ -465,6 +487,7 @@ def init_db() -> None:
                 user_note       TEXT,                         -- 用户附加说明
                 accepted_at     TEXT,                         -- accept/reject 时间
                 design_ref      INTEGER,                      -- 拍板后映射到 design_doc 的 change 序号
+                agent_id        TEXT,                         -- 归属进化 Agent（跨会话累积，REQ-20261001-131018 DEC-003；旧行 NULL 随旧会话只读）
                 created_at      TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_ep_session ON evolve_points(session_id, seq);
@@ -683,6 +706,29 @@ def init_db() -> None:
         _migrate_eval_correction_audit_table(conn)
         # 问题知识库一期：6 张表靠 CREATE IF NOT EXISTS 自补；此处做幂等加列/索引演进（需求 20260731）
         _migrate_problem_kb_tables(conn)
+        # 进化 Agent 作品绑定：evolve_sessions/evolve_points 补 agent_id 列（REQ-20261001-131018）
+        _migrate_evolve_agent_binding(conn)
+
+
+def _migrate_evolve_agent_binding(conn: sqlite3.Connection) -> None:
+    """幂等迁移：进化 Agent 作品绑定加列（REQ-20261001-131018）。
+
+    存量库的 evolve_sessions / evolve_points 靠本函数补 agent_id 列。索引也
+    统一在此建（不放 executescript——CREATE TABLE IF NOT EXISTS 不改旧表结构，
+    旧表无 agent_id 列时 executescript 里的 CREATE INDEX 会先于 ALTER 炸掉）。
+    """
+    with _lock:
+        sess_cols = {row[1] for row in conn.execute("PRAGMA table_info(evolve_sessions)").fetchall()}
+        if "agent_id" not in sess_cols:
+            conn.execute("ALTER TABLE evolve_sessions ADD COLUMN agent_id TEXT")
+        if "work_context_json" not in sess_cols:
+            conn.execute("ALTER TABLE evolve_sessions ADD COLUMN work_context_json TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_es_agent ON evolve_sessions(agent_id)")
+        point_cols = {row[1] for row in conn.execute("PRAGMA table_info(evolve_points)").fetchall()}
+        if "agent_id" not in point_cols:
+            conn.execute("ALTER TABLE evolve_points ADD COLUMN agent_id TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_ep_agent ON evolve_points(agent_id)")
+        conn.commit()
 
 
 def _migrate_evolve_sessions_driver_fields(conn: sqlite3.Connection) -> None:

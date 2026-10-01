@@ -81,37 +81,77 @@ export default function HistoryTab({
     <div className="evolve-history">
       <header className="history-header">
         <h3 className="history-title">进化历史</h3>
-        <span className="history-count">{sessions.length} 个会话</span>
+        <span className="history-count">
+          {sessions.filter((s) => s.agent_id).length} 个会话
+          {sessions.some((s) => !s.agent_id) &&
+            ` · ${sessions.filter((s) => !s.agent_id).length} 个未绑定归档`}
+        </span>
       </header>
 
       {sessions.length === 0 ? (
         <div className="history-empty">
           <p>还没有进化记录。</p>
           <p className="history-empty-hint">
-            去「进化工作台」选一个评估完成的 trace，启动第一次进化共创。
+            去「进化工作台」选一个进化 Agent（绑作品），启动第一次进化共创。
           </p>
         </div>
       ) : (
-        <ul className="session-list">
-          {sessions.map((s) => (
-            <li
-              key={s.session_id}
-              className="session-item"
-              onClick={() => onSelect(s)}
-            >
-              <div className="session-item-head">
-                <span className={`session-status status-${s.status}`}>
-                  {STATUS_DOT[s.status] ?? "?"}
-                </span>
-                <code className="session-id">{s.session_id.slice(0, 8)}</code>
-                <span className={`session-status-label status-${s.status}`}>
-                  {s.status}
-                </span>
+        <>
+          {sessions.some((s) => s.agent_id) && (
+            <ul className="session-list">
+              {sessions
+                .filter((s) => s.agent_id)
+                .map((s) => (
+                  <li
+                    key={s.session_id}
+                    className="session-item"
+                    onClick={() => onSelect(s)}
+                  >
+                    <div className="session-item-head">
+                      <span className={`session-status status-${s.status}`}>
+                        {STATUS_DOT[s.status] ?? "?"}
+                      </span>
+                      <code className="session-id">{s.session_id.slice(0, 8)}</code>
+                      <span className={`session-status-label status-${s.status}`}>
+                        {s.status}
+                      </span>
+                    </div>
+                    <time className="session-time">{formatTime(s.created_at)}</time>
+                  </li>
+                ))}
+            </ul>
+          )}
+          {sessions.some((s) => !s.agent_id) && (
+            <>
+              <div className="history-group-header">
+                未绑定（只读归档——自由启动时代的旧会话，DEC-002）
               </div>
-              <time className="session-time">{formatTime(s.created_at)}</time>
-            </li>
-          ))}
-        </ul>
+              <ul className="session-list archived">
+                {sessions
+                  .filter((s) => !s.agent_id)
+                  .map((s) => (
+                    <li
+                      key={s.session_id}
+                      className="session-item archived"
+                      onClick={() => onSelect(s)}
+                    >
+                      <div className="session-item-head">
+                        <span className={`session-status status-${s.status}`}>
+                          {STATUS_DOT[s.status] ?? "?"}
+                        </span>
+                        <code className="session-id">{s.session_id.slice(0, 8)}</code>
+                        <span className={`session-status-label status-${s.status}`}>
+                          {s.status}
+                        </span>
+                        <span className="badge badge-muted">未绑定·只读</span>
+                      </div>
+                      <time className="session-time">{formatTime(s.created_at)}</time>
+                    </li>
+                  ))}
+              </ul>
+            </>
+          )}
+        </>
       )}
     </div>
   );

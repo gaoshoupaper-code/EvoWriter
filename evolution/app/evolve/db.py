@@ -11,14 +11,23 @@ from typing import Any
 import app.core.db as db
 
 
-def create_session(session_id: str, case_id: str = "") -> None:
-    """创建一个 evolve session（启动时调用）。"""
+def create_session(
+    session_id: str,
+    case_id: str = "",
+    agent_id: str | None = None,
+    work_context: dict[str, Any] | None = None,
+) -> None:
+    """创建一个 evolve session（启动时调用；agent_id/work_context 为作品绑定注入，REQ-20261001-131018）。"""
     now = datetime.now(UTC).isoformat()
     db.execute(
         """INSERT INTO evolve_sessions
-           (session_id, case_id, status, created_at, updated_at)
-           VALUES (?, ?, 'running', ?, ?)""",
-        (session_id, case_id, now, now),
+           (session_id, case_id, status, agent_id, work_context_json, created_at, updated_at)
+           VALUES (?, ?, 'running', ?, ?, ?, ?)""",
+        (
+            session_id, case_id, agent_id,
+            json.dumps(work_context, ensure_ascii=False) if work_context else None,
+            now, now,
+        ),
     )
 
 
@@ -76,7 +85,7 @@ def update_session(
 
 
 def get_session(session_id: str) -> dict[str, Any] | None:
-    """查单个 session。report_json 自动反序列化。"""
+    """查单个 session。report_json / work_context_json 自动反序列化。"""
     row = db.query_one(
         "SELECT * FROM evolve_sessions WHERE session_id = ?",
         (session_id,),
@@ -86,6 +95,11 @@ def get_session(session_id: str) -> dict[str, Any] | None:
             row["report"] = json.loads(row["report_json"])
         except (json.JSONDecodeError, TypeError):
             row["report"] = None
+    if row and row.get("work_context_json"):
+        try:
+            row["work_context"] = json.loads(row["work_context_json"])
+        except (json.JSONDecodeError, TypeError):
+            row["work_context"] = None
     return row
 
 
@@ -95,6 +109,25 @@ def list_sessions(limit: int = 50) -> list[dict[str, Any]]:
         "SELECT * FROM evolve_sessions ORDER BY id DESC LIMIT ?",
         (limit,),
     )
+
+
+def list_sessions_by_agent(agent_id: str, limit: int = 200) -> list[dict[str, Any]]:
+    """列出某进化 Agent 名下的 session（最新在前，Agent 档案页数据源）。
+
+    旧会话（agent_id NULL）不会出现在任何 Agent 名下——归「未绑定」区（DEC-002）。
+    """
+    return db.query_all(
+        "SELECT * FROM evolve_sessions WHERE agent_id = ? ORDER BY id DESC LIMIT ?",
+        (agent_id, limit),
+    )
+
+
+def count_unbound_sessions() -> int:
+    """统计无绑定旧会话数（「未绑定」归档区角标）。"""
+    row = db.query_one(
+        "SELECT COUNT(*) AS c FROM evolve_sessions WHERE agent_id IS NULL"
+    )
+    return row["c"] if row else 0
 
 
 __all__ = [

@@ -3,10 +3,10 @@
 隔离策略（S4）：FastAPI TestClient + 临时 SQLite DB，只测校验逻辑——
 不触及 LLM/executor。
 
-覆盖（自由启动改造，REQ-20260921-124733 DEC-004）：
+覆盖（Agent 绑定模式，REQ-20261001-131018 DEC-002）：
   - import 冒烟：evolve/tests 全部模块可正常 import（重构后路径正确性）
   - 旧入口 /evolve/start 已裁撤（404）
-  - start-converse 请求体无必填字段（空 body 不 422）
+  - start-converse 退役（404）；Agent 会话入口校验 Agent 存在
   - evolve sessions 列表：空 DB 下返回空列表
 
 设计依据：.claude/md/20260701_213000_进化端重构_设计.md
@@ -74,7 +74,7 @@ class ImportSmokeTest(unittest.TestCase):
 
 
 class EvolveStartContractTest(unittest.TestCase):
-    """自由启动契约（DEC-004）：无必填业务输入，旧入口已裁撤。"""
+    """启动契约（REQ-20261001-131018 DEC-002）：入口统一为 Agent 绑定模式。"""
 
     def setUp(self) -> None:
         self.client = TestClient(app)
@@ -86,11 +86,16 @@ class EvolveStartContractTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 404)
 
-    def test_start_converse_accepts_empty_body(self) -> None:
-        """无任何业务输入即可启动（不 422）；测试环境无 recorder → 503 守门。"""
+    def test_start_converse_retired(self) -> None:
+        """自由启动入口退役（DEC-002）→ 404；会话须经 /evolve/agents/{id}/sessions。"""
         resp = self.client.post("/api/evolve/start-converse", json={})
-        self.assertEqual(resp.status_code, 503)
-        self.assertIn("trace_recorder", resp.json()["detail"]["missing_fields"])
+        self.assertEqual(resp.status_code, 404)
+
+    def test_agent_session_requires_existing_agent(self) -> None:
+        """不存在的 Agent → 404（Agent 校验先于 recorder 守门）。"""
+        resp = self.client.post(
+            "/api/evolve/agents/none-such/sessions", json={})
+        self.assertEqual(resp.status_code, 404)
 
 
 class EvolveSessionsQueryTest(unittest.TestCase):

@@ -60,9 +60,16 @@ STATUS_FAILED = "failed"                 # 失败（落地失败，等用户丢�
 STATUS_CANCELLED = "cancelled"           # 已取消（用户主动停止）
 STATUS_CANCEL_TIMEOUT = "cancel_timeout"  # 取消超时（10s 内未收敛，诚实告警态，EDGE-007）
 
-# 占用 working 区的活跃状态——同时只允许一个（决策 G 单会话锁）。
+# 占用 working 区的活跃状态（决策 G 单会话锁 → REQ-20261001-131018 DEC-004 拆两级）。
+# 探查/对话（running/conversing）可跨 Agent 多会话并行；落地通道全局互斥。
 ACTIVE_STATUSES = frozenset({
     STATUS_RUNNING, STATUS_CONVERSING, STATUS_FINALIZING, STATUS_PENDING_REVIEW,
+})
+
+# 落地通道状态（DEC-004「聊天并行、落地排队」）：自 finalizing 起，harness 工作
+# 目录与发布链被独占，至发布或丢弃终结。同一时刻全局仅一个会话可处于这些状态。
+LANDING_STATUSES = frozenset({
+    STATUS_FINALIZING, STATUS_PENDING_REVIEW,
 })
 
 # 终态——不可再变更。
@@ -82,6 +89,14 @@ class EvolveContext:
     def __init__(self, session_id: str, case_id: str = "") -> None:
         self.session_id = session_id
         self.case_id = case_id
+
+        # 作品绑定（REQ-20261001-131018 DEC-003）：会话挂 Agent，Agent 绑作品。
+        # 旧会话（自由启动时代）两字段为空——只读归档，不得再发消息/落地。
+        self.agent_id: str = ""
+        self.workspace_id: str = ""
+        # 开场注入快照（DEC-005）：作品概览 + trace/产物规模。进化点与发布摘要
+        # 在 prompt 组装时动态取（新鲜），不进快照。
+        self.work_context: dict[str, Any] = {}
 
         # D6：recorder 进 ctx，工具闭包通过 ctx 取。
         self.recorder: "EvolutionTraceRecorder | None" = None
@@ -195,5 +210,6 @@ __all__ = [
     "STATUS_FAILED",
     "STATUS_CANCELLED",
     "ACTIVE_STATUSES",
+    "LANDING_STATUSES",
     "TERMINAL_STATUSES",
 ]

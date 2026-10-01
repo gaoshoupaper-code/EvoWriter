@@ -62,6 +62,88 @@ def list_users_brief() -> list[dict[str, Any]]:
     ]
 
 
+# ── 作品（进化 Agent 绑定用，REQ-20261001-131018 DEC-007/008/010）──
+
+
+@router.get("/workspaces")
+def internal_list_workspaces() -> dict[str, Any]:
+    """跨 owner 列全部作品（evolution 创建进化 Agent 时的作品选择源）。
+
+    每行含 workspace_id/title/domain/owner_user_id/owner_username/session_count——
+    进化管理端「选作品」列表直接消费。内部接口无鉴权（同信任域），不暴露给终端用户。
+    """
+    from app.platform.core.db import WorkspaceRepository, get_database
+
+    workspaces = WorkspaceRepository(get_database()).list_all()
+    return {
+        "workspaces": [
+            {
+                "workspace_id": w["workspace_id"],
+                "title": w["title"],
+                "domain": w.get("domain"),
+                "owner_user_id": w["owner_id"],
+                "owner_username": w.get("owner_username"),
+                "session_count": w.get("session_count", 0),
+                "created_at": w.get("created_at"),
+                "updated_at": w.get("updated_at"),
+            }
+            for w in workspaces
+        ],
+        "total": len(workspaces),
+    }
+
+
+@router.get("/workspaces/{workspace_id}")
+def internal_get_workspace(workspace_id: str) -> dict[str, Any]:
+    """作品概要（evolution 开场注入的作品概览 + 作品存在性探测）。
+
+    404 = 作品不存在（被删）——evolution 据此做「作品已删除」粘性标记（DEC-010）。
+    """
+    from app.platform.core.db import WorkspaceRepository, get_database
+
+    w = WorkspaceRepository(get_database()).get_any(workspace_id)
+    if w is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    from app.platform.core.db import UserRepository
+    owner = UserRepository(get_database()).get_by_id(w["owner_id"])
+    return {
+        "workspace_id": w["workspace_id"],
+        "title": w["title"],
+        "domain": w.get("domain"),
+        "owner_user_id": w["owner_id"],
+        "owner_username": (owner or {}).get("username"),
+        "session_count": w.get("session_count", 0),
+        "created_at": w.get("created_at"),
+        "updated_at": w.get("updated_at"),
+    }
+
+
+@router.get("/workspaces/{workspace_id}/artifacts")
+def internal_get_workspace_artifacts(workspace_id: str) -> dict[str, Any]:
+    """作品当前产物快照（storyline/worldview/characters 权威文件，DEC-007「当前产物」路）。
+
+    404 = 作品不存在。文件缺失的产物字段返回空值（作品存在但还没写过该产物）。
+    """
+    from app.platform.core.db import WorkspaceRepository, get_database
+
+    w = WorkspaceRepository(get_database()).get_any(workspace_id)
+    if w is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    owner_id = w["owner_id"]
+
+    store = get_thread_store().artifacts
+    storyline = store.read_workspace_storyline(owner_id, workspace_id)
+    worldview = store.read_workspace_worldview(owner_id, workspace_id)
+    characters = store.read_workspace_characters(owner_id, workspace_id)
+    return {
+        "workspace_id": workspace_id,
+        "title": w["title"],
+        "storyline": storyline.model_dump(mode="json") if storyline else None,
+        "worldview": worldview.model_dump(mode="json") if worldview else None,
+        "characters": characters.model_dump(mode="json") if characters else None,
+    }
+
+
 # ── Phase 3 T3.1：A/B 回放端点 ──────────────────────────────
 
 

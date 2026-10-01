@@ -19,6 +19,11 @@ import { streamRequest } from "@/lib/stream";
 import { appendLiveTraceEvent } from "@/lib/trace";
 import { derivePhaseFromMessage } from "@/lib/execution-phase";
 import {
+  flushThreadPersist,
+  restoreThreadMessages,
+  scheduleThreadPersist,
+} from "@/lib/session-persist";
+import {
   API_BASE_URL,
   apiFetch,
   createThread as createThreadRequest,
@@ -349,7 +354,19 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
     const { threadMessages } = get();
     const saved = threadMessages.get(threadId);
     const d = requireDeps();
-    set({ messages: saved || [makeWelcomeMessage(!!d.getActiveWorkspaceId())] });
+    if (saved) {
+      set({ messages: saved });
+      return;
+    }
+    // 内存 miss（刷新/重启后首次进入该会话）→ 本地恢复（FR-002）。
+    // 先清空避免闪现上一会话内容；恢复含中断态/卡点降级管线。
+    // 空数组不写盘（subscribe 侧约定），本地无记录时回退欢迎语。
+    set({ messages: [] });
+    void restoreThreadMessages(d.getActiveWorkspaceId(), threadId).then((restored) => {
+      // 恢复期间用户可能又切走：只写回仍是当前会话的结果
+      if (d.getActiveThreadId() !== threadId) return;
+      set({ messages: restored || [makeWelcomeMessage(!!d.getActiveWorkspaceId())] });
+    });
   },
 
   resetMessages: () => {
@@ -393,6 +410,43 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
     await performImageStream(set, get, opts);
   },
 }));
+
+// ── 本地持久化调度（FR-002/FR-004，REQ-20261001-170627）──
+//
+// 订阅 messages/loading 变化：
+// - 流式进行中（loading）→ 节流写中间内容（中断后已生成部分可恢复）；
+// - 非流式期间消息变化（终态落地/用户消息/卡点/恢复完成）→ 立即写终版。
+// 写入永远以当次快照入串行链，终版不会被在途中间版覆盖。
+// 空数组跳过（恢复流程的清空瞬间、切换间隙），避免空记录覆盖既有数据。
+let uninstallExecutionPersist: (() => void) | null = null;
+
+/** 安装持久化订阅（home.tsx deps 注入后调用一次，幂等）。 */
+export function installExecutionPersist() {
+  if (uninstallExecutionPersist) return;
+  const d = requireDeps();
+  uninstallExecutionPersist = useExecutionStore.subscribe((state, prev) => {
+    // 流结束（loading true→false）时 messages 引用往往不再变化，
+    // 但终版必须此刻落盘（FR-002：终态写入终版，不能只靠节流延迟）
+    const messagesChanged = state.messages !== prev.messages;
+    const streamEnded = prev.loading && !state.loading;
+    if (!messagesChanged && !streamEnded) return;
+    if (!state.messages.length) return;
+    const threadId = d.getActiveThreadId();
+    const workspaceId = d.getActiveWorkspaceId();
+    if (!threadId || !workspaceId) return;
+    if (state.loading) {
+      scheduleThreadPersist(workspaceId, threadId, state.messages);
+    } else {
+      void flushThreadPersist(state.messages, workspaceId, threadId);
+    }
+  });
+}
+
+/** 测试专用：卸载持久化订阅，保证用例间隔离。 */
+export function _resetExecutionPersistForTests() {
+  uninstallExecutionPersist?.();
+  uninstallExecutionPersist = null;
+}
 
 // ── 核心实现（从 home.tsx:1099-1586 迁移）──
 
@@ -642,6 +696,7 @@ async function performSubmit(
                   awaitingInput: {
                     kind: interruptKind, question: iv.question || "", options: iv.options ?? null,
                     multi_select: iv.multi_select ?? false, source: iv.source, round: iv.round, versions: iv.versions,
+                    askedAt: new Date().toISOString(),
                   },
                 })),
               }));
@@ -849,6 +904,7 @@ async function performImageStream(
                 awaitingInput: {
                   kind: interruptKind, question: iv.question || "", options: iv.options ?? null,
                   multi_select: iv.multi_select ?? false, source: iv.source, round: iv.round, versions: iv.versions,
+                  askedAt: new Date().toISOString(),
                 } as typeof m.awaitingInput,
               })),
             }));

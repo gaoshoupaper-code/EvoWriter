@@ -280,6 +280,8 @@ export type ChatMessage = {
     // image_review 透传（DD4）
     round?: number;
     versions?: unknown[];
+    // 卡点产生时间（ISO）：本地持久化恢复时按 2h 阈值降级只读（REQ-20261001-170627 FR-005）
+    askedAt?: string;
   };
 };
 

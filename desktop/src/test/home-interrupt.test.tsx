@@ -149,6 +149,12 @@ describe("T0b: HITL interrupt → resume", () => {
     expect(screen.getByText("第 3 章主角是否遇到反派？")).toBeInTheDocument();
     expect(screen.getByText("遇到，加些冲突")).toBeInTheDocument();
 
+    // FR-005（REQ-20261001-170627）：卡点带产生时间，供本地恢复按 2h 阈值降级
+    const { useExecutionStore } = await import("@/stores/execution");
+    const lastMsg = [...useExecutionStore.getState().messages].reverse().find((m) => m.role === "assistant");
+    expect(lastMsg?.awaitingInput?.askedAt).toBeTruthy();
+    expect(Date.parse(lastMsg!.awaitingInput!.askedAt!)).not.toBeNaN();
+
     // 用户选择选项（触发 resume）
     await user.click(screen.getByText("遇到，加些冲突"));
 

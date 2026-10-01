@@ -14,7 +14,7 @@ import { projectStageFlow } from "@/lib/stage";
 import { usePanelPolling } from "@/lib/usePanelPolling";
 import type { StageFlow } from "@/lib/stage";
 import type { WorkspacePanel } from "@/lib/types";
-import { useExecutionStore, setExecutionDeps } from "@/stores/execution";
+import { useExecutionStore, setExecutionDeps, installExecutionPersist } from "@/stores/execution";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useTraceStore } from "@/stores/trace";
 import { useContentStore } from "@/stores/content";
@@ -124,6 +124,8 @@ export default function Home() {
       setActiveTraceId: (id) => useTraceStore.getState().setActiveTraceId(id),
       setLiveTraceId: (id) => useTraceStore.getState().setLiveTraceId(id),
     });
+    // 本地持久化订阅（REQ-20261001-170627 FR-002）：deps 就绪后安装，幂等
+    installExecutionPersist();
   }, []);
 
   // ── 主题 ──

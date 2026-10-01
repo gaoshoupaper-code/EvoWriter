@@ -26,6 +26,13 @@ import {
   updateThread as updateThreadRequest,
   fetchWorkspaces,
 } from "@/lib/api";
+import {
+  deleteThreadRecord,
+  deleteWorkspaceRecords,
+  initSessionPersist,
+  readLastPosition,
+  saveLastPosition,
+} from "@/lib/session-persist";
 
 // 内容面板数据类型（bootstrap/switchWorkspace 返回，供 contentStore 消费）
 export interface ContentData {
@@ -163,14 +170,22 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   bootstrap: async () => {
     try {
       set({ bootstrapping: true });
+      // FR-001：等认证就绪再读本地位置——按用户名隔离的记录依赖 authUser
+      // （checkAuth 与本函数可能并发触发，fetchMeOrNull 幂等，重复调用无害）
+      if (!get().authChecked) await get().checkAuth();
+      initSessionPersist({ getUsername: () => get().authUser?.username ?? null });
+
       const { workspaces: ws, styles: st } = await fetchInit();
       set({ workspaces: ws, styles: st });
 
-      const firstWorkspaceId = ws[0]?.workspace_id || "";
+      // FR-001 回现场：优先落在本地记忆的上次工作区（仍存在于名单时）
+      const last = await readLastPosition();
+      const lastWorkspaceId = last && ws.some((w) => w.workspace_id === last.workspaceId) ? last.workspaceId : "";
+      const firstWorkspaceId = lastWorkspaceId || ws[0]?.workspace_id || "";
       set({ activeWorkspaceId: firstWorkspaceId });
       if (!firstWorkspaceId) return null;
 
-      return await loadWorkspaceData(firstWorkspaceId, set, get);
+      return await loadWorkspaceData(firstWorkspaceId, set, get, last?.threadId);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "初始化加载失败。");
       return null;
@@ -215,6 +230,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set({ deletingWorkspace: true });
     try {
       await deleteWorkspaceRequest(pendingId);
+      // FR-003：联动清该工作区下全部本地会话记录（失败静默）
+      void deleteWorkspaceRecords(pendingId);
       const next = get().workspaces.filter((w) => w.workspace_id !== pendingId);
       if (pendingId === get().activeWorkspaceId) {
         set({ activeWorkspaceId: next[0]?.workspace_id || "" });
@@ -248,6 +265,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   handleSelectThread: (threadId) => {
     if (threadId === get().activeThreadId) return;
     set({ activeThreadId: threadId });
+    // FR-001：手动切换会话即记忆为上次位置
+    if (get().activeWorkspaceId) void saveLastPosition(get().activeWorkspaceId, threadId);
   },
 
   handleDeleteThread: async (threadId) => {
@@ -255,6 +274,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set({ deleting: true });
     try {
       await deleteThreadRequest(threadId);
+      // FR-003：服务器删除成功后联动清本地聊天记录（失败静默，残留按名单不存在对待）
+      const belongedWorkspace = get().threads.find((t) => t.thread_id === threadId)?.workspace_id;
       set((state) => {
         const next = state.threads.filter((thread) => thread.thread_id !== threadId);
         const patch: Partial<WorkspaceState> = { threads: next };
@@ -263,6 +284,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         }
         return patch as WorkspaceState;
       });
+      if (belongedWorkspace) void deleteThreadRecord(belongedWorkspace, threadId);
     } catch (deleteError) {
       toast.error(deleteError instanceof Error ? deleteError.message : "删除失败。");
     } finally {
@@ -325,7 +347,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
   },
 
-  setActiveThreadId: (id) => set({ activeThreadId: id }),
+  setActiveThreadId: (id) => {
+    set({ activeThreadId: id });
+    // FR-001：execution 侧落位（新会话创建等）也记忆
+    if (id && get().activeWorkspaceId) void saveLastPosition(get().activeWorkspaceId, id);
+  },
   setActiveWorkspaceId: (id) => set({ activeWorkspaceId: id }),
   setThreads: (updater) =>
     set((state) => ({
@@ -339,19 +365,25 @@ async function loadWorkspaceData(
   workspaceId: string,
   set: (partial: Partial<WorkspaceState>) => void,
   get: () => WorkspaceState,
+  preferredThreadId?: string,
 ): Promise<ContentData | null> {
   set({ bootstrapping: true } as any);
   try {
     const data = await fetchWorkspaceBootstrap(workspaceId);
-    const activeThreadId = data.threads.some((t) => t.thread_id === get().activeThreadId)
-      ? get().activeThreadId
-      : data.threads[0]?.thread_id || "";
+    // 会话选择优先级（FR-001）：上次位置的会话 > 内存中的当前会话 > 第一个会话；
+    // 仅接受仍存在于服务器名单中的 id，失效时逐级回退
+    const activeThreadId =
+      [preferredThreadId, get().activeThreadId, data.threads[0]?.thread_id]
+        .filter(Boolean)
+        .find((id) => data.threads.some((t) => t.thread_id === id)) ?? "";
 
     set({
       threads: data.threads,
       activeThreadId,
       activeWorkspaceDomain: get().workspaces.find((w) => w.workspace_id === workspaceId)?.domain || "writing",
     });
+    // FR-001：有效选择落位后记忆（回退到 threads[0] 也记，作为新的上次位置）
+    if (activeThreadId) void saveLastPosition(workspaceId, activeThreadId);
 
     const content: ContentData = {
       storylineMarkdown: data.storyline?.index_markdown || "",

@@ -3,10 +3,12 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
   finalizeEvolve,
+  getEvolveAgent,
   getEvolveMessages,
   getEvolvePoints,
   getEvolveSession,
   getEvolveSessionEventsSince,
+  getEvolveSessions,
   getLandingChannel,
   listBenchmarkBatches,
   listEvolveAgents,
@@ -19,7 +21,9 @@ import {
   type EvolvePoint,
   type EvolveSession,
 } from "@/lib/api";
+import AgentLaunchCard from "./AgentLaunchCard";
 import ConversationPanel from "./ConversationPanel";
+import NewSessionDialog from "./NewSessionDialog";
 import PointsDrawer from "./PointsDrawer";
 
 /**
@@ -72,6 +76,9 @@ export default function WorkbenchTab({
     localStorage.getItem(AGENT_STORAGE_KEY),
   );
   const [landingOccupied, setLandingOccupied] = useState(false);
+  // 「新开会话」对话框（独立组件，交互修正 2026-10-01：不依赖工作台空闲）
+  const [newSessionOpen, setNewSessionOpen] = useState(false);
+  const [hasAnySession, setHasAnySession] = useState(false);
 
   // 对话 + 进化点
   const [messages, setMessages] = useState<EvolveMessage[]>([]);
@@ -104,20 +111,27 @@ export default function WorkbenchTab({
     if (resp) setLandingOccupied(resp.occupied);
   }, []);
 
+  const refreshHasAnySession = useCallback(async () => {
+    const resp = await getEvolveSessions(1).catch(() => null);
+    if (resp) setHasAnySession(resp.total > 0);
+  }, []);
+
   useEffect(() => {
     void refreshBatches();
     void refreshAgents();
     void refreshLandingChannel();
+    void refreshHasAnySession();
     const timer = setInterval(() => {
       void refreshBatches();
       void refreshAgents();
       void refreshLandingChannel();
+      void refreshHasAnySession();
     }, 10000);
     return () => {
       clearInterval(timer);
       streamCancelRef.current?.();
     };
-  }, [refreshBatches, refreshAgents, refreshLandingChannel]);
+  }, [refreshBatches, refreshAgents, refreshLandingChannel, refreshHasAnySession]);
 
   const handleSelectAgent = useCallback((agentId: string | null) => {
     setSelectedAgentId(agentId);
@@ -189,12 +203,41 @@ export default function WorkbenchTab({
       void getEvolveSession(initialSessionId)
         .then((sess) => selectSession(sess))
         .catch(() => {
-          // session 不存在或拉取失败：静默，中栏保持启动入口态
+          // session 不存在或拉取失败：静默，交给自动定位最新会话的 effect
         });
     }
   }, [initialSessionId, initialSession, selectSession, selectedSessionId]);
 
-  // ── 在 Agent 下开新会话（DEC-002 入口统一绑作品）─────────────
+  // ── 自动定位最新会话（交互修正 2026-10-01）──────────────────
+  // 工作台常驻显示「当前会话」：无 URL 指定且尚未选中时，自动定位——
+  //   记住了 Agent → 该 Agent 最新会话；否则 → 全局最新会话。
+  // 用户从历史 Tab 选了旧会话（URL 联动）后不再自动跳（尊重显式选择）。
+  // 仅在「从未选中」时执行一次（autoFocusedRef 防轮询重复触发）。
+  const autoFocusedRef = useRef(false);
+  useEffect(() => {
+    if (initialSessionId || selectedSessionId || autoFocusedRef.current) return;
+    autoFocusedRef.current = true;
+    (async () => {
+      try {
+        if (selectedAgentId) {
+          const detail = await getEvolveAgent(selectedAgentId);
+          const latest = detail.sessions?.[0];
+          if (latest) {
+            selectSession(latest);
+            return;
+          }
+          // 该 Agent 名下无会话：保持空态（引导开新会话）
+          return;
+        }
+        const resp = await getEvolveSessions(1);
+        if (resp.sessions[0]) selectSession(resp.sessions[0]);
+      } catch {
+        // 拉取失败：保持空态，不阻断
+      }
+    })();
+  }, [initialSessionId, selectedSessionId, selectedAgentId, selectSession]);
+
+  // ── 在 Agent 下开新会话（DEC-002 入口统一绑作品；对话框发起）──
   // benchmarkBatchId 可选：附带时 Agent 把评测弱点视图作为补充证据
   async function handleStart(agentId: string, benchmarkBatchId: string | null) {
     setStarting(true);
@@ -203,11 +246,13 @@ export default function WorkbenchTab({
     setAcceptedCount(0);
     try {
       const resp = await startEvolveAgentSession(agentId, benchmarkBatchId);
+      setNewSessionOpen(false);
       setSelectedSessionId(resp.session_id);
       setSelectedStatus("running");
       toast.success(`进化已启动：${resp.session_id.slice(0, 8)}`);
       subscribeStream(resp.session_id);
       void refreshBatches();
+      void refreshHasAnySession();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "启动进化失败");
     } finally {
@@ -416,9 +461,34 @@ export default function WorkbenchTab({
   }
 
   const canFinalize = selectedStatus === "conversing" && acceptedCount >= 1;
+  const selectedAgentName =
+    agents.find((a) => a.agent_id === selectedAgentId)?.name ?? null;
 
   return (
     <div className="evolve-workbench">
+      {/* 顶部工具栏：常驻「新开会话」入口（交互修正 2026-10-01——不依赖工作台空闲） */}
+      <div className="workbench-toolbar">
+        <div className="toolbar-current">
+          {selectedSessionId ? (
+            <>
+              <span className="toolbar-label">当前会话</span>
+              <code className="session-id">{selectedSessionId.slice(0, 8)}</code>
+              {selectedAgentName && <span className="toolbar-agent">· {selectedAgentName}</span>}
+            </>
+          ) : (
+            <span className="toolbar-label muted">未选中会话（历史会话去「进化历史」取）</span>
+          )}
+        </div>
+        <button
+          type="button"
+          className="start-btn toolbar-new-btn"
+          onClick={() => setNewSessionOpen(true)}
+          disabled={starting}
+        >
+          ＋ 新开会话
+        </button>
+      </div>
+
       {/* 落地通道占用横幅（FR-003/DEC-004：聊天并行、落地排队） */}
       {landingOccupied && (
         <div className="landing-channel-banner">
@@ -432,18 +502,27 @@ export default function WorkbenchTab({
         messages={messages}
         points={points}
         agents={agents}
-        selectedAgentId={selectedAgentId}
-        batches={batches}
-        starting={starting}
+        hasAnySession={hasAnySession}
+        selectedAgentName={selectedAgentName}
         stopping={stopping}
-        landingOccupied={landingOccupied}
         highlightedPointId={highlightedPointId}
-        onSelectAgent={handleSelectAgent}
-        onAgentsChanged={() => void refreshAgents()}
-        onStart={handleStart}
+        onOpenNewSession={() => setNewSessionOpen(true)}
         onSend={handleSend}
         onStop={handleStop}
         onPointHover={setHighlightedPointId}
+      />
+
+      {/* 新开会话对话框（独立组件：Agent 选择/新建/管理 + 可选批次） */}
+      <NewSessionDialog
+        open={newSessionOpen}
+        agents={agents}
+        selectedAgentId={selectedAgentId}
+        batches={batches}
+        starting={starting}
+        onClose={() => setNewSessionOpen(false)}
+        onSelectAgent={handleSelectAgent}
+        onAgentsChanged={() => void refreshAgents()}
+        onStart={handleStart}
       />
 
       {/* 右：进化点浮窗 */}

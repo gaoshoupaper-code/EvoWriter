@@ -1,10 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type {
-  BenchmarkBatchSummary,
-  EvolveAgent,
-  EvolveMessage,
-  EvolvePoint,
-} from "@/lib/api";
+import type { EvolveAgent, EvolveMessage, EvolvePoint } from "@/lib/api";
 import AgentLaunchCard from "./AgentLaunchCard";
 import EvolveMessageBubble from "./EvolveMessageBubble";
 
@@ -12,7 +7,8 @@ import EvolveMessageBubble from "./EvolveMessageBubble";
  * 中部对话区（决策 J/K/L/X）。
  *
  * 三种视图状态：
- *   - idle（无选中会话）：显示启动入口（AgentLaunchCard——选/建进化 Agent 后开会话）
+ *   - idle（无选中会话）：空态引导卡（AgentLaunchCard——「新开会话」统一走
+ *     NewSessionDialog 独立组件，工具栏常驻可点，交互修正 2026-10-01）
  *   - conversing / running / finalizing：显示对话流 + 输入框（conversing 可输入）
  *   - terminal（published/discarded/failed/cancelled）：只读对话流
  *
@@ -31,15 +27,11 @@ interface Props {
   messages: EvolveMessage[];
   points: EvolvePoint[];
   agents: EvolveAgent[];
-  selectedAgentId: string | null;
-  batches: BenchmarkBatchSummary[];
-  starting: boolean;
+  hasAnySession: boolean;
+  selectedAgentName: string | null;
   stopping: boolean;
-  landingOccupied: boolean;
   highlightedPointId: string | null; // 来自浮窗点击
-  onSelectAgent: (agentId: string | null) => void;
-  onAgentsChanged: () => void;
-  onStart: (agentId: string, benchmarkBatchId: string | null) => void;
+  onOpenNewSession: () => void;
   onSend: (content: string) => void;
   onStop: () => void;
   onPointHover: (pointId: string | null) => void;
@@ -51,15 +43,11 @@ export default function ConversationPanel({
   messages,
   points,
   agents,
-  selectedAgentId,
-  batches,
-  starting,
+  hasAnySession,
+  selectedAgentName,
   stopping,
-  landingOccupied,
   highlightedPointId,
-  onSelectAgent,
-  onAgentsChanged,
-  onStart,
+  onOpenNewSession,
   onSend,
   onStop,
   onPointHover,
@@ -90,18 +78,14 @@ export default function ConversationPanel({
     return () => clearTimeout(timer);
   }, [highlightedPointId, messages, onPointHover]);
 
-  // ── idle 视图：启动入口（Agent 选择 + 开会话）──────────────
+  // ── idle 视图：空态引导（开新会话走独立组件 NewSessionDialog）──
   if (!selectedSessionId) {
     return (
       <AgentLaunchCard
         agents={agents}
-        selectedAgentId={selectedAgentId}
-        batches={batches}
-        starting={starting}
-        landingOccupied={landingOccupied}
-        onSelectAgent={onSelectAgent}
-        onAgentsChanged={onAgentsChanged}
-        onStart={onStart}
+        hasAnySession={hasAnySession}
+        selectedAgentName={selectedAgentName}
+        onOpenNewSession={onOpenNewSession}
       />
     );
   }

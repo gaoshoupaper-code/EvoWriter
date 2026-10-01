@@ -13050,3 +13050,39 @@ html[data-theme="dark"] .point-chosen { color: var(--teal); }
 .session-list.archived .session-item { opacity: 0.72; }
 /* 横幅插在两栏之上时，工作台网格改为两行（横幅行 + 内容行） */
 .evolve-workbench { grid-template-rows: auto minmax(0, 1fr); }
+
+/* 工作台顶部工具栏（交互修正 2026-10-01：常驻「新开会话」入口） */
+.workbench-toolbar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+.toolbar-current {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+  color: var(--muted);
+  min-width: 0;
+}
+.toolbar-current .session-id { font-size: 11.5px; }
+.toolbar-agent { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toolbar-label.muted { font-size: 12px; }
+.toolbar-new-btn { padding: 6px 14px; font-size: 13px; white-space: nowrap; }
+
+/* 对话框内的 Agent 选择行（下拉 + 管理动作） */
+.agent-picker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.agent-picker-row select { flex: 1; min-width: 0; }
+.agent-picker-actions { display: inline-flex; gap: 8px; white-space: nowrap; }
+
+/* 嵌套对话框（新建 Agent 二级弹层）压在上层 */
+.modal-overlay.nested { z-index: 70; }

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import BlueprintTab from "@/components/evolve/BlueprintTab";
 import HistoryTab from "@/components/evolve/HistoryTab";
 import WorkbenchTab from "@/components/evolve/WorkbenchTab";
@@ -29,6 +29,7 @@ const VALID_TABS: ReadonlySet<Tab> = new Set(["workbench", "history", "blueprint
 
 export default function EvolvePage() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
 
   // tab：非法值兜底 workbench
   const tabParam = searchParams.get("tab");
@@ -80,6 +81,14 @@ export default function EvolvePage() {
     [setSearchParams],
   );
 
+  // HistoryTab 待审查行「去审查发布」→ 直跳审查报告页（发布/丢弃入口）
+  const openReviewFromHistory = useCallback(
+    (session: EvolveSession) => {
+      navigate(`/evolve/${session.session_id}/review`);
+    },
+    [navigate],
+  );
+
   return (
     <div className="evolve-page">
       <nav className="evolve-tabs" role="tablist">
@@ -119,7 +128,9 @@ export default function EvolvePage() {
             initialSession={initialSession}
           />
         )}
-        {tab === "history" && <HistoryTab onSelect={selectFromHistory} />}
+        {tab === "history" && (
+          <HistoryTab onSelect={selectFromHistory} onReview={openReviewFromHistory} />
+        )}
         {tab === "blueprint" && <BlueprintTab />}
       </div>
     </div>

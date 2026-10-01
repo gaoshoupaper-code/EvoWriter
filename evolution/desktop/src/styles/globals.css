@@ -10877,6 +10877,21 @@ html[data-theme="dark"] .recommendation-body { color: var(--teal); }
 .composer-input:focus { outline: 2px solid var(--teal); outline-offset: -1px; }
 .composer-input:disabled { opacity: 0.6; cursor: not-allowed; }
 
+/* 待审查行动条（composer 区替换态）与历史行审查按钮——落地完成后常驻发布入口 */
+.review-cta-note { flex: 1; align-self: center; font-size: 13px; color: var(--muted); }
+.history-review-btn {
+  margin-left: auto;
+  padding: 3px 10px;
+  font-size: 12px;
+  border: 1px solid var(--teal);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--teal);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.history-review-btn:hover { background: color-mix(in srgb, var(--teal) 12%, transparent); }
+
 .send-btn {
   padding: 0 18px;
   border: none;

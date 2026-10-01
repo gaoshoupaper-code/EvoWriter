@@ -549,6 +549,11 @@ export default function WorkbenchTab({
         highlightedPointId={highlightedPointId}
         activity={activity}
         onOpenNewSession={() => setNewSessionOpen(true)}
+        onOpenReview={
+          selectedSessionId
+            ? () => navigate(`/evolve/${selectedSessionId}/review`)
+            : undefined
+        }
         onSend={handleSend}
         onStop={handleStop}
         onPointHover={setHighlightedPointId}

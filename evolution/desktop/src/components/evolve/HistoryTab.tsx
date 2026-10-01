@@ -36,8 +36,10 @@ function formatTime(iso: string): string {
 
 export default function HistoryTab({
   onSelect,
+  onReview,
 }: {
   onSelect: (session: EvolveSession) => void;
+  onReview: (session: EvolveSession) => void;
 }) {
   const [sessions, setSessions] = useState<EvolveSession[]>([]);
   const [loading, setLoading] = useState(true);
@@ -115,6 +117,19 @@ export default function HistoryTab({
                       <span className={`session-status-label status-${s.status}`}>
                         {s.status}
                       </span>
+                      {/* 待审查：常驻审查入口（发布/丢弃在审查报告页，线上发现 2026-10-01） */}
+                      {s.status === "pending_review" && (
+                        <button
+                          type="button"
+                          className="history-review-btn"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onReview(s);
+                          }}
+                        >
+                          去审查发布
+                        </button>
+                      )}
                     </div>
                     <time className="session-time">{formatTime(s.created_at)}</time>
                   </li>

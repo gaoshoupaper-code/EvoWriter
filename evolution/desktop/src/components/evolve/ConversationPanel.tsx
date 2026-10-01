@@ -33,6 +33,7 @@ interface Props {
   highlightedPointId: string | null; // 来自浮窗点击
   activity: { label: string; at: number } | null; // FR-005 运行中活动信号（父层已做过期隐藏）
   onOpenNewSession: () => void;
+  onOpenReview?: () => void; // 待审查时跳审查报告页（发布/丢弃入口）
   onSend: (content: string) => void;
   onStop: () => void;
   onPointHover: (pointId: string | null) => void;
@@ -50,6 +51,7 @@ export default function ConversationPanel({
   highlightedPointId,
   activity,
   onOpenNewSession,
+  onOpenReview,
   onSend,
   onStop,
   onPointHover,
@@ -95,6 +97,7 @@ export default function ConversationPanel({
   // ── 对话视图 ────────────────────────────────────────────────
   const isConversing = status === "conversing";
   const isRunning = status === "running" || status === "finalizing";
+  const isPendingReview = status === "pending_review";
   const isTerminal =
     status === "published" ||
     status === "discarded" ||
@@ -182,31 +185,43 @@ export default function ConversationPanel({
         )}
       </div>
 
-      <footer className="composer">
-        <textarea
-          className="composer-input"
-          placeholder={
-            canInput
-              ? "和 Agent 讨论改进点…（Enter 发送，Shift+Enter 换行）"
-              : isTerminal
-                ? "会话已结束"
-                : "Agent 正在工作，请稍候…"
-          }
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={!canInput}
-          rows={2}
-        />
-        <button
-          type="button"
-          className="send-btn"
-          onClick={handleSend}
-          disabled={!canInput || sending || !input.trim()}
-        >
-          {sending ? "发送中…" : "发送"}
-        </button>
-      </footer>
+      {/* 待审查：composer 换成审查行动条（发布/丢弃入口在审查报告页）。
+          自动跳转只在落地结束那一瞬触发一次，错过就没有入口（线上发现 2026-10-01），
+          这里给 pending_review 一个常驻入口 */}
+      {isPendingReview && onOpenReview ? (
+        <footer className="composer review-cta">
+          <span className="review-cta-note">落地已完成，等待人工审查后发布</span>
+          <button type="button" className="send-btn" onClick={onOpenReview}>
+            查看审查报告并发布 →
+          </button>
+        </footer>
+      ) : (
+        <footer className="composer">
+          <textarea
+            className="composer-input"
+            placeholder={
+              canInput
+                ? "和 Agent 讨论改进点…（Enter 发送，Shift+Enter 换行）"
+                : isTerminal
+                  ? "会话已结束"
+                  : "Agent 正在工作，请稍候…"
+            }
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={!canInput}
+            rows={2}
+          />
+          <button
+            type="button"
+            className="send-btn"
+            onClick={handleSend}
+            disabled={!canInput || sending || !input.trim()}
+          >
+            {sending ? "发送中…" : "发送"}
+          </button>
+        </footer>
+      )}
     </section>
   );
 }

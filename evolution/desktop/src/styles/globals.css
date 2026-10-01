@@ -462,13 +462,11 @@ a {
   transform: translateX(16px);
 }
 
-.conversation-panel {
-  min-height: calc(100vh - 77px);
-  max-height: calc(100vh - 77px);
-  display: grid;
-  grid-template-rows: auto 1fr auto;
-  overflow: hidden;
-}
+/* 旧「对话面板」规则已删除（线上发现 2026-10-01）：min/max-height: calc(100vh-77px)
+   是给已废弃的旧版整页布局写的。进化工作台复用同名 class 后，这个视口级最小高度
+   恒大于工作台可用空间（Tab 条+工具栏+页内边距远超 77px），把对话面板顶爆容器，
+   底部输入框被 overflow:hidden 裁掉——窗口不够高时输入框整体消失。
+   现行规则见下方 .evolve-workbench 区段的 .conversation-panel（height:100%）。 */
 
 .content-panel {
   min-height: calc(100vh - 77px);
@@ -10470,6 +10468,7 @@ html[data-theme="dark"] .blueprint-body h1 { color: var(--teal); }
   height: 100%;
   min-width: 0;
   background: var(--bg);
+  overflow: hidden;
 }
 
 .conversation-panel.idle {

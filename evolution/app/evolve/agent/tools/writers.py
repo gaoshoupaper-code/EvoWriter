@@ -22,6 +22,7 @@ from __future__ import annotations
 import difflib
 import logging
 import re
+from typing import Any
 
 from langchain_core.tools import tool
 
@@ -95,7 +96,10 @@ def make_writer_tools(backend) -> list:
 
         写入 harness 包的 middleware/ 目录。文件必须是符合 DeepAgent
         AgentMiddleware 规范的 Python 代码（含 state_schema / hook / 返回 dict）。
-        仅用于新建——文件已存在请用 edit_source。
+        **写码前先调 inspect_middleware_protocol 查框架 hook 真实签名**——
+        hook 参数名必须与基类完全一致（框架按参数名注入，参数名错 →
+        运行时 TypeError）；签名错误过不了 validate_changes，发布侧 probe
+        也会拦。仅用于新建——文件已存在请用 edit_source。
 
         Args:
             name: 文件名（不含 .py 后缀，如 "pacing"）
@@ -138,6 +142,10 @@ def make_writer_tools(backend) -> list:
         result = backend.write(virt_path, content)
         if result.error:
             return f"写入失败（{result.error}）。如果文件已存在，请用 edit_source 修改。"
+        # 技能可携带 .py 脚本——源码落盘同样计入未校验计数（DEC-003），
+        # 防止 validate 之后写脚本绕过重新校验（review 对抗轮发现）
+        if virt_path.endswith(".py"):
+            ctx.code_mutations_since_validate += 1
         ctx.emit_step("write_skill", "done", path=virt_path)
         return f"技能文件已创建：{virt_path}"
 
@@ -198,6 +206,9 @@ def make_writer_tools(backend) -> list:
             hint = _build_edit_failure_hint(backend, virt_path, old_string)
             joined = f"{result.error}\n\n{hint}" if hint else result.error
             return f"编辑失败（{file_path}）：{joined}"
+        # 源码编辑计入未校验落盘（DEC-003：validate 后改码必须重新校验）
+        if virt_path.endswith(".py"):
+            ctx.code_mutations_since_validate += 1
         ctx.emit_step("edit_source", "done", path=virt_path, occurrences=result.occurrences)
         return f"已编辑 {file_path}（替换 {result.occurrences} 处）"
 
@@ -219,8 +230,17 @@ def _write_element(backend, subdir: str, name: str, suffix: str, content: str, l
         return (
             f"写入失败（{result.error}）。如果文件已存在，请用 edit_source 修改已有文件。"
         )
+    _track_code_mutation(ctx, suffix)
     ctx.emit_step(f"write_{label}", "done", path=virt_path)
     return f"{label}文件已创建：{virt_path}"
+
+
+def _track_code_mutation(ctx: Any, suffix: str) -> None:
+    """源码落盘计数（REQ-20261001-225509 DEC-003）：validate 之后的新代码
+    必须重新校验才能写 change_log。只计 .py——提示词等非代码不影响
+    hook/语法校验结果。"""
+    if suffix == ".py":
+        ctx.code_mutations_since_validate += 1
 
 
 # edit_source 失败时附带的上下文窗口大小（匹配行 ±N 行）

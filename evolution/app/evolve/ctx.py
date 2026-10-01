@@ -118,6 +118,15 @@ class EvolveContext:
         self.design_doc_path: str = ""
         self.change_log_path: str = ""
 
+        # hook 签名硬门状态（REQ-20261001-225509 FR-001/FR-004）：
+        #   validation_result            validate_changes 最近一次真实结果
+        #                                （None=未跑）。change_log 回填依据。
+        #   code_mutations_since_validate 上次 validate 之后的 .py 落盘次数。
+        #                                >0 = 有新代码未经校验，FlowGuard 拦
+        #                                write_change_log（DEC-003 强制门）。
+        self.validation_result: dict[str, Any] | None = None
+        self.code_mutations_since_validate: int = 0
+
         # 对话式共创（决策 T1.3）：
         # session_status 是 6+态机状态的运行时缓存。FlowGuard 中间件据此判断
         # 当前阶段、决定是否拦截落地工具（决策 T9）。Agent 工具只读不写——

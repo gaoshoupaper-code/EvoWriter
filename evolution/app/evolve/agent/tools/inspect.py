@@ -1,10 +1,11 @@
-"""探查工具（只读，4 个）——给进化 Agent 要素认知能力（决策 S2/S8）。
+"""探查工具（只读，5 个）——给进化 Agent 要素认知能力（决策 S2/S8）。
 
 工具：
-  - list_elements()          列出 harness 包八要素的当前文件清单
-  - read_source(path)        读任意要素源码全文
-  - inspect_state_schema()   查 DeepAgent State 字段结构（硬编码文档）
-  - read_assemble()          读 assemble() 装配入口源码
+  - list_elements()                  列出 harness 包八要素的当前文件清单
+  - read_source(path)                读任意要素源码全文
+  - inspect_state_schema()           查 DeepAgent State 字段结构（硬编码文档）
+  - read_assemble()                  读 assemble() 装配入口源码
+  - inspect_middleware_protocol()    查框架 hook 真实签名（REQ-20261001-225509）
 
 这些工具让 Agent 动态探查"当前包里实际有什么"——system prompt 里的全景
 是抽象知识，实际文件清单是动态的，靠这些工具按需查。
@@ -17,12 +18,13 @@ from typing import Any
 from langchain_core.tools import tool
 
 from app.core.settings import settings
+from app.evolve.hook_protocol import format_hook_table
 
 logger = logging.getLogger("evolution.evolve.agent.tools.inspect")
 
 
 def make_inspect_tools() -> list:
-    """构建探查工具集（4 个，只读）。"""
+    """构建探查工具集（5 个，只读）。"""
 
     @tool
     def list_elements() -> str:
@@ -125,7 +127,30 @@ def make_inspect_tools() -> list:
         except Exception as e:
             return f"读取 assemble 失败：{e}"
 
-    return [list_elements, read_source, inspect_state_schema, read_assemble]
+    @tool
+    def inspect_middleware_protocol() -> str:
+        """查看框架 AgentMiddleware 全部可覆写 hook 的真实签名（动态内省）。
+
+        **写/改中间件前必须先查本工具**：hook 参数名必须与基类完全一致——
+        框架按参数名注入（如 after_model 收 (state, runtime)），参数名写错
+        （如写成 response）→ 运行时 TypeError、trace 报废。
+        签名校验是硬门：validate_changes 与发布侧 probe 都会逐 hook 比对，
+        不一致直接拦。
+
+        Returns:
+            全部可覆写 hook 清单（签名表）+ 当前环境框架版本号。
+        """
+        try:
+            return format_hook_table()
+        except Exception as e:
+            # FR-002 失败语义：明确报错，不静默（环境异常非 Agent 过错）
+            return (
+                f"错误：无法内省框架 AgentMiddleware 协议（{e}）。"
+                f"这是运行环境异常（langchain 不可导入），不是你的问题——"
+                f"请如实告知用户，不要凭记忆猜 hook 签名。"
+            )
+
+    return [list_elements, read_source, inspect_state_schema, read_assemble, inspect_middleware_protocol]
 
 
 # ── State schema 硬编码文档（S8）──────────────────────────────────

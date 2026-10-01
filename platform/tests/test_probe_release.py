@@ -51,6 +51,115 @@ def test_probe_rejected_when_commit_not_in_bare(client):
     assert resp.json()["status"] == "rejected"
 
 
+# ── hook 签名硬门（REQ-20261001-225509 FR-001 / AC-004）────────────
+
+
+def _add_bad_hook_middleware(work):
+    """塞进一个错签名中间件：aafter_model 写成 (state, response)——
+    2026-10-01 线上事故 review_gate 的原样签名。"""
+    (work / "middleware" / "bad_hook.py").write_text(
+        "from langchain.agents.middleware.types import AgentMiddleware\n"
+        "\n"
+        "\n"
+        "class BadHookMiddleware(AgentMiddleware):\n"
+        "    async def aafter_model(self, state, response):\n"
+        "        return None\n",
+        encoding="utf-8",
+    )
+
+
+def test_probe_rejected_when_hook_signature_mismatch(client, harness_git):
+    bad = harness_git.commit("bad hook signature", mutate=_add_bad_hook_middleware)
+    resp = client.post("/api/release/probe", json={"source_commit": bad})
+    assert resp.status_code == 200  # 门禁拒绝是正常业务结果，不是 5xx
+    body = resp.json()
+    assert body["status"] == "rejected"
+    reason = body["reason"]
+    # AC-004 三要素：类名 + hook 名 + 正确签名
+    assert "BadHookMiddleware" in reason
+    assert "aafter_model" in reason
+    assert "runtime" in reason
+
+
+def _add_mixin_middleware(work):
+    """review 对抗轮实测绕过形态：错签名 hook 在 mixin 里，使用者不直接覆写。"""
+    (work / "middleware" / "mixin_gate.py").write_text(
+        "from langchain.agents.middleware.types import AgentMiddleware\n"
+        "\n"
+        "\n"
+        "class BadHookMixin(AgentMiddleware):\n"
+        "    async def aafter_model(self, state, response):\n"
+        "        return None\n"
+        "\n"
+        "\n"
+        "class UsesMixinMiddleware(BadHookMixin):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+
+
+def test_probe_rejected_when_mixin_inherits_bad_hook(client, harness_git):
+    bad = harness_git.commit("mixin bad hook", mutate=_add_mixin_middleware)
+    resp = client.post("/api/release/probe", json={"source_commit": bad})
+    body = resp.json()
+    assert body["status"] == "rejected"
+    # 共享 mixin 函数按函数去重只报一次，落在定义类（BadHookMixin）或
+    # 使用类（UsesMixinMiddleware）名下均可——关键是被拦且三要素齐全
+    reason = body["reason"]
+    assert ("BadHookMixin" in reason) or ("UsesMixinMiddleware" in reason)
+    assert "aafter_model" in reason
+    assert "runtime" in reason
+
+
+_BAD_HOOK_OUTSIDE_MIDDLEWARE_INIT = '''\
+"""mixin 定义在包根目录（非 middleware/）——考验包子模块级扫描。"""
+from contracts.runtime_context import RuntimeContext
+
+from .middleware.uses_mixin import UsesRootMixinMiddleware
+
+
+def assemble(ctx: RuntimeContext):
+    return {"assembled": True, "model": type(ctx.model).__name__}
+'''
+
+
+def _add_root_mixin_package(work):
+    """坏签名 hook 定义在包根的 mixin 模块里，middleware/ 下只有干净的
+    使用者——目录扫描 ① 够不到 mixin，必须靠装配后包子模块扫描 ② 拦截。"""
+    (work / "bad_root_mixin.py").write_text(
+        "from langchain.agents.middleware.types import AgentMiddleware\n"
+        "\n"
+        "\n"
+        "class RootBadHookMixin(AgentMiddleware):\n"
+        "    async def aafter_model(self, state, response):\n"
+        "        return None\n",
+        encoding="utf-8",
+    )
+    (work / "middleware" / "uses_mixin.py").write_text(
+        "from ..bad_root_mixin import RootBadHookMixin\n"
+        "\n"
+        "\n"
+        "class UsesRootMixinMiddleware(RootBadHookMixin):\n"
+        "    pass\n",
+        encoding="utf-8",
+    )
+    (work / "__init__.py").write_text(
+        _BAD_HOOK_OUTSIDE_MIDDLEWARE_INIT, encoding="utf-8",
+    )
+
+
+def test_probe_rejected_when_bad_hook_outside_middleware_dir(client, harness_git):
+    """坏签名 hook 定义在包根（非 middleware/）：目录扫描够不到 mixin，
+    必须靠装配后的包子模块级扫描拦截。"""
+    bad = harness_git.commit("root mixin bad hook", mutate=_add_root_mixin_package)
+    resp = client.post("/api/release/probe", json={"source_commit": bad})
+    body = resp.json()
+    assert body["status"] == "rejected"
+    reason = body["reason"]
+    assert ("UsesRootMixinMiddleware" in reason) or ("RootBadHookMixin" in reason)
+    assert "aafter_model" in reason
+
+
 def _rewrite_init(text: str):
     """构造 mutate：整包替换 __init__.py 为指定源码。"""
 

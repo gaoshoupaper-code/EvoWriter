@@ -200,7 +200,9 @@ def write_change_log(
           "design_ref": 1  # 对应 design_doc.changes 的序号（1-based，关联方案条目）
         }
     validation schema：
-        {"passed": bool, "config_valid": bool, "import_ok": bool, "errors": [str]}
+        {"passed": bool, "status": "passed|failed|not_run", "errors": [str]}
+        （status 为 REQ-20261001-225509 FR-004 新增三态；旧字段 config_valid/
+        import_ok 不再使用）
     """
     path = session_dir(session_id) / "change_log.md"
     meta = {
@@ -210,8 +212,20 @@ def write_change_log(
         "validation": validation,
     }
     lines = ["# 执行改动记录", "", summary, ""]
-    lines.append(f"## 校验结果：{'通过' if validation.get('passed') else '失败'}")
+    # REQ-20261001-225509 FR-004：三态如实渲染——未跑过校验不再是默认「通过」。
+    _v_status = validation.get("status")
+    if _v_status == "not_run":
+        verdict = "未校验"
+    elif validation.get("passed"):
+        verdict = "通过"
+    else:
+        verdict = "失败"
+    lines.append(f"## 校验结果：{verdict}")
     lines.append("")
+    if validation.get("errors"):
+        for err in validation["errors"]:
+            lines.append(f"- {err}")
+        lines.append("")
     if applied:
         lines.append("## 落地清单")
         lines.append("")

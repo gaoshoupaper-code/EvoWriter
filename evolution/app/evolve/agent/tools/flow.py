@@ -23,6 +23,12 @@ from pydantic import BaseModel, Field
 from app.core.settings import settings
 from app.evolve import docs
 from app.evolve.ctx import get_tool_context
+# hook 校验必须在模块加载期绑定（review 对抗轮发现：函数体内延迟 import 发生在
+# _import_check_all exec 被检代码之后，被检代码可先 monkeypatch 校验函数拆门）。
+from app.evolve.hook_protocol import (
+    check_hook_signatures,
+    collect_middleware_classes_from_dir,
+)
 
 logger = logging.getLogger("evolution.evolve.agent.tools.flow")
 
@@ -161,9 +167,13 @@ def make_flow_tools() -> list:
           1. py_compile：harness 包内所有 .py 文件无语法错误。
           2. import 检查：尝试 import 改动过的模块，捕获运行时错误
              （如引用不存在的模块、类定义错误）。
+          3. hook 签名硬校验：中间件覆写 hook 的参数名必须与框架基类
+             完全一致（框架按参数名注入，参数名错 → 运行时 TypeError）。
+             写中间件前先调 inspect_middleware_protocol 查真实签名。
 
         如果校验失败，按错误信息修复后重新校验。
-        **建议最多调用 2 次**——若 2 次仍失败，如实写 change_log 收尾。
+        **建议最多调用 2 次**——若 2 次仍失败，如实写 change_log 收尾
+        （失败清单会如实记入 change_log 的校验结果，发布侧 probe 也会拦）。
         """
         ctx = get_tool_context()
         if ctx is None:
@@ -192,8 +202,22 @@ def make_flow_tools() -> list:
         #    __init__ 签名必须接受构造调用传的 kwargs。拦截签名漂移。
         _middleware_signature_check(pkg_root, errors)
 
+        # 4. hook 签名硬校验（REQ-20261001-225509 FR-001）：覆写 hook 的参数名
+        #    必须与基类一致（框架按参数名注入，错名 → 运行时 TypeError）。
+        #    逐文件直载 middleware/ 目录（绕开包 __init__ 的重 import）。
+        #    校验函数是模块顶部绑定的引用，不在此处延迟 import。
+        hook_errors = check_hook_signatures(
+            collect_middleware_classes_from_dir(pkg_root / "middleware")
+        )
+        errors.extend(hook_errors)
+
         # passed 只看真错误：env_diffs 是环境差异，不阻塞 FlowGuard
         passed = len(errors) == 0
+        # FR-004 / DEC-003：真实结果落 ctx——change_log 回填依据 +
+        # FlowGuard 强制门依据（跑过即解锁 change_log，失败也放行收尾，
+        # 失败清单如实传导，DEC-005）。
+        ctx.validation_result = {"passed": passed, "errors": list(errors)}
+        ctx.code_mutations_since_validate = 0
         ctx.emit_step(
             "validate_changes", "done" if passed else "failed",
             passed=passed, errors=len(errors), env_diffs=len(env_diffs),
@@ -221,6 +245,9 @@ def make_flow_tools() -> list:
             applied: 已落地改动列表。每条含 target/action/result/detail/design_ref
               （design_ref 对应 design_doc 改动清单的序号，1-based）。
             summary: 自然语言总述（落地了什么、是否通过校验）
+
+        校验结果由工具侧回填（REQ-20261001-225509 FR-004）——validate_changes
+        最近一次真实结果：通过 / 失败清单 / 未校验，三态如实记录。
         """
         ctx = get_tool_context()
         if ctx is None:
@@ -229,7 +256,8 @@ def make_flow_tools() -> list:
         try:
             # 转 list[dict] 传给 docs 层（落盘契约不变）
             applied_dicts: list[dict[str, Any]] = [a.model_dump() for a in applied]
-            validation = {"passed": True, "errors": []}
+            # FR-004：回填真实校验结果（未跑 → 如实记未校验，不再硬编码通过）
+            validation = _current_validation_payload(ctx)
             path = docs.write_change_log(
                 ctx.session_id,
                 applied=applied_dicts,
@@ -249,6 +277,30 @@ def make_flow_tools() -> list:
 
 
 # ── import 检查辅助 ─────────────────────────────────────────────
+
+
+def _current_validation_payload(ctx: Any) -> dict[str, Any]:
+    """change_log 的校验结果回填（REQ-20261001-225509 FR-004）。
+
+    从 ctx 读 validate_changes 最近一次真实结果，三态如实返回：
+      - 跑过且通过   {"passed": True,  "status": "passed",  "errors": []}
+      - 跑过但失败   {"passed": False, "status": "failed",  "errors": [...]}
+      - 从未跑过     {"passed": False, "status": "not_run", "errors": [...]}
+    （「未跑」理论上已被 FlowGuard 拦截，此处是双保险——绝不默认通过。）
+    """
+    result = getattr(ctx, "validation_result", None)
+    if not result:
+        return {
+            "passed": False,
+            "status": "not_run",
+            "errors": ["未执行 validate_changes（FlowGuard 应已拦截，此为双保险记录）"],
+        }
+    passed = bool(result.get("passed"))
+    return {
+        "passed": passed,
+        "status": "passed" if passed else "failed",
+        "errors": list(result.get("errors") or []),
+    }
 
 
 # harness 包运行在 executor 进程，会 import executor 私有的框架包

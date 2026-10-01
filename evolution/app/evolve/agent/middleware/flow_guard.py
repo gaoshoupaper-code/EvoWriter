@@ -9,8 +9,10 @@
      finalizing 状态下解锁全部工具。
      这保证"未拍板不改码"是硬约束，不靠提示词自律。
 
-  ② 产出依赖（决策 S4，沿用原 FlowGuard 逻辑）：
-     write_change_log 前必须有 design_doc（审查链路依赖）。
+  ② 产出依赖（决策 S4 + REQ-20261001-225509 DEC-003/005）：
+     write_change_log 前必须有 design_doc，且必须跑过 validate_changes
+     （跑过之后又写新源码 → 必须重新校验）。校验失败不拦收尾——失败清单
+     如实进 change_log，发布侧 probe 兜底。
      design_doc + change_log 都齐才放行 Agent 结束（防漏产出）。
 
 阶段判定：从 EvolveContext.session_status 读（conversing/finalizing/running 等）。
@@ -94,11 +96,18 @@ class FlowGuardMiddleware(AgentMiddleware):
             )
         return None
 
-    # ── 产出依赖（决策 S4，原 FlowGuard 逻辑保留）──────────────────
+    # ── 产出依赖（决策 S4 + REQ-20261001-225509 DEC-003 强制门）──────
 
     @staticmethod
     def _check_change_log_guard() -> str | None:
-        """检查 write_change_log 前置条件。返回违规描述，None 表示合规。"""
+        """检查 write_change_log 前置条件。返回违规描述，None 表示合规。
+
+        前置条件（按序）：
+          1. design_doc 已产出（决策 S4，审查链路依赖）。
+          2. validate_changes 已跑过且其后没有新的源码落盘（DEC-003 强制门）。
+             校验失败不拦——失败清单会如实进 change_log，发布侧 probe 兜底
+             （DEC-005 放行收尾语义）。
+        """
         from app.evolve.ctx import get_tool_context
         ctx = get_tool_context()
         if ctx is None:
@@ -107,6 +116,19 @@ class FlowGuardMiddleware(AgentMiddleware):
             return (
                 "write_change_log 前必须先产出 design_doc（调用 write_design_doc）。"
                 "审查链路依赖 design_doc，请先完成方案设计。"
+            )
+        if ctx.validation_result is None:
+            return (
+                "write_change_log 前必须先调用 validate_changes 校验源码"
+                "（语法 + import + hook 签名）。校验失败也允许收尾——"
+                "失败清单会如实记入 change_log；但没跑过校验不能收尾。"
+                "请先调用 validate_changes。"
+            )
+        if ctx.code_mutations_since_validate > 0:
+            return (
+                f"上次 validate_changes 之后又有 {ctx.code_mutations_since_validate} 次"
+                f"源码落盘未重新校验。请再次调用 validate_changes 覆盖最终代码，"
+                f"然后才能写 change_log。"
             )
         return None
 

@@ -71,6 +71,144 @@ def _load_package(pkg_path: Path, mod_name: str):
     return mod
 
 
+def _check_hook_signatures(checkout: Path, mod_prefix: str = "") -> str | None:
+    """hook 签名硬门（REQ-20261001-225509 FR-001 发布侧兜底，DEC-002）。
+
+    与 evolution 侧 hook_protocol.check_hook_signatures 同构：覆写 hook 的
+    参数名必须与 AgentMiddleware 基类完全一致（框架按参数名注入，参数名错
+    → 运行时 TypeError）。probe 跑 executor 同环境，比对基线即真正执行
+    代码的框架版本——Agent 侧校验被跳过/版本漂移时这里是权威门。
+
+    覆写解析沿 MRO 找第一个非框架定义（mixin 继承的错签名 hook 同拦），
+    解包 staticmethod/classmethod 后比对；仅 **kwargs 算合法宽松写法。
+
+    扫描面（mod_prefix 为已加载包名时取并集，按类名去重）：
+      ① middleware/ 目录逐文件直载——未挂载的孤儿文件同样是隐患
+      ② 已加载包的全部子模块——subagents/tools 等目录定义、被 __init__
+         import 的中间件类（evolution 侧因缺 executor 私有包扫不到）
+
+    Returns:
+        违规描述（拒绝理由），None 表示通过。
+    """
+    import importlib.util
+    import inspect
+    import types
+
+    from langchain.agents.middleware.types import AgentMiddleware
+
+    framework_prefixes = ("langchain", "langgraph", "deepagents")
+    base_hooks = {
+        name: inspect.signature(obj)
+        for name, obj in vars(AgentMiddleware).items()
+        if not name.startswith("_") and inspect.isfunction(obj)
+    }
+    # 仅 **kwargs 豁免：框架按参数名注入，*args-only 收不到注入参数
+    loose_kind = inspect.Parameter.VAR_KEYWORD
+
+    def _is_framework_base(klass) -> bool:
+        mod = getattr(klass, "__module__", "") or ""
+        return any(
+            mod == p or mod.startswith(p + ".") for p in framework_prefixes
+        )
+
+    def _effective_override(klass, hook_name):
+        for base in klass.__mro__:
+            if base is object or _is_framework_base(base):
+                continue
+            fn = base.__dict__.get(hook_name)
+            if fn is not None:
+                return fn
+        return None
+
+    def _check_class(obj, errors, seen_fn_ids) -> None:
+        for hook, base_sig in base_hooks.items():
+            override = _effective_override(obj, hook)
+            if override is None:
+                continue
+            if isinstance(override, (staticmethod, classmethod)):
+                override = override.__func__
+            if not inspect.isfunction(override):
+                continue
+            if id(override) in seen_fn_ids:
+                continue
+            sub_sig = inspect.signature(override)
+            if any(p.kind is loose_kind for p in sub_sig.parameters.values()):
+                continue
+            base_params = [p for p in base_sig.parameters if p != "self"]
+            sub_params = [p for p in sub_sig.parameters if p != "self"]
+            if sub_params != base_params:
+                seen_fn_ids.add(id(override))
+                errors.append(
+                    f"{obj.__name__}.{hook} 参数应为 {base_params}，"
+                    f"实际 {sub_params}"
+                )
+
+    errors: list[str] = []
+    seen_fn_ids: set[int] = set()
+    seen_class_names: set[str] = set()
+    mw_dir = checkout / "middleware"
+
+    # ① middleware/ 目录直载（合成父包解析相对 import）
+    if mw_dir.is_dir():
+        parent_name = "platform_probe_hook_check"
+        parent = types.ModuleType(parent_name)
+        parent.__path__ = [str(mw_dir)]
+        sys.modules[parent_name] = parent
+        try:
+            for py in sorted(mw_dir.glob("*.py")):
+                if py.name.startswith("__"):
+                    continue
+                mod_name = f"{parent_name}.{py.stem}"
+                spec = importlib.util.spec_from_file_location(mod_name, py)
+                if spec is None or spec.loader is None:
+                    continue
+                mod = importlib.util.module_from_spec(spec)
+                sys.modules[mod_name] = mod
+                try:
+                    spec.loader.exec_module(mod)
+                except Exception:
+                    sys.modules.pop(mod_name, None)
+                    continue  # import 失败的文件由装配阶段暴露
+                for obj in vars(mod).values():
+                    if not (
+                        isinstance(obj, type)
+                        and issubclass(obj, AgentMiddleware)
+                        and obj is not AgentMiddleware
+                        and obj.__module__ == mod_name
+                    ):
+                        continue
+                    seen_class_names.add(obj.__name__)
+                    _check_class(obj, errors, seen_fn_ids)
+        finally:
+            for name in [
+                n for n in sys.modules
+                if n == parent_name or n.startswith(parent_name + ".")
+            ]:
+                sys.modules.pop(name, None)
+
+    # ② 已加载包的全部子模块（mod_prefix 非空时）——扫 subagents/tools
+    #    等目录定义且被装配链 import 的中间件类
+    if mod_prefix:
+        for mod_name, mod in list(sys.modules.items()):
+            if mod is None or not mod_name.startswith(mod_prefix + "."):
+                continue
+            for obj in vars(mod).values():
+                if not (
+                    isinstance(obj, type)
+                    and issubclass(obj, AgentMiddleware)
+                    and obj is not AgentMiddleware
+                    and obj.__module__ == mod_name
+                ):
+                    continue
+                if obj.__name__ in seen_class_names:
+                    continue  # ① 已查过同一类（目录直载副本）
+                _check_class(obj, errors, seen_fn_ids)
+
+    if errors:
+        return "hook 签名不匹配：" + "; ".join(dict.fromkeys(errors))
+    return None
+
+
 def main() -> int:
     import subprocess
     import tempfile
@@ -125,6 +263,11 @@ def main() -> int:
         ]
         if real_changes:
             return _reject(f"candidate {commit} 装配后 checkout 不干净（包有副作用）")
+        # hook 签名硬门放在装配后：此时装配链 import 的全部子模块都在
+        # sys.modules 里，扫描面取「middleware 目录直载 ∪ 包子模块」并集。
+        hook_violation = _check_hook_signatures(checkout, module_name)
+        if hook_violation:
+            return _reject(f"candidate {commit} {hook_violation}")
         print(json.dumps({
             "status": "ready",
             "identity": {

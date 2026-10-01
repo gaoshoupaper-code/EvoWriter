@@ -35,6 +35,15 @@ const initialAssistantMessage: ChatMessage = {
   content: "先选择一个工作目录，再开启或恢复创作会话。",
 };
 
+// 欢迎消息按工作区状态二选一（DEC-007）：有工作区 → 邀约式新文案；无工作区 → 保留选目录指引。
+// 模块加载时 deps 未注入，store 初始值固定用 initialAssistantMessage；运行中注入/切换走本函数。
+function makeWelcomeMessage(hasWorkspace: boolean): ChatMessage {
+  return {
+    role: "assistant",
+    content: hasWorkspace ? "我们开始新的故事吧～" : "先选择一个工作目录，再开启或恢复创作会话。",
+  };
+}
+
 // ── SSE 事件字段提取（从 home.tsx:86-133 迁移）──
 
 function getToolName(event: StreamEvent) {
@@ -80,19 +89,21 @@ function upsertRunningTool(tools: ToolStatus[] | undefined, event: StreamEvent) 
   const parentKey = getToolParentKey(event);
   const subagentName = getSubagentName(event);
   const focus = getTaskFocus(event);
+  const now = Date.now();
   const nextTools = [...(tools ?? [])];
 
   if (callId) {
     const existingIndex = nextTools.findIndex((tool) => tool.key === callId);
     if (existingIndex >= 0) {
-      nextTools[existingIndex] = { ...nextTools[existingIndex], name: toolName, status: "running", ...focus };
+      // 刷新已有条目：保留原 startedAt（耗时口径不重置）
+      nextTools[existingIndex] = { ...nextTools[existingIndex], name: toolName, status: "running", startedAt: nextTools[existingIndex].startedAt ?? now, ...focus };
       return nextTools;
     }
-    nextTools.push({ key: callId, name: toolName, status: "running", parentKey, subagentName, ...focus });
+    nextTools.push({ key: callId, name: toolName, status: "running", parentKey, subagentName, startedAt: now, ...focus });
     return nextTools;
   }
 
-  nextTools.push({ key: buildToolKey(toolName, "", nextTools.length), name: toolName, status: "running", parentKey, subagentName, ...focus });
+  nextTools.push({ key: buildToolKey(toolName, "", nextTools.length), name: toolName, status: "running", parentKey, subagentName, startedAt: now, ...focus });
   return nextTools;
 }
 
@@ -100,7 +111,8 @@ function markToolComplete(tools: ToolStatus[] | undefined, event: StreamEvent) {
   const toolName = getToolName(event);
   const eventCallId = getToolCallId(event);
   const nextTools = [...(tools ?? [])];
-  const markDone = (tool: ToolStatus): ToolStatus => ({ ...tool, status: "done" });
+  const now = Date.now();
+  const markDone = (tool: ToolStatus): ToolStatus => ({ ...tool, status: "done", endedAt: now });
 
   if (eventCallId) {
     for (let i = 0; i < nextTools.length; i++) {
@@ -122,7 +134,7 @@ function markToolComplete(tools: ToolStatus[] | undefined, event: StreamEvent) {
       return nextTools;
     }
   }
-  nextTools.push({ key: buildToolKey(toolName, "", nextTools.length), name: toolName, status: "done" });
+  nextTools.push({ key: buildToolKey(toolName, "", nextTools.length), name: toolName, status: "done", startedAt: now, endedAt: now });
   return nextTools;
 }
 
@@ -130,7 +142,8 @@ function markToolFailed(tools: ToolStatus[] | undefined, event: StreamEvent) {
   const toolName = getToolName(event);
   const eventCallId = getToolCallId(event);
   const nextTools = [...(tools ?? [])];
-  const markFailed = (tool: ToolStatus): ToolStatus => ({ ...tool, status: "failed" });
+  const now = Date.now();
+  const markFailed = (tool: ToolStatus): ToolStatus => ({ ...tool, status: "failed", endedAt: now });
 
   if (eventCallId) {
     for (let i = 0; i < nextTools.length; i++) {
@@ -152,7 +165,7 @@ function markToolFailed(tools: ToolStatus[] | undefined, event: StreamEvent) {
       return nextTools;
     }
   }
-  nextTools.push({ key: buildToolKey(toolName, "", nextTools.length), name: toolName, status: "failed" });
+  nextTools.push({ key: buildToolKey(toolName, "", nextTools.length), name: toolName, status: "failed", startedAt: now, endedAt: now });
   return nextTools;
 }
 
@@ -279,6 +292,7 @@ interface ExecutionState {
   // ── 瞬态（运行中，不持久）──
   activeReasoning: string; // P2: reasoning_stream 累积
   hasHistory: boolean; // T18: 当前会话是否已有历史交互（驱动记忆感开场白）
+  activeStreamKind: "" | "writing" | "image"; // FR-007: 当前流类型（图片流思考态选专属文案池）
 
   // ── 内部 ref 等价物 ──
   streamReader: { read: () => Promise<{ done: boolean; value: Uint8Array | undefined }>; cancel: () => Promise<void> } | null;
@@ -306,6 +320,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   result: null,
   activeReasoning: "",
   hasHistory: false,
+  activeStreamKind: "",
   streamReader: null,
   threadMessages: new Map(),
 
@@ -326,17 +341,21 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
     }
     // 加载新 thread 的消息
     const saved = threadMessages.get(threadId);
-    set({ messages: saved || [initialAssistantMessage] });
+    set({ messages: saved || [makeWelcomeMessage(!!d.getActiveWorkspaceId())] });
     d.setActiveThreadId(threadId);
   },
 
   loadThreadMessages: (threadId) => {
     const { threadMessages } = get();
     const saved = threadMessages.get(threadId);
-    set({ messages: saved || [initialAssistantMessage] });
+    const d = requireDeps();
+    set({ messages: saved || [makeWelcomeMessage(!!d.getActiveWorkspaceId())] });
   },
 
-  resetMessages: () => set({ messages: [initialAssistantMessage] }),
+  resetMessages: () => {
+    const d = requireDeps();
+    set({ messages: [makeWelcomeMessage(!!d.getActiveWorkspaceId())] });
+  },
 
   clearThreadMessages: () => {
     get().threadMessages.clear();
@@ -420,7 +439,7 @@ async function performSubmit(
     return;
   }
 
-  set({ loading: true, result: null });
+  set({ loading: true, result: null, activeStreamKind: "writing" });
 
   if (resumeTraceId) {
     d.setLiveTraceId(resumeTraceId);
@@ -656,6 +675,23 @@ async function performSubmit(
           contentFormat: "markdown",
         })),
       }));
+    } else {
+      // FR-002 断流兜底：SSE 正常关闭但未收到 final——落 failed 终态，不永挂思考态。
+      // 幂等：credit_exhausted 等分支 break 前已设终态，这里不覆盖。
+      const current = get().messages[assistantIdx];
+      if (current && current.role === "assistant" && !current.status) {
+        const brokenMessage = "⚠️ 连接中断（未收到完成信号），已生成的内容已保存，可以重试。";
+        d.setLiveTraceId("");
+        toast.error(brokenMessage);
+        set((state) => ({
+          messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
+            ...message,
+            status: "failed",
+            content: message.content === "正在执行..." ? brokenMessage : `${message.content}\n\n${brokenMessage}`,
+            contentFormat: "markdown",
+          })),
+        }));
+      }
     }
   } catch (submitError) {
     const errMsg = submitError instanceof Error ? submitError.message : "";
@@ -707,7 +743,7 @@ async function performSubmit(
     }));
     if (isResume) throw submitError;
   } finally {
-    set({ streamReader: null, loading: false });
+    set({ streamReader: null, loading: false, activeStreamKind: "" });
   }
 }
 
@@ -760,7 +796,7 @@ async function performImageStream(
     });
   }
 
-  set({ loading: true, streamReader: null });
+  set({ loading: true, streamReader: null, activeStreamKind: "image" });
 
   if (!isResume) {
     set((state) => ({ messages: [...state.messages, { role: "user", content: opts.prompt, contentFormat: "text" }] }));
@@ -820,11 +856,19 @@ async function performImageStream(
           } else if (event.type === "final") {
             const data = event.data as { content?: string };
             set((state) => ({
-              messages: updateAssistantMessage(state.messages, state.messages.length - 1, (m) => ({ ...m, content: data.content ?? "完成", contentFormat: "markdown" })),
+              messages: updateAssistantMessage(state.messages, state.messages.length - 1, (m) => ({
+                ...m, status: "completed", content: data.content ?? "完成", contentFormat: "markdown",
+              })),
             }));
             return;
           } else if (event.type === "error") {
-            toast.error((event.data as { error?: string }).error ?? "image stream 出错");
+            const errText = (event.data as { error?: string }).error ?? "image stream 出错";
+            toast.error(errText);
+            set((state) => ({
+              messages: updateAssistantMessage(state.messages, state.messages.length - 1, (m) => ({
+                ...m, status: "failed", content: `⚠️ ${errText}`, contentFormat: "markdown",
+              })),
+            }));
             return;
           }
         } catch {
@@ -832,9 +876,24 @@ async function performImageStream(
         }
       }
     }
+
+    // FR-003 图片流断流兜底：循环正常结束（无 final/interrupt/error 提前 return）→
+    // 落 failed 终态，不停留在「正在生成...」占位（booting 永挂变体）。
+    const brokenMessage = "⚠️ 连接中断（未收到完成信号），可以重试。";
+    toast.error(brokenMessage);
+    set((state) => ({
+      messages: updateAssistantMessage(state.messages, state.messages.length - 1, (m) => ({
+        ...m,
+        status: "failed",
+        content: m.content === "正在生成..." || m.content === "正在优化..."
+          ? brokenMessage
+          : `${m.content}\n\n${brokenMessage}`,
+        contentFormat: "markdown",
+      })),
+    }));
   } catch (err) {
     toast.error(err instanceof Error ? err.message : "image stream 失败");
   } finally {
-    set({ streamReader: null, loading: false });
+    set({ streamReader: null, loading: false, activeStreamKind: "" });
   }
 }

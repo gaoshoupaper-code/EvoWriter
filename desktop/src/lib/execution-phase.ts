@@ -32,6 +32,10 @@ export function derivePhaseFromMessage(message: ChatMessage): ExecutionPhase {
     return "booting";
   }
 
+  // 裸静态消息（无 tools/traceId/status）→ idle：欢迎语等静态消息不进执行态。
+  // 执行中的消息必满足其一：占位 content（上方 booting 拦截）、run_start 后的 traceId、running tool。
+  if (!message.tools?.length && !message.traceId && !message.status) return "idle";
+
   // 有流式正文但无 running tool → thinking（可能是 model_stream 产出阶段）
   if (message.content) return "thinking";
 

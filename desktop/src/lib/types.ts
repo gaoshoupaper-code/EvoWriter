@@ -236,6 +236,9 @@ export type ToolStatus = {
   // P1 扩展（仅 task 工具有值）：供 stageFlow 生成阶段/章节焦点（D6/D7）
   subagentType?: string; // storybuilding / general-purpose
   iteration?: number | null; // storybuilding 轮次 / 调用序
+  // FR-006 扩展：步骤耗时（ms 时间戳，展开态步骤列表用）
+  startedAt?: number;
+  endedAt?: number;
 };
 
 // HITL 选项化：ask_user 的结构化选项（label + 一句话解释）

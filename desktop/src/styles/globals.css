@@ -4545,6 +4545,55 @@ html[data-theme="dark"] .panel-heading {
   font-family: var(--font-mono, monospace);
 }
 
+/* ── ThinkingView 展开态步骤列表（FR-006）── */
+.yan-thinking-steps-current {
+  font-size: 12px;
+  color: var(--ink);
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+.yan-thinking-steps-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.yan-thinking-step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.yan-thinking-step-mark {
+  width: 14px;
+  text-align: center;
+  flex: none;
+}
+.yan-thinking-step[data-status="done"] .yan-thinking-step-mark {
+  color: var(--good, #3a9d5d);
+}
+.yan-thinking-step[data-status="running"] .yan-thinking-step-mark {
+  color: var(--ink);
+  animation: stage-focus-breathe 1.8s ease-in-out infinite;
+}
+/* FR-006：失败步骤标红 */
+.yan-thinking-step[data-status="failed"] {
+  color: var(--danger, #c2452d);
+}
+.yan-thinking-step[data-status="failed"] .yan-thinking-step-mark,
+.yan-thinking-step[data-status="failed"] .yan-thinking-step-name {
+  color: var(--danger, #c2452d);
+}
+.yan-thinking-step-name {
+  color: var(--ink);
+}
+.yan-thinking-step-elapsed {
+  font-size: 11px;
+}
+
 /* ── WritingProgress（写作中）── */
 .yan-writing {
   margin: 4px 0 8px;

@@ -21,12 +21,59 @@ export const BOOTING_COPY = [
   "准备中，马上开始...",
 ];
 
-// ── 思考态（thinking）折叠摘要文案，按阶段推断 ──
-export const THINKING_COPY: Record<string, string[]> = {
+// ── 思考态（thinking）文案：信号驱动 + 主题池轮播（FR-004/005/007）──
+
+/** 主题池键（THINKING_COPY 的键） */
+export type ThinkingTheme = "storybuilding" | "detailOutline" | "writing" | "meta" | "review" | "general" | "image";
+
+/** 工具/子 Agent 信号 → 主题池键（FR-004 映射表） */
+export const TOOL_THEME_KEYS: Record<string, ThinkingTheme> = {
+  storybuilding: "storybuilding",
+  "detail-outline": "detailOutline",
+  writing: "writing",
+  meta: "meta",
+};
+
+/** 工具/子 Agent 人话名（降级文案与步骤列表共用） */
+export const TOOL_DISPLAY_NAMES: Record<string, string> = {
+  task: "派发任务",
+  set_goal: "设定目标",
+  record_goal_completion: "记录目标",
+  storybuilding: "构思故事",
+  "detail-outline": "细纲",
+  writing: "正文写作",
+  meta: "收尾整理",
+};
+
+/** 轮播节奏：同主题超时换句；不重复最近 N 句（池不足 3 句时放宽为 1） */
+export const THINKING_ROTATE_MS = 7000;
+export const THINKING_NO_REPEAT = 2;
+
+export const THINKING_COPY: Record<ThinkingTheme, string[]> = {
   storybuilding: [
-    "正在构思故事的框架...",
+    "正在搭故事的骨架和核心人物...",
     "想想主角和世界观的设定...",
     "梳理一下故事的核心冲突...",
+    "正在设计故事的转折点...",
+    "把主线脉络再理一遍...",
+  ],
+  detailOutline: [
+    "正在把大纲拆成一场一场的戏...",
+    "细化每个场景的节拍...",
+    "核对场景之间的衔接...",
+    "正在安排每一幕的节奏...",
+  ],
+  writing: [
+    "正在写正文，这段有点长，稍等我...",
+    "笔下的人物正在对话...",
+    "正在打磨这一段的细节...",
+    "文思如泉涌，停不下来...",
+    "正在给画面补上光影...",
+  ],
+  meta: [
+    "正在整理产物和收尾...",
+    "做最后的检查和润色...",
+    "把成果归置整齐...",
   ],
   review: [
     "正在审查故事线的一致性...",
@@ -35,8 +82,46 @@ export const THINKING_COPY: Record<string, string[]> = {
   general: [
     "整理一下收尾工作...",
     "做最后的检查和润色...",
+    "马上就好...",
+    "正在核对产出...",
+  ],
+  image: [
+    "正在构思画面...",
+    "调整构图和光影...",
+    "正在给画面上色...",
+    "细化主体和背景...",
   ],
 };
+
+/** 思考态文案的信号输入 */
+export interface ThinkingSignals {
+  toolName?: string;
+  subagentType?: string;
+  streamKind?: "" | "writing" | "image";
+}
+
+/**
+ * 信号 → 主题池键。返回 "" 表示无映射（调用方降级显示工具人话名）。
+ * 图片流优先：streamKind=image 时无视工具信号（图片流无 tool_call 事件）。
+ */
+export function resolveThinkingTheme(signals: ThinkingSignals): ThinkingTheme | "" {
+  if (signals.streamKind === "image") return "image";
+  const key = TOOL_THEME_KEYS[signals.subagentType ?? ""] ?? TOOL_THEME_KEYS[signals.toolName ?? ""];
+  return key ?? "";
+}
+
+/**
+ * 从主题池取一条文案，排除刚用过的（FR-005 防重复）。
+ * recent 是最近展示过的文案（新的在后）。
+ */
+export function pickThinkingCopy(theme: ThinkingTheme | "", recent: string[] = []): string {
+  const pool = (theme && THINKING_COPY[theme]) || THINKING_COPY.general;
+  const excludeSize = pool.length >= 3 ? THINKING_NO_REPEAT : Math.min(1, pool.length - 1);
+  const excludes = recent.slice(-excludeSize);
+  const candidates = pool.filter((c) => !excludes.includes(c));
+  const chosen = candidates.length > 0 ? candidates[Math.floor(Math.random() * candidates.length)] : pool[0];
+  return chosen;
+}
 
 // ── 交付仪式（delivering）文案 ──
 export const DELIVERY_COPY = [
@@ -85,13 +170,6 @@ export function pickRandom(pool: string[], lastIndex: number = -1): { text: stri
     idx = Math.floor(Math.random() * pool.length);
   }
   return { text: pool[idx], index: idx };
-}
-
-/** 按 stage type 取思考态文案 */
-export function getThinkingCopy(stageType: string | undefined): string {
-  if (!stageType) return "正在思考...";
-  const pool = THINKING_COPY[stageType] ?? THINKING_COPY.general;
-  return pool[Math.floor(Math.random() * pool.length)];
 }
 
 /** 按 stage type 取阶段人话名 */

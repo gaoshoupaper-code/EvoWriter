@@ -21,15 +21,26 @@ Skill 步骤 4）均为软约束；RevisionLimitMiddleware 只在超出上限时
       最后一条消息，ReAct 循环得以继续）
   - 注入上限（默认 2）防死循环：模型连续无视指令则放行返回（人工 review
     阶段兜底），并打印一次日志留痕
+
+接口协议（deepagents 0.6.1 / langchain 1.3.1，2026-10-01 修复）：
+  after_model / aafter_model 采用与 before_model 同族的二参签名
+  (state, runtime)。原实现误用旧签名 (state, response)，首次运行即抛
+  TypeError（harness@94782e8f，trace-d586244a…，33s 零产物失败）。闸门
+  判定只依赖 state（response 从未参与），修复后不再臆取 response；hook
+  整体 try/except 降级放行 + logger.exception 留痕——护栏故障不得中断
+  创作主流程（对齐 storyline_contract_guard 的降级哲学）。
 """
 from __future__ import annotations
 
+import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import HumanMessage
+
+logger = logging.getLogger(__name__)
 
 
 class ReviewGateMiddleware(AgentMiddleware):
@@ -104,11 +115,19 @@ class ReviewGateMiddleware(AgentMiddleware):
     # 终局检测：模型拟结束且 review 未执行 → 注入强制补审指令
     # ------------------------------------------------------------------
 
-    def after_model(self, state: Any, response: Any) -> dict[str, Any] | None:
-        return self._gate(state)
+    def after_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        try:
+            return self._gate(state)
+        except Exception:  # noqa: BLE001 — 闸门故障不得中断创作主流程
+            logger.exception("ReviewGate after_model 异常，降级放行")
+            return None
 
-    async def aafter_model(self, state: Any, response: Any) -> dict[str, Any] | None:
-        return self._gate(state)
+    async def aafter_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        try:
+            return self._gate(state)
+        except Exception:  # noqa: BLE001 — 闸门故障不得中断创作主流程
+            logger.exception("ReviewGate aafter_model 异常，降级放行")
+            return None
 
     def _gate(self, state: Any) -> dict[str, Any] | None:
         """闸门判定（纯逻辑，便于测试）。

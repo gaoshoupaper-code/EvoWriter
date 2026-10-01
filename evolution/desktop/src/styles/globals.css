@@ -12943,7 +12943,6 @@ html[data-theme="dark"] .point-chosen { color: var(--teal); }
 
 /* 落地通道占用横幅（FR-003：聊天并行、落地排队） */
 .landing-channel-banner {
-  grid-column: 1 / -1;
   padding: 8px 16px;
   border-bottom: 1px solid var(--line);
   background: color-mix(in srgb, var(--amber, #b45309) 12%, var(--panel-soft));
@@ -13073,12 +13072,15 @@ html[data-theme="dark"] .point-chosen { color: var(--teal); }
   padding-top: 10px;
 }
 .session-list.archived .session-item { opacity: 0.72; }
-/* 横幅插在两栏之上时，工作台网格改为两行（横幅行 + 内容行） */
+/* 工作台恒两行：顶部块（工具栏+横幅）auto + 内容区 1fr。
+   工具栏与横幅必须同属 workbench-top 一个跨列子项——横幅单独跨列时
+   子项数超过行模板，内容行掉进隐式 auto 行，对话面板溢出被裁，
+   底部输入框随之消失（线上发现 2026-10-01）。 */
 .evolve-workbench { grid-template-rows: auto minmax(0, 1fr); }
+.workbench-top { grid-column: 1 / -1; }
 
 /* 工作台顶部工具栏（交互修正 2026-10-01：常驻「新开会话」入口） */
 .workbench-toolbar {
-  grid-column: 1 / -1;
   display: flex;
   align-items: center;
   justify-content: space-between;

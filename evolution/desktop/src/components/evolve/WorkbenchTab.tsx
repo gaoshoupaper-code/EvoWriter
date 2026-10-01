@@ -502,35 +502,40 @@ export default function WorkbenchTab({
 
   return (
     <div className="evolve-workbench">
-      {/* 顶部工具栏：常驻「新开会话」入口（交互修正 2026-10-01——不依赖工作台空闲） */}
-      <div className="workbench-toolbar">
-        <div className="toolbar-current">
-          {selectedSessionId ? (
-            <>
-              <span className="toolbar-label">当前会话</span>
-              <code className="session-id">{selectedSessionId.slice(0, 8)}</code>
-              {selectedAgentName && <span className="toolbar-agent">· {selectedAgentName}</span>}
-            </>
-          ) : (
-            <span className="toolbar-label muted">未选中会话（历史会话去「进化历史」取）</span>
-          )}
+      {/* 顶部工具栏 + 落地横幅合并为一个跨列块：evolve-workbench 行模板只有两行
+         （auto + 1fr），横幅若单独占一个跨列子项，内容行会掉进隐式 auto 行，
+         对话面板被 overflow:hidden 裁掉底部输入框（线上发现 2026-10-01） */}
+      <div className="workbench-top">
+        {/* 工具栏：常驻「新开会话」入口（交互修正 2026-10-01——不依赖工作台空闲） */}
+        <div className="workbench-toolbar">
+          <div className="toolbar-current">
+            {selectedSessionId ? (
+              <>
+                <span className="toolbar-label">当前会话</span>
+                <code className="session-id">{selectedSessionId.slice(0, 8)}</code>
+                {selectedAgentName && <span className="toolbar-agent">· {selectedAgentName}</span>}
+              </>
+            ) : (
+              <span className="toolbar-label muted">未选中会话（历史会话去「进化历史」取）</span>
+            )}
+          </div>
+          <button
+            type="button"
+            className="start-btn toolbar-new-btn"
+            onClick={() => setNewSessionOpen(true)}
+            disabled={starting}
+          >
+            ＋ 新开会话
+          </button>
         </div>
-        <button
-          type="button"
-          className="start-btn toolbar-new-btn"
-          onClick={() => setNewSessionOpen(true)}
-          disabled={starting}
-        >
-          ＋ 新开会话
-        </button>
-      </div>
 
-      {/* 落地通道占用横幅（FR-003/DEC-004：聊天并行、落地排队） */}
-      {landingOccupied && (
-        <div className="landing-channel-banner">
-          落地通道占用中——另一会话正在落地/待审。对话不受影响；拍板需先等通道释放（发布或丢弃占用会话）。
-        </div>
-      )}
+        {/* 落地通道占用横幅（FR-003/DEC-004：聊天并行、落地排队） */}
+        {landingOccupied && (
+          <div className="landing-channel-banner">
+            落地通道占用中——另一会话正在落地/待审。对话不受影响；拍板需先等通道释放（发布或丢弃占用会话）。
+          </div>
+        )}
+      </div>
       {/* 中：对话区（原左侧历史已移到独立「进化历史」Tab）*/}
       <ConversationPanel
         selectedSessionId={selectedSessionId}

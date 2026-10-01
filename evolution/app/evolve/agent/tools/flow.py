@@ -34,10 +34,11 @@ class DesignChange(BaseModel):
 
     target: str = Field(description="目标（要素路径，如 middleware/pacing.py 或 prompts/writing_system.md）")
     change_desc: str = Field(description="改什么（描述性）")
-    reason: str = Field(description="依据评估证据（自然语言）")
+    reason: str = Field(description="依据的证据与推理（自然语言，引用 trace/产物/要素证据）")
     evidence_ref: list[str] = Field(
         description="引用证据源的 id（必填，至少一个）。可引用：评测弱点视图的"
-        "维度名或缺陷标签（附带批次时）、评估 finding id（f01…，历史会话）、"
+        "作品证据（trace_id/产物修订 id/要素路径）优先；评测维度名/标签（附带批次时）、"
+        "旧评估 finding id（f01…，历史会话恢复）兼容、"
         "契约违反 id（cv-<key>）、或探查所见的 trace 节点 / 要素路径。"
     )
     expected_up: str = Field(description="预期涨的方面")

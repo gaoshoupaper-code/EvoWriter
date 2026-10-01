@@ -163,7 +163,7 @@ export default function ConversationPanel({
             <div className="empty-glyph">⏳</div>
             <p className="empty-text">
               {isRunning
-                ? "Agent 正在探查评估报告和 harness 要素，请稍候…"
+                ? "Agent 正在准备开场分析（基于作品概览），请稍候…"
                 : isConversing
                   ? "等待 Agent 回复…" // conversing 但无消息：用户已发首条消息，等 Agent 回复
                   : "等待 Agent 发出开场白…"}

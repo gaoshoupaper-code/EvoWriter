@@ -57,11 +57,11 @@ def make_points_tools() -> list:
     ) -> str:
         """提出一个新的进化点（改进建议），等待用户在对话中表态。
 
-        这是 conversing 阶段的核心工具——你（Agent）基于评估报告 + 探查要素
-        的理解，提出一个改进点，列出 2-3 个备选方案，让用户选择/否决/补充。
+        这是 conversing 阶段的核心工具——你（Agent）基于讨论与按需取证的
+        理解，提出一个改进点，列出 2-3 个备选方案，让用户选择/否决/补充。
 
         **何时调用**：
-        - 你已经分析了某个评估问题，想出改进方向 → 调本工具提出
+        - 你已经取证分析了某个问题（查过 trace/产物/源码），想出改进方向 → 调本工具提出
         - 不要在一条消息里 propose 多个点——一个点一个调用，让用户聚焦讨论
         - propose 前先用自由文本向用户解释你的分析（pros/cons 讨论），
           然后调本工具固化结构化方案
@@ -69,8 +69,8 @@ def make_points_tools() -> list:
         Args:
             target: 要改的要素路径（如 "middleware/retry.py" / "prompts/meta_system.md" /
                     "subagents/writing.py"）。具体到文件，方便落地。
-            problem: 为什么要改——基于哪条评估 finding，描述当前问题。
-                     格式建议："评估 finding fXX 指出 ...（引用证据）"
+            problem: 为什么要改——基于哪条证据（trace_id / 产物修订 / 要素路径），
+                     描述当前问题。格式建议："trace-xxxx 显示 ...（引用证据）"
             options: 备选方案列表（2-4 个）。每个方案含 description/pros/cons/expected_impact。
                 至少 2 个方案（让用户有对比），至多 4 个（避免选择疲劳）。
             recommendation: 你推荐哪个方案 + 理由（自由文本）。

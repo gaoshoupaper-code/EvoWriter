@@ -282,3 +282,38 @@ class LandingChannelMutexTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InspectOnDemandTest(unittest.TestCase):
+    """FR-005 按需读取修正：开场指令不得引导预拉 trace/产物/评估。
+
+    用户纠偏（2026-10-01）：一上来就读会话记录、还提评估报告（已废弃）——
+    证据工具必须按需调用，开场白基于注入概览直接发。
+    """
+
+    def test_bound_inspect_input_no_prewarm_no_eval(self):
+        from app.evolve.agent.agent import _build_inspect_user_input
+        from app.evolve.ctx import EvolveContext
+
+        ctx = EvolveContext("sess-od")
+        ctx.agent_id = "agent-od"
+        ctx.workspace_id = "ws-od"
+        text = _build_inspect_user_input(ctx, "")
+        # 按需纪律存在
+        self.assertIn("按需", text)
+        self.assertIn("不要在本阶段主动批量调用证据工具", text)
+        # 不引导预拉
+        self.assertNotIn("列出作品会话记录", text)
+        self.assertNotIn("翻看绑定作品的证据", text)
+        # 无废弃评估引用
+        self.assertNotIn("评估报告", text)
+        self.assertNotIn("评估 finding", text)
+
+    def test_unbound_inspect_input_also_on_demand(self):
+        from app.evolve.agent.agent import _build_inspect_user_input
+        from app.evolve.ctx import EvolveContext
+
+        ctx = EvolveContext("sess-od2")
+        text = _build_inspect_user_input(ctx, "")
+        self.assertIn("按需调用", text)
+        self.assertNotIn("评估报告", text)

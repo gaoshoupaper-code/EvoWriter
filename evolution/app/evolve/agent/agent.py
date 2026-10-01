@@ -363,11 +363,10 @@ async def run_inspect_round(ctx: EvolveContext, trace_id: str) -> dict[str, Any]
 
     流程：
       1. 创建 recorder run + 构建 agent（带 checkpointer + thread_id）
-      2. status = running（FlowGuard 不拦，探查工具 + 设计工具可用）
-      3. Agent 自动跑：探查 harness 要素（+ 若有被测 trace / 评测弱点视图则一并看）→ 发开场白
-         （开场白里总结评估 + 提出本次要讨论的问题，决策 J）
-      4. Agent 调证据工具（list_work_traces 等）与 inspect_* 完成探查后，
-         自然结束（不进入落地，因为没用户对话）
+      2. status = running（FlowGuard 不拦，只读工具可用）
+      3. Agent 基于注入的概览（FR-004）直接发开场白——不预拉证据：
+         trace/产物/harness 证据工具留给对话阶段按需调用（FR-005 修正）
+      4. 发完开场白自然结束（不进入落地，因为没用户对话）
       5. 探查完成 → status 转 conversing，等用户第一条消息
 
     与 run_evolve_session 的区别：不跑落地（design_doc/落地编码留给 finalize round）。
@@ -409,35 +408,7 @@ async def run_inspect_round(ctx: EvolveContext, trace_id: str) -> dict[str, Any]
             "该视图是本次进化的补充证据输入（本会话已绑定作品，作品数据是主证据）。\n\n"
         )
 
-    if ctx.agent_id:
-        work_section = (
-            f"你（进化 Agent）绑定了作品 workspace_id={ctx.workspace_id}——本次进化的主证据源。\n"
-            f"本阶段任务：\n"
-            f"1. 调 list_elements / read_source 探查 harness 包要素，理解创作 Agent 当前怎么搭\n"
-            f"2. 翻看绑定作品的证据：列出作品会话记录（trace）概览、读关键 trace 的骨架、\n"
-            f"   查作品当前产物与版本史——找出真实使用中暴露的问题（失败、反复重试、产物缺陷）\n"
-            f"3. 探查完后，给用户发一条开场白——总结 harness 结构发现 + 作品使用数据发现\n"
-            f"   （+ 若附带评测弱点视图则一并总结），提出本次进化要讨论的核心方向\n\n"
-            f"重要约束：\n"
-            f"- 不要在本阶段调 write_design_doc / write_* / edit_source（落地工具）\n"
-            f"- 不要急于 propose 进化点——先让用户了解全貌，再逐个讨论\n"
-            f"- 进化点的问题描述要引用具体 trace/产物证据，不要凭空推断\n"
-        )
-    else:
-        work_section = (
-            f"本阶段任务：\n"
-            f"1. 调 list_elements / read_source 探查 harness 包要素，理解 Agent 当前怎么搭\n"
-            f"3. 探查完后，给用户发一条开场白——总结探查发现与（若附带）评测弱点，"
-            f"提出本次进化要讨论的核心方向（不要直接 propose 进化点，先让用户了解全貌）\n\n"
-            f"重要约束：\n"
-            f"- 不要在本阶段调 write_design_doc / write_* / edit_source（落地工具）\n"
-            f"- 不要急于 propose 进化点——先让用户了解发现，再逐个讨论\n"
-        )
-    user_input = (
-        f"请开始进化流程的探查阶段。case_id={ctx.case_id}。\n"
-        f"{benchmark_section}"
-        f"{work_section}"
-    )
+    user_input = _build_inspect_user_input(ctx, benchmark_section)
 
     try:
         await _run_agent_streamed(agent, user_input, config, ctx)
@@ -468,6 +439,46 @@ async def run_inspect_round(ctx: EvolveContext, trace_id: str) -> dict[str, Any]
         if ctx.recorder and ctx.trace_id_self:
             ctx.recorder.fail_run(ctx.trace_id_self, e)
         return {"status": "failed", "error": str(e), "session_id": ctx.session_id}
+
+
+def _build_inspect_user_input(ctx: EvolveContext, benchmark_section: str) -> str:
+    """组装探查轮的开场指令（REQ-20261001-131018 FR-005 按需读取修正）。
+
+    开场不预拉证据——作品概览/进化点/发布摘要已由 system prompt 注入（FR-004），
+    Agent 基于概览直接发开场白；trace/产物/harness 源码等证据工具一律按需调用
+    （讨论到具体问题、需要归因时再查）。评估系统已裁撤，不再出现评估报告引用。
+    """
+    if ctx.agent_id:
+        work_section = (
+            f"你（进化 Agent）绑定了作品 workspace_id={ctx.workspace_id}。\n"
+            f"作品概览、既有进化点、历次发布摘要已在你的上下文里。\n\n"
+            f"本阶段任务：直接给用户发一条开场白——\n"
+            f"1. 基于已注入的概览介绍现状（作品规模、上次进化到哪、遗留的进化点）\n"
+            f"2. 提出你建议讨论的方向，让用户决定从哪开始\n\n"
+            f"证据纪律（按需读取，不要开场就拉数据）：\n"
+            f"- 不要在本阶段主动批量调用证据工具（list_work_traces / read_work_trace /\n"
+            f"  read_current_artifacts / list_elements 等）——等讨论到具体问题需要归因时再查\n"
+            f"- 用户提到某个症状（如「大纲老崩」「角色写重复了」）时，再按需调对应工具取证\n"
+            f"- 进化点的 problem 必须引用具体证据（trace_id / 产物修订 / 要素路径），\n"
+            f"  没查证过就不要下结论\n\n"
+            f"其他约束：\n"
+            f"- 不要调 write_design_doc / write_* / edit_source（落地工具）\n"
+            f"- 不要急于 propose 进化点——先和用户对齐方向，再逐个讨论\n"
+        )
+    else:
+        work_section = (
+            f"本阶段任务：\n"
+            f"直接给用户发一条开场白——提出本次进化要讨论的核心方向，让用户决定从哪开始。\n\n"
+            f"约束：\n"
+            f"- 证据工具按需调用，不要开场批量拉取\n"
+            f"- 不要调 write_design_doc / write_* / edit_source（落地工具）\n"
+            f"- 不要急于 propose 进化点——先和用户对齐方向，再逐个讨论\n"
+        )
+    return (
+        f"请开始进化流程的探查阶段。case_id={ctx.case_id}。\n"
+        f"{benchmark_section}"
+        f"{work_section}"
+    )
 
 
 async def run_converse_round(ctx: EvolveContext, user_message: str) -> dict[str, Any]:
@@ -745,7 +756,7 @@ def _format_input_summary(ctx: EvolveContext) -> str:
                 lines.append(f"  • [{h.get('dimension', '?')}] {h.get('finding', '')[:80]}")
 
     if not lines:
-        return "(本次进化自由启动：无评估报告/评测弱点输入，以 harness 要素探查与用户对话为准)"
+        return "(本会话绑定作品：无附带评测弱点视图。证据按需取证——讨论到具体问题时调证据工具查 trace/产物，不要凭空推断)"
     if ctx.trace_id:
         lines.append(f"- 被测 trace_id: {ctx.trace_id}")
     return "\n".join(lines)

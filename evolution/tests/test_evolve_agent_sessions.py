@@ -201,7 +201,8 @@ class WorkContextInjectionTest(unittest.TestCase):
         # 三路内容
         self.assertIn(WORK["title"], binding)              # 作品概览
         self.assertIn("进化点 3 个", binding)                # 进化点清单（含状态统计）
-        self.assertIn("[accepted] 要素1", binding)
+        # FR-002：清单行带全局序号 + 真实 id（跨会话引用契约），目标要素跟在 id 后
+        self.assertRegex(binding, r"\[accepted\] #\d+（id=[0-9a-f]{32}）要素1")
         self.assertIn("历次发布 1 次", binding)              # 发布摘要
         # 不含旧会话聊天原文
         self.assertNotIn("XYZZY", binding)

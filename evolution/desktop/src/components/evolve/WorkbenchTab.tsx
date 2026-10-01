@@ -92,6 +92,18 @@ export default function WorkbenchTab({
   const [highlightedPointId, setHighlightedPointId] = useState<string | null>(null);
   const streamCancelRef = useRef<(() => void) | null>(null);
 
+  // ── 运行中活动指示（FR-005）────────────────────────────
+  // 后端从 llm_start/tool_start span 事件派生 activity 帧；这里只保留最新
+  // 一条（label + 时间戳）。90s 无新帧视为空闲自动隐藏——覆盖取证段频繁工具
+  // 调用与思考段长回复生成，round 结束后指示自然消退。
+  const [activity, setActivity] = useState<{ label: string; at: number } | null>(null);
+  useEffect(() => {
+    if (!activity) return;
+    const left = 90_000 - (Date.now() - activity.at);
+    const timer = setTimeout(() => setActivity(null), Math.max(left, 0));
+    return () => clearTimeout(timer);
+  }, [activity]);
+
   // ── 轮询：评测批次 + Agent 列表 + 落地通道 ─────────────────
   // 只列已完成（done/partial）批次——弱点视图只对完成批次有意义
   const refreshBatches = useCallback(async () => {
@@ -179,6 +191,7 @@ export default function WorkbenchTab({
       setSelectedSessionId(s.session_id);
       setSelectedStatus(s.status);
       setHighlightedPointId(null);
+      setActivity(null);
       void loadSessionDetail(s.session_id);
       // 活跃会话订阅 Pull 事件流
       if (["running", "conversing", "finalizing"].includes(s.status)) {
@@ -249,6 +262,7 @@ export default function WorkbenchTab({
       setNewSessionOpen(false);
       setSelectedSessionId(resp.session_id);
       setSelectedStatus("running");
+      setActivity(null); // 新会话不继承旧会话的活动指示（FR-005）
       toast.success(`进化已启动：${resp.session_id.slice(0, 8)}`);
       subscribeStream(resp.session_id);
       void refreshBatches();
@@ -322,9 +336,15 @@ export default function WorkbenchTab({
         }
 
         // session_status 终态：派发 end 帧，然后停止轮询。
-        const terminal = ["published", "discarded", "failed", "cancelled"].includes(
-          resp.session_status,
-        );
+        // cancel_timeout 与后端 is_terminal 对齐（review finding-13）——RC3 修复后
+        // 该状态首次真正可达，遗漏会让 2s 轮询永不停。
+        const terminal = [
+          "published",
+          "discarded",
+          "failed",
+          "cancelled",
+          "cancel_timeout",
+        ].includes(resp.session_status);
         if (terminal) {
           handleSseFrame(sessionId, { type: "end" });
           return;
@@ -347,6 +367,19 @@ export default function WorkbenchTab({
     switch (frame.type) {
       case "heartbeat":
         break;
+      case "activity": {
+        // FR-005 运行中活动信号：llm_start/tool_start span 派生。
+        // at 用帧携带的事件侧 ts（review finding-4）：重放历史帧时按真实发生
+        // 时间过期，空闲会话不再出现假「正在运行」指示；解析失败回退本地时钟。
+        if (frame.label) {
+          const ts = typeof frame.ts === "string" ? Date.parse(frame.ts) : NaN;
+          setActivity({
+            label: String(frame.label),
+            at: Number.isFinite(ts) ? ts : Date.now(),
+          });
+        }
+        break;
+      }
       case "message_updated":
         // 消息刷新已由 poll 的事件驱动统一处理（拉到任意新帧即 loadMessages）。
         // 此 case 仅作语义标记，无额外副作用。
@@ -355,6 +388,7 @@ export default function WorkbenchTab({
         // 阶段切换（inspect → conversing → finalizing）——立即纠正本地状态。
         // 消息/进化点刷新已由 poll 统一处理。
         setSelectedStatus(frame.phase);
+        setActivity(null);
         break;
       case "proposal":
         // 进化点状态变更——浮窗刷新已由 poll 的 loadPoints 统一处理。
@@ -373,6 +407,7 @@ export default function WorkbenchTab({
       }
       case "end": {
         // 流结束 → 刷新会话详情（拿最终 status）
+        setActivity(null);
         void refreshBatches();
         void loadSessionDetail(sessionId);
         // 检查是否需要跳 review-report（pending_review 时，决策 AA）
@@ -431,6 +466,7 @@ export default function WorkbenchTab({
     try {
       await stopEvolve(selectedSessionId);
       streamCancelRef.current?.();
+      setActivity(null); // 停止成功即撤下活动指示（review finding-15）
       toast.success("已停止");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "停止失败");
@@ -506,6 +542,7 @@ export default function WorkbenchTab({
         selectedAgentName={selectedAgentName}
         stopping={stopping}
         highlightedPointId={highlightedPointId}
+        activity={activity}
         onOpenNewSession={() => setNewSessionOpen(true)}
         onSend={handleSend}
         onStop={handleStop}

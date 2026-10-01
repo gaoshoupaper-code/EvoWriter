@@ -696,17 +696,23 @@ def _format_work_binding(ctx: EvolveContext) -> str:
         f"（{art_stats.get('logical_keys', 0)} 类）"
     )
 
-    # 既有进化点（动态——跨会话累积，会话 2 能看到会话 1 的点，FR-008）
+    # 既有进化点（动态——跨会话累积，会话 2 能看到会话 1 的点，FR-008）。
+    # 每行带 id + 全局序号（FR-002）：新会话看不到旧会话的工具返回值，
+    # 不注入 id 则模型更新旧点时只能瞎猜引用。
     points = EvolvePointsRepo.list_by_agent(ctx.agent_id)
     if points:
         by_status: dict[str, int] = {}
         for p in points:
             by_status[p["status"]] = by_status.get(p["status"], 0) + 1
         stat_desc = "、".join(f"{k} {v}" for k, v in by_status.items())
-        lines.append(f"- 既有进化点 {len(points)} 个（{stat_desc}）：")
+        lines.append(
+            f"- 既有进化点 {len(points)} 个（{stat_desc}）。"
+            f"更新/否决时 point_id 用清单里的 id 或 #序号："
+        )
         for p in points[:10]:
             lines.append(
-                f"  • [{p['status']}] {p['target']}: {p['problem'][:60]}"
+                f"  • [{p['status']}] #{p['seq']}（id={p['id']}）"
+                f"{p['target']}: {p['problem'][:60]}"
             )
     else:
         lines.append("- 既有进化点：无（本 Agent 名下尚未提出）")

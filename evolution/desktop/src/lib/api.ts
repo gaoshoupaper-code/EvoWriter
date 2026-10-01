@@ -705,6 +705,7 @@ export interface EvolveFrame {
   type:
     | "message_updated"
     | "phase"
+    | "activity" // FR-005：运行中活动信号（llm_start/tool_start span 派生，带 ts）
     | "log"
     | "step"
     | "proposal"

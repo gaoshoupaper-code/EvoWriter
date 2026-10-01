@@ -19,6 +19,8 @@ EvolvePointsRepo：进化点 CRUD（propose/update/reject 三态状态机）。
 from __future__ import annotations
 
 import json
+import re
+import sqlite3
 import uuid
 from datetime import UTC, datetime
 from typing import Any
@@ -251,23 +253,44 @@ class EvolvePointsRepo:
         """
         point_id = _uuid()
         now = _now()
-        row = db.query_one(
-            "SELECT MAX(seq) AS max_seq FROM evolve_points WHERE session_id = ?",
-            (session_id,),
-        )
-        seq = (row["max_seq"] + 1) if row and row["max_seq"] is not None else 1
 
-        db.execute(
-            """INSERT INTO evolve_points
-               (id, session_id, seq, target, problem, options, recommendation, note,
-                status, agent_id, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?)""",
-            (
-                point_id, session_id, seq, target, problem,
-                json.dumps(options, ensure_ascii=False),
-                recommendation, note, agent_id, now,
-            ),
-        )
+        def _next_seq(agent_id: str | None, session_id: str) -> int:
+            # seq 按 Agent 全局递增（FR-002 跨会话引用契约）：同一 Agent 的点跨会话
+            # 连续编号，`#N` 引用全局唯一。旧链路（无 agent_id）维持按会话编号。
+            if agent_id:
+                row = db.query_one(
+                    "SELECT MAX(seq) AS max_seq FROM evolve_points WHERE agent_id = ?",
+                    (agent_id,),
+                )
+            else:
+                row = db.query_one(
+                    "SELECT MAX(seq) AS max_seq FROM evolve_points WHERE session_id = ?",
+                    (session_id,),
+                )
+            return (row["max_seq"] + 1) if row and row["max_seq"] is not None else 1
+
+        # 撞唯一约束重试（FR-002，review finding-3）：idx_ep_agent_seq 保证 Agent 内
+        # seq 唯一；同 Agent 双会话并发 propose 的 MAX+1 读后写竞态由 IntegrityError
+        # 暴露，重查 MAX 重试即可收敛（索引未建的存量窗口期兜底语义不变）。
+        seq = _next_seq(agent_id, session_id)
+        for _attempt in range(3):
+            try:
+                db.execute(
+                    """INSERT INTO evolve_points
+                       (id, session_id, seq, target, problem, options, recommendation, note,
+                        status, agent_id, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'proposed', ?, ?)""",
+                    (
+                        point_id, session_id, seq, target, problem,
+                        json.dumps(options, ensure_ascii=False),
+                        recommendation, note, agent_id, now,
+                    ),
+                )
+                break
+            except sqlite3.IntegrityError:
+                if agent_id is None or _attempt == 2:
+                    raise
+                seq = _next_seq(agent_id, session_id)
         # 进化点一对一归属（需求 20260731 REQ-01.3/DEC-20/AC-33）：
         # 表达"为什么提出该计划"，与是否采纳无关。从 problem 文本解析 finding 引用，
         # 反查该 session 绑定评估卷宗的问题实例。解析不到不阻断 propose（可后续治理补录）。
@@ -381,6 +404,47 @@ class EvolvePointsRepo:
             (point_id,),
         )
         return EvolvePointsRepo._row_to_dict(row) if row else None
+
+    @staticmethod
+    def resolve_by_ref(
+        point_ref: str,
+        *,
+        agent_id: str | None = None,
+        session_id: str = "",
+    ) -> dict[str, Any] | None:
+        """按多种写法解析进化点（FR-002 跨会话引用契约）。
+
+        支持三种写法（模型在对话里可能任选其一）：
+          - 32 位十六进制原始 id（propose 返回值 / 清单注入值）
+          - "#N"：Agent 名下全局序号（无 agent_id 的旧链路按会话序号）
+          - 纯数字 N：同 "#N"
+
+        同序号撞号（重排前的存量数据）取创建时间最新的一点，保证确定性。
+        解析不到返回 None，由调用方组织提示文案。
+        """
+        ref = (point_ref or "").strip()
+        if not ref:
+            return None
+        # 写法一：32 位 hex 原始 id
+        if re.fullmatch(r"[0-9a-fA-F]{32}", ref):
+            return EvolvePointsRepo.get_by_id(ref.lower())
+        # 写法二：#N / 纯数字 N 序号
+        m = re.fullmatch(r"#?(\d+)", ref)
+        if m:
+            seq = int(m.group(1))
+            if agent_id:
+                candidates = EvolvePointsRepo.list_by_agent(agent_id)
+            else:
+                candidates = EvolvePointsRepo.list_by_session(session_id)
+            hits = [p for p in candidates if p.get("seq") == seq]
+            if not hits:
+                return None
+            if len(hits) == 1:
+                return hits[0]
+            return max(
+                hits, key=lambda p: (p.get("created_at") or "", p.get("id") or "")
+            )
+        return None
 
     @staticmethod
     def list_by_session(session_id: str) -> list[dict[str, Any]]:

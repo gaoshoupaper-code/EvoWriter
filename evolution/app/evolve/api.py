@@ -536,11 +536,15 @@ def _try_load_eval_snapshot(eval_ref: str | None) -> dict[str, Any] | None:
 
 
 @router.post("/evolve/sessions/{session_id}/stop")
-def stop_session(session_id: str) -> dict[str, Any]:
+async def stop_session(session_id: str) -> dict[str, Any]:
     """手动停止运行中的进化 session（FR-006 / NFR-001 / DEC-002）。
 
     立即标记 cancelling 并返回（DEC-002），后台 asyncio task 在 10 秒时限内
     收敛到 cancelled。
+
+    必须是 async 端点（线上回归修复）：内部 asyncio.create_task 依赖运行中的
+    事件循环；同步 def 会跑在线程池线程，create_task 抛 RuntimeError → 500，
+    收敛协程 never awaited，会话永久卡 cancelling（RC3）。
 
     已知边界：Agent 若停在改源码中途，harnesses/repo/ 下可能留脏文件，
     本端点不清理（由用户手动 stash / 重置）。
@@ -680,6 +684,8 @@ def _trace_event_to_sse(event: Any) -> dict[str, Any] | None:
     """trace 事件 → 前端 Pull 帧派生（trace 重构 20260720_154825）。
 
     重构后只派生以下帧（移除了 sse_frame 桥接 / model_stream）：
+      - type=llm_start           → {type:"activity", phase:"thinking"}（FR-005 思考信号）
+      - type=tool_start          → {type:"activity", phase:"tool", label}（FR-005 工具信号）
       - tool="phase"            → {type:"phase", phase}（阶段切换）
       - tool="proposal"         → {type:"proposal", ...}（浮窗进化点状态变更）
       - tool="finalizing"       → {type:"finalizing", ...}（落地进度）
@@ -691,7 +697,24 @@ def _trace_event_to_sse(event: Any) -> dict[str, Any] | None:
       - 不再有 sse_frame 桥接：token 流不入 trace，事件数与 span 数对齐
       - 新增 message_updated 帧：消息已落 evolve_messages，前端拉权威存储
       - 前端不再维护临时消息 state，全部走 loadMessages 增量拉
+
+    FR-005 活动信号：从 TraceMiddleware 已写入的 llm_start/tool_start span 事件
+    派生，不新增事件写入（取证段 5-7 分钟内只读工具不落消息，若无可见信号
+    用户无法区分「在跑」与「挂了」）。派生只读 event.type/tool_name 字段，
+    不依赖 input（llm_start 的 input 已被 recorder 外化，可能为 null）。
     """
+    if event.type == "llm_start":
+        return {
+            "type": "activity", "phase": "thinking", "label": "正在思考/撰写回复…",
+            "ts": str(event.timestamp or ""),
+        }
+    if event.type == "tool_start":
+        name = event.tool_name or "工具"
+        return {
+            "type": "activity", "phase": "tool", "label": f"正在调用 {name}",
+            "ts": str(event.timestamp or ""),
+        }
+
     if event.type != "run_meta" or not event.input:
         return None
     data = event.input if isinstance(event.input, dict) else {}
@@ -1196,6 +1219,11 @@ def _rebuild_ctx_from_db(session_id: str) -> EvolveContext | None:
     ctx.session_status = session.get("status") or STATUS_RUNNING
     ctx.thread_id = session_id  # thread_id 始终 = session_id（决策 T1）
     ctx.eval_snapshot = {}
+    # 自观测 trace id 无条件恢复（线上回归修复）：inspect round 创建 trace 后落
+    # self_trace_id 列。此前只有旧版评估卷宗分支读回该列，自由启动/Agent 绑定的
+    # 新会话走不到 → converse/finalize 轮 ctx.trace_id_self 恒空，recorder 静默、
+    # message_updated/proposal 帧断流、trace 断档（RC1）。
+    ctx.trace_id_self = session.get("self_trace_id") or ""
     _bind_agent_fields(ctx)
 
     # 历史会话（阶段 D 绑定过评估卷宗）：直读旧表回填快照，保对话上下文连续
@@ -1203,7 +1231,6 @@ def _rebuild_ctx_from_db(session_id: str) -> EvolveContext | None:
     if bound_eval_dossier_id:
         dossier = _load_bound_eval_dossier_snapshot(bound_eval_dossier_id)
         if dossier is not None:
-            ctx.trace_id_self = session.get("self_trace_id") or ""
             ctx.trace_id = dossier.get("trace_id") or ""
             ctx.origin_layer = _resolve_origin_layer(ctx.trace_id) if ctx.trace_id else None
             ctx.eval_snapshot = {
@@ -1249,16 +1276,32 @@ def _ensure_trace_resumed(ctx: EvolveContext) -> None:
 
     resume_run 幂等：trace 内存状态已存在时 no-op，所以 inspect round 首次 create_run
     后再调也安全。
+
+    FR-001 失败语义（review finding-1）：resume_run 返回 False（trace 行已被删，
+    如 DELETE /traces）时同样必须「记 ERROR 且不阻断」——此时清空 trace_id_self
+    让本轮降级为无录像可跑，否则后续每个 emit 都抛 KeyError、converse round
+    直接 failed。
     """
     if ctx.recorder and ctx.trace_id_self:
         try:
-            ctx.recorder.resume_run(ctx.trace_id_self, ctx.session_id)
+            resumed = ctx.recorder.resume_run(ctx.trace_id_self, ctx.session_id)
         except Exception:
-            # resume 失败不应阻断请求——但要让运维看到（后续 emit 会抛 KeyError 暴露）。
+            # resume 失败不阻断请求（FR-001 失败语义）。异常路径同样降级清空：
+            # 否则后续 emit 抛 KeyError、converse round 直接 failed（ctx 按请求
+            # 重建，清空只影响本轮；下一请求会重试 resume）。
             logger.exception(
-                "resume_run 失败 session=%s trace=%s",
+                "resume_run 异常 session=%s trace=%s —— 本轮降级为无自观测录像",
                 ctx.session_id, ctx.trace_id_self,
             )
+            ctx.trace_id_self = ""
+            return
+        if resumed is False:
+            logger.error(
+                "resume_run 返回 False（trace 行缺失）session=%s trace=%s —— "
+                "本轮降级为无自观测录像继续运行（FR-001 失败语义）",
+                ctx.session_id, ctx.trace_id_self,
+            )
+            ctx.trace_id_self = ""
 
 
 async def _cleanup_checkpoint(session_id: str) -> None:

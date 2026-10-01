@@ -492,6 +492,8 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_ep_session ON evolve_points(session_id, seq);
             CREATE INDEX IF NOT EXISTS idx_ep_status ON evolve_points(session_id, status);
+            -- FR-002 唯一索引 idx_ep_agent_seq 不在此建：存量撞号会让 executescript
+            -- 整体失败连累启动——由 _migrate_ep_agent_seq_unique 容错管理。
 
             -- evidence_dossiers：证据卷宗（Evidence Dossier，2026-07，原名 evidence_packs）。
             -- 一条 trace × 一个编译规则版本 = 一行；同 trace 可有多版本（追加，不覆盖）。
@@ -708,6 +710,34 @@ def init_db() -> None:
         _migrate_problem_kb_tables(conn)
         # 进化 Agent 作品绑定：evolve_sessions/evolve_points 补 agent_id 列（REQ-20261001-131018）
         _migrate_evolve_agent_binding(conn)
+        # FR-002：Agent 内全局序号唯一索引（并发 propose 撞号根治，review finding-3）
+        _migrate_ep_agent_seq_unique(conn)
+
+
+def _migrate_ep_agent_seq_unique(conn: sqlite3.Connection) -> None:
+    """幂等迁移：evolve_points 建 Agent 内序号唯一部分索引（FR-002）。
+
+    容错语义：存量撞号（收敛脚本重排前）会让 CREATE UNIQUE INDEX 失败——此时
+    只记 WARNING 不阻断启动（否则线上库一启动就崩），提示先跑
+    scripts/converge_stale_evolve_state（重排后该脚本也会补建本索引）。
+    旧链路（agent_id NULL）被 WHERE 子句排除，不受约束。
+    """
+    import logging
+
+    with _lock:
+        try:
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_ep_agent_seq "
+                "ON evolve_points(agent_id, seq) WHERE agent_id IS NOT NULL"
+            )
+            conn.commit()
+        except sqlite3.DatabaseError as exc:
+            logging.getLogger("evolution.db").warning(
+                "idx_ep_agent_seq 唯一索引未建（存量 agent 内 seq 撞号：%s）。"
+                "先运行 scripts/converge_stale_evolve_state 重排后再重启补建；"
+                "未建期间并发 propose 可能撞号（resolve_by_ref 按 created_at 最新兜底）",
+                exc,
+            )
 
 
 def _migrate_evolve_agent_binding(conn: sqlite3.Connection) -> None:

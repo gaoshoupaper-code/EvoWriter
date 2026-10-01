@@ -31,6 +31,7 @@ interface Props {
   selectedAgentName: string | null;
   stopping: boolean;
   highlightedPointId: string | null; // 来自浮窗点击
+  activity: { label: string; at: number } | null; // FR-005 运行中活动信号（父层已做过期隐藏）
   onOpenNewSession: () => void;
   onSend: (content: string) => void;
   onStop: () => void;
@@ -47,6 +48,7 @@ export default function ConversationPanel({
   selectedAgentName,
   stopping,
   highlightedPointId,
+  activity,
   onOpenNewSession,
   onSend,
   onStop,
@@ -142,6 +144,13 @@ export default function ConversationPanel({
       </header>
 
       <div className="message-list">
+        {/* FR-005 运行中活动指示：取证/思考期间让用户看到 Agent 还活着 */}
+        {activity && (
+          <div className="activity-indicator" role="status">
+            <span className="activity-dot" aria-hidden />
+            <span className="activity-label">{activity.label}</span>
+          </div>
+        )}
         {messages.length === 0 ? (
           <div className="conv-empty">
             <div className="empty-glyph">⏳</div>

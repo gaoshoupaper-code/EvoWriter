@@ -10602,6 +10602,31 @@ html[data-theme="dark"] .blueprint-body h1 { color: var(--teal); }
 }
 .conv-empty .empty-glyph { font-size: 32px; margin-bottom: 8px; }
 
+/* FR-005 运行中活动指示条：取证/思考期间显示 Agent 当前动作 */
+.activity-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-self: center;
+  padding: 4px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--bg-inset, rgba(127, 127, 127, 0.08));
+  color: var(--muted);
+  font-size: 12px;
+}
+.activity-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent, #4f8ef7);
+  animation: activity-pulse 1.4s ease-in-out infinite;
+}
+@keyframes activity-pulse {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 1; }
+}
+
 .evolve-msg {
   display: flex;
   gap: 12px;

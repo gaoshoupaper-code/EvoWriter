@@ -134,7 +134,10 @@ def make_points_tools() -> list:
         或与用户继续讨论后用自由文本说明 + 调本工具记录最终选择。
 
         Args:
-            point_id: 进化点 id（propose 时返回的）
+            point_id: 进化点引用，三种写法均可（FR-002）：
+                - 32 位十六进制 id（propose 返回值 / 清单注入值，最可靠）
+                - "#N"：Agent 名下全局序号（如 "#2"，跨会话唯一）
+                - 纯数字 N：同 "#N"（如 "2"）
             chosen_option: 用户选的方案下标（0-based）
             user_note: 用户附加说明（修改意见、顾虑、期望等）
         """
@@ -144,10 +147,15 @@ def make_points_tools() -> list:
 
         ctx.emit_step("update_evolution_point", "running", point_id=point_id)
         try:
-            # 校验 chosen_option 在合理范围（先查 point）
-            point = EvolvePointsRepo.get_by_id(point_id)
+            # 三种写法统一解析（FR-002：Agent 拿不到 id 时也能用 #N 引用）
+            point = EvolvePointsRepo.resolve_by_ref(
+                point_id,
+                agent_id=ctx.agent_id or None,
+                session_id=ctx.session_id,
+            )
             if point is None:
-                return f"进化点 {point_id} 不存在"
+                return f"进化点 {point_id} 不存在。\n{_available_points_hint(ctx)}"
+            point_id = point["id"]
             if not _point_owned_by_ctx(point, ctx):
                 return f"进化点 {point_id} 不属于当前进化 Agent"
             if not (0 <= chosen_option < len(point["options"])):
@@ -190,7 +198,10 @@ def make_points_tools() -> list:
         注意：rejected 进化点不会进入最终 design_doc（拍板时只取 accepted）。
 
         Args:
-            point_id: 进化点 id
+            point_id: 进化点引用，三种写法均可（FR-002）：
+                - 32 位十六进制 id（propose 返回值 / 清单注入值，最可靠）
+                - "#N"：Agent 名下全局序号（如 "#2"，跨会话唯一）
+                - 纯数字 N：同 "#N"（如 "2"）
             reason: 否决理由（用户的话总结）
         """
         ctx = get_tool_context()
@@ -199,9 +210,15 @@ def make_points_tools() -> list:
 
         ctx.emit_step("reject_evolution_point", "running", point_id=point_id)
         try:
-            point = EvolvePointsRepo.get_by_id(point_id)
+            # 三种写法统一解析（FR-002）
+            point = EvolvePointsRepo.resolve_by_ref(
+                point_id,
+                agent_id=ctx.agent_id or None,
+                session_id=ctx.session_id,
+            )
             if point is None:
-                return f"进化点 {point_id} 不存在"
+                return f"进化点 {point_id} 不存在。\n{_available_points_hint(ctx)}"
+            point_id = point["id"]
             if not _point_owned_by_ctx(point, ctx):
                 return f"进化点 {point_id} 不属于当前进化 Agent"
 
@@ -230,7 +247,8 @@ def make_points_tools() -> list:
         检查哪些还没表态。
 
         Returns:
-            进化点清单（按提出顺序）。每个点含 seq/target/status/已选方案/来源会话。
+            进化点清单（按提出顺序）。每个点含 id/seq/target/status/已选方案/
+            来源会话——update/reject 时 point_id 可直接用 id 或 #seq 引用。
         """
         ctx = get_tool_context()
         if ctx is None:
@@ -243,11 +261,11 @@ def make_points_tools() -> list:
         if not points:
             return "当前进化 Agent 名下还没有提出任何进化点。"
 
-        lines = [f"共 {len(points)} 个进化点："]
+        lines = [f"共 {len(points)} 个进化点（point_id 可用 id 或 #序号 引用）："]
         status_icon = {"proposed": "○", "accepted": "✓", "rejected": "✗"}
         for p in points:
             icon = status_icon.get(p["status"], "?")
-            line = f"  {icon} #{p['seq']} [{p['status']}] {p['target']}"
+            line = f"  {icon} #{p['seq']}（id={p['id']}）[{p['status']}] {p['target']}"
             if ctx.agent_id and p.get("session_id") != ctx.session_id:
                 line += f"（来自早前会话 {p['session_id']}）"
             if p["status"] == "accepted" and p["chosen_option"] is not None:
@@ -262,6 +280,24 @@ def make_points_tools() -> list:
         reject_evolution_point,
         list_evolution_points,
     ]
+
+
+def _available_points_hint(ctx: Any) -> str:
+    """换算不命中时给 Agent 的可用点清单（FR-002 失败语义：附 id 引导自查）。
+
+    线上回归背景：旧契约下清单不露 id，模型只能猜 "#1"/"evolution-point-1"，
+    三连「不存在」后放弃并重复 propose。附上 id+序号让模型一步自查纠正。
+    """
+    if ctx.agent_id:
+        points = EvolvePointsRepo.list_by_agent(ctx.agent_id)
+    else:
+        points = EvolvePointsRepo.list_by_session(ctx.session_id)
+    if not points:
+        return "当前进化 Agent 名下没有可用进化点（可先调 propose_evolution_point 提出）。"
+    lines = ["当前可用进化点（point_id 可用 32 位 id 或 #序号）："]
+    for p in points:
+        lines.append(f"  #{p['seq']}（id={p['id']}）[{p['status']}] {p['target']}")
+    return "\n".join(lines)
 
 
 def _point_owned_by_ctx(point: dict[str, Any], ctx: Any) -> bool:

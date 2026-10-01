@@ -32,6 +32,7 @@ from ..middleware.quota_convergence import (
     DEFAULT_MAX_MODEL_CALLS,
     QuotaConvergenceMiddleware,
 )
+from ..middleware.review_gate import ReviewGateMiddleware
 from ..middleware.storyline_contract_guard import (
     StorylineContractGuardMiddleware,
 )
@@ -172,6 +173,12 @@ def build_storybuilding_deep_subagent(
         quota_target,
         max_model_calls=DEFAULT_MAX_MODEL_CALLS,
     ))
+    # review 执行下限闸门（进化 #2，2026-10-01）：与 RevisionLimit 上限合围为
+    # 「产物已产出 ⇒ review ≥1 次」。证据：4 条完成 trace 骨架均无 review 节点
+    # （首建 trace-e434ed1c… 写完 storyline.md 后 7s 即终局返回）——原有全部
+    # 指令层为软约束，RevisionLimit 只防多调不防零调。本闸门在模型拟终局且
+    # review 未执行时注入强制补审指令，打断静默截断。
+    storybuilding_middleware.append(ReviewGateMiddleware(workspace_root))
     if context_file_paths:
         storybuilding_middleware.append(ContextAssemblerMiddleware(
             workspace_root,

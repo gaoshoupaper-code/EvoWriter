@@ -144,6 +144,8 @@ services:
       # 共享 harness（与 executor 同一份）
       - harness_data:/app/evolution/harnesses
       - harness_git:/app/evolution/harness.git
+      # harness 镜像推送 deploy key（发版后 bare repo → GitHub 备份，只读挂载）
+      - ./evolution/secrets/mirror_key:/app/evolution/secrets/mirror_key:ro
       # 仅供 V1 legacy reader 只读兼容；V2 的不可变制品和 Payload 在 evolution_data。
       # evolution 不写 workspace（:ro），产物真源仍在 executor。
       - executor_data:/app/executor/data:ro

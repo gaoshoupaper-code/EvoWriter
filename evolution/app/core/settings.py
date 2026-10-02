@@ -82,6 +82,17 @@ class Settings(BaseSettings):
     # harness bare repo 路径（evolution push → executor pull 的中转）。
     harness_bare_repo: str = "harness.git"
 
+    # ── harness 镜像推送（发版后自动备份到外部 git 仓库，如 GitHub）──
+    # bare repo main 镜像推到外部仓库专用分支，保证服务器 harness 演进历史
+    # 在 git 托管侧有一份完整副本。留空 = 禁用（发版主链路不依赖镜像）。
+    # ssh deploy key 认证：git@github.com:<owner>/<repo>.git（配 ssh_key_path）；
+    # https token 认证：https://x-access-token:<TOKEN>@github.com/<owner>/<repo>.git
+    harness_mirror_remote_url: str = ""
+    # 镜像目标分支。专用分支不与主开发分支混流——harness 树与主项目树不同根。
+    harness_mirror_branch: str = "harness/production"
+    # ssh 私钥路径（ssh 认证时注入 GIT_SSH_COMMAND；https 认证留空）。
+    harness_mirror_ssh_key_path: str = ""
+
     # ── 进化对话式共创工作台 checkpointer（Phase 2A，决策 T5）──
     # 每个 evolve session 一个独立 SQLite 文件（evolve_<session_id>.db），
     # LangGraph 通过 thread_id 自动恢复对话史。discarded session 删文件清理。

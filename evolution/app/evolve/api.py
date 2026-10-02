@@ -885,17 +885,32 @@ def publish_session(session_id: str, request: Request) -> dict[str, Any]:
                 "session=%s v%s", session_id, promoted.version,
             )
 
+        # ── 5. 镜像推送（bare repo → 外部 git 仓库专用分支，软失败）──
+        # 发版权威产物是 Platform 账本 + artifact；镜像只是 git 托管侧备份，
+        # 失败不阻断发版（下次发版会带上全部积压 commit 一并推送）。
+        mirror_push = "disabled"
+        try:
+            if git_ops.push_mirror() is not None:
+                mirror_push = "pushed"
+        except Exception:
+            logger.exception(
+                "harness 镜像推送失败（不影响发版结果，下次发版重试）: "
+                "session=%s", session_id,
+            )
+            mirror_push = "failed"
+
         ev_db.update_session(session_id, status="published")
 
         logger.info(
-            "进化 candidate 经 Platform 晋升成功: session=%s v%s commit=%s",
-            session_id, promoted.version, source_commit,
+            "进化 candidate 经 Platform 晋升成功: session=%s v%s commit=%s mirror=%s",
+            session_id, promoted.version, source_commit, mirror_push,
         )
         return {
             "status": "activated",
             "release_id": release_id,
             "snapshot_version": promoted.version,
             "source_commit": source_commit,
+            "mirror_push": mirror_push,
             "snapshot_trace_id": None,
         }
     except HTTPException:

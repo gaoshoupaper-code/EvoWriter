@@ -21,6 +21,7 @@ RUN sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors
 RUN apt-get update && apt-get install -y --no-install-recommends \
         git \
         curl \
+        openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # git 配置：harness 卷挂载触发 dubious ownership，预先放行 + 配 commit 身份

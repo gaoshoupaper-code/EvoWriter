@@ -397,6 +397,63 @@ class PlatformReleaseWorkflowTest(unittest.TestCase):
         )
         self.assertEqual(session["status"], "published")
 
+    def test_publish_pushes_mirror_after_promote(self) -> None:
+        """镜像推送：promote 成功后推 bare main 到外部仓库，返回体带 pushed。"""
+        from app.evolve.api import publish_session
+
+        self._session("mirror-push")
+        with ExitStack() as stack:
+            for p in self._url_patches():
+                stack.enter_context(p)
+            stack.enter_context(
+                patch("httpx.post", side_effect=[_probe_ready(), _promote_ok(version=14)])
+            )
+            stack.enter_context(
+                patch("app.versioning.registry_repo.get_version_by_session", return_value=None)
+            )
+            stack.enter_context(
+                patch("app.core.git_ops.commit_candidate", return_value="candidate-commit")
+            )
+            push_mirror = stack.enter_context(
+                patch("app.core.git_ops.push_mirror", return_value="candidate-commit")
+            )
+            result = publish_session("mirror-push", self._request())
+
+        self.assertEqual(result["mirror_push"], "pushed")
+        push_mirror.assert_called_once_with()
+
+    def test_publish_mirror_failure_does_not_block_release(self) -> None:
+        """镜像推送失败（网络/认证）→ 软失败：发版仍成功，session 照常 published。"""
+        from app.evolve.api import publish_session
+
+        self._session("mirror-fail")
+        with ExitStack() as stack:
+            for p in self._url_patches():
+                stack.enter_context(p)
+            stack.enter_context(
+                patch("httpx.post", side_effect=[_probe_ready(), _promote_ok(version=15)])
+            )
+            stack.enter_context(
+                patch("app.versioning.registry_repo.get_version_by_session", return_value=None)
+            )
+            stack.enter_context(
+                patch("app.core.git_ops.commit_candidate", return_value="candidate-commit")
+            )
+            stack.enter_context(
+                patch(
+                    "app.core.git_ops.push_mirror",
+                    side_effect=RuntimeError("git push 失败: Permission denied"),
+                )
+            )
+            result = publish_session("mirror-fail", self._request())
+
+        self.assertEqual(result["status"], "activated")
+        self.assertEqual(result["mirror_push"], "failed")
+        session = db.query_one(
+            "SELECT status FROM evolve_sessions WHERE session_id='mirror-fail'"
+        )
+        self.assertEqual(session["status"], "published")
+
     def test_manual_rollback_promotes_old_commit_via_platform(self) -> None:
         """rollback：registry 只读查目标 commit → Platform promote 重新晋升。"""
         from app.versioning.snapshot_api import RollbackRequest, rollback_snapshot

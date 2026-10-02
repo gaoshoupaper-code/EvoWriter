@@ -11,6 +11,7 @@ executor 从 bare repo pull/clone（在 git_sync.py 实现）。
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from pathlib import Path
 
@@ -21,12 +22,18 @@ logger = logging.getLogger("evolution.git_ops")
 # git 操作的统一 author（避免依赖全局 git config）
 _GIT_AUTHOR = ("evolution", "evolution@local")
 
+# 外网 push（镜像推送）的超时：跨境网络抖动余量；本地 bare push 仍用默认 30s
+_GIT_PUSH_TIMEOUT_SECONDS = 60
 
-def _git(args: list[str], cwd: Path) -> str:
+
+def _git(
+    args: list[str], cwd: Path, timeout: int = 30, env: dict[str, str] | None = None
+) -> str:
     """执行 git 命令，返回 stdout。失败 raise RuntimeError。"""
     cmd = ["git"] + args
+    run_env = {**os.environ, **env} if env else None
     result = subprocess.run(
-        cmd, cwd=cwd, capture_output=True, text=True, timeout=30,
+        cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout, env=run_env,
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -266,6 +273,56 @@ def _push_to_bare(wd: Path, bare: Path) -> None:
         _git(["push", "--force-with-lease", "origin", "main"], wd)
 
 
+def push_mirror() -> str | None:
+    """把 bare repo main 镜像推到外部仓库专用分支（发版后调用，git 托管侧备份）。
+
+    镜像语义：bare repo 是唯一真相源，外部分支只是副本——non-fast-forward
+    （外部分支分叉/被改写）时强制对齐，与 _push_to_bare 的漂移自愈同思路。
+
+    Returns:
+        镜像 ref 推送后的完整 commit hash；未配置 mirror remote 时返回 None（跳过）。
+
+    Raises:
+        RuntimeError: push 失败（网络/认证/仓库不可达）。调用方按软失败处理，
+        不阻断发版主链路（账本 + artifact 才是发版的权威产物）。
+    """
+    url = settings.harness_mirror_remote_url
+    if not url:
+        return None
+    branch = settings.harness_mirror_branch
+    refspec = f"main:refs/heads/{branch}"
+    bare = read_dir()
+
+    env: dict[str, str] | None = None
+    key_path = settings.harness_mirror_ssh_key_path
+    if key_path:
+        # ssh deploy key 认证：IdentitiesOnly 防止尝试其他 agent key；
+        # accept-new 首连自动记 host key，host key 变更仍拒绝（防中间人）。
+        env = {
+            "GIT_SSH_COMMAND": (
+                f"ssh -i {key_path} -o IdentitiesOnly=yes"
+                " -o StrictHostKeyChecking=accept-new"
+            )
+        }
+
+    try:
+        _git(["push", url, refspec], bare, timeout=_GIT_PUSH_TIMEOUT_SECONDS, env=env)
+    except RuntimeError as exc:
+        if "non-fast-forward" not in exc.args[0] and "non fast-forward" not in exc.args[0]:
+            raise
+        logger.warning(
+            "镜像推送 non-fast-forward（外部分支分叉），强制对齐: %s", exc.args[0]
+        )
+        _git(
+            ["push", "--force", url, refspec], bare,
+            timeout=_GIT_PUSH_TIMEOUT_SECONDS, env=env,
+        )
+
+    pushed = _git(["rev-parse", "main"], bare)
+    logger.info("harness 镜像已推送: %s → %s@%s", pushed[:12], branch, url.split("@")[-1])
+    return pushed
+
+
 def _sync_bare_to_head(wd: Path, bare: Path) -> None:
     """启动时对齐 bare repo main 与工作目录 HEAD。
 
@@ -384,4 +441,5 @@ __all__ = [
     "show_file",
     "commit_file",
     "init_work_repo",
+    "push_mirror",
 ]

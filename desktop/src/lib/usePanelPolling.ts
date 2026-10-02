@@ -10,6 +10,10 @@ import {
 
 const POLL_INTERVAL_MS = 2000;
 
+// 停前补拉兜底重拉延迟：final SSE 事件可能先于大纲文件落盘/索引就绪，
+// 首拉全空时等文件系统追上再拉一次（仅一次，任务确实无产物时不无限轮询）。
+const FINAL_RETRY_DELAY_MS = 2500;
+
 // 不参与轮询的面板：chat 走独立 /generate/stream（聊天区不动）。
 const NON_POLL_PANELS: ReadonlySet<WorkspacePanel> = new Set(["chat"]);
 
@@ -91,11 +95,13 @@ export function usePanelPolling({
   };
 
   // 单面板拉取与写 state（pollOnce 与 pollAllPanels 共用）。
+  // 返回本次拉取是否得到任何内容（停前补拉用：全空 → 延迟重拉兜底）。
   const _pollPanel = async (
     panel: Exclude<WorkspacePanel, "chat"> | "all",
     workspaceId: string,
     s: PanelPollingSetters,
-  ) => {
+  ): Promise<boolean> => {
+    let gotAny = false;
     if (panel === "script" || panel === "all") {
       // script 面板展示 storyline（含全景表数据 panorama，FR-003）。
       const data = await fetchWorkspaceStoryline(workspaceId);
@@ -104,27 +110,33 @@ export function usePanelPolling({
       s.setStorylinePanorama(data.panorama);
       s.setStorylineFormat(data.format);
       s.setActiveStorylineFilename((cur) => keepActiveFilename(cur, data.entries.map((e) => e.title)));
+      if (data.index_markdown?.trim() || data.entries.length) gotAny = true;
     }
     if (panel === "characters" || panel === "all") {
       const data = await fetchWorkspaceCharacters(workspaceId);
       s.setCharacters(data.characters);
       s.setActiveCharacterFilename((cur) => keepActiveFilename(cur, data.characters.map((c) => c.filename)));
       s.setCharactersLoading(false);
+      if (data.characters.length) gotAny = true;
     }
     if (panel === "worldview" || panel === "all") {
       const data = await fetchWorkspaceWorldview(workspaceId);
       s.setWorldviewMarkdown(data.markdown);
       s.setWorldviewLoading(false);
+      if (data.markdown?.trim()) gotAny = true;
     }
+    return gotAny;
   };
 
   // 全量拉取：三个内容面板并行（任务结束时用，见停前补拉 effect）。
-  const pollAllPanels = async (workspaceId: string) => {
-    if (bootstrappingRef.current) return;
+  // 返回是否拉到内容；bootstrapping 期间跳过（bootstrap 是权威源，不触发重拉）。
+  const pollAllPanels = async (workspaceId: string): Promise<boolean> => {
+    if (bootstrappingRef.current) return true;
     try {
-      await _pollPanel("all", workspaceId, settersRef.current);
+      return await _pollPanel("all", workspaceId, settersRef.current);
     } catch {
-      // 静默：与单次轮询一致，避免打断完成态 UI。
+      // 静默：与单次轮询一致，避免打断完成态 UI。按全空处理走延迟重拉。
+      return false;
     }
   };
 
@@ -160,7 +172,14 @@ export function usePanelPolling({
     // 只补拉当前面板会让 script/characters/worldview 保持旧空数据，
     // 直到下次 bootstrap（重启/切换工作区）才可见。
     if (wasLoading && !loading && activeWorkspaceId) {
-      void pollAllPanels(activeWorkspaceId);
+      void (async () => {
+        const gotAny = await pollAllPanels(activeWorkspaceId);
+        // 兜底：final 事件可能先于产物文件落盘/索引就绪，首拉全空时延迟重拉一次。
+        if (!gotAny) {
+          await new Promise((resolve) => setTimeout(resolve, FINAL_RETRY_DELAY_MS));
+          await pollAllPanels(activeWorkspaceId);
+        }
+      })();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loading]);

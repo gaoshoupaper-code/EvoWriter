@@ -113,4 +113,81 @@ describe("usePanelPolling 停前全量补拉", () => {
     expect(mockedWorldview).not.toHaveBeenCalled();
     hook.unmount();
   });
+
+  it("停前补拉全空时延迟重拉一次（final 先于产物落盘的竞态兜底）", async () => {
+    vi.useFakeTimers();
+    try {
+      // 首拉三件套全空
+      mockedStoryline.mockResolvedValue({ index_markdown: "", entries: [], panorama: [], format: "v2" } as any);
+      mockedCharacters.mockResolvedValue({ characters: [] } as any);
+      mockedWorldview.mockResolvedValue({ markdown: "" } as any);
+
+      const setters = makeSetters();
+      const hook = renderHook(
+        ({ loading }: { loading: boolean }) =>
+          usePanelPolling({
+            activeWorkspaceId: "ws-1",
+            activePanel: "chat",
+            loading,
+            bootstrapping: false,
+            setters,
+          }),
+        { initialProps: { loading: true } },
+      );
+      hook.rerender({ loading: false });
+
+      // 首拉完成：三接口各一次，写入空数据
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mockedStoryline).toHaveBeenCalledTimes(1);
+      expect(setters.setStorylineMarkdown).toHaveBeenCalledWith("");
+
+      // 文件落盘后接口有数据了
+      mockedStoryline.mockResolvedValue({ index_markdown: "# 大纲", entries: ENTRIES, panorama: PANORAMA, format: "v2" } as any);
+      mockedCharacters.mockResolvedValue({ characters: CHARACTERS } as any);
+      mockedWorldview.mockResolvedValue({ markdown: "# 世界观" } as any);
+
+      // 2.5s 后兜底重拉，写入真数据
+      await vi.advanceTimersByTimeAsync(2500);
+      expect(mockedStoryline).toHaveBeenCalledTimes(2);
+      expect(setters.setStorylineMarkdown).toHaveBeenCalledWith("# 大纲");
+      expect(setters.setCharacters).toHaveBeenCalledWith(CHARACTERS);
+      expect(setters.setWorldviewMarkdown).toHaveBeenCalledWith("# 世界观");
+
+      // 任务确实无产物时不再无限拉：再推进也不会有第三次
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(mockedStoryline).toHaveBeenCalledTimes(2);
+      hook.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("停前补拉拉到内容时不做延迟重拉", async () => {
+    vi.useFakeTimers();
+    try {
+      // beforeEach 已把三接口 mock 成有数据
+      const setters = makeSetters();
+      const hook = renderHook(
+        ({ loading }: { loading: boolean }) =>
+          usePanelPolling({
+            activeWorkspaceId: "ws-1",
+            activePanel: "chat",
+            loading,
+            bootstrapping: false,
+            setters,
+          }),
+        { initialProps: { loading: true } },
+      );
+      hook.rerender({ loading: false });
+
+      await vi.advanceTimersByTimeAsync(10000);
+      // 只有停前补拉那一次，无兜底重拉
+      expect(mockedStoryline).toHaveBeenCalledTimes(1);
+      expect(mockedCharacters).toHaveBeenCalledTimes(1);
+      expect(mockedWorldview).toHaveBeenCalledTimes(1);
+      hook.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

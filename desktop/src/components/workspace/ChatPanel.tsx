@@ -77,8 +77,12 @@ export function ChatPanel({
   const lastMessage = messages[messages.length - 1];
   const awaitingWithOptions =
     lastMessage?.role === "assistant" && !!lastMessage?.awaitingInput?.options?.length;
-  // 修订门控（FR-004）：写作域大纲未产出时，对话输入不可用（表单是唯一首发入口）
-  const revisionLocked = writingDomain && !outlineReady;
+  // 修订门控（FR-004）：写作域大纲未产出时，对话输入不可用（表单是唯一首发入口）。
+  // 门控只锁首发（会话里还没有用户消息）：首发后表单不再渲染（下方互斥分支），
+  // 若停前补拉竞态/拉空导致三件套仍空，继续锁 composer 就是死局——
+  // 交付态提示「要改的话跟我说」却无处可输（线上 bug：回执阶段输入框卡死）。
+  const hasUserMessage = messages.some((m) => m.role === "user");
+  const revisionLocked = writingDomain && !outlineReady && !hasUserMessage;
 
   useEffect(() => {
     const input = inputRef.current;
@@ -206,7 +210,7 @@ export function ChatPanel({
       </div>
 
       {/* v9 表单直入（FR-002）：写作域首次生成走需求表单；大纲产出前对话入口不可用（FR-004） */}
-      {writingDomain && !outlineReady && !messages.some((m) => m.role === "user") && onDemandSubmit ? (
+      {writingDomain && !outlineReady && !hasUserMessage && onDemandSubmit ? (
         <div className="demand-form-wrap">
           <DemandForm onSubmit={onDemandSubmit} disabled={!hasActiveWorkspace} submitting={loading} />
         </div>

@@ -39,6 +39,7 @@ def build_deep_subagent(
     skills: list[str] | None = None,
     checkpointer: object | None = None,
     batch_size_tools: list[object] | None = None,
+    tools: list[object] | None = None,
     revision_limit: RevisionLimitMiddleware | None = None,
 ) -> CompiledSubAgent:
     """将创作型子代理构建为 DeepAgent（内含 review 审查子代理）。
@@ -74,6 +75,8 @@ def build_deep_subagent(
                              场景保持默认 None）
         batch_size_tools:    连写批次工具列表（进化 #4：set_increment_batch 闭包
                              引用三中间件实例；None = 不挂载，行为与旧版一致）
+        tools:               额外常驻工具列表（如 confirm_with_user：回执轮
+                             interrupt 暂停载体；None = 不挂载，行为与旧版一致）
         revision_limit:      预置修订上限中间件实例（进化 #4：批次工具需共享引用
                              以动态放宽上限；None = 内部自建，行为同旧版）
 
@@ -117,7 +120,7 @@ def build_deep_subagent(
     # ---- 2. 调用 create_deep_agent ----
     graph = create_deep_agent(
         model=model,
-        tools=list(batch_size_tools) if batch_size_tools else [],
+        tools=[*(tools or []), *(batch_size_tools or [])],
         system_prompt=system_prompt,
         subagents=[review_spec],
         middleware=mw,

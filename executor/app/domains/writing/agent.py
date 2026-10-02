@@ -839,6 +839,14 @@ class MetaAgentService(BaseAgentService):
                     "source": "interview",
                 }
                 if isinstance(iv, dict):
+                    # DD4（hitl.py 协议）：优先转发 payload 自带 kind/source——
+                    # 如回执轮 confirm_with_user 的 kind="choice" +
+                    # source="storybuilding-receipt"；缺省回退访谈旧口径
+                    # （source=interview / 前端 kind 默认 choice），向后兼容。
+                    if isinstance(iv.get("kind"), str):
+                        interrupt_payload["kind"] = iv["kind"]
+                    if isinstance(iv.get("source"), str):
+                        interrupt_payload["source"] = iv["source"]
                     interrupt_payload["question"] = iv.get("question", "")
                     interrupt_payload["options"] = iv.get("options")
                     interrupt_payload["multi_select"] = iv.get("multi_select", False)

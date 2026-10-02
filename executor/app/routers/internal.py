@@ -197,7 +197,10 @@ async def ab_replay(req: ABReplayRequest) -> ABReplayResponse:
     )
 
     # 2. 构造生成请求
+    # thread_id 为必填字段（多用户改造后加严），漏传会让本端点 500——
+    # 2026-10-02 线上验证回执轮时发现（存量 bug，与回执修复同期修正）。
     payload = ScreenplayGenerateRequest(
+        thread_id=thread.thread_id,
         prompt=req.premise or f"写一部{req.genre}小说",
         genre=req.genre,
         premise=req.premise,

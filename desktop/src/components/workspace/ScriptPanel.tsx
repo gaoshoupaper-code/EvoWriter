@@ -1,5 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { markdownTableComponents } from "../../lib/markdown-components";
 import type { PanoramaEvent, StorylineEntry } from "../../lib/types";
 
 type ScriptPanelProps = {
@@ -58,7 +59,7 @@ export function ScriptPanel({
       <div className="content-panel-body">
         {fallbackMarkdownView ? (
           <article className="outline-markdown detail-outline-markdown">
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>{storylineMarkdown}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownTableComponents}>{storylineMarkdown}</ReactMarkdown>
           </article>
         ) : items.length > 0 ? (
           <div className="detail-outline-layout">
@@ -81,7 +82,7 @@ export function ScriptPanel({
             {active && active.key !== CORE_KEY ? (
               <article className="outline-markdown detail-outline-markdown">
                 {active.markdown.trim() ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{active.markdown}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownTableComponents}>{active.markdown}</ReactMarkdown>
                 ) : (
                   <p>该故事线暂无内容。</p>
                 )}
@@ -89,38 +90,40 @@ export function ScriptPanel({
             ) : active ? (
               <article className="outline-markdown detail-outline-markdown">
                 {active.markdown.trim() ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{active.markdown}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownTableComponents}>{active.markdown}</ReactMarkdown>
                 ) : null}
                 {panoramaAvailable ? (
                   <>
                     <h3>跨线全景</h3>
                     <p className="field-label">全部故事线的事件按剧情时序合并——交汇事件的所属线列出全部参与线。</p>
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>时序</th>
-                          <th>所属线</th>
-                          <th>事件</th>
-                          <th>类型</th>
-                          <th>角色</th>
-                          <th>地点</th>
-                          <th>描述</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {storylinePanorama.map((ev) => (
-                          <tr key={`${ev.t}-${ev.name}`}>
-                            <td>{ev.t}</td>
-                            <td>{ev.storylines.join("、")}</td>
-                            <td>{ev.name}</td>
-                            <td>{ev.type}</td>
-                            <td>{ev.characters}</td>
-                            <td>{ev.location}</td>
-                            <td>{ev.desc}</td>
+                    <div className="md-table-wrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>时序</th>
+                            <th>所属线</th>
+                            <th>事件</th>
+                            <th>类型</th>
+                            <th>角色</th>
+                            <th>地点</th>
+                            <th>描述</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {storylinePanorama.map((ev) => (
+                            <tr key={`${ev.t}-${ev.name}`}>
+                              <td>{ev.t}</td>
+                              <td>{ev.storylines.join("、")}</td>
+                              <td>{ev.name}</td>
+                              <td>{ev.type}</td>
+                              <td>{ev.characters}</td>
+                              <td>{ev.location}</td>
+                              <td>{ev.desc}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </>
                 ) : null}
               </article>

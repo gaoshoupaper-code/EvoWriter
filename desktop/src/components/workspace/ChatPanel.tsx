@@ -1,6 +1,7 @@
 import { KeyboardEvent, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { markdownTableComponents } from "../../lib/markdown-components";
 import type { ChatMessage, ThreadSummary } from "../../lib/types";
 import type { StageFlow } from "../../lib/stage";
 import { InterviewOptions } from "./InterviewOptions";
@@ -164,7 +165,7 @@ export function ChatPanel({
               ) : null}
               <div className="message-content">
                 {message.role === "assistant" && message.contentFormat === "markdown" ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownTableComponents}>{message.content}</ReactMarkdown>
                 ) : (
                   <p>{message.content}</p>
                 )}

@@ -2727,6 +2727,76 @@ a {
   background: transparent;
 }
 
+/* 表格基础样式（REQ-20261002-125632 FR-001~005）：
+   行分隔线 + 表头底色 + 悬停高亮 + 紧凑密度，颜色全走主题变量。
+   宽窗：max-width:100% 让长描述优雅折行；窄窗：td 的 6em 地板阻止
+   列被压到逐字竖排，触底后由 .md-table-wrap 横向滚动（FR-003，
+   wrapper 由 markdown-components.tsx 注入）；表头吸顶与横向滚动
+   容器互斥，按 FR-001 失败语义降级为普通表头。 */
+.message-content :where(.md-table-wrap),
+.outline-markdown :where(.md-table-wrap) {
+  max-width: 100%;
+  overflow-x: auto;
+  margin: 18px 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.message-content :where(table),
+.outline-markdown :where(table) {
+  width: max-content;
+  max-width: 100%;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.message-content :where(th, td),
+.outline-markdown :where(th, td) {
+  padding: 7px 11px;
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: break-word;
+}
+
+.message-content :where(td),
+.outline-markdown :where(td) {
+  min-width: 6em;
+  border-bottom: 1px solid var(--line);
+}
+
+.message-content :where(th),
+.outline-markdown :where(th) {
+  white-space: nowrap;
+  font-weight: 800;
+  color: var(--muted);
+  background: color-mix(in srgb, var(--ink) 7%, transparent);
+  border-bottom: 1px solid var(--line-strong);
+}
+
+.message-content tbody tr:last-child td,
+.outline-markdown tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.message-content tbody tr:hover td,
+.outline-markdown tbody tr:hover td {
+  background: color-mix(in srgb, var(--teal) 8%, transparent);
+}
+
+/* 排版阶梯（REQ-20261002-125632 FR-004）：拉开内容面板标题层级对比；
+   聊天气泡保持原阶梯，避免改变对话流密度 */
+.outline-markdown h1 {
+  font-size: 26px;
+}
+
+.outline-markdown h2 {
+  font-size: 18px;
+}
+
+.outline-markdown h3 {
+  font-size: 15px;
+}
+
 .chat-composer {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 104px;

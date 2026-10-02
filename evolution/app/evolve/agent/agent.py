@@ -717,15 +717,42 @@ def _format_work_binding(ctx: EvolveContext) -> str:
     else:
         lines.append("- 既有进化点：无（本 Agent 名下尚未提出）")
 
-    # 历次发布摘要（动态）
+    # 历次发布摘要（动态）。两路口径缺一不可：
+    #   本 Agent 名下发布（agent_id 隔离的档案视角）
+    #   全局发版流水（Platform 账本 = harness 真实演进史）。新 Agent 名下无发布
+    #   ≠ harness 是原始形态——缺全局口径会让 Agent 误判改动基线、
+    #   重复提出已修复的问题（线上实测：进化 Agent 误称「harness 还是 v7 原始形态」）。
     published = [
         s for s in ev_db.list_sessions_by_agent(ctx.agent_id, limit=50)
         if s.get("status") == "published"
     ]
     if published:
-        lines.append(f"- 历次发布 {len(published)} 次（最近一次 {published[0].get('updated_at', '?')}）")
+        lines.append(
+            f"- 本 Agent 名下发布 {len(published)} 次"
+            f"（最近一次 {published[0].get('updated_at', '?')}）"
+        )
     else:
-        lines.append("- 历次发布：无（本 Agent 尚未发布过 harness 改动）")
+        lines.append("- 本 Agent 名下发布：无（harness 全局演进史见下，勿当成原始形态）")
+
+    from app.versioning import platform_ledger
+    try:
+        ledger = platform_ledger.fetch_ledger()
+        items = sorted(ledger.get("items") or [], key=lambda v: v["version"], reverse=True)
+        prod = ledger.get("production_version")
+        if items:
+            lines.append(
+                f"- 全局发版流水（Platform 账本，harness 实际演进史）："
+                f"当前生产版本 v{prod}，累计 {len(items)} 个版本。最近发版："
+            )
+            for v in items[:5]:
+                date = (v.get("created_at") or "?")[:10]
+                note = (v.get("note") or "").strip() or "（无摘要）"
+                lines.append(f"  • v{v['version']}（{date}）：{note[:80]}")
+            lines.append("  （提进化点前先对照上述摘要——已修复过的问题不要重复提）")
+        else:
+            lines.append("- 全局发版流水：账本为空（harness 确为原始形态）")
+    except RuntimeError:
+        lines.append("- 全局发版流水暂缺（Platform 账本不可达，可用证据工具自行探查）")
     return "\n".join(lines)
 
 

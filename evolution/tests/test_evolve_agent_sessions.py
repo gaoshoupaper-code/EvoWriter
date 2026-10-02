@@ -7,6 +7,7 @@ recorder 均桩掉——本文件只测会话生命周期控制流，不跑 LLM 
   - 旧会话（agent_id NULL）发消息/拍板被拒（403 只读，AC-002）
   - 作品删除后拒绝开新会话；归档 Agent 拒绝开新会话（FR-009）
   - 开场注入三路内容（概览/进化点/发布摘要）且不含旧聊天原文（AC-004）
+  - 发布摘要含全局发版流水（Platform 账本）+ 账本不可达降级
   - 概览拉取失败降级（FR-004 失败语义）
   - conversing 多会话可并存；落地通道互斥 + 占用提示（AC-003）
 """
@@ -158,6 +159,17 @@ class AgentSessionStartTest(unittest.TestCase):
 class WorkContextInjectionTest(unittest.TestCase):
     """AC-004：开场注入三路内容，不含旧会话聊天原文。"""
 
+    # Platform 账本桩数据（全局发版流水注入用）
+    LEDGER = {
+        "items": [
+            {"version": 23, "commit": "c23" * 10, "note": "fix: 回执轮死锁修复",
+             "created_at": "2026-10-02T09:44:10Z"},
+            {"version": 22, "commit": "c22" * 10, "note": "进化 session abc 产出的改动",
+             "created_at": "2026-10-02T07:44:29Z"},
+        ],
+        "production_version": 23,
+    }
+
     def setUp(self):
         with db.transaction() as conn:
             conn.execute("DELETE FROM evolve_messages")
@@ -165,6 +177,13 @@ class WorkContextInjectionTest(unittest.TestCase):
             conn.execute("DELETE FROM evolve_sessions")
             conn.execute("DELETE FROM evolve_agents")
         self.agent = _make_agent("注入Agent")
+        # 账本走桩——不真实连 Platform（测试环境不可达）
+        patcher = mock.patch(
+            "app.versioning.platform_ledger.fetch_ledger",
+            return_value=dict(self.LEDGER),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_injection_contains_three_sections_and_no_chat_history(self):
         # 造数据：Agent 名下 3 个进化点、1 次发布、一段旧会话聊天（不应出现）
@@ -203,7 +222,11 @@ class WorkContextInjectionTest(unittest.TestCase):
         self.assertIn("进化点 3 个", binding)                # 进化点清单（含状态统计）
         # FR-002：清单行带全局序号 + 真实 id（跨会话引用契约），目标要素跟在 id 后
         self.assertRegex(binding, r"\[accepted\] #\d+（id=[0-9a-f]{32}）要素1")
-        self.assertIn("历次发布 1 次", binding)              # 发布摘要
+        self.assertIn("本 Agent 名下发布 1 次", binding)       # 发布摘要（Agent 档案口径）
+        # 全局发版流水（Platform 账本，harness 真实演进史）
+        self.assertIn("全局发版流水", binding)
+        self.assertIn("当前生产版本 v23", binding)
+        self.assertIn("v23（2026-10-02）：fix: 回执轮死锁修复", binding)
         # 不含旧会话聊天原文
         self.assertNotIn("XYZZY", binding)
 
@@ -222,6 +245,32 @@ class WorkContextInjectionTest(unittest.TestCase):
         ctx = evolve_api._build_evolve_ctx("s4")
         binding = _format_work_binding(ctx)
         self.assertIn("概览暂缺", binding)
+
+    def test_injection_new_agent_not_misled_as_pristine(self):
+        """新 Agent 名下无发布 ≠ harness 原始形态（线上实测曾误判「还是 v7 原始形态」）。"""
+        from app.evolve import api as evolve_api
+        from app.evolve.agent.agent import _format_work_binding
+
+        # 名下零 session：直接造一个空 work_context 的当前会话
+        ev_db.create_session("s5", case_id="", agent_id=self.agent["agent_id"])
+        ctx = evolve_api._build_evolve_ctx("s5")
+        binding = _format_work_binding(ctx)
+        self.assertIn("本 Agent 名下发布：无", binding)
+        self.assertIn("勿当成原始形态", binding)
+        # 全局流水在场且带「勿重复提」提示
+        self.assertIn("不要重复提", binding)
+
+    def test_injection_degrades_when_ledger_unreachable(self):
+        from app.evolve import api as evolve_api
+        from app.evolve.agent.agent import _format_work_binding
+
+        ev_db.create_session("s6", case_id="", agent_id=self.agent["agent_id"])
+        ctx = evolve_api._build_evolve_ctx("s6")
+        with mock.patch("app.versioning.platform_ledger.fetch_ledger",
+                        side_effect=RuntimeError("Platform 账本不可达")):
+            binding = _format_work_binding(ctx)
+        self.assertIn("全局发版流水暂缺", binding)
+        self.assertIn("Platform 账本不可达", binding)
 
 
 class LandingChannelMutexTest(unittest.TestCase):

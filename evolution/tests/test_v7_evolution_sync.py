@@ -57,6 +57,13 @@ class TestBlueprintV7(unittest.TestCase):
         self.assertNotIn("正文写作", bp)
         self.assertNotIn("细纲生成", bp)
 
+    def test_blueprint_disambiguates_v7_from_release_version(self):
+        """v7 是架构代号，须显式与发版流水号切割（防误读「harness 还是 v7 原始形态」）。"""
+        bp = evolve_prompt.STATIC_BLUEPRINT
+        self.assertIn("架构代号", bp)
+        self.assertIn("不是 harness 的发版流水号", bp)
+        self.assertIn("全局发版流水", bp)
+
     def test_prompt_builder_drops_trajectories(self):
         """v7：问题知识库下线，无 trajectories 占位符/参数。"""
         self.assertNotIn("TRAJECTORIES", dir(evolve_prompt))

@@ -3,13 +3,21 @@
 交互模式（默认）的入口闸门：storyline.md 尚不存在的线程，第 1 次运行
 拦截一切受保护产物写入（storyline.md / worldview.md / character/*.md），
 强制先交「理解回执」（需求复述 + 假设清单 + 故事核心五字段草案，进化 #2）；
-用户回复确认/修改 = 第 2 次运行的触发器，运行计数即确认信号。
+回执经 confirm_with_user 工具（interrupt 挂起）交用户确认，工具正常返回
+（= 用户已回复）即释放写入；用户回复触发的新运行（运行计数 > 1）同样释放。
 
 设计（与 ReviewGateMiddleware 同族范式）：
   - 确认信号不解析消息内容——[配比导航]（QuotaConvergence）与
     [review 闸门]（ReviewGate）注入的消息本身是 HumanMessage，按内容判定
-    「用户已回复」会被系统注入伪造；运行计数天然免疫（执行端仅在用户输入
-    时发起下一次运行）。
+    「用户已回复」会被系统注入伪造；confirm_with_user 的挂起与返回值由
+    执行端 HITL 通道驱动（resume 仅用户操作可触发），运行计数同样天然
+    免疫（执行端仅在用户输入时发起下一次运行）。
+  - 回执轮暂停走 interrupt 而非文本终局（2026-10-02 线上死锁修复）：
+    ArtifactValidationMiddleware 要求 storyline.md 已产出才放行终局，
+    回执轮恰好禁止写产物——文本停轮被拦回，模型在两个互锁闸门间反复
+    挣扎（连续重复模型调用、输入框全程锁死）。confirm 工具把暂停变为
+    真实图挂起，不经过 after_model 产物校验；挂起即正常收尾
+    awaiting_input，前端解锁选项区。
   - wrap_tool_call 拦 write_file / edit_file 指向受保护路径 → 返回
     ToolMessage（status="error" + business_intercept 标记，对齐
     StorylineSingleLineLimit 的拦截消息规范：不触发写重试、不触发
@@ -42,6 +50,9 @@ logger = logging.getLogger(__name__)
 _PROTECTED_FILES = ("/storyline.md", "/worldview.md")
 _PROTECTED_DIR_PREFIX = "/character/"
 
+# 用户确认工具名（confirm_with_user 正常返回 = 用户已回复，闸门释放）
+_CONFIRM_TOOL_NAME = "confirm_with_user"
+
 
 class ReceiptGateMiddleware(AgentMiddleware):
     """理解回执硬闸：首轮未确认回执时，拦截一切受保护产物写入。"""
@@ -65,6 +76,8 @@ class ReceiptGateMiddleware(AgentMiddleware):
         self._run_count = 0
         self._blocks = 0
         self._exhausted_logged = False
+        # confirm_with_user 工具正常返回（interrupt 已被用户 resume）= 已确认
+        self._confirmed = False
         # 回执轮指令注入计数（上限防刷屏：模型长跑不结束时停止注入）
         self._directives = 0
         self._max_directives = 8
@@ -100,20 +113,27 @@ class ReceiptGateMiddleware(AgentMiddleware):
         )
 
     def _inject_receipt_directive(self) -> dict[str, Any] | None:
-        """回执轮导航指令：压住配比导航的「继续增量」，引导输出理解回执。"""
+        """回执轮导航指令：压住配比导航的「继续增量」，引导走 confirm 工具。"""
         try:
             if not self._receipt_round_active():
+                return None
+            if self._confirmed:
                 return None
             if self._directives >= self._max_directives:
                 return None
             self._directives += 1
             return {"messages": [HumanMessage(content=(
                 "[交互模式·回执轮] 本轮为首次运行：忽略上面的增量推进导航——"
-                "本轮不写任何产物（写入会被硬拦截）。读取 demand.md 后输出理解回执："
+                "本轮先不写任何产物（写入会被硬拦截）。读取 demand.md 后构造理解回执："
                 "需求复述 + 假设清单 + 故事核心五字段草案（Logline / 核心主题 / "
                 "类型基调 / 节奏曲线 / 最终结局——结局确认后系统级钉死不可改，"
-                "回执轮是唯一能修改它的地方），请用户确认或修改草案后返回。"
-                "用户回复后的下一次运行才能动笔。"
+                "回执轮是唯一能修改它的地方），然后调用 confirm_with_user 工具"
+                "提交回执并等待用户确认（question=回执全文，options=确认/修改引导，"
+                "如「确认草案，开始初构」「我要修改，见补充」）。"
+                "工具返回用户的确认或修改意见后：确认 → 以确认稿为锚开始初构；"
+                "修改 → 先按意见调整再动笔。"
+                "不要用纯文本回复代替工具调用——产物未写出时终局会被产物校验"
+                "拦回，运行无法结束。"
             ))]}
         except Exception:  # noqa: BLE001 — 指令注入故障不得中断创作主流程
             logger.exception("ReceiptGate 指令注入异常，跳过")
@@ -124,6 +144,12 @@ class ReceiptGateMiddleware(AgentMiddleware):
     # ------------------------------------------------------------------
 
     def wrap_tool_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:
+        if self._is_confirm_call(request):
+            result = handler(request)
+            # 正常返回 = interrupt 已被用户 resume（GraphInterrupt 异常路径
+            # 不会走到这里），确认为真实用户信号
+            self._confirmed = True
+            return result
         blocked = self._maybe_block(request)
         if blocked is not None:
             return blocked
@@ -132,10 +158,19 @@ class ReceiptGateMiddleware(AgentMiddleware):
     async def awrap_tool_call(
         self, request: Any, handler: Callable[[Any], Awaitable[Any]]
     ) -> Any:
+        if self._is_confirm_call(request):
+            result = await handler(request)
+            self._confirmed = True
+            return result
         blocked = self._maybe_block(request)
         if blocked is not None:
             return blocked
         return await handler(request)
+
+    def _is_confirm_call(self, request: Any) -> bool:
+        """判定是否为 confirm_with_user 工具调用（与 review 计数同款判定式）。"""
+        tool_call = getattr(request, "tool_call", {})
+        return _mapping_value(tool_call, "name") == _CONFIRM_TOOL_NAME
 
     # ------------------------------------------------------------------
     # 核心判定
@@ -148,8 +183,10 @@ class ReceiptGateMiddleware(AgentMiddleware):
             ToolMessage 表示拦截；None 表示放行。任何内部异常降级放行。
         """
         try:
-            # 第 2 次运行起：用户已回复（= 确认信号），闸门满足
-            if self._run_count > 1:
+            # 确认信号（任一即闸门满足）：
+            #   1. confirm_with_user 工具正常返回（interrupt 已被用户 resume）
+            #   2. 第 2 次运行起（用户回复 = 新运行触发器，兜底口径）
+            if self._confirmed or self._run_count > 1:
                 return None
             # 跳过开关（评估集预置流）
             if self.skip:
@@ -207,15 +244,16 @@ class ReceiptGateMiddleware(AgentMiddleware):
         return normalized_path.startswith(_PROTECTED_DIR_PREFIX)
 
     def _block_message(self, tool_call: Any) -> ToolMessage:
-        """构造拦截消息：引导输出理解回执（对齐业务拦截消息规范）。"""
+        """构造拦截消息：引导走 confirm 工具（对齐业务拦截消息规范）。"""
         tool_call_id = _mapping_value(tool_call, "id")
         return ToolMessage(
             content=(
                 "[回执闸门] 本线程为首轮运行且 storyline.md 尚未创建：理解回执未确认，"
                 "受保护产物（storyline.md / worldview.md / character/*.md）禁止写入。"
-                "请先按系统提示词 §7.1 输出理解回执（需求复述 + 假设清单 + "
-                "故事核心五字段草案），请用户确认或修改草案，然后返回。"
-                "用户回复后的下一次运行方可写产物。"
+                "请先按系统提示词 §7.1 构造理解回执（需求复述 + 假设清单 + "
+                "故事核心五字段草案），调用 confirm_with_user 工具提交回执等待"
+                "用户确认；工具返回用户意见后方可写产物。"
+                "不要用纯文本回复代替工具调用——产物未写出时终局会被产物校验拦回。"
             ),
             name=str(_mapping_value(tool_call, "name") or "write_file"),
             tool_call_id=str(tool_call_id or ""),

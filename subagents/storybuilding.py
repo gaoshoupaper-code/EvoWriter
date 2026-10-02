@@ -44,6 +44,7 @@ from ..middleware.storyline_single_line_limit import (
     StorylineSingleLineLimitMiddleware,
 )
 from ..middleware.revision_limit import RevisionLimitMiddleware
+from ..tools.confirm_with_user import build_confirm_with_user_tool
 from ..tools.increment_batch import build_increment_batch_tool
 from app.platform.agent.middleware import ContextAssemblerMiddleware
 
@@ -216,6 +217,9 @@ def build_storybuilding_deep_subagent(
         revision_limit_mw,
         line_limit_mw,
     )
+    # 回执轮 interrupt 暂停载体（2026-10-02 线上死锁修复）：回执经
+    # confirm_with_user 挂起等待用户确认，ReceiptGate 监听其正常返回释放写入
+    confirm_tool = build_confirm_with_user_tool()
 
     # ---- 统一审查子代理规格（审查器自主读取所有文件） ----
     review_spec = build_storybuilding_reviewer(
@@ -266,6 +270,7 @@ def build_storybuilding_deep_subagent(
         max_revisions=1,
         revision_limit=revision_limit_mw,
         batch_size_tools=[batch_tool],
+        tools=[confirm_tool],
         skills=skills,
         checkpointer=checkpointer,
     )

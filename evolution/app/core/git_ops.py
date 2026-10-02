@@ -259,18 +259,36 @@ def _push_to_bare(wd: Path, bare: Path) -> None:
     此时用 --force-with-lease 兜底：工作目录是 harness 源码的唯一写入方，
     evolution 是单一真相源，强制对齐不会丢别处的提交。
 
+    force-with-lease 也失败（bare 上有工作目录没见过的提交——常见于手动
+    直推 bare 的热修，此时强推会丢掉这些提交）时，抛可定位错误并给出
+    合并指引，不静默覆盖（线上踩坑：热修直推 bare 后发版被拒）。
+
     失败再 raise（commit_and_push 把异常透出，调用方按发版失败处理）。
     """
     try:
         _git(["push", "origin", "main"], wd)
     except RuntimeError as exc:
-        if "non-fast-forward" not in exc.args[0] and "non fast-forward" not in exc.args[0]:
+        # 分叉的两种 git 标记都要认：rejected (fetch first) / non-fast-forward
+        # （线上踩坑：fetch first 形态漏判，force-with-lease 兜底没触发直接裸抛）
+        if not any(
+            marker in exc.args[0]
+            for marker in ("non-fast-forward", "non fast-forward", "fetch first")
+        ):
             raise
         logger.warning(
             "push 检测到 non-fast-forward（bare repo 漂移），用 --force-with-lease 对齐: %s",
             exc.args[0],
         )
-        _git(["push", "--force-with-lease", "origin", "main"], wd)
+        try:
+            _git(["push", "--force-with-lease", "origin", "main"], wd)
+        except RuntimeError as lease_exc:
+            raise RuntimeError(
+                "bare repo main 与工作目录分叉，且 --force-with-lease 拒绝对齐"
+                "（bare 上存在工作目录没有的提交——常见于手动直推 bare 的热修，"
+                "强推会丢掉它们）。解法：在工作目录执行 "
+                "git fetch origin main && git merge origin/main 解决冲突后重试发版。"
+                f"原始错误: {lease_exc.args[0]}"
+            ) from lease_exc
 
 
 def push_mirror() -> str | None:
@@ -308,7 +326,11 @@ def push_mirror() -> str | None:
     try:
         _git(["push", url, refspec], bare, timeout=_GIT_PUSH_TIMEOUT_SECONDS, env=env)
     except RuntimeError as exc:
-        if "non-fast-forward" not in exc.args[0] and "non fast-forward" not in exc.args[0]:
+        # 与 _push_to_bare 同口径：fetch first / non-fast-forward 都算分叉
+        if not any(
+            marker in exc.args[0]
+            for marker in ("non-fast-forward", "non fast-forward", "fetch first")
+        ):
             raise
         logger.warning(
             "镜像推送 non-fast-forward（外部分支分叉），强制对齐: %s", exc.args[0]

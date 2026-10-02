@@ -38,6 +38,8 @@ def build_deep_subagent(
     max_revisions: int = 1,
     skills: list[str] | None = None,
     checkpointer: object | None = None,
+    batch_size_tools: list[object] | None = None,
+    revision_limit: RevisionLimitMiddleware | None = None,
 ) -> CompiledSubAgent:
     """将创作型子代理构建为 DeepAgent（内含 review 审查子代理）。
 
@@ -70,6 +72,10 @@ def build_deep_subagent(
         checkpointer:        checkpoint saver（v7：故事专家提升为顶层装配时由
                              assemble 透传，P2 修订对话的线程持久化依赖；子代理
                              场景保持默认 None）
+        batch_size_tools:    连写批次工具列表（进化 #4：set_increment_batch 闭包
+                             引用三中间件实例；None = 不挂载，行为与旧版一致）
+        revision_limit:      预置修订上限中间件实例（进化 #4：批次工具需共享引用
+                             以动态放宽上限；None = 内部自建，行为同旧版）
 
     Returns:
         编译后的子代理字典 {name, description, runnable}，可直接注册到父代理
@@ -82,8 +88,11 @@ def build_deep_subagent(
 
     # ---- 1. 组装子代理 middleware ----
     mw: list[AgentMiddleware] = list(subagent_middleware) if subagent_middleware else []
-    # RevisionLimitMiddleware 拦截 review 调用次数，提供硬上限
-    mw.append(RevisionLimitMiddleware(max_revisions=max_revisions))
+    # RevisionLimitMiddleware 拦截 review 调用次数，提供硬上限。
+    # 进化 #4：调用方可注入预置实例（连写批次工具闭包需共享引用动态放宽上限）；
+    # 默认内部自建，行为与旧版完全一致。
+    mw.append(revision_limit if revision_limit is not None
+              else RevisionLimitMiddleware(max_revisions=max_revisions))
     # ArtifactValidationMiddleware 在代理输出前检查产物文件（可选）
     if artifact_paths:
         mw.append(ArtifactValidationMiddleware(artifact_paths))
@@ -108,7 +117,7 @@ def build_deep_subagent(
     # ---- 2. 调用 create_deep_agent ----
     graph = create_deep_agent(
         model=model,
-        tools=[],
+        tools=list(batch_size_tools) if batch_size_tools else [],
         system_prompt=system_prompt,
         subagents=[review_spec],
         middleware=mw,

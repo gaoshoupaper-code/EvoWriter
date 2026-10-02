@@ -24,6 +24,7 @@ TraceStatus = Literal[
     "completed", "failed", "evidence_capture_failed",
     "cancelled", "cancel_timeout",  # 取消类终态（cancel_timeout 仅可恢复为 cancelled）
     "interrupted",  # 无存活 owner 的历史/失联中断态（FR-009）
+    "step_limit_reached",  # 步数保险丝触顶的部分成功终态（REQ-20261002-125538 FR-004）
 ]
 TraceWorkload = Literal["creation", "evidence_compile", "evaluation", "evolution"]
 # 维度3 完整性：recording/sealing 期间为 pending（不可与 verified/incomplete 终态混用，FR-008/CON-007）。

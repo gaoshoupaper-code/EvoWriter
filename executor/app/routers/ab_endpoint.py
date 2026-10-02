@@ -294,7 +294,9 @@ def run_ab_generation(
         logger.info("A/B 生成启动: trace_id=%s source=%s", trace_id, source_root)
         run_config = {
             "configurable": {"thread_id": thread.thread_id},
-            "recursion_limit": 300,
+            # 保险丝化（REQ-20261002-125538 FR-002）：A/B 回放链路无软着陆，
+            # 1000 为唯一防线，仅兜极端失控。
+            "recursion_limit": 1000,
         }
         # FR-002 写入侧：A/B 用裸 stream（非 astream_events），拿不到 task 事件，
         # 在每个 super-step 边界扫描 chapter/ 目录检测新完成章节并触发逐章抽取入库。

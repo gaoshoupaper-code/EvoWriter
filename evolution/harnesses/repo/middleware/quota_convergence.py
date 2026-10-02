@@ -29,14 +29,16 @@ from contracts.storybuilding_quota import (
     evaluate_quota,
 )
 
-# 默认增量预算：模型调用数上限。执行端 recursion_limit=300 计的是 LangGraph
-# 超步（super-step）——实测 v14 编排栈（deepagents 0.6.1 / langchain 1.3.1 /
-# langgraph 1.2.0）每次模型调用消耗 5 个超步：QuotaConvergence.before_model +
-# ContextAssembler.before_model + model 节点 + TodoListMiddleware.after_model +
-# tools 节点，即 300 超步 ≈ 60 次模型调用（GraphRecursionError 硬死点）。
-# 预算 = (300 − 60 收尾余量) / 5 = 48，保证软着陆先于硬限制触发。
-# 后续在编排链增删 before_model/after_model 中间件时须重算此系数。
-DEFAULT_MAX_MODEL_CALLS = 48
+# 默认增量预算：模型调用数上限（REQ-20261002-125538 DEC-005 过渡期上调 48→60）。
+# 历史口径已失准：v14 注释按「每模型调用 5 超步」精算 (300−60)/5=48，但依赖
+# 升级（deepagents 0.7.19 / langgraph 1.2.12）+ 中间件增删后，2026-10-01 线上
+# trace 实测 ≈7.1 超步/次，48 预算的软着陆来不及触发，42 次调用撞 300 硬顶
+# （GraphRecursionError）。执行端已把 recursion_limit 保险丝化（300→1000），
+# 精算关系不再成立，改为守护测试锁定「预算 × 保守系数 8 < 保险丝 1000」
+# （tests/test_harness_quota_convergence.py::test_default_budget_below_recursion_limit）。
+# 60 = 过渡期对冲 edit_file old_string 失配浪费（DEC-004 另开需求）；
+# 失配修复上线后复评回收。编排栈再升级时以新实测系数重算。
+DEFAULT_MAX_MODEL_CALLS = 60
 
 
 class QuotaConvergenceMiddleware(AgentMiddleware):

@@ -39,6 +39,7 @@ class CancelState(str, Enum):
 TERMINAL_STATES = frozenset({
     "completed", "done", "failed", "evidence_capture_failed", "cancelled", "cancel_timeout",
     "interrupted",  # 心跳超时/进程重启的中断态（非用户取消，但也是终态）
+    "step_limit_reached",  # 步数保险丝触顶的部分成功终态（REQ-20261002-125538 FR-004）
 })
 
 # 取消类终态：用户主动取消产生的终态（不含 failed/interrupted）。

@@ -38,7 +38,9 @@ class NotifyBody(BaseModel):
     trace_path: str = ""
     # HITL：状态变迁即推送（awaiting_input / running / 终态）。
     # running 是 resume 后的状态变迁（awaiting_input→running），也需摄入同步。
-    status: Literal["running", "awaiting_input", "completed", "failed", "cancelled"] = "completed"
+    # step_limit_reached：步数保险丝触顶的部分成功终态（REQ-20261002-125538 FR-004），
+    # 与 failed 区分——不进失败统计，语义为「已产出部分成果」。
+    status: Literal["running", "awaiting_input", "completed", "failed", "cancelled", "step_limit_reached"] = "completed"
     # 手动测试兜底（D-Q14）：任务在产出 trace 前就失败时，executor 带 task_id 通知。
     # 此时 trace_id 为空，按 task_id 反查测试记录标 failed。
     task_id: str | None = None

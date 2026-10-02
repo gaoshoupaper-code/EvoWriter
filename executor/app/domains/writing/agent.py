@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.errors import GraphRecursionError
 from langgraph.types import Command
 
 from contracts.platform import BindingRecord
@@ -655,7 +656,10 @@ class MetaAgentService(BaseAgentService):
                 config={
                     "configurable": {"thread_id": thread.thread_id},
                     "callbacks": [TraceCallbackHandler(self.trace_recorder, trace.trace_id)],
-                    "recursion_limit": 300,
+                    # 保险丝（REQ-20261002-125538 DEC-002）：正常停止由 QuotaConvergence
+                    # 软着陆主导（预算 60 次模型调用 × 实测 ≈7.1 超步/次 ≈ 426），
+                    # 此处远离预算只做最后保险丝，防超步系数漂移再炸硬顶。
+                    "recursion_limit": 1000,
                 },
             )
             content = self._extract_text(result)
@@ -786,7 +790,11 @@ class MetaAgentService(BaseAgentService):
         config = {
             "configurable": {"thread_id": thread.thread_id},
             "callbacks": [TraceCallbackHandler(self.trace_recorder, trace.trace_id)],
-            "recursion_limit": 300,
+            # 保险丝（REQ-20261002-125538 DEC-002）：正常停止由 QuotaConvergence
+            # 软着陆主导（预算 60 次模型调用 × 实测 ≈7.1 超步/次 ≈ 426），
+            # 此处远离预算只做最后保险丝，防超步系数漂移再炸硬顶。
+            # 触发本保险丝时由 except GraphRecursionError 分支做部分成功收尾。
+            "recursion_limit": 1000,
         }
 
         # trace_pump 作为额外并发任务（与 agent 事件/心跳公平竞争 asyncio.wait）
@@ -849,6 +857,17 @@ class MetaAgentService(BaseAgentService):
                 raise RuntimeError(f"Trace snapshot was not found: {trace.trace_id}")
             yield _sse("trace_snapshot", snapshot.model_dump(mode="json"))
             yield _sse("final", response.model_dump())
+        except GraphRecursionError:
+            # FR-004（REQ-20261002-125538）：撞步数保险丝 → 部分成功收尾，不裸抛。
+            # 保险丝（1000）远离软着陆预算（60 次调用 × ≈7.1 超步 ≈ 426），
+            # 走到这里说明软着陆同时失效的极端场景——已写内容对用户仍有价值。
+            self.trace_recorder.step_limit_run(thread, trace.trace_id)
+            # 已消耗的 token 不退（与 user_stop 同口径结算）
+            self._settle_credits_if_any(thread.thread_id, force_stopped=False)
+            for trace_update in self._trace_updates(trace_queue):
+                yield trace_update
+            yield _sse("final", self._step_limit_response(payload, thread).model_dump())
+            return
         except asyncio.CancelledError:
             # D4/D5/D6：CancelledError 三路分流。
             # - user_stop：用户点了停止按钮（_user_stop_requested 标记命中）→ cancelled
@@ -1034,6 +1053,30 @@ class MetaAgentService(BaseAgentService):
             title=title,
             content=content,
         )
+
+    def _step_limit_response(
+        self,
+        payload: ScreenplayGenerateRequest,
+        thread: ThreadSummary,
+    ) -> ScreenplayGenerateResponse:
+        """步数保险丝触顶后的部分成功响应（FR-004，REQ-20261002-125538）。
+
+        workspace 已有 storyline.md 产物 → 复用正常收尾构造（含锚定检查），
+        content 前置降级文案；极端情况（保险丝烧断时尚无产物）→ 纯降级文案。
+        """
+        notice = "大纲已生成部分内容，因步数限制提前收尾，可继续对话补全。"
+        try:
+            return self._response_from_workspace_artifacts(payload, notice, thread)
+        except (FileNotFoundError, ValueError):
+            return ScreenplayGenerateResponse(
+                mode="live",
+                thread_id=thread.thread_id,
+                workspace_id=thread.workspace_id,
+                session_name=thread.session_name,
+                workspace_path=thread.workspace_path,
+                title=payload.fallback_title(),
+                content=notice,
+            )
 
 def _sse(event_type: str, payload: object) -> str:
     """Format a single Server-Sent Event line."""

@@ -115,7 +115,8 @@ def _extract_llm_text(output: Any) -> str:
 
 def run_summary(run: TraceRunSummary) -> str:
     """生成 run 节点的 chain_summary。"""
-    status_label = {"completed": "完成", "failed": "失败", "running": "运行中"}.get(run.status, run.status)
+    status_label = {"completed": "完成", "failed": "失败", "running": "运行中",
+                      "step_limit_reached": "部分完成（步数限制）"}.get(run.status, run.status)
     duration = f"{run.duration_ms / 1000:.1f}s" if run.duration_ms is not None else "--"
     return f"{run.endpoint} · {status_label} · {duration}"
 

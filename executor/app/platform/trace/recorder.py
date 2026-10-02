@@ -640,6 +640,30 @@ class TraceRecorder:
         )
         return event
 
+    def step_limit_run(self, thread: ThreadSummary, trace_id: str) -> TraceLogEvent:
+        """以独立终态标记步数保险丝触顶（部分成功，REQ-20261002-125538 FR-004）。
+
+        事件类型用 run_end（非 run_error）：语义是「执行未走完但已产出部分成果」，
+        区别于 failed（agent 报错）与 evidence_capture_failed（取证失败）。
+        workspace 已写文件不动，用户可继续对话补全。
+        """
+        duration_ms = self._duration_ms(trace_id)
+        error_message = "GraphRecursionError: recursion limit reached"
+        event = self.append_event(
+            trace_id,
+            {
+                "type": "run_end",
+                "status": "step_limit_reached",
+                "source": "system",
+                "duration_ms": duration_ms,
+                "error": error_message,
+            },
+        )
+        self._finalize_run(
+            thread, trace_id, "step_limit_reached", duration_ms, error_message
+        )
+        return event
+
     def cancel_run(
         self,
         thread: ThreadSummary,
@@ -817,7 +841,9 @@ class TraceRecorder:
             return False
         # 单调保护：已合法终态（且非可恢复的 cancel_timeout）则不接管。
         current_status = run.status
-        if current_status in ("completed", "failed", "cancelled", "interrupted"):
+        if current_status in (
+            "completed", "failed", "cancelled", "interrupted", "step_limit_reached",
+        ):
             return False
         from app.schemas.screenplay import ThreadSummary as ThreadSummarySchema
         thread = ThreadSummarySchema(

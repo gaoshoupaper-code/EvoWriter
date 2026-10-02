@@ -95,7 +95,9 @@ class CharacterService(BaseAgentService):
                 config={
                     "configurable": {"thread_id": thread.thread_id},
                     "callbacks": [TraceCallbackHandler(self.trace_recorder, trace.trace_id)],
-                    "recursion_limit": 300,
+                    # 保险丝化（REQ-20261002-125538 FR-002）：本链路无软着陆，
+                    # 1000 为唯一防线，仅兜极端失控。
+                    "recursion_limit": 1000,
                 },
             )
             content = self._extract_text(result)

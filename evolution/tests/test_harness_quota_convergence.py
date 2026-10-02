@@ -126,13 +126,18 @@ class QuotaConvergenceNavigationTest(unittest.TestCase):
         self.assertNotIn("继续下一轮增量", third.content)
 
     def test_default_budget_below_recursion_limit(self) -> None:
-        """默认预算在执行端 recursion_limit=300 超步内可软着陆（review P1，实测口径）。
+        """默认预算在执行端保险丝（recursion_limit=1000）内软着陆（REQ-20261002-125538 AC-003）。
 
-        实测（deepagents 0.6.1 栈）：每模型调用 5 超步（2×before_model + model
-        + after_model + tools），300 超步硬死于第 60 次调用；预算×5 + 60 收尾
-        余量必须 ≤ 300。
+        口径变更：v14 实测「每模型调用 5 超步」已失准——2026-10-01 线上 trace
+        （deepagents 0.7.19 / langgraph 1.2.12）实测 ≈7.1 超步/次，48 预算在
+        300 硬顶下软着陆来不及触发（GraphRecursionError，42 次调用撞顶）。
+        现硬顶已保险丝化（300→1000，远离预算），本测试改锁两条：
+          1. 预算值 = 60（DEC-005 过渡期上调；edit_file 失配修复上线后复评回收）；
+          2. 预算 × 保守系数 8（实测 7.1 + 余量）< 保险丝 1000——软着陆先于保险丝。
+        系数再漂移超 8 时本测试先于线上失败；调预算/改编排栈时须同步重算此关系。
         """
-        self.assertLessEqual(_qc.DEFAULT_MAX_MODEL_CALLS * 5 + 60, 300)
+        self.assertEqual(_qc.DEFAULT_MAX_MODEL_CALLS, 60)
+        self.assertLess(_qc.DEFAULT_MAX_MODEL_CALLS * 8, 1000)
 
     def test_before_agent_resets_cycle(self) -> None:
         """每次运行（graph 执行）开始时轮次计数清零。"""

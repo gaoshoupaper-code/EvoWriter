@@ -44,6 +44,8 @@ export interface ContentData {
   worldviewMarkdown: string;
   characters: { filename: string; name: string; markdown: string }[];
   activeCharacterFilename: string;
+  objects: { filename: string; name: string; markdown: string }[];
+  activeObjectFilename: string;
 }
 
 type ThemeMode = "light" | "dark";
@@ -394,6 +396,8 @@ async function loadWorkspaceData(
       worldviewMarkdown: data.worldview?.markdown || "",
       characters: data.characters?.characters || [],
       activeCharacterFilename: data.characters?.characters[0]?.filename || "",
+      objects: data.objects?.objects || [],
+      activeObjectFilename: data.objects?.objects[0]?.filename || "",
     };
     return content;
   } catch (err) {

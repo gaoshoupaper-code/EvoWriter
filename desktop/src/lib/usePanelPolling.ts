@@ -1,9 +1,10 @@
 
 import { useEffect, useRef } from "react";
-import type { CharacterMarkdownFile, PanoramaEvent, StorylineEntry } from "./types";
+import type { CharacterMarkdownFile, ObjectMarkdownFile, PanoramaEvent, StorylineEntry } from "./types";
 import type { WorkspacePanel } from "./types";
 import {
   fetchWorkspaceCharacters,
+  fetchWorkspaceObjects,
   fetchWorkspaceStoryline,
   fetchWorkspaceWorldview,
 } from "./api";
@@ -35,6 +36,10 @@ export interface PanelPollingSetters {
   setCharacters: (c: CharacterMarkdownFile[]) => void;
   setActiveCharacterFilename: (fn: (cur: string) => string) => void;
   setCharactersLoading: (b: boolean) => void;
+
+  setObjects: (o: ObjectMarkdownFile[]) => void;
+  setActiveObjectFilename: (fn: (cur: string) => string) => void;
+  setObjectsLoading: (b: boolean) => void;
 
   setWorldviewMarkdown: (s: string) => void;
   setWorldviewLoading: (b: boolean) => void;
@@ -118,6 +123,13 @@ export function usePanelPolling({
       s.setActiveCharacterFilename((cur) => keepActiveFilename(cur, data.characters.map((c) => c.filename)));
       s.setCharactersLoading(false);
       if (data.characters.length) gotAny = true;
+    }
+    if (panel === "objects" || panel === "all") {
+      const data = await fetchWorkspaceObjects(workspaceId);
+      s.setObjects(data.objects);
+      s.setActiveObjectFilename((cur) => keepActiveFilename(cur, data.objects.map((o) => o.filename)));
+      s.setObjectsLoading(false);
+      if (data.objects.length) gotAny = true;
     }
     if (panel === "worldview" || panel === "all") {
       const data = await fetchWorkspaceWorldview(workspaceId);

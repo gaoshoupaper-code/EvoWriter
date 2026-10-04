@@ -24,6 +24,7 @@ from app.schemas.screenplay import (
     WorkspaceBootstrapResponse,
     WorkspaceCharacterContent,
     WorkspaceCreateRequest,
+    WorkspaceObjectContent,
     WorkspaceStorylineContent,
     WorkspaceSummary,
     WorkspaceWorldviewContent,
@@ -81,6 +82,8 @@ def _classify_changes(changes, workspace_path: Path) -> set[str]:
             categories.add("worldview")
         elif len(parts) > 1 and parts[0] == "character":
             categories.add("characters")
+        elif len(parts) > 1 and parts[0] == "object":
+            categories.add("objects")
     return categories
 
 
@@ -109,6 +112,10 @@ async def _workspace_watch_generator(owner_id: str, workspace_id: str, workspace
                 content = thread_store.artifacts.read_workspace_characters(owner_id, workspace_id)
                 if content is not None:
                     yield _sse_event("characters", content.model_dump())
+            if "objects" in categories:
+                content = thread_store.artifacts.read_workspace_objects(owner_id, workspace_id)
+                if content is not None:
+                    yield _sse_event("objects", content.model_dump())
         _log("sse_close", channel="watch", workspace_id=workspace_id,
              ms=int((time.perf_counter() - start) * 1000))
     except BaseException as exc:
@@ -170,6 +177,14 @@ def get_workspace_worldview(workspace_id: str, user: CurrentUser = Depends(curre
 @router.get("/workspaces/{workspace_id}/characters", response_model=WorkspaceCharacterContent)
 def get_workspace_characters(workspace_id: str, user: CurrentUser = Depends(current_user)) -> WorkspaceCharacterContent:
     content = get_thread_store().artifacts.read_workspace_characters(user.user_id, workspace_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return content
+
+
+@router.get("/workspaces/{workspace_id}/objects", response_model=WorkspaceObjectContent)
+def get_workspace_objects(workspace_id: str, user: CurrentUser = Depends(current_user)) -> WorkspaceObjectContent:
+    content = get_thread_store().artifacts.read_workspace_objects(user.user_id, workspace_id)
     if content is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return content

@@ -19,9 +19,11 @@ from app.platform.core.db import ThreadRepository, workspace_dir
 from app.schemas.character import CharacterGenerateResponse
 from app.schemas.screenplay import (
     CharacterMarkdownFile,
+    ObjectMarkdownFile,
     StorylineEntry,
     ThreadSummary,
     WorkspaceCharacterContent,
+    WorkspaceObjectContent,
     WorkspaceStorylineContent,
     WorkspaceWorldviewContent,
 )
@@ -148,6 +150,22 @@ class WritingArtifactStore:
                 characters.append(CharacterMarkdownFile(filename=ap.name, name=ap.stem, markdown=_read_text(ap)))
         return WorkspaceCharacterContent(workspace_id=workspace_id, characters=characters)
 
+    def read_workspace_objects(self, owner_id: str, workspace_id: str) -> WorkspaceObjectContent | None:
+        """读物品卡产物（REQ-20261004-221109 FR-007）：object/*.md 一物品一文件。
+
+        无 object/ 目录的旧作品返回空列表（空态由前端渲染，不报错）。
+        """
+        try:
+            ws_path = self._require_ws_path(owner_id, workspace_id)
+        except (KeyError, FileNotFoundError):
+            return None
+        object_dir = ws_path / "object"
+        objects: list[ObjectMarkdownFile] = []
+        if object_dir.exists():
+            for ap in sorted(object_dir.glob("*.md"), key=lambda p: p.stem):
+                objects.append(ObjectMarkdownFile(filename=ap.name, name=ap.stem, markdown=_read_text(ap)))
+        return WorkspaceObjectContent(workspace_id=workspace_id, objects=objects)
+
     def bootstrap_workspace(
         self, owner_id: str, workspace_id: str, *, ws_exists: bool, threads_rows: list[dict],
         thread_summaries: list[ThreadSummary],
@@ -178,12 +196,19 @@ class WritingArtifactStore:
                 characters.append(CharacterMarkdownFile(filename=ap.name, name=ap.stem, markdown=_read_text(ap)))
         character_content = WorkspaceCharacterContent(workspace_id=workspace_id, characters=characters)
 
+        object_dir = ws_path / "object"
+        objects: list[ObjectMarkdownFile] = []
+        if object_dir.exists():
+            for ap in sorted(object_dir.glob("*.md"), key=lambda p: p.stem):
+                objects.append(ObjectMarkdownFile(filename=ap.name, name=ap.stem, markdown=_read_text(ap)))
+
 
         return {
             "threads": sorted(thread_summaries, key=lambda t: t.updated_at, reverse=True),
             "storyline": storyline,
             "characters": character_content,
             "worldview": worldview,
+            "objects": WorkspaceObjectContent(workspace_id=workspace_id, objects=objects),
         }
 
     # ── 产物写入 ─────────────────────────────────────────────

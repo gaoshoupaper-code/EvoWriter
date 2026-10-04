@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CharacterGenerateRequest, CharacterGenerateResponse, CheckpointState, InitResponse, Style, ThreadSummary, TraceDetail, TraceRunSummary, WorkspaceBootstrapResponse, WorkspaceCharacterContent, WorkspaceStorylineContent, WorkspaceWorldviewContent, WorkspaceSummary } from "./types";
+import type { CharacterGenerateRequest, CharacterGenerateResponse, CheckpointState, InitResponse, Style, ThreadSummary, TraceDetail, TraceRunSummary, WorkspaceBootstrapResponse, WorkspaceCharacterContent, WorkspaceObjectContent, WorkspaceStorylineContent, WorkspaceWorldviewContent, WorkspaceSummary } from "./types";
 
 /**
  * 桌面端所有请求走 Rust 中继（设计文档 S4/S5）：
@@ -511,6 +511,12 @@ export async function fetchWorkspaceStoryline(workspaceId: string) {
 export async function fetchWorkspaceCharacters(workspaceId: string) {
   const response = await apiFetch(`${API_BASE_URL}/api/workspaces/${workspaceId}/characters`);
   return parseJsonResponse<WorkspaceCharacterContent>(response);
+}
+
+
+export async function fetchWorkspaceObjects(workspaceId: string) {
+  const response = await apiFetch(`${API_BASE_URL}/api/workspaces/${workspaceId}/objects`);
+  return parseJsonResponse<WorkspaceObjectContent>(response);
 }
 
 

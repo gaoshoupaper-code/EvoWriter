@@ -16,16 +16,19 @@ import {
   fetchWorkspaceWorldview,
 } from "@/lib/api";
 import type { CharacterMarkdownFile, PanoramaEvent, StorylineEntry } from "@/lib/types";
+import { fetchWorkspaceObjects } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
   fetchWorkspaceStoryline: vi.fn(),
   fetchWorkspaceCharacters: vi.fn(),
+  fetchWorkspaceObjects: vi.fn(),
   fetchWorkspaceWorldview: vi.fn(),
 }));
 
 const mockedStoryline = vi.mocked(fetchWorkspaceStoryline);
 const mockedCharacters = vi.mocked(fetchWorkspaceCharacters);
 const mockedWorldview = vi.mocked(fetchWorkspaceWorldview);
+const mockedObjects = vi.mocked(fetchWorkspaceObjects);
 
 function makeSetters(): PanelPollingSetters {
   return {
@@ -37,6 +40,9 @@ function makeSetters(): PanelPollingSetters {
     setCharacters: vi.fn(),
     setActiveCharacterFilename: vi.fn(),
     setCharactersLoading: vi.fn(),
+    setObjects: vi.fn(),
+    setActiveObjectFilename: vi.fn(),
+    setObjectsLoading: vi.fn(),
     setWorldviewMarkdown: vi.fn(),
     setWorldviewLoading: vi.fn(),
   };
@@ -58,6 +64,7 @@ describe("usePanelPolling 停前全量补拉", () => {
       format: "v2",
     } as any);
     mockedCharacters.mockResolvedValue({ characters: CHARACTERS } as any);
+    mockedObjects.mockResolvedValue({ objects: [] } as any);
     mockedWorldview.mockResolvedValue({ markdown: "# 世界观" } as any);
   });
 
@@ -120,6 +127,7 @@ describe("usePanelPolling 停前全量补拉", () => {
       // 首拉三件套全空
       mockedStoryline.mockResolvedValue({ index_markdown: "", entries: [], panorama: [], format: "v2" } as any);
       mockedCharacters.mockResolvedValue({ characters: [] } as any);
+      mockedObjects.mockResolvedValue({ objects: [] } as any);
       mockedWorldview.mockResolvedValue({ markdown: "" } as any);
 
       const setters = makeSetters();
@@ -144,6 +152,7 @@ describe("usePanelPolling 停前全量补拉", () => {
       // 文件落盘后接口有数据了
       mockedStoryline.mockResolvedValue({ index_markdown: "# 大纲", entries: ENTRIES, panorama: PANORAMA, format: "v2" } as any);
       mockedCharacters.mockResolvedValue({ characters: CHARACTERS } as any);
+      mockedObjects.mockResolvedValue({ objects: [] } as any);
       mockedWorldview.mockResolvedValue({ markdown: "# 世界观" } as any);
 
       // 2.5s 后兜底重拉，写入真数据

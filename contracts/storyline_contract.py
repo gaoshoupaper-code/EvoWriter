@@ -168,21 +168,31 @@ def assert_storyline_v2_contract(md: str) -> list[str]:
     line_names = [m.group(1).strip().replace("**", "") for m in headers]
     if len(line_names) != len(set(line_names)):
         violations.append("线名重复")
-    event_names: list[str] = []
-    for i, m in enumerate(headers):
-        end = headers[i + 1].start() if i + 1 < len(headers) else len(md)
-        block = md[m.start():end]
-        rows = [ln.strip() for ln in block.splitlines() if ln.strip().startswith("|")]
-        for ln in rows:
-            if _TABLE_HEADER_HINT.match(ln) or re.fullmatch(r"\|[\s|:-]+\|", ln):
-                continue
-            cells = [c.strip() for c in ln.strip().strip("|").split("|")]
-            if len(cells) >= 2 and cells[1]:
-                event_names.append(cells[1].replace("**", ""))
+    event_names = extract_event_names(md)
     if len(event_names) != len(set(event_names)):
         violations.append("事件名重复")
 
     return violations
+
+
+# ── 事件名提取（公共：唯一性检查与 object_contract 锚点校验共用，唯一实现）──
+
+
+def extract_event_names(md: str) -> list[str]:
+    """提取 storyline.md 全部事件名（事件表数据行「事件」列，按出现序）。
+
+    表头含「时序」「事件」的行是表头，全竖线分隔行是分隔线，均跳过；
+    其余表格行取第二列为事件名（与原唯一性检查同口径）。
+    """
+    names: list[str] = []
+    for ln in md.splitlines():
+        s = ln.strip()
+        if not s.startswith("|") or _TABLE_HEADER_HINT.match(s) or _TABLE_SEPARATOR.fullmatch(s):
+            continue
+        cells = _split_cells(s)
+        if len(cells) >= 2 and _clean(cells[1]):
+            names.append(_clean(cells[1]))
+    return names
 
 
 # ── 运行时写入校验（写前拦截判定入口）────────────────────────
@@ -295,18 +305,7 @@ def check_storyline_write(current: str, projected: str) -> list[GuardViolation]:
     if len(proj_line_names) != len(set(proj_line_names)):
         violations.append(GuardViolation("contract", "线名重复（全文件唯一，创建后不改）"))
 
-    all_event_names: list[str] = []
-    for b in proj_blocks:
-        data, header_row = _data_rows(b.text)
-        if header_row is None:
-            continue
-        name_idx = _col_index(header_row, "事件")
-        if name_idx is None:
-            continue
-        for ln in data:
-            cells = _split_cells(ln)
-            if name_idx < len(cells) and _clean(cells[name_idx]):
-                all_event_names.append(_clean(cells[name_idx]))
+    all_event_names = extract_event_names(projected)
     if len(all_event_names) != len(set(all_event_names)):
         violations.append(GuardViolation("contract", "事件名重复（全文件唯一，创建后不改）"))
 
@@ -341,5 +340,6 @@ __all__ = [
     "GuardViolation",
     "assert_storyline_v2_contract",
     "check_storyline_write",
+    "extract_event_names",
     "extract_final_ending",
 ]

@@ -32,6 +32,9 @@ from ..middleware.quota_convergence import (
     DEFAULT_MAX_MODEL_CALLS,
     QuotaConvergenceMiddleware,
 )
+from ..middleware.object_contract_guard import (
+    ObjectContractGuardMiddleware,
+)
 from ..middleware.storyline_contract_guard import (
     StorylineContractGuardMiddleware,
 )
@@ -86,10 +89,12 @@ def build_storybuilding_subagent(
     permissions = [
         # 读取：允许读取所有文件
         FilesystemPermission(operations=["read"], paths=["/**"], mode="allow"),
-        # 写入：允许写入 3 个维度（storyline.md 单文件，不再有 storyline/ 目录）
+        # 写入：允许写入 4 个维度（storyline.md 单文件，不再有 storyline/ 目录）
         FilesystemPermission(operations=["write"], paths=["/character/*.md"], mode="allow"),
         FilesystemPermission(operations=["write"], paths=["/worldview.md"], mode="allow"),
         FilesystemPermission(operations=["write"], paths=["/storyline.md"], mode="allow"),
+        # 物品卡（REQ-20261004-221109：一物品一文件，契约由 ObjectContractGuard 校验）
+        FilesystemPermission(operations=["write"], paths=["/object/*.md"], mode="allow"),
         # 拒绝：禁止写入其他所有文件
         FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
     ]
@@ -98,7 +103,7 @@ def build_storybuilding_subagent(
         name="storybuilding",
         description=(
             "适用：需要构建或扩展小说故事世界时调用——包括人物、世界观、"
-            "故事核心、故事线（含事件表）。"
+            "故事核心、故事线（含事件表）与物品卡（功法/武技/武器等关键物品档案）。"
             "增量迭代：按人物/故事线的比值分流——人物充足(≥3)新增一条故事线，"
             "人物不足(<3)新增一个人物并融入现有故事(不新增故事线)；"
             "每次调用只执行一种模式，可循环多次调用。"
@@ -167,6 +172,10 @@ def build_storybuilding_deep_subagent(
     #   契约规则范围化校验（仅新增/变更区块）+ 名称唯一全局 + 事件数量模板
     #   （非交汇口径）+ 最终结局不可改 + 防死循环强制收尾与拦截日志
     storybuilding_middleware.append(StorylineContractGuardMiddleware(workspace_root))
+    # 物品卡契约护栏（REQ-20261004-221109 FR-004）：
+    #   写 /object/*.md 校验卡片结构/枚举/锚点/重名；写 storyline.md 反查
+    #   被删事件未被卡片轨迹引用（堵死悬挂引用两个入口）+ 防死循环强制收尾
+    storybuilding_middleware.append(ObjectContractGuardMiddleware(workspace_root))
     storybuilding_middleware.append(QuotaConvergenceMiddleware(
         workspace_root,
         quota_target,
@@ -211,8 +220,9 @@ def build_storybuilding_deep_subagent(
         name="storybuilding",
         description=(
             "适用：需要构建或扩展小说故事世界时调用——包括人物、世界观、"
-            "故事核心、故事线（含事件表）。"
+            "故事核心、故事线（含事件表）与物品卡（关键物品档案）。"
             "单文件产物：storyline.md 承载故事核心 + 一线一区块（线头 + 事件表）；"
+            "物品卡 object/*.md 在故事线完成后集中建立；"
             "全景时间轴与泳道图由程序派生，agent 不维护。"
             "增量迭代：按人物/故事线比值分流两种互斥模式——"
             "人物充足(≥3)新增一条故事线，人物不足(<3)新增一个人物并融入现有故事、不新增故事线；"

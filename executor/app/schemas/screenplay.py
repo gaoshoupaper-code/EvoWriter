@@ -100,6 +100,19 @@ class WorkspaceCharacterContent(BaseModel):
     characters: list[CharacterMarkdownFile]
 
 
+class ObjectMarkdownFile(BaseModel):
+    """物品卡文件（REQ-20261004-221109 FR-007）：一物品一文件，markdown 承载全卡。"""
+
+    filename: str
+    name: str
+    markdown: str
+
+
+class WorkspaceObjectContent(BaseModel):
+    workspace_id: str
+    objects: list[ObjectMarkdownFile] = Field(default_factory=list)
+
+
 class ScreenplayGenerateRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -158,3 +171,4 @@ class WorkspaceBootstrapResponse(BaseModel):
     storyline: WorkspaceStorylineContent | None = None
     characters: WorkspaceCharacterContent | None = None
     worldview: WorkspaceWorldviewContent | None = None
+    objects: WorkspaceObjectContent | None = None

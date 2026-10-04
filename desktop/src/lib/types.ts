@@ -1,4 +1,4 @@
-export type WorkspacePanel = "chat" | "characters" | "script" | "worldview";
+export type WorkspacePanel = "chat" | "characters" | "objects" | "script" | "worldview";
 
 export type Style = {
   style_id: string;
@@ -83,6 +83,17 @@ export type CharacterMarkdownFile = {
 export type WorkspaceCharacterContent = {
   workspace_id: string;
   characters: CharacterMarkdownFile[];
+};
+
+export type ObjectMarkdownFile = {
+  filename: string;
+  name: string;
+  markdown: string;
+};
+
+export type WorkspaceObjectContent = {
+  workspace_id: string;
+  objects: ObjectMarkdownFile[];
 };
 
 export type StreamEvent = {
@@ -337,4 +348,5 @@ export type WorkspaceBootstrapResponse = {
   storyline: WorkspaceStorylineContent | null;
   characters: WorkspaceCharacterContent | null;
   worldview: WorkspaceWorldviewContent | null;
+  objects: WorkspaceObjectContent | null;
 };

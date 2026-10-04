@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { AppShell } from "@/components/workspace/AppShell";
 import { CharactersPanel } from "@/components/workspace/CharactersPanel";
+import { ObjectsPanel } from "@/components/workspace/ObjectsPanel";
 import { ChatPanel } from "@/components/workspace/ChatPanel";
 import { ConfirmDialog } from "@/components/workspace/ConfirmDialog";
 import { ScriptPanel } from "@/components/workspace/ScriptPanel";
@@ -76,6 +77,9 @@ export default function Home() {
   const characters = useContentStore((s) => s.characters);
   const charactersLoading = useContentStore((s) => s.charactersLoading);
   const activeCharacterFilename = useContentStore((s) => s.activeCharacterFilename);
+  const objects = useContentStore((s) => s.objects);
+  const objectsLoading = useContentStore((s) => s.objectsLoading);
+  const activeObjectFilename = useContentStore((s) => s.activeObjectFilename);
   const worldviewMarkdown = useContentStore((s) => s.worldviewMarkdown);
   const worldviewLoading = useContentStore((s) => s.worldviewLoading);
   const storylineMarkdown = useContentStore((s) => s.storylineMarkdown);
@@ -239,6 +243,9 @@ export default function Home() {
       setCharacters: (v) => useContentStore.getState().setCharacters(v),
       setActiveCharacterFilename: (fn) => useContentStore.setState((s) => ({ activeCharacterFilename: fn(s.activeCharacterFilename) })),
       setCharactersLoading: (v) => useContentStore.getState().setCharactersLoading(v),
+      setObjects: (v) => useContentStore.getState().setObjects(v),
+      setActiveObjectFilename: (fn) => useContentStore.setState((s) => ({ activeObjectFilename: fn(s.activeObjectFilename) })),
+      setObjectsLoading: (v) => useContentStore.getState().setObjectsLoading(v),
       setWorldviewMarkdown: (v) => useContentStore.getState().setWorldviewMarkdown(v),
       setWorldviewLoading: (v) => useContentStore.getState().setWorldviewLoading(v),
       setStorylinePanorama: (v) => useContentStore.getState().setStorylinePanorama(v),
@@ -424,6 +431,15 @@ export default function Home() {
             activeFilename={activeCharacterFilename}
             loading={charactersLoading}
             onSelectCharacter={(f) => useContentStore.getState().setActiveCharacterFilename(f)}
+          />
+        ) : null}
+
+        {activePanel === "objects" ? (
+          <ObjectsPanel
+            objects={objects}
+            activeFilename={activeObjectFilename}
+            loading={objectsLoading}
+            onSelectObject={(f) => useContentStore.getState().setActiveObjectFilename(f)}
           />
         ) : null}
 

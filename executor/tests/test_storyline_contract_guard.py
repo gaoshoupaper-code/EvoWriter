@@ -277,7 +277,7 @@ class GuardMiddlewareTest(unittest.TestCase):
 
 
 class PathGuardWhitelistTest(unittest.TestCase):
-    def test_harness_whitelist_is_four_entries(self) -> None:
+    def test_harness_whitelist_is_five_entries(self) -> None:
         _load_real_harness()
         from harness_current.middleware.path_guard import WRITING_WRITE_PATTERNS
 
@@ -286,6 +286,7 @@ class PathGuardWhitelistTest(unittest.TestCase):
             r"^/character/[^/]+\.md$",
             r"^/storyline\.md$",
             r"^/worldview\.md$",
+            r"^/object/[^/]+\.md$",
             r"^/review/[^/]+\.md$",
         })
         for forbidden in ("/outline.md", "/novel.md", "/chapter/x.md", "/detail/x.md", "/state_log.md", "/storyline/x.md"):

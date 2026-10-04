@@ -487,11 +487,26 @@ def init_db() -> None:
                 user_note       TEXT,                         -- 用户附加说明
                 accepted_at     TEXT,                         -- accept/reject 时间
                 design_ref      INTEGER,                      -- 拍板后映射到 design_doc 的 change 序号
+                landed_session_id TEXT,                       -- 拍板落地会话（REQ-20261004-212948：publish 按它切终态）
+                version         TEXT,                         -- 发版版本号（status=shipped 时归属的作品语义版本，如 0.2）
                 agent_id        TEXT,                         -- 归属进化 Agent（跨会话累积，REQ-20261001-131018 DEC-003；旧行 NULL 随旧会话只读）
                 created_at      TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_ep_session ON evolve_points(session_id, seq);
             CREATE INDEX IF NOT EXISTS idx_ep_status ON evolve_points(session_id, status);
+
+            -- evolve_releases：发版记录（REQ-20261004-212948 DEC-001/003）。
+            -- 一次 publish = 一行，版本号按作品语义推进（同作品小数 +1，换作品整数 +1）。
+            -- 语义版本号只服务界面展示与 Agent 感知；Platform 账本 vN 仍是机器对账权威。
+            CREATE TABLE IF NOT EXISTS evolve_releases (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id   TEXT NOT NULL UNIQUE,            -- FK evolve_sessions（发版幂等键）
+                agent_id     TEXT,                            -- 发布会话归属 Agent（旧链路 NULL）
+                workspace_id TEXT NOT NULL,                   -- 作品（版本推进比较键，DEC-003）
+                version      TEXT NOT NULL,                   -- 作品语义版本（0.1 / 1.0 …）
+                point_count  INTEGER NOT NULL DEFAULT 0,      -- 本版封存进终态的进化点数
+                created_at   TEXT NOT NULL
+            );
             -- FR-002 唯一索引 idx_ep_agent_seq 不在此建：存量撞号会让 executescript
             -- 整体失败连累启动——由 _migrate_ep_agent_seq_unique 容错管理。
 
@@ -712,6 +727,8 @@ def init_db() -> None:
         _migrate_evolve_agent_binding(conn)
         # FR-002：Agent 内全局序号唯一索引（并发 propose 撞号根治，review finding-3）
         _migrate_ep_agent_seq_unique(conn)
+        # 发版终态与版本闭环：evolve_points 补 landed_session_id/version 列（REQ-20261004-212948）
+        _migrate_evolve_release_tracking(conn)
 
 
 def _migrate_ep_agent_seq_unique(conn: sqlite3.Connection) -> None:
@@ -738,6 +755,147 @@ def _migrate_ep_agent_seq_unique(conn: sqlite3.Connection) -> None:
                 "未建期间并发 propose 可能撞号（resolve_by_ref 按 created_at 最新兜底）",
                 exc,
             )
+
+
+def _migrate_evolve_release_tracking(conn: sqlite3.Connection) -> None:
+    """幂等迁移：发版终态与版本闭环加列/建表（REQ-20261004-212948）。
+
+    存量库的 evolve_points 靠本函数补 landed_session_id / version 列；
+    evolve_releases 表对新库由 executescript 建，存量库靠此处 CREATE IF NOT EXISTS。
+    存量数据的终态回填（老点切 shipped + 版本重放）由
+    _backfill_evolve_release_history 在此结构就绪后执行（FR-006）。
+    """
+    with _lock:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(evolve_points)").fetchall()}
+        if "landed_session_id" not in cols:
+            conn.execute("ALTER TABLE evolve_points ADD COLUMN landed_session_id TEXT")
+        if "version" not in cols:
+            conn.execute("ALTER TABLE evolve_points ADD COLUMN version TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ep_landed ON evolve_points(landed_session_id, status)"
+        )
+        conn.execute(
+            """CREATE TABLE IF NOT EXISTS evolve_releases (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id   TEXT NOT NULL UNIQUE,
+                agent_id     TEXT,
+                workspace_id TEXT NOT NULL,
+                version      TEXT NOT NULL,
+                point_count  INTEGER NOT NULL DEFAULT 0,
+                created_at   TEXT NOT NULL
+            )"""
+        )
+        conn.commit()
+        # 存量数据终态回填（FR-006）：结构就绪后重放历史发版
+        _backfill_evolve_release_history(conn)
+
+
+def next_release_version(conn: sqlite3.Connection, workspace_id: str) -> str:
+    """作品语义版本号推进（REQ-20261004-212948 DEC-003，全局单序列）。
+
+    供 EvolveReleasesRepo（新发版）与存量回填共用，保证两处规则一致：
+      - 无历史发版 → "0.1"
+      - 与最近一次发版同作品（workspace_id 相同）→ 小数位 +1
+      - 换作品（含回访旧作品）→ 整数位 +1
+    """
+    row = conn.execute(
+        "SELECT workspace_id, version FROM evolve_releases ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if row is None:
+        return "0.1"
+    major_s, _, minor_s = (row["version"] or "0.1").partition(".")
+    try:
+        major, minor = int(major_s), int(minor_s or 0)
+    except ValueError:
+        major, minor = 0, 1
+    if row["workspace_id"] == workspace_id:
+        return f"{major}.{minor + 1}"
+    return f"{major + 1}.0"
+
+
+def _backfill_evolve_release_history(conn: sqlite3.Connection) -> None:
+    """存量回填（REQ-20261004-212948 FR-006/DEC-004）：老点切已发版 + 版本重放。
+
+    判定规则（DEC-006 丢弃语义下的时间窗归版）：
+      - 绑定 Agent 的已发布（published）会话按 (updated_at, id) 升序重放，
+        沿 DEC-003 规则分配版本号
+      - 点归版：该 Agent 名下 accepted、有落地痕迹（design_ref 非空）、
+        accepted_at 非空且不晚于该次发布时间 → 切 shipped + 版本号。
+        （旧拍板逻辑取全部 accepted 进 design_doc，故 accepted_at 不晚于
+        发布时间的点必随该版落地；被丢弃后重采纳的点归下一次发布）
+      - 发布后采纳的点保持 accepted（下次拍板照常落地）
+      - accepted_at 缺失的老点不动，log 清单人工核对（FR-006 失败语义）
+    幂等：已 shipped 的点与已有 release 记录的会话不再命中，重跑无变更。
+    """
+    import logging
+
+    logger = logging.getLogger("evolution.db")
+    agents = {
+        row["agent_id"]: row["workspace_id"]
+        for row in conn.execute(
+            "SELECT agent_id, workspace_id FROM evolve_agents"
+        ).fetchall()
+    }
+    published = conn.execute(
+        """SELECT session_id, agent_id, updated_at FROM evolve_sessions
+           WHERE status = 'published' AND agent_id IS NOT NULL
+           ORDER BY updated_at, id"""
+    ).fetchall()
+    now = datetime.now(UTC).isoformat()
+    with _lock:
+        try:
+            for sess in published:
+                sid, agent_id = sess["session_id"], sess["agent_id"]
+                if conn.execute(
+                    "SELECT 1 FROM evolve_releases WHERE session_id = ?", (sid,)
+                ).fetchone():
+                    continue
+                workspace_id = agents.get(agent_id) or ""
+                version = next_release_version(conn, workspace_id)
+                cur = conn.execute(
+                    """UPDATE evolve_points
+                       SET status = 'shipped', version = ?, landed_session_id = ?
+                       WHERE agent_id = ? AND status = 'accepted'
+                         AND design_ref IS NOT NULL
+                         AND accepted_at IS NOT NULL
+                         AND accepted_at <= ?""",
+                    (version, sid, agent_id, sess["updated_at"]),
+                )
+                shipped_ids = conn.execute(
+                    """SELECT seq, id, target FROM evolve_points
+                       WHERE landed_session_id = ? AND status = 'shipped'""",
+                    (sid,),
+                ).fetchall()
+                conn.execute(
+                    """INSERT INTO evolve_releases
+                       (session_id, agent_id, workspace_id, version, point_count, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (sid, agent_id, workspace_id, version, cur.rowcount, now),
+                )
+                logger.info(
+                    "存量回填：session %s → 版本 %s，封存 %d 个进化点：%s",
+                    sid, version, cur.rowcount,
+                    [(r["seq"], r["id"], r["target"]) for r in shipped_ids],
+                )
+            orphans = conn.execute(
+                """SELECT seq, id FROM evolve_points
+                   WHERE status = 'accepted' AND design_ref IS NOT NULL
+                     AND accepted_at IS NULL
+                     AND agent_id IN (
+                         SELECT DISTINCT agent_id FROM evolve_sessions WHERE status = 'published'
+                     )"""
+            ).fetchall()
+            if orphans:
+                logger.warning(
+                    "存量回填：%d 个老点 accepted_at 缺失无法归版，保持 accepted 待人工核对：%s",
+                    len(orphans), [(r["seq"], r["id"]) for r in orphans],
+                )
+        except Exception:
+            # 容错语义（review P2）：回填失败不阻断启动（对齐 _migrate_ep_agent_seq_unique），
+            # 回滚未提交残留，下次启动幂等重放
+            conn.rollback()
+            logger.exception("存量回填失败（不影响启动），下次启动幂等重试")
+        conn.commit()
 
 
 def _migrate_evolve_agent_binding(conn: sqlite3.Connection) -> None:

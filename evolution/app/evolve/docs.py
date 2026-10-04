@@ -311,9 +311,12 @@ def generate_design_doc_from_points(session_id: str, agent_id: str | None = None
     )
     path = write_design_doc(session_id, changes=changes, rationale=rationale)
 
-    # 回填 design_ref（1-based 序号）到进化点表
+    # 回填 design_ref（1-based 序号）+ 落地会话归属到进化点表
+    # （REQ-20261004-212948 FR-001：publish 按 landed_session_id 切终态，
+    # 只封存本次拍板覆盖的点；丢弃后重拍板会被新会话覆盖，DEC-006）
     for i, point in enumerate(accepted, 1):
         EvolvePointsRepo.set_design_ref(point["id"], i)
+    EvolvePointsRepo.mark_landed([p["id"] for p in accepted], session_id)
 
     return path
 

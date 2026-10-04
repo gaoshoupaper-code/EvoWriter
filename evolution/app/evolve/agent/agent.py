@@ -566,7 +566,8 @@ async def run_finalize_round(ctx: EvolveContext) -> dict[str, Any]:
     from app.evolve.docs import generate_design_doc_from_points
     from app.evolve.evolve_repo import EvolvePointsRepo
 
-    # 前置：必须有 accepted 进化点（Agent 绑定模式按 Agent 取——跨会话累积，FR-008）
+    # 前置：必须有未发版的 accepted 进化点（Agent 绑定模式按 Agent 取——跨会话累积，
+    # FR-008；已发版 shipped 点不重复落地，REQ-20261004-212948 FR-002）
     if ctx.agent_id:
         accepted_count = EvolvePointsRepo.count_accepted_by_agent(ctx.agent_id)
     else:
@@ -574,7 +575,7 @@ async def run_finalize_round(ctx: EvolveContext) -> dict[str, Any]:
     if accepted_count == 0:
         return {
             "status": "failed",
-            "error": "拍板失败：没有 accepted 进化点（至少需要 1 个）",
+            "error": "拍板失败：没有待落地的新采纳进化点（已发版的点不重复落地，至少需要 1 个未发版的已采纳点）",
             "session_id": ctx.session_id,
         }
 
@@ -709,10 +710,20 @@ def _format_work_binding(ctx: EvolveContext) -> str:
             f"- 既有进化点 {len(points)} 个（{stat_desc}）。"
             f"更新/否决时 point_id 用清单里的 id 或 #序号："
         )
+        # 已发版点带版本号（REQ-20261004-212948 FR-004：Agent 感知已处理问题）
         for p in points[:10]:
+            tag = f"[{p['status']}"
+            if p["status"] == "shipped":
+                tag += f" v{p.get('version') or '?'}"
+            tag += "]"
             lines.append(
-                f"  • [{p['status']}] #{p['seq']}（id={p['id']}）"
+                f"  • {tag} #{p['seq']}（id={p['id']}）"
                 f"{p['target']}: {p['problem'][:60]}"
+            )
+        if by_status.get("shipped"):
+            lines.append(
+                "  （[shipped] 已发版 = 已处理并随版本发布，勿重复 propose；"
+                "同目标需要再优化（新问题/回归）时请新提进化点并说明与上版差异）"
             )
     else:
         lines.append("- 既有进化点：无（本 Agent 名下尚未提出）")

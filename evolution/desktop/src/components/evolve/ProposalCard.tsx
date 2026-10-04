@@ -24,6 +24,8 @@ const STATUS_META: Record<
   proposed: { icon: "○", label: "讨论中", tone: "proposed" },
   accepted: { icon: "✓", label: "已采纳", tone: "accepted" },
   rejected: { icon: "✗", label: "已否决", tone: "rejected" },
+  // 已发版终态（REQ-20261004-212948）：卡片消息只读回显，label 带版本号由下方拼接
+  shipped: { icon: "▣", label: "已发版", tone: "rejected" },
 };
 
 export default function ProposalCard({ point, highlighted }: Props) {
@@ -31,6 +33,11 @@ export default function ProposalCard({ point, highlighted }: Props) {
   const chosen = point.status === "accepted" && point.chosen_option !== null
     ? point.options[point.chosen_option ?? 0]
     : null;
+  // 已发版终态回显时 label 拼上版本号（REQ-20261004-212948 FR-003）
+  const statusLabel =
+    point.status === "shipped" && point.version
+      ? `${meta.label} v${point.version}`
+      : meta.label;
 
   return (
     <div className={`proposal-card status-${meta.tone}${highlighted ? " proposal-highlighted" : ""}`}
@@ -40,7 +47,7 @@ export default function ProposalCard({ point, highlighted }: Props) {
         <code className="proposal-target">{point.target}</code>
         <span className={`proposal-status status-${meta.tone}`}>
           <span className="status-icon">{meta.icon}</span>
-          {meta.label}
+          {statusLabel}
         </span>
       </header>
 

@@ -308,6 +308,8 @@ class EvolvePointsRepo:
             "user_note": None,
             "accepted_at": None,
             "design_ref": None,
+            "landed_session_id": None,
+            "version": None,
             "created_at": now,
             "agent_id": agent_id,
         }
@@ -395,11 +397,88 @@ class EvolvePointsRepo:
         return cur.rowcount > 0
 
     @staticmethod
+    def mark_landed(point_ids: list[str], landed_session_id: str) -> int:
+        """拍板落地回填：记录点随哪个会话进入 design_doc（REQ-20261004-212948）。
+
+        publish 成功时按 landed_session_id 切终态（ship_points）——只切本次
+        拍板覆盖的点，拍板后新采纳的点（未回填）不会被误切。丢弃后再拍板，
+        本字段被新会话覆盖（DEC-006 丢弃退回语义）。
+        不改 status（accepted 保持不变，状态权威仍在 accept/reject）。
+
+        Returns:
+            实际更新行数。
+        """
+        if not point_ids:
+            return 0
+        placeholders = ", ".join("?" for _ in point_ids)
+        cur = db.execute(
+            f"""UPDATE evolve_points SET landed_session_id = ?
+                WHERE id IN ({placeholders}) AND status = 'accepted'""",
+            (landed_session_id, *point_ids),
+        )
+        return cur.rowcount
+
+    @staticmethod
+    def ship_points(landed_session_id: str, *, version: str) -> int:
+        """发版封存：把该落地会话覆盖的 accepted 点切终态 shipped + 版本号。
+
+        幂等可重放：只命中 status='accepted'（已 shipped 的行不再变更），
+        publish 幂等分支重入补切漏切时安全（REQ-20261004-212948 FR-001）。
+
+        Returns:
+            本次实际切为 shipped 的行数（重放时为 0）。
+        """
+        cur = db.execute(
+            """UPDATE evolve_points
+               SET status = 'shipped', version = ?
+               WHERE landed_session_id = ? AND status = 'accepted'""",
+            (version, landed_session_id),
+        )
+        return cur.rowcount
+
+    @staticmethod
+    def list_shipped_versions_by_target(agent_id: str, target: str) -> list[str]:
+        """查 Agent 名下与 target 完全一致的已发版点的版本号（FR-005 提醒用）。
+
+        Returns:
+            版本号列表（按发版序升序）；无命中返回空表。
+        """
+        rows = db.query_all(
+            """SELECT version FROM evolve_points
+               WHERE agent_id = ? AND target = ? AND status = 'shipped'
+               ORDER BY created_at, seq""",
+            (agent_id, target),
+        )
+        return [r["version"] for r in rows if r.get("version")]
+
+    @staticmethod
+    def mark_landed_legacy(agent_id: str, landed_session_id: str) -> int:
+        """存量窗口兜底（review P2×2）：给升级前已 finalize 的点补 landed_session_id。
+
+        旧代码没有 landed_session_id 字段——升级时已停在 pending_review 的会话，
+        其点有 design_ref（落地痕迹）但 landed 为 NULL，publish 时 ship 按
+        landed 匹配会漏封存（封 0 点 + 烧版本号 + 点滞留 accepted）。
+        只捞「landed IS NULL」的行：新链路点拍板时必被 mark_landed 覆盖，
+        丢弃会话的点 landed 指向已丢弃会话（非 NULL）不受影响（DEC-006）。
+
+        Returns:
+            实际补标的行数。
+        """
+        cur = db.execute(
+            """UPDATE evolve_points SET landed_session_id = ?
+               WHERE agent_id = ? AND status = 'accepted'
+                 AND design_ref IS NOT NULL AND landed_session_id IS NULL""",
+            (landed_session_id, agent_id),
+        )
+        return cur.rowcount
+
+    @staticmethod
     def get_by_id(point_id: str) -> dict[str, Any] | None:
         """按 id 查单个进化点。"""
         row = db.query_one(
             """SELECT id, session_id, seq, target, problem, options, recommendation, note,
-                      status, chosen_option, user_note, accepted_at, design_ref, created_at, agent_id
+                      status, chosen_option, user_note, accepted_at, design_ref,
+                      landed_session_id, version, created_at, agent_id
                FROM evolve_points WHERE id = ?""",
             (point_id,),
         )
@@ -451,7 +530,8 @@ class EvolvePointsRepo:
         """按 seq 升序列出 session 的全部进化点（浮窗数据源）。"""
         rows = db.query_all(
             """SELECT id, session_id, seq, target, problem, options, recommendation, note,
-                      status, chosen_option, user_note, accepted_at, design_ref, created_at, agent_id
+                      status, chosen_option, user_note, accepted_at, design_ref,
+                      landed_session_id, version, created_at, agent_id
                FROM evolve_points
                WHERE session_id = ?
                ORDER BY seq ASC""",
@@ -464,7 +544,8 @@ class EvolvePointsRepo:
         """按 status 过滤列出进化点（如查 accepted 用于拍板）。"""
         rows = db.query_all(
             """SELECT id, session_id, seq, target, problem, options, recommendation, note,
-                      status, chosen_option, user_note, accepted_at, design_ref, created_at, agent_id
+                      status, chosen_option, user_note, accepted_at, design_ref,
+                      landed_session_id, version, created_at, agent_id
                FROM evolve_points
                WHERE session_id = ? AND status = ?
                ORDER BY seq ASC""",
@@ -492,7 +573,8 @@ class EvolvePointsRepo:
         """
         rows = db.query_all(
             """SELECT id, session_id, seq, target, problem, options, recommendation, note,
-                      status, chosen_option, user_note, accepted_at, design_ref, created_at, agent_id
+                      status, chosen_option, user_note, accepted_at, design_ref,
+                      landed_session_id, version, created_at, agent_id
                FROM evolve_points
                WHERE agent_id = ?
                ORDER BY created_at, seq ASC""",
@@ -505,7 +587,8 @@ class EvolvePointsRepo:
         """按 status 过滤列出 Agent 名下进化点（finalize 取 accepted 用，FR-010）。"""
         rows = db.query_all(
             """SELECT id, session_id, seq, target, problem, options, recommendation, note,
-                      status, chosen_option, user_note, accepted_at, design_ref, created_at, agent_id
+                      status, chosen_option, user_note, accepted_at, design_ref,
+                      landed_session_id, version, created_at, agent_id
                FROM evolve_points
                WHERE agent_id = ? AND status = ?
                ORDER BY created_at, seq ASC""",
@@ -539,8 +622,137 @@ class EvolvePointsRepo:
             "user_note": row.get("user_note"),
             "accepted_at": row.get("accepted_at"),
             "design_ref": row.get("design_ref"),
+            "landed_session_id": row.get("landed_session_id"),
+            "version": row.get("version"),
             "created_at": row["created_at"],
             "agent_id": row.get("agent_id"),
         }
 
 
+
+
+# ════════════════════════════════════════════════════════════
+#  EvolveReleasesRepo：发版记录（REQ-20261004-212948 DEC-001/003）
+# ════════════════════════════════════════════════════════════
+
+
+class EvolveReleasesRepo:
+    """evolve_releases 表读写：作品语义版本号的分配与查询。
+
+    版本号规则（DEC-003，全局单序列）：
+      - 首个发版 0.1
+      - 与上一次发版同一作品（workspace_id 相同）：小数位 +1（0.1 → 0.2）
+      - 换作品（含回访旧作品）：整数位 +1（0.5 → 1.0；1.1 → 2.0）
+    语义版本号只服务界面展示与 Agent 感知；Platform 账本 vN 是机器对账权威，
+    两套号并存互不换算。
+    """
+
+    @staticmethod
+    def next_version(workspace_id: str) -> str:
+        """按 DEC-003 规则推算下一次发版的版本号（不落库）。
+
+        Args:
+            workspace_id: 本次发版会话所属作品
+        Returns:
+            版本号字符串（"0.1" / "0.6" / "2.0" …）。
+        """
+        conn = db.get_conn()
+        with db._lock:
+            return db.next_release_version(conn, workspace_id)
+
+    @staticmethod
+    def record_release(
+        session_id: str,
+        *,
+        agent_id: str | None,
+        workspace_id: str,
+        version: str,
+        point_count: int = 0,
+    ) -> dict[str, Any]:
+        """记录一次发版（publish 成功路径调用）。
+
+        session_id 唯一约束兜底幂等：调用方应先 get_by_session 查重。
+        Returns:
+            完整发版记录 dict。
+        """
+        now = _now()
+        db.execute(
+            """INSERT INTO evolve_releases
+               (session_id, agent_id, workspace_id, version, point_count, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (session_id, agent_id, workspace_id, version, point_count, now),
+        )
+        return {
+            "session_id": session_id,
+            "agent_id": agent_id,
+            "workspace_id": workspace_id,
+            "version": version,
+            "point_count": point_count,
+            "created_at": now,
+        }
+
+    @staticmethod
+    def get_by_session(session_id: str) -> dict[str, Any] | None:
+        """按落地会话查发版记录（publish 幂等分支复用版本号用）。"""
+        row = db.query_one(
+            "SELECT session_id, agent_id, workspace_id, version, point_count, created_at "
+            "FROM evolve_releases WHERE session_id = ?",
+            (session_id,),
+        )
+        return dict(row) if row else None
+
+    @staticmethod
+    def ship_and_record(
+        session_id: str,
+        *,
+        agent_id: str | None,
+        workspace_id: str,
+    ) -> dict[str, Any]:
+        """发版封存（原子临界区）：查重 → 分配版本 → 切终态 → 记录。
+
+        同一把 db._lock 内用原生 conn 语句完成并单次 commit——防同会话
+        并发 publish（双击）的 next_version 读后写竞态与版本重复分配；
+        session_id 已有记录（并发竞态输家 / 幂等重入）复用既有版本号
+        补切漏切，与 publish 幂等分支同语义（REQ-20261004-212948 风险处置）。
+
+        Returns:
+            {version, point_count, reused}——reused=True 表示命中既有记录。
+        """
+        conn = db.get_conn()
+        with db._lock:
+            row = conn.execute(
+                "SELECT version FROM evolve_releases WHERE session_id = ?", (session_id,),
+            ).fetchone()
+            if row is not None:
+                cur = conn.execute(
+                    """UPDATE evolve_points SET status = 'shipped', version = ?
+                       WHERE landed_session_id = ? AND status = 'accepted'""",
+                    (row["version"], session_id),
+                )
+                conn.commit()
+                return {"version": row["version"], "point_count": cur.rowcount, "reused": True}
+            version = db.next_release_version(conn, workspace_id)
+            # 与 ship_points 同语义的 UPDATE——内联原生语句保证临界区单次 commit
+            cur = conn.execute(
+                """UPDATE evolve_points SET status = 'shipped', version = ?
+                   WHERE landed_session_id = ? AND status = 'accepted'""",
+                (version, session_id),
+            )
+            conn.execute(
+                """INSERT INTO evolve_releases
+                   (session_id, agent_id, workspace_id, version, point_count, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (session_id, agent_id, workspace_id, version, cur.rowcount, _now()),
+            )
+            conn.commit()
+            return {"version": version, "point_count": cur.rowcount, "reused": False}
+
+    @staticmethod
+    def list_recent(limit: int = 50) -> list[dict[str, Any]]:
+        """按发版序倒序列出近期发版记录（展示/对账用）。"""
+        rows = db.query_all(
+            "SELECT session_id, agent_id, workspace_id, version, point_count, created_at "
+            "FROM evolve_releases ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(r) for r in rows]

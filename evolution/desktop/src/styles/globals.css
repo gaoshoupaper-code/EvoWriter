@@ -11003,6 +11003,39 @@ html[data-theme="dark"] .recommendation-body { color: var(--teal); }
 .point-item.status-accepted { border-left: 2px solid var(--teal); }
 .point-item.status-rejected { opacity: 0.65; border-left: 2px solid var(--muted); }
 
+/* 已发版组（REQ-20261004-212948 DEC-002）：置灰只读 + 版本分组折叠 */
+.point-item.status-shipped {
+  opacity: 0.55;
+  border-left: 2px solid var(--muted);
+}
+.point-item.status-shipped:hover { border-color: var(--line); }
+.group-title-collapsible {
+  border: 0;
+  background: none;
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+.group-caret { margin-left: auto; color: var(--muted); font-size: 10px; }
+.shipped-version-block { margin: 2px 0 10px; }
+.shipped-version-title {
+  font-size: 10.5px;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  margin: 0 0 4px;
+  padding: 0 4px;
+}
+.point-version {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--muted);
+  background: var(--panel-solid);
+  padding: 0 6px;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
 .point-head { display: flex; align-items: center; gap: 6px; }
 .point-seq { font-size: 10.5px; color: var(--muted); font-family: var(--font-mono); }
 .point-target {

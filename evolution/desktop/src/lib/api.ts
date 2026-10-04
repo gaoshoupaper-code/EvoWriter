@@ -791,11 +791,13 @@ export interface EvolvePoint {
   options: EvolvePointOption[];
   recommendation?: string | null;
   note?: string | null;
-  status: "proposed" | "accepted" | "rejected";
+  status: "proposed" | "accepted" | "rejected" | "shipped";
   chosen_option?: number | null; // 0-based，accepted 时
   user_note?: string | null;
   accepted_at?: string | null;
   design_ref?: number | null;
+  landed_session_id?: string | null; // 拍板落地会话（shipped 时按它封存）
+  version?: string | null; // 发版版本号（status=shipped 时归属，如 "0.2"）
   created_at: string;
 }
 

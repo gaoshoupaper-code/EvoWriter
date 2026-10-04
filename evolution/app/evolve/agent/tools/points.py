@@ -108,10 +108,32 @@ def make_points_tools() -> list:
                 seq=point["seq"],
                 target=target,
             )
+            # FR-005 软提醒（不拦截）：同目标已发版过 → 附版本提示，引导确认
+            # 新问题/回归而非重复。命中判断失败静默降级（不影响创建）。
+            reminder = ""
+            try:
+                prior = (
+                    EvolvePointsRepo.list_shipped_versions_by_target(ctx.agent_id, target)
+                    if ctx.agent_id else []
+                )
+            except Exception:
+                logger.warning(
+                    "FR-005 已发版提醒查询失败（降级为无提醒，不影响创建）: "
+                    "agent=%s target=%s",
+                    ctx.agent_id, target, exc_info=True,
+                )
+                prior = []
+            if prior:
+                reminder = (
+                    f"\n提醒：该目标已于 {'、'.join(f'v{v}' for v in prior)} 发版改过——"
+                    f"请确认这是新问题或回归而非重复；若是，请在后续讨论中"
+                    f"向用户说明与上版的差异。"
+                )
             return (
                 f"已提出进化点 #{point['seq']}（id={point['id']}）：{target}\n"
                 f"现在请在对话中告诉用户，等用户表态（选择方案/否决/补充）后，"
                 f"调 update_evolution_point 或 reject_evolution_point 更新状态。"
+                f"{reminder}"
             )
         except Exception as e:
             ctx.emit_step("propose_evolution_point", "failed", error=str(e))
@@ -158,6 +180,10 @@ def make_points_tools() -> list:
             point_id = point["id"]
             if not _point_owned_by_ctx(point, ctx):
                 return f"进化点 {point_id} 不属于当前进化 Agent"
+            if point["status"] == "shipped":
+                # 终态只读（REQ-20261004-212948 FR-004）：已随版本发版封存。
+                # 同目标需要再优化（新问题或回归）时请新提点并说明与上版差异
+                return _shipped_readonly_hint(point, "采纳/修改")
             if not (0 <= chosen_option < len(point["options"])):
                 return (
                     f"chosen_option {chosen_option} 越界——"
@@ -221,6 +247,9 @@ def make_points_tools() -> list:
             point_id = point["id"]
             if not _point_owned_by_ctx(point, ctx):
                 return f"进化点 {point_id} 不属于当前进化 Agent"
+            if point["status"] == "shipped":
+                # 终态只读（同 update：已发版点不可否决，只能新提点）
+                return _shipped_readonly_hint(point, "否决")
 
             updated = EvolvePointsRepo.reject(point_id, user_note=reason or None)
             ctx.emit_step(
@@ -262,10 +291,17 @@ def make_points_tools() -> list:
             return "当前进化 Agent 名下还没有提出任何进化点。"
 
         lines = [f"共 {len(points)} 个进化点（point_id 可用 id 或 #序号 引用）："]
-        status_icon = {"proposed": "○", "accepted": "✓", "rejected": "✗"}
+        status_icon = {"proposed": "○", "accepted": "✓", "rejected": "✗", "shipped": "▣"}
+        if any(p["status"] == "shipped" for p in points):
+            lines.append(
+                "提示：[shipped] 已发版 = 已处理并随版本发布的问题，勿重复 propose；"
+                "同一目标需要再优化（新问题/回归）时，请新提进化点并说明与上版差异。"
+            )
         for p in points:
             icon = status_icon.get(p["status"], "?")
             line = f"  {icon} #{p['seq']}（id={p['id']}）[{p['status']}] {p['target']}"
+            if p["status"] == "shipped":
+                line += f"（已发版 v{p.get('version') or '?'}）"
             if ctx.agent_id and p.get("session_id") != ctx.session_id:
                 line += f"（来自早前会话 {p['session_id']}）"
             if p["status"] == "accepted" and p["chosen_option"] is not None:
@@ -282,6 +318,16 @@ def make_points_tools() -> list:
     ]
 
 
+def _shipped_readonly_hint(point: dict[str, Any], action: str) -> str:
+    """已发版点被 update/reject 时的终态只读提示（REQ-20261004-212948 FR-004）。"""
+    v = point.get("version") or "?"
+    return (
+        f"进化点 #{point['seq']} 已发版（v{v}）——终态只读，不可再{action}。"
+        f"若该目标需要继续优化（新问题或回归），请 propose 一个新进化点，"
+        f"并在 problem 里说明与 v{v} 的差异。"
+    )
+
+
 def _available_points_hint(ctx: Any) -> str:
     """换算不命中时给 Agent 的可用点清单（FR-002 失败语义：附 id 引导自查）。
 
@@ -296,7 +342,10 @@ def _available_points_hint(ctx: Any) -> str:
         return "当前进化 Agent 名下没有可用进化点（可先调 propose_evolution_point 提出）。"
     lines = ["当前可用进化点（point_id 可用 32 位 id 或 #序号）："]
     for p in points:
-        lines.append(f"  #{p['seq']}（id={p['id']}）[{p['status']}] {p['target']}")
+        line = f"  #{p['seq']}（id={p['id']}）[{p['status']}] {p['target']}"
+        if p["status"] == "shipped":
+            line += f"（已发版 v{p.get('version') or '?'}，终态只读）"
+        lines.append(line)
     return "\n".join(lines)
 
 

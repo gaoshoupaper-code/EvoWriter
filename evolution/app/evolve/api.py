@@ -762,6 +762,44 @@ def _trace_event_to_sse(event: Any) -> dict[str, Any] | None:
 # ── 发版 / 丢弃（Phase 4，S9/S12）────────────────────────────
 
 
+def _ship_release(session: dict[str, Any]) -> str | None:
+    """发版成功后的终态封存与版本记录（REQ-20261004-212948 FR-001/DEC-001/003）。
+
+    - 存量窗口兜底（review P2）：升级前已 finalize 的点无 landed_session_id，
+      先补标再封存，否则 ship 按 landed 匹配会漏（封 0 点 + 烧版本号）
+    - 分配作品语义版本号（同作品小数 +1，换作品整数 +1）并记 evolve_releases
+    - 本次拍板覆盖的 accepted 点（landed_session_id=本会话）切 shipped + 版本号
+    - 幂等：已有 release 记录则复用版本号并补切漏切（publish 重入安全）
+    - 旧链路（无 agent_id）不参与版本闭环，返回 None
+    """
+    session_id = session["session_id"]
+    agent_id = session.get("agent_id")
+    if not agent_id:
+        logger.warning(
+            "session %s 无绑定 Agent，跳过发版终态封存（旧链路归档语义）", session_id,
+        )
+        return None
+    from app.evolve import agents_repo
+    from app.evolve.evolve_repo import EvolvePointsRepo, EvolveReleasesRepo
+
+    legacy = EvolvePointsRepo.mark_landed_legacy(agent_id, session_id)
+    if legacy:
+        logger.info(
+            "session %s 发版封存：补标 %d 个升级前已落地的存量点", session_id, legacy,
+        )
+    agent = agents_repo.get(agent_id)
+    workspace_id = (agent or {}).get("workspace_id") or ""
+    result = EvolveReleasesRepo.ship_and_record(
+        session_id, agent_id=agent_id, workspace_id=workspace_id,
+    )
+    logger.info(
+        "session %s 发版封存：版本 %s（作品 %s），%d 个进化点进终态%s",
+        session_id, result["version"], workspace_id, result["point_count"],
+        "（复用既有记录）" if result["reused"] else "",
+    )
+    return result["version"]
+
+
 @router.post("/evolve/sessions/{session_id}/publish")
 def publish_session(session_id: str, request: Request) -> dict[str, Any]:
     """单阶段发版（Phase A 平台化）：冻结 candidate → Platform 门禁 → Platform 晋升。
@@ -806,6 +844,7 @@ def publish_session(session_id: str, request: Request) -> dict[str, Any]:
         # Phase A 起发版不再写 registry（只读），此分支只覆盖切换前已在旧线
         # 落档的 session。
         if candidate is not None and candidate.get("status") == "production":
+            release_version = _ship_release(session)
             ev_db.update_session(session_id, status="published")
             return {
                 "status": "activated",
@@ -813,6 +852,7 @@ def publish_session(session_id: str, request: Request) -> dict[str, Any]:
                 "snapshot_version": candidate["version"],
                 "source_commit": candidate["commit_hash"],
                 "snapshot_trace_id": candidate.get("snapshot_trace_id"),
+                "release_version": release_version,
             }
 
         # ── 1. 冻结 candidate（首次发版：commit 源码；legacy 已冻结则复用） ──
@@ -899,6 +939,7 @@ def publish_session(session_id: str, request: Request) -> dict[str, Any]:
             )
             mirror_push = "failed"
 
+        release_version = _ship_release(session)
         ev_db.update_session(session_id, status="published")
 
         logger.info(
@@ -912,6 +953,7 @@ def publish_session(session_id: str, request: Request) -> dict[str, Any]:
             "source_commit": source_commit,
             "mirror_push": mirror_push,
             "snapshot_trace_id": None,
+            "release_version": release_version,
         }
     except HTTPException:
         raise
@@ -1160,7 +1202,7 @@ async def finalize_session(session_id: str) -> dict[str, Any]:
     if accepted_count == 0:
         raise HTTPException(
             status_code=400,
-            detail="拍板失败：没有 accepted 进化点（至少需要 1 个，决策 A）",
+            detail="拍板失败：没有待落地的新采纳进化点（已发版的点不重复落地，至少需要 1 个未发版的已采纳点，决策 A）",
         )
 
     # 重建 ctx

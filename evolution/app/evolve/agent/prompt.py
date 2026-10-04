@@ -25,11 +25,17 @@ v7 架构切换（自 v6 多 Agent 流水线）后的认知地图：
   - evolve_system_prompt(...)：用 str.replace 把动态部分（session_id /
     eval_summary / reflections）替换进占位符。
 
+Skills 池注入（2026-10-04）：占位符替换完成后，把 app/evolve/skills 池的
+SKILL.md 正文（load_skill_sections）追加在 prompt 最末尾——行为指令贴尾，
+近因效应。蓝图本体不掺技能内容，蓝图 API / 前端展示不受影响。
+
 为什么 STATIC_BLUEPRINT 不是 f-string：f-string 会触发 {x} 转义，蓝图里的
 字面花括号（如 Command(update={...})）需要双重转义，且蓝图不能独立展示
 （含未替换的 {var}）。普通字符串 + 占位符替换让蓝图可作为纯文本独立展示。
 """
 from __future__ import annotations
+
+from app.evolve.skills import load_skill_sections
 
 
 # ── 占位符（HTML 注释，markdown 渲染时不可见）──────────────────────
@@ -409,10 +415,16 @@ def evolve_system_prompt(
 """
 
     # 占位符替换（保持 STATIC_BLUEPRINT 为纯字符串可独立展示）
-    return (
+    prompt = (
         STATIC_BLUEPRINT
         .replace(_PLACEHOLDER_CURRENT_SESSION, current_session_block)
     )
+
+    # Skills 池注入段追加在最末尾（池空则不追加，见模块 docstring）
+    skills_block = load_skill_sections()
+    if skills_block:
+        prompt = f"{prompt}\n\n{skills_block}"
+    return prompt
 
 
 __all__ = ["evolve_system_prompt", "STATIC_BLUEPRINT"]

@@ -32,8 +32,9 @@ from ..middleware.quota_convergence import (
     DEFAULT_MAX_MODEL_CALLS,
     QuotaConvergenceMiddleware,
 )
-from ..middleware.receipt_gate import ReceiptGateMiddleware
-from ..middleware.review_gate import ReviewGateMiddleware
+from ..middleware.object_contract_guard import (
+    ObjectContractGuardMiddleware,
+)
 from ..middleware.storyline_contract_guard import (
     StorylineContractGuardMiddleware,
 )
@@ -43,9 +44,6 @@ from ..middleware.storyline_integrity import (
 from ..middleware.storyline_single_line_limit import (
     StorylineSingleLineLimitMiddleware,
 )
-from ..middleware.revision_limit import RevisionLimitMiddleware
-from ..tools.confirm_with_user import build_confirm_with_user_tool
-from ..tools.increment_batch import build_increment_batch_tool
 from app.platform.agent.middleware import ContextAssemblerMiddleware
 
 PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "storybuilding_system.md"
@@ -91,10 +89,12 @@ def build_storybuilding_subagent(
     permissions = [
         # 读取：允许读取所有文件
         FilesystemPermission(operations=["read"], paths=["/**"], mode="allow"),
-        # 写入：允许写入 3 个维度（storyline.md 单文件，不再有 storyline/ 目录）
+        # 写入：允许写入 4 个维度（storyline.md 单文件，不再有 storyline/ 目录）
         FilesystemPermission(operations=["write"], paths=["/character/*.md"], mode="allow"),
         FilesystemPermission(operations=["write"], paths=["/worldview.md"], mode="allow"),
         FilesystemPermission(operations=["write"], paths=["/storyline.md"], mode="allow"),
+        # 物品卡（REQ-20261004-221109：一物品一文件，契约由 ObjectContractGuard 校验）
+        FilesystemPermission(operations=["write"], paths=["/object/*.md"], mode="allow"),
         # 拒绝：禁止写入其他所有文件
         FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
     ]
@@ -103,7 +103,7 @@ def build_storybuilding_subagent(
         name="storybuilding",
         description=(
             "适用：需要构建或扩展小说故事世界时调用——包括人物、世界观、"
-            "故事核心、故事线（含事件表）。"
+            "故事核心、故事线（含事件表）与物品卡（功法/武技/武器等关键物品档案）。"
             "增量迭代：按人物/故事线的比值分流——人物充足(≥3)新增一条故事线，"
             "人物不足(<3)新增一个人物并融入现有故事(不新增故事线)；"
             "每次调用只执行一种模式，可循环多次调用。"
@@ -166,28 +166,21 @@ def build_storybuilding_deep_subagent(
         workspace_root,
         max_new_lines=resolve_line_budget(quota_target),
     ))
-    # 写入完整性护栏（REQ-20261030-002231 FR-011）：单文件增量编辑防丢线区块/事件
+    # 写入完整性护栏（REQ-20260930-002231 FR-011）：单文件增量编辑防丢线区块/事件
     storybuilding_middleware.append(StorylineIntegrityMiddleware(workspace_root))
     # 结构契约运行时护栏（REQ-20260930-194437 FR-003/004/005/007）：
     #   契约规则范围化校验（仅新增/变更区块）+ 名称唯一全局 + 事件数量模板
     #   （非交汇口径）+ 最终结局不可改 + 防死循环强制收尾与拦截日志
     storybuilding_middleware.append(StorylineContractGuardMiddleware(workspace_root))
-    quota_middleware = QuotaConvergenceMiddleware(
+    # 物品卡契约护栏（REQ-20261004-221109 FR-004）：
+    #   写 /object/*.md 校验卡片结构/枚举/锚点/重名；写 storyline.md 反查
+    #   被删事件未被卡片轨迹引用（堵死悬挂引用两个入口）+ 防死循环强制收尾
+    storybuilding_middleware.append(ObjectContractGuardMiddleware(workspace_root))
+    storybuilding_middleware.append(QuotaConvergenceMiddleware(
         workspace_root,
         quota_target,
         max_model_calls=DEFAULT_MAX_MODEL_CALLS,
-    )
-    storybuilding_middleware.append(quota_middleware)
-    # 交互模式（进化 #2/#5，2026-10-02）：理解回执硬闸——首运行禁写 + 回执轮
-    # 导航指令注入。storyline.md 已存在的续写线程闸门自动失效；demand 元信息
-    # receipt_skip: true（评估集预置流）可跳过。
-    storybuilding_middleware.append(ReceiptGateMiddleware(workspace_root))
-    # review 执行下限闸门（进化 #2，2026-10-01）：与 RevisionLimit 上限合围为
-    # 「产物已产出 ⇒ review ≥1 次」。证据：4 条完成 trace 骨架均无 review 节点
-    # （首建 trace-e434ed1c… 写完 storyline.md 后 7s 即终局返回）——原有全部
-    # 指令层为软约束，RevisionLimit 只防多调不防零调。本闸门在模型拟终局且
-    # review 未执行时注入强制补审指令，打断静默截断。
-    storybuilding_middleware.append(ReviewGateMiddleware(workspace_root))
+    ))
     if context_file_paths:
         storybuilding_middleware.append(ContextAssemblerMiddleware(
             workspace_root,
@@ -197,29 +190,6 @@ def build_storybuilding_deep_subagent(
     primary_spec = build_storybuilding_subagent(
         workspace_root, storybuilding_middleware, style_suffix
     )
-
-    # ---- 连写批次工具与三护栏联动（进化 #4，2026-10-02）----
-    # 共享实例：RevisionLimit 在 factory 内部创建会与批次工具脱节——预建实例
-    # 注入 factory（factory 的 revision_limit=None 路径行为与旧版一致）。
-    # 连写联动基线（装配值）：QuotaConvergence 每次运行开始回调恢复，杜绝
-    # 跨运行残留（上一轮连写 5 后下一轮静默继承放宽的 review 上限）。
-    revision_limit_mw = RevisionLimitMiddleware(max_revisions=1)
-    line_limit_mw = next(
-        mw for mw in storybuilding_middleware
-        if isinstance(mw, StorylineSingleLineLimitMiddleware)
-    )
-    quota_middleware.baseline_callback = lambda: (
-        setattr(revision_limit_mw, "max_revisions", 1),
-        setattr(line_limit_mw, "max_new_lines", resolve_line_budget(quota_target)),
-    )
-    batch_tool = build_increment_batch_tool(
-        quota_middleware,
-        revision_limit_mw,
-        line_limit_mw,
-    )
-    # 回执轮 interrupt 暂停载体（2026-10-02 线上死锁修复）：回执经
-    # confirm_with_user 挂起等待用户确认，ReceiptGate 监听其正常返回释放写入
-    confirm_tool = build_confirm_with_user_tool()
 
     # ---- 统一审查子代理规格（审查器自主读取所有文件） ----
     review_spec = build_storybuilding_reviewer(
@@ -250,8 +220,9 @@ def build_storybuilding_deep_subagent(
         name="storybuilding",
         description=(
             "适用：需要构建或扩展小说故事世界时调用——包括人物、世界观、"
-            "故事核心、故事线（含事件表）。"
+            "故事核心、故事线（含事件表）与物品卡（关键物品档案）。"
             "单文件产物：storyline.md 承载故事核心 + 一线一区块（线头 + 事件表）；"
+            "物品卡 object/*.md 在故事线完成后集中建立；"
             "全景时间轴与泳道图由程序派生，agent 不维护。"
             "增量迭代：按人物/故事线比值分流两种互斥模式——"
             "人物充足(≥3)新增一条故事线，人物不足(<3)新增一个人物并融入现有故事、不新增故事线；"
@@ -265,12 +236,9 @@ def build_storybuilding_deep_subagent(
         subagent_middleware=primary_spec.get("middleware"),
         backend=backend,
         artifact_paths=[workspace_root / "storyline.md"],
-        # review 次数：装配基线 1（交互模式一轮一单元一 review）；连写批次由
-        # set_increment_batch 动态放宽至 4N（共享实例注入，进化 #4）
+        # review 全流程只调用 1 次（REQ-20260930-194437 FR-006：
+        # 参数与提示词「单次审查」口径对齐，原值 2 是代码与提示词漂移）
         max_revisions=1,
-        revision_limit=revision_limit_mw,
-        batch_size_tools=[batch_tool],
-        tools=[confirm_tool],
         skills=skills,
         checkpointer=checkpointer,
     )

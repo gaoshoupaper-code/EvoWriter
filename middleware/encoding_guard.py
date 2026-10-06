@@ -368,3 +368,8 @@ def _mapping_value(mapping: object, key: str) -> Any:
 
 
 __all__ = ["EncodingGuardMiddleware"]
+
+
+def build(abc):
+    """架构清单挂载钩子：基础链 EncodingGuard（写入后编码 + 完整性校验）。"""
+    return EncodingGuardMiddleware()

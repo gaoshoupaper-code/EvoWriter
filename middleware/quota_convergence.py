@@ -42,12 +42,7 @@ DEFAULT_MAX_MODEL_CALLS = 60
 
 
 class QuotaConvergenceMiddleware(AgentMiddleware):
-    """配比导航中间件：未达标驱动继续、达标收尾、预算耗尽强制收尾。
-
-    交互模式批次（进化 #4）：batch_lines=1（默认）时单元完成即收尾（一轮一个
-    增量单元，返回摘要交用户审阅）；>1 为连写批次，新增线数达标才收尾。
-    收口判定机械核对（运行开始基线快照 vs 当前实况），不依赖 LLM 自觉。
-    """
+    """配比导航中间件：未达标驱动继续、达标收尾、预算耗尽强制收尾。"""
 
     def __init__(
         self,
@@ -65,24 +60,15 @@ class QuotaConvergenceMiddleware(AgentMiddleware):
         self.workspace_path = Path(workspace_path).resolve()
         self.target = target
         self.max_model_calls = max_model_calls
-        # 交互模式批次参数（进化 #4）：默认一轮一个增量单元；用户指示连写时由
-        # set_increment_batch 工具设为 N（按新增故事线计），每次运行开始重置回 1
-        self.batch_lines = 1
-        # 联动基线恢复回调（装配层注入：运行开始时恢复 RevisionLimit /
-        # SingleLineLimit 的装配基线；None = 无联动，独立运行/测试可用）
-        self.baseline_callback = None
-        self._baseline: tuple[int, int] | None = None
         self._model_calls = 0
 
     # ── 运行周期重置（每次 graph 执行开始）──────────────────────
 
     def before_agent(self, state: Any, runtime: Any) -> None:
         self._model_calls = 0
-        self._reset_batch()
 
     async def abefore_agent(self, state: Any, runtime: Any) -> None:
         self._model_calls = 0
-        self._reset_batch()
 
     # ── 每轮模型调用前注入导航指令 ──────────────────────────────
 
@@ -99,50 +85,6 @@ class QuotaConvergenceMiddleware(AgentMiddleware):
         return {"messages": [message]}
 
     # ── 导航判定（纯逻辑，便于测试）────────────────────────────
-
-    # ── 交互模式批次（进化 #4）：运行开始重置 + 基线快照 + 收口判定 ──
-
-    def _reset_batch(self) -> None:
-        """运行开始：批次回默认 1、恢复联动中间件基线、快照工作区基线。"""
-        self.batch_lines = 1
-        if self.baseline_callback is not None:
-            try:
-                self.baseline_callback()
-            except Exception:  # noqa: BLE001 — 恢复失败不阻断运行
-                pass
-        self._baseline = self._snapshot()
-
-    def _snapshot(self) -> tuple[int, int]:
-        """工作区基线快照：(故事线区块数, 人物档案数)。"""
-        try:
-            count = count_workspace(self.workspace_path)
-            by_type = count.get("by_type") or {}
-            lines = sum(by_type.values())
-        except Exception:  # noqa: BLE001 — 计数失败返回 (0, 0)，批次判定退化为不触发
-            return (0, 0)
-        try:
-            chars = len(list((self.workspace_path / "character").glob("*.md")))
-        except Exception:  # noqa: BLE001
-            chars = 0
-        return (lines, chars)
-
-    def _batch_complete(self) -> bool:
-        """批次收口判定：默认（1）= 新增任一单元（线或人物）即收；连写（N>1）
-        = 新增线数 ≥ N。基线缺失时不触发（退化由配比/预算兜底）。"""
-        if self._baseline is None:
-            return False
-        try:
-            count = count_workspace(self.workspace_path)
-            by_type = count.get("by_type") or {}
-            lines = sum(by_type.values())
-            chars = len(list((self.workspace_path / "character").glob("*.md")))
-        except Exception:  # noqa: BLE001
-            return False
-        new_lines = lines - self._baseline[0]
-        new_chars = chars - self._baseline[1]
-        if self.batch_lines > 1:
-            return new_lines >= self.batch_lines
-        return (new_lines + new_chars) >= 1
 
     def _build_message(self) -> HumanMessage | None:
         """构造本轮导航指令；软终止模式（target=None）恒返回 None。"""
@@ -164,30 +106,37 @@ class QuotaConvergenceMiddleware(AgentMiddleware):
         count = count_workspace(self.workspace_path)
         by_type = count["by_type"] or {}
         status = evaluate_quota(self.target, by_type)
-        batch_done = self._batch_complete()
 
-        if status.achieved or batch_done:
-            if status.achieved:
-                reason = "配比已达标"
-            elif self.batch_lines > 1:
-                reason = f"连写批次已完成（{self.batch_lines} 条线全部落地）"
-            else:
-                reason = "本轮增量单元已完成（交互模式默认一轮一个单元）"
+        if status.achieved:
             return HumanMessage(content=(
-                f"[配比导航 第{cycle}轮] {status.summary_line()}；{reason}。"
-                "停止新增故事线与人物，进入收尾——"
+                f"[配比导航 第{cycle}轮] {status.summary_line()}。"
+                "已达标：停止新增故事线与人物，进入收尾——"
                 "核对 storyline.md 事件表时序号、交汇标注与线头字段完整，"
-                "然后按流程调用 review 审查并按需修订一次"
-                "（本轮产物有修改而尚未审查的必须先审，未审直接返回会被系统闸门拦回），"
-                "最后返回摘要交用户审阅（返回后等待用户反馈；"
-                "用户明确说「连写 N 条」后下一轮才会连续产出）。"
+                "然后按流程调用 review 审查并按需修订一次，最后返回。"
             ))
 
         return HumanMessage(content=(
             f"[配比导航 第{cycle}轮] {status.summary_line()}。"
-            "继续本轮增量：按系统提示词的增量分流规则（人物/故事线比值 R）"
-            "选择新增故事线或新增人物，直至单元/批次完成、达标或预算耗尽。"
+            "继续下一轮增量：按系统提示词的增量分流规则（人物/故事线比值 R）"
+            "选择新增故事线或新增人物，直至达标或预算耗尽。"
         ))
 
 
 __all__ = ["DEFAULT_MAX_MODEL_CALLS", "QuotaConvergenceMiddleware"]
+
+
+def _load_quota_target(abc):
+    from contracts.storybuilding_quota import parse_demand_quota
+
+    demand_path = abc.workspace_path / "demand.md"
+    demand_md = demand_path.read_text(encoding="utf-8") if demand_path.exists() else ""
+    return parse_demand_quota(demand_md)
+
+
+def build(abc):
+    """架构清单挂载钩子：domain 导航——配比收敛（预算常量随模块口径演进）。"""
+    return QuotaConvergenceMiddleware(
+        abc.workspace_path,
+        _load_quota_target(abc),
+        max_model_calls=DEFAULT_MAX_MODEL_CALLS,
+    )

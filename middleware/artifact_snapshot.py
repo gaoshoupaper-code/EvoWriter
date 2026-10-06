@@ -154,3 +154,10 @@ def _is_versioned_artifact_path(file_path: object) -> bool:
 
 
 __all__ = ["ArtifactSnapshotMiddleware"]
+
+
+def build(abc):
+    """架构清单挂载钩子：基础链 ArtifactSnapshot（写盘成功才快照；无回调时解释器不挂载）。"""
+    return ArtifactSnapshotMiddleware(
+        abc.artifact_callback, abc.workspace_path, abc.trace_name,
+    )

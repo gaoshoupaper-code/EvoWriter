@@ -43,24 +43,6 @@ _STORYLINE_FILE = "/storyline.md"
 # 同一规则连续拒绝上限（第 3 次拒绝后，下一次同规则违规放行并强制收尾）
 DEFAULT_MAX_REJECTS = 3
 
-# 结局不可变类规则的判定词（进化 #4 结局草稿制豁免用）。
-# 执行端契约规则名不在包内，此处按名称模式匹配；匹配不上则豁免不生效，
-# 维持原拦截行为（安全降级）。
-_ENDING_IMMUTABLE_KEYWORDS = ("ending", "结局")
-
-
-def _is_ending_immutable_rule(rule_name: str) -> bool:
-    """判定违规规则是否属于「最终结局不可变」类（用于草稿制豁免）。
-
-    Args:
-        rule_name: 契约违规的规则标识（contracts.storyline_contract 返回值）。
-
-    Returns:
-        True 表示该违规应被豁免（不再拦截结局修改）。
-    """
-    name = str(rule_name or "").lower()
-    return any(keyword in name for keyword in _ENDING_IMMUTABLE_KEYWORDS)
-
 
 class StorylineContractGuardMiddleware(AgentMiddleware):
     """storyline.md 结构契约 / 事件数量 / 结局不可变 运行时护栏。
@@ -174,18 +156,6 @@ class StorylineContractGuardMiddleware(AgentMiddleware):
             self._reject_counts.clear()
             return None
 
-        # 进化 #4（结局草稿制）：豁免「最终结局不可变」类规则——结局初构定为草稿
-        # 基线，后续轮次可随叙事需要修订（prompt §6.3/§7.1 同步改口径）。
-        # 规则名匹配不上（执行端 contracts 改名/重组）时豁免不生效，安全降级
-        # 为原拦截行为，不会改坏。豁免仅跳过拦截，不计入连续拒绝计数。
-        violations = [
-            v for v in violations
-            if not _is_ending_immutable_rule(v.rule)
-        ]
-        if not violations:
-            self._reject_counts.clear()
-            return None
-
         # 防死循环：已达连续拒绝上限的规则 → 放行其违规并排队强制收尾
         blocked_msgs: list[str] = []
         blocked_rules: set[str] = set()
@@ -237,3 +207,8 @@ class StorylineContractGuardMiddleware(AgentMiddleware):
 
 
 __all__ = ["DEFAULT_MAX_REJECTS", "StorylineContractGuardMiddleware"]
+
+
+def build(abc):
+    """架构清单挂载钩子：domain 护栏——故事线结构契约运行时校验。"""
+    return StorylineContractGuardMiddleware(abc.workspace_path)

@@ -303,3 +303,8 @@ def _mapping_value(mapping: object, key: str) -> Any:
 
 
 __all__ = ["ReadCacheMiddleware"]
+
+
+def build(abc):
+    """架构清单挂载钩子：基础链 ReadCache（命中短路，最外层拦截 read_file）。"""
+    return ReadCacheMiddleware(intervention_callback=abc.intervention_callback)

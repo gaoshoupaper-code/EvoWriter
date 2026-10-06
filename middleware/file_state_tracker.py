@@ -163,3 +163,8 @@ def _mapping_value(mapping: object, key: str) -> Any:
 
 
 __all__ = ["FileStateTrackerMiddleware"]
+
+
+def build(abc):
+    """架构清单挂载钩子：基础链 FileStateTracker（edit 前 old_string 预检）。"""
+    return FileStateTrackerMiddleware()

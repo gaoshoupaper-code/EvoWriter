@@ -102,3 +102,8 @@ def _mapping_value(mapping: object, key: str) -> Any:
     if isinstance(mapping, dict):
         return mapping.get(key)
     return getattr(mapping, key, None)
+
+
+def build(abc):
+    """架构清单挂载钩子：审查闭环 RevisionLimit 硬上限（max_revisions 取清单声明）。"""
+    return RevisionLimitMiddleware(max_revisions=abc.agent.max_revisions)

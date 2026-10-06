@@ -949,7 +949,11 @@ export interface Snapshot {
 
 export interface HarnessElementView {
   name: string;
-  kind: string; // meta | subagent
+  kind: string; // main | sub（旧版本客户端可能仍见 story_expert 等历史值）
+  role?: "main" | "sub"; // 主/Sub 视角切换依据（后端清单/回退路径均提供）
+  display_name?: string; // 中文名（清单 display_name / 旧布局角色映射）
+  runtime_name?: string; // 运行时委托名（如审查器 = review）
+  description?: string; // 委托描述（清单版本提供）
   prompt: { body: string };
   skills: { path: string; name: string; description: string | null; content: string | null; load_error: string | null }[];
   middlewares: {
@@ -962,6 +966,7 @@ export interface HarnessElementView {
     description: string | null;
     optional: boolean;
   }[];
+  tools?: string[]; // 该 agent 清单挂载的工具名（当前均为空，未来扩展）
 }
 
 /** Tool 作用域——诚实反映 harness 里 tool 的真实归属（非全局即 agent） */
@@ -981,12 +986,22 @@ export interface ToolInfo {
   load_error: string | null;     // 解析失败时填
 }
 
+/** 清单外孤儿要素（DEC-005 桌面「未挂载」展示；仅 manifest 布局提供） */
+export interface UnmountedElements {
+  subagents: string[];
+  middleware: string[];
+  prompts: string[];
+  skills: string[];
+}
+
 export interface HarnessElementsView {
   source_commit: string | null;
   has_source: boolean;
+  layout?: "manifest" | "v7" | "v14"; // manifest = 架构清单真相源
   agents: HarnessElementView[];
   tools: ToolInfo[]; // 顶层平级——tools/ 是全局平铺的，不属于任何 agent
   subagent_relations: { from: string; to: string; role: string }[];
+  unmounted?: UnmountedElements;
 }
 
 export async function getSnapshots(): Promise<Snapshot[]> {

@@ -191,3 +191,33 @@ def _mapping_value(mapping: object, key: str) -> Any:
     if isinstance(mapping, dict):
         return mapping.get(key)
     return getattr(mapping, key, None)
+
+
+# 连续增量负载（REQ-20260922-162823 FR-002，DEC-011 同一判定器）：
+#   - 有配比（full/semi）：单线护栏预算 = 目标线总数 + 余量（防中途废稿重写卡护栏）
+#   - 无配比（minimal / 生产缺字段，DEC-013 软终止）：固定宽松上限防失控
+_MINIMAL_LINE_BUDGET = 8
+_LINE_BUDGET_MARGIN = 2
+
+
+def resolve_line_budget(target) -> int:
+    """按 demand 目标配比计算本次运行的新增故事线预算（护栏 max_new_lines）。"""
+    if target is None:
+        return _MINIMAL_LINE_BUDGET
+    return target.total() + _LINE_BUDGET_MARGIN
+
+
+def _load_quota_target(abc):
+    from contracts.storybuilding_quota import parse_demand_quota
+
+    demand_path = abc.workspace_path / "demand.md"
+    demand_md = demand_path.read_text(encoding="utf-8") if demand_path.exists() else ""
+    return parse_demand_quota(demand_md)
+
+
+def build(abc):
+    """架构清单挂载钩子：domain 护栏——单线新增预算按 demand 配比动态放宽。"""
+    return StorylineSingleLineLimitMiddleware(
+        abc.workspace_path,
+        max_new_lines=resolve_line_budget(_load_quota_target(abc)),
+    )

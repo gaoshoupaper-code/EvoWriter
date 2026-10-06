@@ -111,14 +111,13 @@ class TestV7PackageContent(unittest.TestCase):
             )
 
     def test_story_expert_assets_kept(self):
+        """M2 清单架构（REQ-20261006-130414）：装配资产 = 清单 + prompt/skill/middleware。"""
         for rel in [
+            "architecture.json",
             "prompts/storybuilding_system.md",
             "prompts/storybuilding_review.md",
             "prompts/demand_template.md",
-            "subagents/storybuilding.py",
-            "subagents/factory.py",
-            "subagents/types.py",
-            "subagents/reviewers/storybuilding.py",
+            "middleware/object_contract_guard.py",
             "skills/storybuilding-initial/SKILL.md",
             "skills/storybuilding-expand/SKILL.md",
         ]:
@@ -174,8 +173,12 @@ class TestV7Assemble(unittest.TestCase):
                 f"只允许故事专家技能，出现: {p}",
             )
 
-    def test_factory_passes_checkpointer_to_top_level(self):
-        """顶层装配必须透传 checkpointer（P2 修订对话的线程持久化依赖）。"""
+    def test_interpreter_passes_checkpointer_to_top_level(self):
+        """顶层装配必须透传 checkpointer（P2 修订对话的线程持久化依赖）。
+
+        M2 清单架构：装配在解释器（app.platform.agent.architecture），
+        create_deep_agent 的 kwargs 捕获点随迁。
+        """
         import tempfile
 
         from langgraph.checkpoint.memory import InMemorySaver
@@ -183,18 +186,16 @@ class TestV7Assemble(unittest.TestCase):
         pkg = self._load_pkg()
         captured: dict[str, Any] = {}
 
-        # 直接 patch 工厂模块内的函数绑定（build_deep_subagent 从这里取
-        # create_deep_agent），避免依赖 runtime 共享模块的 patch 时机
-        import harness_current.subagents.factory as factory_mod
+        import app.platform.agent.architecture as arch_mod
 
-        original = factory_mod.create_deep_agent
+        original = arch_mod.create_deep_agent
         try:
 
             def _capture(**kwargs):
                 captured.update(kwargs)
                 return original(**kwargs)
 
-            factory_mod.create_deep_agent = _capture
+            arch_mod.create_deep_agent = _capture
             sentinel = InMemorySaver()
             recorder = _StubRecorder()
             with tempfile.TemporaryDirectory() as tmp:
@@ -204,7 +205,7 @@ class TestV7Assemble(unittest.TestCase):
                 ctx = self._make_ctx(tmp, recorder, checkpointer=sentinel)
                 pkg.assemble(ctx)
         finally:
-            factory_mod.create_deep_agent = original
+            arch_mod.create_deep_agent = original
 
         self.assertIs(captured.get("checkpointer"), sentinel)
 

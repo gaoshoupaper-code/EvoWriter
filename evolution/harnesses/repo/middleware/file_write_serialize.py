@@ -122,3 +122,8 @@ def _mapping_value(mapping: object, key: str) -> Any:
     if isinstance(mapping, dict):
         return mapping.get(key)
     return getattr(mapping, key, None)
+
+
+def build(abc):
+    """架构清单挂载钩子：基础链 FileWriteSerialize（按 file_path 串行化写）。"""
+    return FileWriteSerializeMiddleware(intervention_callback=abc.intervention_callback)

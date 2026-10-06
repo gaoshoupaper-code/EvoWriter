@@ -14,9 +14,26 @@ class MiddlewareProjectionTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.package_root = Path(__file__).resolve().parents[1] / "harnesses" / "repo"
-        # 双形态守卫：working 包可能是 v7 单专家形态（factory.py）或 v14 多 Agent
-        # 实验形态（orchestrator.py）——两代布局投影均已支持（v14 形态适配），
-        # 按实际形态断言对应泳道集合。
+        # 三形态守卫：working 包现为 M2 清单形态（architecture.json，REQ-
+        # 20261006-130414），历史提交可能是 v7 单专家形态（factory.py）或 v14
+        # 实验形态（orchestrator.py）。清单形态走 project_manifest_stacks
+        # （结构 = 清单声明，真相源）；旧形态走源码解析投影——按实际形态断言。
+        manifest_file = cls.package_root / "architecture.json"
+        if manifest_file.is_file():
+            from contracts.architecture_manifest import ArchitectureManifest
+            from app.versioning.middleware_projection import project_manifest_stacks
+
+            manifest = ArchitectureManifest.model_validate(
+                json.loads(manifest_file.read_text(encoding="utf-8"))
+            )
+            sources = {
+                f"middleware/{p.name}": p.read_text(encoding="utf-8")
+                for p in (cls.package_root / "middleware").glob("*.py")
+                if p.name != "__init__.py"
+            }
+            cls.stacks = project_manifest_stacks(sources, manifest)
+            cls.layout = "manifest"
+            return
         paths = [
             "__init__.py",
             "subagents/storybuilding.py",
@@ -35,19 +52,23 @@ class MiddlewareProjectionTest(unittest.TestCase):
                 if (cls.package_root / path).is_file()
             }
         )
+        cls.layout = (
+            "v14" if (cls.package_root / "subagents" / "orchestrator.py").is_file() else "v7"
+        )
 
     def test_projects_layout_lanes(self) -> None:
         """按 working 包形态产出对应泳道集合。"""
-        if (self.package_root / "subagents" / "orchestrator.py").is_file():
+        if self.layout == "v14":
             self.assertEqual(
                 set(self.stacks),
                 {"orchestrator", "worldview", "character", "storyline", "storybuilding_review"},
             )
         else:
+            # manifest 与 v7 同构：故事专家（main）+ 审查器（sub）
             self.assertEqual(set(self.stacks), {"storybuilding", "storybuilding_review"})
 
     def test_projects_real_class_names_and_hooks(self) -> None:
-        """v7 形态：类名 + hooks 投影（v14 形态下无 storybuilding 泳道，跳过）。"""
+        """故事专家泳道：类名 + hooks 投影（v14 形态下无该泳道，跳过）。"""
         if "storybuilding" not in self.stacks:
             self.skipTest("working 包为 v14 多 Agent 形态，v7 泳道断言不适用")
         story = {item["class_name"]: item for item in self.stacks["storybuilding"]}
@@ -55,7 +76,7 @@ class MiddlewareProjectionTest(unittest.TestCase):
             story["StorylineSingleLineLimitMiddleware"]["hooks"],
             ["before_agent", "wrap_tool_call"],
         )
-        # v7：__init__.assemble 传 context_file_paths=["demand.md"] → ContextAssembler 实挂
+        # 清单 context_files=["demand.md"]（v7 assemble 同参）→ ContextAssembler 实挂
         self.assertIn("ContextAssemblerMiddleware", story)
         self.assertFalse(story["ArtifactValidationMiddleware"]["optional"])
         self.assertTrue(
@@ -63,7 +84,7 @@ class MiddlewareProjectionTest(unittest.TestCase):
         )
 
     def test_story_expert_stack_has_guards_and_limits(self) -> None:
-        """v7 形态：故事专家栈含护栏 + 修订上限 + 产物校验。"""
+        """故事专家栈含护栏 + 修订上限 + 产物校验。"""
         if "storybuilding" not in self.stacks:
             self.skipTest("working 包为 v14 多 Agent 形态，v7 泳道断言不适用")
         story = {item["class_name"] for item in self.stacks["storybuilding"]}

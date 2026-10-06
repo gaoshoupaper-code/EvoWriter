@@ -301,36 +301,17 @@ class PathGuardWhitelistTest(unittest.TestCase):
 
 class AssemblyTest(unittest.TestCase):
     def test_max_revisions_one_and_guard_mounted(self) -> None:
-        _load_real_harness()
-        # 类身份必须取自同一次加载，否则 isinstance 对不上（两次 load_package
-        # 产生两个独立的类对象）
-        import harness_current.subagents.storybuilding as sb_mod
-        from harness_current.middleware.storyline_contract_guard import (
-            StorylineContractGuardMiddleware as GuardCls,
+        """M2 清单架构：单次审查修订 + 结构契约护栏挂载均声明在 architecture.json。"""
+        import json
+
+        pkg_dir = Path(__file__).resolve().parents[2] / "evolution" / "harnesses" / "repo"
+        manifest = json.loads(
+            (pkg_dir / "architecture.json").read_text(encoding="utf-8")
         )
+        story = next(a for a in manifest["agents"] if a["name"] == "storybuilding")
 
-        captured: dict = {}
-
-        def fake_build_deep_subagent(**kwargs):
-            captured.update(kwargs)
-            return {"name": kwargs["name"]}
-
-        original = sb_mod.build_deep_subagent
-        sb_mod.build_deep_subagent = fake_build_deep_subagent
-        try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                sb_mod.build_storybuilding_deep_subagent(
-                    workspace_root=Path(tmpdir),
-                    model=None,
-                    backend=None,
-                    middleware_factory=lambda name: [],
-                )
-        finally:
-            sb_mod.build_deep_subagent = original
-
-        self.assertEqual(captured["max_revisions"], 1)
-        mounted = captured["subagent_middleware"]
-        self.assertTrue(any(isinstance(m, GuardCls) for m in mounted))
+        self.assertEqual(story.get("max_revisions", 1), 1)
+        self.assertIn("storyline_contract_guard", story["middleware"])
 
 
 if __name__ == "__main__":

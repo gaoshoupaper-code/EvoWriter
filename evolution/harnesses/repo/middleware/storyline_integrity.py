@@ -225,3 +225,8 @@ class StorylineIntegrityMiddleware(AgentMiddleware):
             status="error",
             response_metadata={"business_intercept": True},
         )
+
+
+def build(abc):
+    """架构清单挂载钩子：domain 护栏——单文件增量编辑防丢线区块/事件。"""
+    return StorylineIntegrityMiddleware(abc.workspace_path)

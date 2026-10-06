@@ -244,3 +244,8 @@ class ObjectContractGuardMiddleware(AgentMiddleware):
 
 
 __all__ = ["DEFAULT_MAX_REJECTS", "ObjectContractGuardMiddleware"]
+
+
+def build(abc):
+    """架构清单挂载钩子：domain 护栏——物品卡契约校验。"""
+    return ObjectContractGuardMiddleware(abc.workspace_path)

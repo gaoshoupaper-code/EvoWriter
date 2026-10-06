@@ -100,6 +100,9 @@ function ShippedGroup({
                   <div className="point-head">
                     <span className="point-seq">#{p.seq}</span>
                     <code className="point-target">{p.target}</code>
+                    {p.target === "architecture.json" && (
+                      <span className="point-arch-badge" title="架构级改动：动的是 harness 的 agent 结构与挂载">架构级</span>
+                    )}
                     {p.version && <span className="point-version">v{p.version}</span>}
                   </div>
                   <p className="point-problem">{p.problem}</p>
@@ -174,6 +177,9 @@ export default function PointsDrawer({
                         <div className="point-head">
                           <span className="point-seq">#{p.seq}</span>
                           <code className="point-target">{p.target}</code>
+                          {p.target === "architecture.json" && (
+                            <span className="point-arch-badge" title="架构级改动：动的是 harness 的 agent 结构与挂载">架构级</span>
+                          )}
                         </div>
                         <p className="point-problem">{p.problem}</p>
                         {p.status === "accepted" && p.chosen_option !== null && (

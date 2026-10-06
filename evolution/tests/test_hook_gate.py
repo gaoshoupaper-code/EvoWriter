@@ -442,13 +442,21 @@ class CodeMutationCounterTests(unittest.TestCase):
         self.ctx.validation_result = {"passed": True, "errors": []}
         # validate 之后又有新代码 → FlowGuard 拦
         self.assertIsNotNone(FlowGuardMiddleware._check_change_log_guard())
-        # 重新 validate（干净临时包）→ 计数归零 → 门开
+        # 重新 validate（干净临时包，含最小合法架构清单——清单缺失会被
+        # validate 第 5 步拦下）→ 计数归零 → 门开
         import tempfile as _tf
         import types as _types
         from unittest import mock as _mock
         from app.evolve.agent.tools import flow as flow_mod
         clean = Path(_tf.mkdtemp(prefix="hook_gate_clean_"))
         (clean / "__init__.py").write_text("", encoding="utf-8")
+        (clean / "prompts").mkdir()
+        (clean / "prompts" / "main.md").write_text("P", encoding="utf-8")
+        (clean / "architecture.json").write_text(
+            '{"schema_version": "writer.architecture/1", "agents": ['
+            '{"name": "solo", "role": "main", "prompt": "prompts/main.md"}]}',
+            encoding="utf-8",
+        )
         with _mock.patch.object(
             flow_mod, "settings",
             _types.SimpleNamespace(harness_work_dir_path=clean),

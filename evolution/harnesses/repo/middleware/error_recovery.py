@@ -193,3 +193,11 @@ def _mapping_value(mapping: object, key: str) -> Any:
     if isinstance(mapping, dict):
         return mapping.get(key)
     return getattr(mapping, key, None)
+
+
+def build(abc):
+    """架构清单挂载钩子：基础链 ErrorRecovery（最外层，捕异常/重试）。"""
+    return ErrorRecoveryMiddleware(
+        intervention_callback=abc.intervention_callback,
+        tool_replay_policy=abc.ctx.tool_replay_policy,  # CON-005 task 防重放
+    )

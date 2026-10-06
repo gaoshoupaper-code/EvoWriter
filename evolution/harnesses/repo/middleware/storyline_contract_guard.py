@@ -207,3 +207,8 @@ class StorylineContractGuardMiddleware(AgentMiddleware):
 
 
 __all__ = ["DEFAULT_MAX_REJECTS", "StorylineContractGuardMiddleware"]
+
+
+def build(abc):
+    """架构清单挂载钩子：domain 护栏——故事线结构契约运行时校验。"""
+    return StorylineContractGuardMiddleware(abc.workspace_path)

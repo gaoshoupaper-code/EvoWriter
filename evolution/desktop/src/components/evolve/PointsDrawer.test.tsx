@@ -111,4 +111,20 @@ describe("PointsDrawer 四组展示（AC-006）", () => {
     expect(btn.disabled).toBe(true);
     expect(screen.getByText(/已发版的不再重复落地/)).toBeTruthy();
   });
+
+  it("架构清单类 target 显示「架构级」醒目标识（REQ-20261006-130414 AC-008）", () => {
+    render(
+      <PointsDrawer
+        points={[
+          makePoint({ id: "arch", seq: 1, status: "proposed", target: "architecture.json" }),
+          makePoint({ id: "norm", seq: 2, status: "proposed", target: "middleware/retry.py" }),
+        ]}
+        acceptedCount={0}
+        canFinalize={false}
+      />,
+    );
+    // 架构级点带徽章；普通要素点不带
+    expect(screen.getByText("架构级")).toBeTruthy();
+    expect(screen.getAllByText("架构级")).toHaveLength(1);
+  });
 });

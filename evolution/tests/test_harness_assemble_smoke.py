@@ -75,15 +75,17 @@ ctx = RuntimeContext(
 )
 graph = mod.assemble(ctx)
 
-# 线数预算断言也在子进程做：v13 形态的 storybuilding.py 含相对导入
-# （.factory/..middleware），主进程 spec 单文件加载不了（promote 拓扑形态相关）
+# 线数预算断言也在子进程做：M2 清单架构下预算函数随模块走
+# （middleware/storyline_single_line_limit.resolve_line_budget），主进程
+# spec 单文件加载不了相对导入链，留在子进程验证（拓扑形态相关）
 from contracts.storybuilding_quota import parse_demand_quota
 
-storybuilding = importlib.import_module(f"{mod.__name__}.subagents.storybuilding")
+single_limit = importlib.import_module(
+    f"{mod.__name__}.middleware.storyline_single_line_limit")
 demand_md = (workspace / "demand.md").read_text(encoding="utf-8")
 target = parse_demand_quota(demand_md)
-budget_full = storybuilding.resolve_line_budget(target)
-budget_none = storybuilding.resolve_line_budget(None)
+budget_full = single_limit.resolve_line_budget(target)
+budget_none = single_limit.resolve_line_budget(None)
 print(json.dumps({
     "ok": graph is not None,
     "budget_full": (budget_full if isinstance(budget_full, int) else None),

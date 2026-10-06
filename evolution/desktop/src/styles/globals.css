@@ -7405,6 +7405,92 @@ html[data-theme="dark"] {
   color: var(--evo-ink-secondary);
 }
 
+/* ── 主/SubAgent 高层切换（REQ-20261006-130414 DEC-003/004）── */
+.harness-scope-bar {
+  display: flex;
+  gap: var(--evo-space-2);
+  margin-bottom: var(--evo-space-3);
+}
+
+.harness-scope-toggle {
+  padding: var(--evo-space-2) var(--evo-space-4);
+  font-size: var(--evo-text-sm);
+  font-weight: 600;
+  border: 1px solid var(--evo-line);
+  border-radius: var(--evo-radius-md);
+  background: var(--evo-surface);
+  color: var(--evo-ink-secondary);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.harness-scope-toggle.active {
+  background: var(--evo-accent-soft);
+  border-color: var(--evo-accent);
+  color: var(--evo-accent);
+}
+
+/* SubAgent 视图内的子代理选择器 + 未挂载孤儿 */
+.harness-sub-selector {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--evo-space-2);
+  margin-bottom: var(--evo-space-4);
+}
+
+.harness-sub-chip {
+  padding: 2px 10px;
+  font-size: var(--evo-text-xs);
+  border: 1px solid var(--evo-line);
+  border-radius: 999px;
+  background: var(--evo-surface);
+  color: var(--evo-ink-secondary);
+  cursor: pointer;
+}
+
+.harness-sub-chip.active {
+  background: var(--evo-accent-soft);
+  border-color: var(--evo-accent);
+  color: var(--evo-accent);
+  font-weight: 600;
+}
+
+.harness-sub-chip.unmounted {
+  opacity: 0.6;
+  cursor: default;
+  font-style: italic;
+}
+
+.harness-sub-empty {
+  font-size: var(--evo-text-xs);
+  color: var(--evo-ink-tertiary);
+}
+
+/* SubAgent 视角 Tools Tab 的挂载说明条（DEC-005 空态说明） */
+.tool-mounted-strip {
+  font-size: var(--evo-text-xs);
+  color: var(--evo-ink-secondary);
+  background: var(--evo-surface);
+  border: 1px dashed var(--evo-line);
+  border-radius: var(--evo-radius-sm);
+  padding: var(--evo-space-2) var(--evo-space-3);
+  margin-bottom: var(--evo-space-3);
+}
+
+/* 拍板进化点的架构级醒目标识（FR-005） */
+.point-arch-badge {
+  display: inline-block;
+  font-size: var(--evo-text-xs);
+  font-weight: 700;
+  padding: 1px 8px;
+  border-radius: var(--evo-radius-sm);
+  background: #fff3cd;
+  color: #8a6d00;
+  border: 1px solid #e6d488;
+  white-space: nowrap;
+}
+
 /* ── Agent 归属徽章 ── */
 .agent-badge {
   display: inline-block;

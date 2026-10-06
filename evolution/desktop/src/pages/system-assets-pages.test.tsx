@@ -214,4 +214,63 @@ describe("HarnessPage（要素透视）", () => {
     const option = screen.getByRole("option", { name: /v9.*代码同 v8/ }) as HTMLOptionElement;
     expect(option).toBeTruthy();
   });
+
+  // ── 主/SubAgent 高层切换（REQ-20261006-130414 FR-006/007 / AC-009）──
+
+  const MANIFEST_ELEMENTS = {
+    source_commit: "c15",
+    has_source: true,
+    layout: "manifest" as const,
+    agents: [
+      {
+        name: "storybuilding", kind: "main", role: "main" as const,
+        display_name: "故事专家", runtime_name: "storybuilding",
+        prompt: { body: "主 agent 提示词" }, skills: [], middlewares: [], tools: [],
+      },
+      {
+        name: "storybuilding_review", kind: "sub", role: "sub" as const,
+        display_name: "故事审查", runtime_name: "review",
+        prompt: { body: "审查器提示词" }, skills: [], middlewares: [], tools: [],
+      },
+    ],
+    tools: [],
+    subagent_relations: [
+      { from: "storybuilding", to: "storybuilding_review", role: "故事审查" },
+    ],
+    unmounted: {
+      subagents: ["subagents/orphan_agent.py"],
+      middleware: [], prompts: [], skills: [],
+    },
+  };
+
+  function mockManifest() {
+    api.getSnapshots.mockResolvedValue(SNAPSHOTS);
+    api.getHarnessElements.mockResolvedValue(MANIFEST_ELEMENTS);
+    api.getMemoryElements.mockResolvedValue({ version: 14, has_source: true, elements: [] });
+    api.getUpgradeDiff.mockResolvedValue(makeUpgradeDiff());
+  }
+
+  it("默认主Agent 视角：五 Tab 含 Memory，无子代理选择器（AC-009）", async () => {
+    mockManifest();
+    render(<HarnessPage />);
+    await screen.findByText("主Agent（故事专家）");
+    expect(screen.getByText("SubAgent（1）")).toBeTruthy();
+    expect(screen.getByText("Memory")).toBeTruthy();
+    expect(screen.queryByText("故事审查（review）")).toBeNull();
+  });
+
+  it("切到 SubAgent 视角：四 Tab 无 Memory，选择器 + 未挂载孤儿可见（AC-009）", async () => {
+    mockManifest();
+    render(<HarnessPage />);
+    await screen.findByText("SubAgent（1）");
+    fireEvent.click(screen.getByText("SubAgent（1）"));
+    // 子代理选择器（含运行时委托名）与未挂载孤儿（DEC-005 诚实呈现）
+    expect(await screen.findByText("故事审查（review）")).toBeTruthy();
+    expect(screen.getByText("orphan_agent · 未挂载")).toBeTruthy();
+    // Memory 为版本级要素：Sub 视角无此 Tab
+    expect(screen.queryByText("Memory")).toBeNull();
+    // 其余四 Tab 在
+    expect(screen.getByText("Prompt")).toBeTruthy();
+    expect(screen.getByText("Middleware")).toBeTruthy();
+  });
 });

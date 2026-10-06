@@ -218,40 +218,19 @@ class ObjectGuardMiddlewareTest(unittest.TestCase):
 
 class AssemblyTest(unittest.TestCase):
     def test_object_whitelist_and_guard_mounted(self) -> None:
-        _load_real_harness()
-        import harness_current.subagents.storybuilding as sb_mod
-        from harness_current.middleware.object_contract_guard import (
-            ObjectContractGuardMiddleware as GuardCls,
+        """M2 清单架构：物品卡写白名单 + 护栏挂载都以 architecture.json 为准。"""
+        import json
+
+        pkg_dir = Path(__file__).resolve().parents[2] / "evolution" / "harnesses" / "repo"
+        manifest = json.loads(
+            (pkg_dir / "architecture.json").read_text(encoding="utf-8")
         )
+        story = next(a for a in manifest["agents"] if a["name"] == "storybuilding")
 
-        captured: dict = {}
-
-        def fake_build_deep_subagent(**kwargs):
-            captured.update(kwargs)
-            return {"name": kwargs["name"]}
-
-        original = sb_mod.build_deep_subagent
-        sb_mod.build_deep_subagent = fake_build_deep_subagent
-        try:
-            with tempfile.TemporaryDirectory() as tmpdir:
-                spec = sb_mod.build_storybuilding_subagent(Path(tmpdir))
-                write_paths = {
-                    p.paths[0] for p in spec["permissions"]
-                    if p.operations == ["write"] and p.mode == "allow"
-                }
-                self.assertIn("/object/*.md", write_paths)
-
-                sb_mod.build_storybuilding_deep_subagent(
-                    workspace_root=Path(tmpdir),
-                    model=None,
-                    backend=None,
-                    middleware_factory=lambda name: [],
-                )
-        finally:
-            sb_mod.build_deep_subagent = original
-
-        mounted = captured["subagent_middleware"]
-        self.assertTrue(any(isinstance(m, GuardCls) for m in mounted))
+        # 物品卡写白名单（REQ-20260804-221109：/object/*.md）
+        self.assertIn("/object/*.md", story["write_permissions"])
+        # 护栏挂载（有序 domain middleware 列表内）
+        self.assertIn("object_contract_guard", story["middleware"])
 
 
 if __name__ == "__main__":

@@ -318,3 +318,11 @@ def _tool_error(tool_name: object, tool_call_id: object, message: str) -> ToolMe
         tool_call_id=str(tool_call_id or ""),
         status="error",
     )
+
+
+def build(abc):
+    """架构清单挂载钩子：基础链 PathGuard（路径白名单 + 规范化）。"""
+    return FilesystemPathGuardMiddleware(
+        abc.workspace_path,
+        intervention_callback=abc.intervention_callback,
+    )

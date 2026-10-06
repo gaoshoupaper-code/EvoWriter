@@ -375,4 +375,62 @@ def _enrich_mount(
     }
 
 
-__all__ = ["HOOK_ORDER", "build_middleware_projection"]
+def _module_to_class_map(catalog: dict[str, dict[str, Any]]) -> dict[str, str]:
+    """middleware 模块名 → 类名（借 catalog 的 source_path 反查）。"""
+    mapping: dict[str, str] = {}
+    for class_name, info in catalog.items():
+        src = info.get("source_path") or ""
+        if src.startswith("middleware/") and src.endswith(".py"):
+            mapping[src[len("middleware/"):-len(".py")]] = class_name
+    return mapping
+
+
+def project_manifest_stacks(
+    package_sources: dict[str, str],
+    manifest: "Any",
+) -> dict[str, list[dict[str, Any]]]:
+    """架构清单版栈投影（REQ-20261006-130414 FR-001）。
+
+    结构来自清单声明（真相源），hook 信息来自 middleware 源码目录的 catalog
+    ——源码解析只服务展示层的类信息，不再推断挂载关系。栈构成与解释器装配
+    顺序一致（executor app.platform.agent.architecture）：
+      base 组（BASE_CHAIN_MODULES，全 agent 统一）→ Trace（runtime）→
+      agent 组（清单 domain middleware 有序）→ runtime 组
+      （ContextAssembler / RevisionLimit / ArtifactValidation 按清单条件）。
+    """
+    from contracts.architecture_manifest import BASE_CHAIN_MODULES
+
+    catalog = _build_catalog(package_sources)
+    module_class = _module_to_class_map(catalog)
+
+    def _mount(module: str, group: str, optional: bool = False) -> dict[str, Any] | None:
+        class_name = module_class.get(module)
+        if class_name is None:
+            return None
+        return {"class_name": class_name, "group": group, "optional": optional}
+
+    stacks: dict[str, list[dict[str, Any]]] = {}
+    for agent in manifest.agents:
+        mounts: list[dict[str, Any]] = []
+        for module in BASE_CHAIN_MODULES:
+            m = _mount(module, "base")
+            if m:
+                mounts.append(m)
+        mounts.append({"class_name": "TraceMiddleware", "group": "runtime", "optional": True})
+        for module in agent.middleware:
+            m = _mount(module, "agent")
+            if m:
+                mounts.append(m)
+        if agent.context_files:
+            mounts.append({"class_name": "ContextAssemblerMiddleware", "group": "runtime", "optional": False})
+        if agent.delegates:
+            m = _mount("revision_limit", "agent")
+            if m:
+                mounts.append(m)
+        if agent.artifact_paths:
+            mounts.append({"class_name": "ArtifactValidationMiddleware", "group": "runtime", "optional": False})
+        stacks[agent.name] = [_enrich_mount(mount, catalog) for mount in mounts]
+    return stacks
+
+
+__all__ = ["HOOK_ORDER", "build_middleware_projection", "project_manifest_stacks"]

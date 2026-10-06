@@ -46,6 +46,7 @@ FINALIZE_ONLY_TOOLS = frozenset({
     "write_skill",
     "write_subagent",
     "edit_source",
+    "delete_file",
     # flow.py（产出落地文档）
     "write_design_doc",
     "validate_changes",

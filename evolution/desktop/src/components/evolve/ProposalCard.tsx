@@ -45,6 +45,9 @@ export default function ProposalCard({ point, highlighted }: Props) {
       <header className="proposal-header">
         <span className="proposal-seq">#{point.seq}</span>
         <code className="proposal-target">{point.target}</code>
+        {point.target === "architecture.json" && (
+          <span className="point-arch-badge" title="架构级改动：动的是 harness 的 agent 结构与挂载">架构级</span>
+        )}
         <span className={`proposal-status status-${meta.tone}`}>
           <span className="status-icon">{meta.icon}</span>
           {statusLabel}

@@ -163,13 +163,17 @@ def make_flow_tools() -> list:
     def validate_changes() -> str:
         """校验 harness 包源码改动的合法性。
 
-        在所有改动落地后（write_*/edit_source）调用。校验项：
+        在所有改动落地后（write_*/edit_source/delete_file）调用。校验项：
           1. py_compile：harness 包内所有 .py 文件无语法错误。
           2. import 检查：尝试 import 改动过的模块，捕获运行时错误
              （如引用不存在的模块、类定义错误）。
           3. hook 签名硬校验：中间件覆写 hook 的参数名必须与框架基类
              完全一致（框架按参数名注入，参数名错 → 运行时 TypeError）。
              写中间件前先调 inspect_middleware_protocol 查真实签名。
+          4. 架构清单强校验：architecture.json 的引用存在性（prompt/
+             middleware/skills/definition）、委托双向一致与无环、子代理
+             数量上限、middleware build(ctx) 钩子存在。改架构 = 改清单，
+             清单错 = 装配必炸，这里直接拦。
 
         如果校验失败，按错误信息修复后重新校验。
         **建议最多调用 2 次**——若 2 次仍失败，如实写 change_log 收尾
@@ -211,6 +215,31 @@ def make_flow_tools() -> list:
         )
         errors.extend(hook_errors)
 
+        # 5. 架构清单强校验（REQ-20261006-130414 FR-002）：引用存在性、
+        #    委托双向一致/无环、子代理数量上限、build 钩子存在。
+        #    校验规则在 contracts（CON-002：进化 Agent 禁改契约，规则不可篡改）。
+        unmounted_note = ""
+        try:
+            from contracts.architecture_manifest import load_and_validate
+            _, manifest_result = load_and_validate(pkg_root)
+        except Exception as e:  # ManifestError 等全部收敛为校验错误
+            errors.append(f"架构清单: {e}")
+        else:
+            errors.extend(f"架构清单: {e}" for e in manifest_result.errors)
+            unmounted = (
+                manifest_result.unmounted_middleware
+                + manifest_result.unmounted_subagents
+                + manifest_result.unmounted_prompts
+                + manifest_result.unmounted_skills
+            )
+            if unmounted:
+                # 未挂载不阻断（DEC-005：桌面显示「未挂载」），但告知 Agent 现状
+                unmounted_note = (
+                    "\n（未挂载要素（存在但清单未引用，不阻断，桌面会显示未挂载）: "
+                    + ", ".join(unmounted)
+                    + "）"
+                )
+
         # passed 只看真错误：env_diffs 是环境差异，不阻塞 FlowGuard
         passed = len(errors) == 0
         # FR-004 / DEC-003：真实结果落 ctx——change_log 回填依据 +
@@ -223,7 +252,7 @@ def make_flow_tools() -> list:
             passed=passed, errors=len(errors), env_diffs=len(env_diffs),
         )
         if passed and not env_diffs:
-            return "校验通过：harness 包所有源码无语法错误 + import 正常。"
+            return "校验通过：harness 包所有源码无语法错误 + import 正常。" + unmounted_note
         if passed:
             # 无真错误，但有环境差异——如实标注哪些框架包未校验，让 Agent 知道
             # 这些不是它的错，不用反复改。
@@ -232,7 +261,7 @@ def make_flow_tools() -> list:
                 f"（{len(env_diffs)} 项框架包引用因运行环境差异未校验，属正常："
                 f"app.platform / app.schemas 等 executor 私有包 evolution 端不具备。"
                 f"这些在 executor 运行时可正常 import，无需修改。）"
-            )
+            ) + unmounted_note
         return "校验失败，发现以下问题：\n" + "\n".join(f"- {e}" for e in errors)
 
     @tool

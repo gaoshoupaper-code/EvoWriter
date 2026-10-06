@@ -23,7 +23,29 @@ function scopeLabel(scope: ToolScope): string {
   }
 }
 
-export function ToolsTab({ tools }: { tools: ToolInfo[] }) {
+export function ToolsTab({
+  tools,
+  mountedTools,
+}: {
+  tools: ToolInfo[];
+  /** SubAgent 视角：该 agent 清单挂载的工具名（DEC-005 诚实呈现——空态说明而非隐藏） */
+  mountedTools?: string[];
+}) {
+  return (
+    <div>
+      {mountedTools != null && (
+        <div className="tool-mounted-strip">
+          {mountedTools.length > 0
+            ? `该子代理挂载工具：${mountedTools.join("、")}`
+            : "该子代理未挂载专属工具（下方为全局工具清单）"}
+        </div>
+      )}
+      <ToolList tools={tools} />
+    </div>
+  );
+}
+
+function ToolList({ tools }: { tools: ToolInfo[] }) {
   // 空态：该版本 tools/ 目录无文件（或全部解析失败）
   if (tools.length === 0) {
     return (

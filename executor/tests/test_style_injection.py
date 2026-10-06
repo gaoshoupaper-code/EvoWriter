@@ -17,36 +17,52 @@ from contracts.runtime_context import RuntimeContext
 
 
 class TestApplyStyleSuffix(unittest.TestCase):
-    """验证 apply_style_suffix 注入逻辑（包内 subagents/types.py）。"""
+    """风格 SUFFIX 注入逻辑（M2 清单架构下随 subagents/types.py 退役，
+    落进清单解释器 _system_prompt——按 manifest agent 名取 styles）。"""
 
     def setUp(self):
-        # 直接加载 harness 工作目录（与生产 artifact 同源）；生产拉取链路属于
-        # artifact_client/loader 的测试，这里只消费包内容。
         from pathlib import Path
+
         from app.platform.agent.loader import load_package
+        from contracts.architecture_manifest import load_architecture_manifest
+
         harness_dir = Path(__file__).resolve().parents[2] / "evolution" / "harnesses" / "repo"
         load_package(harness_dir)
-        # apply_style_suffix 在 subagents.types，通过包内 import 取
-        from harness_current.subagents.types import apply_style_suffix
-        self.apply_style_suffix = apply_style_suffix
+        self.pkg_dir = harness_dir
+        self.manifest = load_architecture_manifest(harness_dir)
+
+    def _prompt(self, styles):
+        from pathlib import Path
+
+        from app.platform.agent.architecture import AgentBuildCtx, _system_prompt
+        from contracts.runtime_context import RuntimeContext
+
+        ctx = RuntimeContext(
+            model=object(), backend=object(), checkpointer=None,
+            workspace_path=Path("/tmp"), styles=styles,
+        )
+        agent = self.manifest.agent("storybuilding")
+        abc = AgentBuildCtx(ctx, self.manifest, agent, "harness_current", self.pkg_dir)
+        return _system_prompt(abc)
 
     def test_no_suffix_returns_original(self):
-        """无 suffix（None）应原样返回 prompt。"""
-        prompt = "你是写作助手。"
-        self.assertEqual(self.apply_style_suffix(prompt, None), prompt)
+        """无 suffix（styles=None）应返回 prompt 原文。"""
+        body = (self.pkg_dir / "prompts" / "storybuilding_system.md").read_text(
+            encoding="utf-8"
+        ).strip()
+        self.assertEqual(self._prompt(None), body)
 
     def test_empty_suffix_returns_original(self):
-        """空字符串 suffix 应原样返回（apply_style_suffix 对 falsy 值短路）。"""
-        prompt = "你是写作助手。"
-        self.assertEqual(self.apply_style_suffix(prompt, ""), prompt)
+        """空字符串 suffix 应原样返回（falsy 值短路不追加）。"""
+        body = (self.pkg_dir / "prompts" / "storybuilding_system.md").read_text(
+            encoding="utf-8"
+        ).strip()
+        self.assertEqual(self._prompt({"storybuilding": ""}), body)
 
     def test_suffix_appended(self):
-        """有 suffix 应追加到 prompt 末尾（两换行分隔）。"""
-        prompt = "你是写作助手。"
-        suffix = "风格：简洁有力。"
-        result = self.apply_style_suffix(prompt, suffix)
-        self.assertEqual(result, f"{prompt}\n\n{suffix}")
-        self.assertIn(suffix, result)
+        """有 suffix 应按 manifest agent 名取值并追加到 prompt 末尾（两换行分隔）。"""
+        result = self._prompt({"storybuilding": "风格：简洁有力。"})
+        self.assertTrue(result.endswith("\n\n风格：简洁有力。"))
 
 
 class TestRuntimeContextStyles(unittest.TestCase):

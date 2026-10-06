@@ -19,12 +19,19 @@ TTL 60s 兜底。版本切换热路径从 N 个 git show 降到 0。
 from __future__ import annotations
 
 import ast
+import json
 import logging
 import time
 from typing import Any
 
 import yaml
 from fastapi import APIRouter, HTTPException, Query
+
+from contracts.architecture_manifest import (
+    ARCHITECTURE_MANIFEST_FILENAME,
+    BASE_CHAIN_MODULES,
+    ArchitectureManifest,
+)
 
 from app.core.git_ops import show_file
 from app.versioning import platform_ledger
@@ -85,6 +92,83 @@ _SUBAGENT_ROLE_MAP: dict[str, str] = {
     "character": "人物构建",
     "storyline": "故事线构建",
 }
+
+
+def _manifest_at_commit(commit: str | None) -> ArchitectureManifest | None:
+    """读某 commit 的架构清单（无清单返回 None → 调用方回退静态布局探测）。
+
+    REQ-20261006-130414 FR-001/006：清单版本的要素视图直接以清单为真相源，
+    源码解析投影退役；schema 解析失败按无清单回退（旧探测仍可用）。
+    """
+    if not commit:
+        return None
+    try:
+        raw = show_file(commit, ARCHITECTURE_MANIFEST_FILENAME)
+        return ArchitectureManifest.model_validate(json.loads(raw))
+    except Exception:  # noqa: BLE001 — 无清单 / 解析失败统一回退旧探测
+        logger.debug("架构清单缺失或解析失败 @ %s", commit, exc_info=True)
+        return None
+
+
+def _manifest_middleware_stacks(
+    commit: str | None, manifest: ArchitectureManifest
+) -> dict[str, list[dict[str, Any]]]:
+    """清单版本的中间件栈投影：git 读 middleware 源码 → 共享清单投影函数。"""
+    sources: dict[str, str] = {}
+    if commit:
+        for path in _list_files_at_commit(commit, "middleware"):
+            if path.endswith(".py") and not path.endswith("__init__.py"):
+                try:
+                    sources[path] = show_file(commit, path)
+                except Exception:  # noqa: BLE001
+                    pass
+    from app.versioning.middleware_projection import project_manifest_stacks
+
+    return project_manifest_stacks(sources, manifest)
+
+
+def _commit_unmounted(
+    commit: str | None, manifest: ArchitectureManifest
+) -> dict[str, list[str]]:
+    """清单外孤儿文件报告（git commit 级，DEC-005 桌面「未挂载」展示）。"""
+    if not commit:
+        return {"subagents": [], "middleware": [], "prompts": [], "skills": []}
+
+    def _files(subdir: str) -> set[str]:
+        return set(_list_files_at_commit(commit, subdir))
+
+    referenced_mw = {mw for a in manifest.agents for mw in a.middleware}
+    referenced_skills = {s for a in manifest.agents for s in a.skills}
+    referenced_prompts = {a.prompt for a in manifest.agents}
+    referenced_defs = {a.definition for a in manifest.agents if a.definition}
+
+    all_mw = _files("middleware")
+    all_skills = _files("skills")
+    all_prompts = _files("prompts")
+    all_subs = _files("subagents")
+
+    unmounted_mw = sorted(
+        p[len("middleware/"):-len(".py")] for p in all_mw
+        if p.endswith(".py") and not p.endswith("__init__.py")
+        and p[len("middleware/"):-len(".py")] not in referenced_mw
+        and p[len("middleware/"):-len(".py")] not in BASE_CHAIN_MODULES
+        and p[len("middleware/"):-len(".py")] != "revision_limit"
+    )
+    unmounted_skills = sorted(
+        {p.split("/")[1] for p in all_skills if p.startswith("skills/") and len(p.split("/")) > 2}
+        - referenced_skills
+    )
+    unmounted_prompts = sorted(p for p in all_prompts if p not in referenced_prompts)
+    unmounted_subs = sorted(
+        p for p in all_subs
+        if p.endswith(".py") and not p.endswith("__init__.py") and p not in referenced_defs
+    )
+    return {
+        "subagents": unmounted_subs,
+        "middleware": unmounted_mw,
+        "prompts": unmounted_prompts,
+        "skills": unmounted_skills,
+    }
 
 
 def _agent_specs_for_commit(
@@ -303,16 +387,23 @@ def build_elements_view(version: int) -> dict[str, Any]:
         "version": int,
         "source_commit": str | None,
         "has_source": bool,
-        "agents": [ {name, kind, prompt, skills, middlewares}, ... ],
+        "layout": "manifest" | "v7" | "v14",
+        "agents": [ {name, kind, role, display_name, runtime_name,
+                     prompt, skills, middlewares, tools}, ... ],
         "tools": [ {path, name, description, scope, load_error}, ... ],
-        "subagent_relations": [ {from, to, role}, ... ]
+        "subagent_relations": [ {from, to, role}, ... ],
+        "unmounted": {subagents, middleware, prompts, skills}   # 仅 manifest 布局
       }
 
-    agents 顺序：v7 = 故事专家→审查器；v14 = orchestrator→领域（worldview/
-    character/storyline 按文件序）→审查器。tools 顶层平级——harness 的 tools/
-    是全局平铺的，不属于任何 agent。
+    布局优先级（REQ-20261006-130414 FR-001/009）：有架构清单 → 清单视图
+    （唯一真相源，源码解析退役）；无清单回退 v7/v14 静态探测（历史版本兼容）。
+    agents 顺序：清单 = 声明序（main 在前）；v7 = 故事专家→审查器；
+    v14 = orchestrator→领域→审查器。tools 顶层平级——tools/ 全局平铺。
     """
     commit = _version_to_commit(version)
+    manifest = _manifest_at_commit(commit)
+    if manifest is not None:
+        return _build_manifest_elements_view(version, commit, manifest)
     specs, layout = _agent_specs_for_commit(commit)
     skills = _build_skill_infos(commit)
     middleware_stacks = _build_middleware_stacks(commit)
@@ -322,9 +413,14 @@ def build_elements_view(version: int) -> dict[str, Any]:
         {
             "name": name,
             "kind": kind,
+            # role 派生（旧布局兼容清单版前端结构）：顶层装配 = main
+            "role": "main" if kind in ("story_expert", "orchestrator") else "sub",
+            "display_name": _SUBAGENT_ROLE_MAP.get(name, name),
+            "runtime_name": name,
             "prompt": {"body": read_prompt_body(commit, prompt_files)},
             "skills": _agent_skills(skills, name, kind, layout),
             "middlewares": middleware_stacks.get(name, []),
+            "tools": [],
         }
         for name, kind, prompt_files in specs
     ]
@@ -351,9 +447,54 @@ def build_elements_view(version: int) -> dict[str, Any]:
         "version": version,
         "source_commit": commit,
         "has_source": commit is not None,
+        "layout": layout,
         "agents": agents,
         "tools": tools,
         "subagent_relations": relations,
+    }
+
+
+def _build_manifest_elements_view(
+    version: int, commit: str | None, manifest: ArchitectureManifest
+) -> dict[str, Any]:
+    """清单版要素视图（FR-006/007）：结构、挂载、委托关系全部以清单为准。"""
+    skills = _build_skill_infos(commit)
+    stacks = _manifest_middleware_stacks(commit, manifest)
+    tools = _build_tool_infos(commit)
+    tool_names = {t["name"] for t in tools}
+
+    agents = [
+        {
+            "name": agent.name,
+            "kind": agent.role,
+            "role": agent.role,
+            "display_name": agent.display_name or agent.name,
+            "runtime_name": agent.runtime_name or agent.name,
+            "description": agent.description,
+            "prompt": {"body": read_prompt_body(commit, (agent.prompt,))},
+            "skills": [s for s in skills
+                       if any(s["path"] == f"skills/{name}"
+                              or s["path"].startswith(f"skills/{name}/")
+                              for name in agent.skills)],
+            "middlewares": stacks.get(agent.name, []),
+            "tools": [t for t in agent.tools if t in tool_names],
+        }
+        for agent in manifest.agents
+    ]
+    relations = [
+        {"from": parent.name, "to": child,
+         "role": (manifest.agent(child).display_name if manifest.agent(child) else child) or child}
+        for parent in manifest.agents for child in parent.delegates
+    ]
+    return {
+        "version": version,
+        "source_commit": commit,
+        "has_source": commit is not None,
+        "layout": "manifest",
+        "agents": agents,
+        "tools": tools,
+        "subagent_relations": relations,
+        "unmounted": _commit_unmounted(commit, manifest),
     }
 
 

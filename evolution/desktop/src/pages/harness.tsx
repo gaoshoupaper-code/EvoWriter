@@ -20,12 +20,16 @@ import { ToolsTab } from "@/components/harness/ToolsTab";
 import { MiddlewareTab } from "@/components/harness/MiddlewareTab";
 
 /**
- * Harness 要素透视页（数据源：Platform 账本，REQ-20260923-145931）。
+ * Harness 要素透视页（数据源：Platform 账本 / 架构清单，REQ-20261006-130414）。
  *
- * 选一个版本快照 → 一眼看懂这个版本的 harness 怎么搭的：
- *   Prompt（说什么）/ Skills（会什么）/ Tools（用什么）/ Middleware（怎么装配）/ Memory（记忆怎么转）
+ * 选一个版本快照 → 主/SubAgent 高层切换 → 各自视角下看五要素：
+ *   主Agent 视角：Prompt / Skills / Tools / Middleware / Memory（五 Tab）
+ *   SubAgent 视角：Prompt / Skills / Tools / Middleware（四 Tab，无 Memory——
+ *   记忆是版本级要素，不属于单个子代理；Tools 显示全局工具 + 挂载列表）
  *
- * Tab 顺序按 Agent 构造的递进。记忆子系统保留 4 阶段流水线叙事，独立接口拉取。
+ * 主/Sub 结构来自架构清单（DEC-003/004：两层切换 + 视图内子代理选择器）；
+ * 清单外孤儿文件按 DEC-005 显示「未挂载」，不隐藏。
+ * 旧版本（无清单）由后端回退静态布局探测，前端结构不变（FR-009）。
  * 数据流：并行调 getHarnessElements（主要素）+ getMemoryElements（记忆要素）
  *       + getUpgradeDiff（升级总览实时 git diff，基线 = 代码基于的版本）。
  *
@@ -41,6 +45,9 @@ export default function HarnessPage() {
   const [diffFailed, setDiffFailed] = useState(false);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // 主/Sub 高层切换（DEC-003）+ SubAgent 视图内子代理选择器（DEC-004）
+  const [scope, setScope] = useState<"main" | "sub">("main");
+  const [selectedSub, setSelectedSub] = useState<string | null>(null);
 
   // 拉取版本列表（仅首次 / 手动重试）。
   // refresh 不依赖 selectedVersion：用函数式 setSelectedVersion 读最新值，
@@ -113,6 +120,21 @@ export default function HarnessPage() {
     return map;
   })();
 
+  // 主/Sub 分组（role 由后端清单/回退路径统一提供，缺失时兜底单主架构）
+  const mainAgents = elements?.agents.filter((a) => (a.role ?? "main") === "main") ?? [];
+  const subAgents = elements?.agents.filter((a) => a.role === "sub") ?? [];
+  const activeSub =
+    subAgents.find((a) => a.name === selectedSub) ?? subAgents[0] ?? null;
+  // 当前视角喂给要素 Tab 的 agent 集合：主视角 = 全部主 agent；
+  // Sub 视角 = 当前选中的单个子代理（五要素作用于选中者，DEC-004）
+  const scopedAgents = scope === "main" ? mainAgents : activeSub ? [activeSub] : [];
+
+  // 切版本时重置视角（新版本可能没有子代理，防止停留在空 Sub 视图）
+  useEffect(() => {
+    setScope("main");
+    setSelectedSub(null);
+  }, [selectedVersion]);
+
   if (loading) return <div className="page-loading">加载版本列表…</div>;
 
   // DEC-005：账本不可达报错态（含重试），不渲染任何版本数据
@@ -164,42 +186,94 @@ export default function HarnessPage() {
       {/* 升级总览条（diff 拉取失败显示占位，FR-003 提示不阻断） */}
       <UpgradeOverview diff={upgradeDiff} failed={diffFailed} />
 
-      {/* 五要素 Tab：Prompt → Skills → Tools → Middleware → Memory（构造递进顺序） */}
       {elements ? (
-        <Tabs defaultValue="prompt" className="harness-tabs">
-          <TabsList>
-            <TabsTrigger value="prompt">Prompt</TabsTrigger>
-            <TabsTrigger value="skills">Skills</TabsTrigger>
-            <TabsTrigger value="tools">Tools</TabsTrigger>
-            <TabsTrigger value="middleware">Middleware</TabsTrigger>
-            <TabsTrigger value="memory">Memory</TabsTrigger>
-          </TabsList>
-          <TabsContent value="prompt">
-            <PromptTab agents={elements.agents} diffs={diffs} />
-          </TabsContent>
-          <TabsContent value="skills">
-            <SkillsTab agents={elements.agents} diffs={diffs} />
-          </TabsContent>
-          <TabsContent value="tools">
-            <ToolsTab tools={elements.tools} />
-          </TabsContent>
-          <TabsContent value="middleware">
-            <MiddlewareTab
-              agents={elements.agents}
-              diffs={diffs}
-              hasSource={elements.has_source}
-            />
-          </TabsContent>
-          <TabsContent value="memory">
-            {/* memoryElements 未到位时显示加载态，到位后由组件内部处理空态/流水线 */}
-            {/* version 用于卡片内"查看源码"懒加载 /snapshots/{v}/source */}
-            {memoryElements && selectedVersion != null ? (
-              <MemorySubsystemCard elements={memoryElements} version={selectedVersion} />
-            ) : (
-              <div className="page-loading">加载记忆要素…</div>
+        <>
+          {/* 主/SubAgent 高层切换（DEC-003：Subagent 是一等视角，不是第六要素） */}
+          <div className="harness-scope-bar" role="tablist" aria-label="Agent 视角切换">
+            <button
+              className={`harness-scope-toggle ${scope === "main" ? "active" : ""}`}
+              onClick={() => setScope("main")}
+            >
+              主Agent（{mainAgents.map((a) => a.display_name ?? a.name).join("、") || "—"}）
+            </button>
+            <button
+              className={`harness-scope-toggle ${scope === "sub" ? "active" : ""}`}
+              onClick={() => setScope("sub")}
+            >
+              SubAgent（{subAgents.length}）
+            </button>
+          </div>
+
+          {/* SubAgent 视图：子代理选择器（DEC-004）+ 未挂载孤儿（DEC-005 诚实呈现） */}
+          {scope === "sub" && (
+            <div className="harness-sub-selector">
+              {subAgents.map((a) => (
+                <button
+                  key={a.name}
+                  className={`harness-sub-chip ${activeSub?.name === a.name ? "active" : ""}`}
+                  onClick={() => setSelectedSub(a.name)}
+                  title={a.description}
+                >
+                  {a.display_name ?? a.name}
+                  {a.runtime_name && a.runtime_name !== a.name ? `（${a.runtime_name}）` : ""}
+                </button>
+              ))}
+              {(elements.unmounted?.subagents ?? []).map((path) => (
+                <span key={path} className="harness-sub-chip unmounted" title="存在于包内但架构清单未挂载">
+                  {path.replace(/^subagents\//, "").replace(/\.py$/, "")} · 未挂载
+                </span>
+              ))}
+              {subAgents.length === 0 && (elements.unmounted?.subagents ?? []).length === 0 && (
+                <span className="harness-sub-empty">此版本无子代理</span>
+              )}
+            </div>
+          )}
+
+          {/* 五要素 Tab：主视角五 Tab（含 Memory）；Sub 视角四 Tab（Memory 为版本级要素不切片） */}
+          <Tabs
+            key={`${scope}-${activeSub?.name ?? "main"}`}
+            defaultValue="prompt"
+            className="harness-tabs"
+          >
+            <TabsList>
+              <TabsTrigger value="prompt">Prompt</TabsTrigger>
+              <TabsTrigger value="skills">Skills</TabsTrigger>
+              <TabsTrigger value="tools">Tools</TabsTrigger>
+              <TabsTrigger value="middleware">Middleware</TabsTrigger>
+              {scope === "main" && <TabsTrigger value="memory">Memory</TabsTrigger>}
+            </TabsList>
+            <TabsContent value="prompt">
+              <PromptTab agents={scopedAgents} diffs={diffs} />
+            </TabsContent>
+            <TabsContent value="skills">
+              <SkillsTab agents={scopedAgents} diffs={diffs} />
+            </TabsContent>
+            <TabsContent value="tools">
+              <ToolsTab
+                tools={elements.tools}
+                mountedTools={scope === "sub" ? activeSub?.tools ?? [] : undefined}
+              />
+            </TabsContent>
+            <TabsContent value="middleware">
+              <MiddlewareTab
+                agents={scopedAgents}
+                diffs={diffs}
+                hasSource={elements.has_source}
+              />
+            </TabsContent>
+            {scope === "main" && (
+              <TabsContent value="memory">
+                {/* memoryElements 未到位时显示加载态，到位后由组件内部处理空态/流水线 */}
+                {/* version 用于卡片内"查看源码"懒加载 /snapshots/{v}/source */}
+                {memoryElements && selectedVersion != null ? (
+                  <MemorySubsystemCard elements={memoryElements} version={selectedVersion} />
+                ) : (
+                  <div className="page-loading">加载记忆要素…</div>
+                )}
+              </TabsContent>
             )}
-          </TabsContent>
-        </Tabs>
+          </Tabs>
+        </>
       ) : (
         <div className="page-loading">加载 Harness 要素…</div>
       )}

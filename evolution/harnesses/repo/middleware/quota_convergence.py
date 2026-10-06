@@ -123,3 +123,20 @@ class QuotaConvergenceMiddleware(AgentMiddleware):
 
 
 __all__ = ["DEFAULT_MAX_MODEL_CALLS", "QuotaConvergenceMiddleware"]
+
+
+def _load_quota_target(abc):
+    from contracts.storybuilding_quota import parse_demand_quota
+
+    demand_path = abc.workspace_path / "demand.md"
+    demand_md = demand_path.read_text(encoding="utf-8") if demand_path.exists() else ""
+    return parse_demand_quota(demand_md)
+
+
+def build(abc):
+    """架构清单挂载钩子：domain 导航——配比收敛（预算常量随模块口径演进）。"""
+    return QuotaConvergenceMiddleware(
+        abc.workspace_path,
+        _load_quota_target(abc),
+        max_model_calls=DEFAULT_MAX_MODEL_CALLS,
+    )

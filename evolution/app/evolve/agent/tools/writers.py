@@ -1,11 +1,13 @@
-"""写工具（5 写 + 1 edit）——给进化 Agent 受控的要素修改能力（决策 S5/S10）。
+"""写工具（5 写 + 1 edit + 1 delete）——给进化 Agent 受控的要素修改能力（决策 S5/S10）。
 
 每个可改要素配一个专用写工具（封装路径锁定 + backend 落盘），
-另外 1 个 edit_source 工具用于修改已有文件。
+1 个 edit_source 工具修改已有文件，1 个 delete_file 工具删除文件
+（REQ-20261006-130414 FR-003，DEC-002 物理删除 + DEC-008 全仓库通用）。
 
 设计原则（S5）：
   - write_* 仅新建（backend.write，已存在报错 → 提示用 edit_source）
   - edit_source 修改已有（backend.edit，精确替换 old_string→new_string）
+  - delete_file 物理删除（git 保历史；同步清理 architecture.json 引用）
   - 所有写操作经 FilesystemBackend（virtual_mode 路径安全 + symlink 防护）
   - name/path 参数 sanitize（防路径穿越），backend 再做一层拦截
 
@@ -14,18 +16,22 @@
   write_middleware → /middleware/{name}.py
   write_tool       → /tools/{name}.py
   write_skill      → /skills/{path}
-  write_subagent   → /subagents/{name}.py
+  write_subagent   → /subagents/{name}.py（动态钩子模块；纯清单 agent 无需）
   edit_source      → 任意已有文件（path + old_string + new_string）
+  delete_file      → 任意已有要素文件（同步清清单引用；架构清单本体不可删）
 """
 from __future__ import annotations
 
 import difflib
+import json
 import logging
 import re
+from pathlib import Path
 from typing import Any
 
 from langchain_core.tools import tool
 
+from app.core.settings import settings
 from app.evolve.ctx import get_tool_context
 
 logger = logging.getLogger("evolution.evolve.agent.tools.writers")
@@ -151,10 +157,13 @@ def make_writer_tools(backend) -> list:
 
     @tool
     def write_subagent(name: str, code: str) -> str:
-        """新建一个子代理定义源码文件。
+        """新建一个子代理动态钩子定义文件。
 
-        写入 harness 包的 subagents/ 目录。文件必须定义子代理的构建逻辑
-        （被 assemble() 调用构建 CompiledSubAgent）。
+        写入 harness 包的 subagents/ 目录。**M2 架构清单机制下，子代理
+        的静态挂载（prompt/middleware/skills/委托/权限）全部声明在
+        architecture.json——新增子代理的标准动作是 edit_source 改清单**；
+        本工具只在子代理需要动态构建逻辑（清单表达不了的运行时逻辑）时
+        才用，文件路径登记到对应 agent 的 definition 字段。
         仅用于新建——文件已存在请用 edit_source。
 
         Args:
@@ -212,7 +221,62 @@ def make_writer_tools(backend) -> list:
         ctx.emit_step("edit_source", "done", path=virt_path, occurrences=result.occurrences)
         return f"已编辑 {file_path}（替换 {result.occurrences} 处）"
 
-    return [write_prompt, write_middleware, write_tool, write_skill, write_subagent, edit_source]
+    @tool
+    def delete_file(file_path: str) -> str:
+        """删除 harness 包内的一个要素文件（物理删除，git 保历史）。
+
+        全仓库通用（middleware/prompts/skills/tools/subagents）；删除时
+        自动同步清理 architecture.json 里的引用（该文件的挂载条目、
+        以它为 prompt/definition 的 agent 整条及其委托边），防止悬空引用。
+        误删恢复 = 回退 harness 版本。架构清单 architecture.json 本体
+        不可删（改架构用 edit_source 改清单）。
+
+        Args:
+            file_path: 相对 harness 包根的文件路径（如 "middleware/retry.py"）
+        """
+        ctx = get_tool_context()
+        if ctx is None:
+            return "错误：session 未初始化"
+        virt_path = "/" + file_path.lstrip("/")
+        if ".." in virt_path:
+            return f"错误：非法路径 '{file_path}'（不允许 ..）"
+        # CON-002 纵深防御：契约代码不可删（同 edit_source 红线）
+        check_lower = file_path.lower()
+        for forbidden in _FORBIDDEN_EDIT_PREFIXES:
+            if forbidden in check_lower:
+                return (
+                    f"错误：拒绝删除 '{file_path}'——CON-002 物理隔离："
+                    f"进化 Agent 禁止触碰契约代码（contracts/）。"
+                )
+        if virt_path == "/architecture.json":
+            return "错误：架构清单本体不可删除——调整架构请用 edit_source 修改清单。"
+
+        root = Path(getattr(backend, "root_dir", None) or settings.harness_work_dir_path)
+        target = (root / virt_path.lstrip("/")).resolve()
+        root_resolved = root.resolve()
+        if root_resolved not in target.parents:
+            return f"错误：非法路径 '{file_path}'（越出 harness 包根）"
+        if not target.is_file():
+            return f"错误：文件不存在 '{file_path}'"
+
+        # 先清清单引用，再删文件——清单清理失败则整体不动（原子性）
+        cleaned = _clean_manifest_references(root, virt_path)
+        if cleaned is None:
+            return (
+                f"错误：architecture.json 引用清理失败，已中止删除。"
+                f"请先 read_source 检查清单 JSON 结构后重试。"
+            )
+        target.unlink()
+        if virt_path.endswith(".py"):
+            ctx.code_mutations_since_validate += 1
+        ctx.emit_step("delete_file", "done", path=virt_path, cleaned_refs=cleaned)
+        msg = f"已删除 {file_path}"
+        if cleaned:
+            msg += f"（已同步清理清单引用：{cleaned}）"
+        msg += "。删除后请调 validate_changes 确认无悬空引用。"
+        return msg
+
+    return [write_prompt, write_middleware, write_tool, write_skill, write_subagent, edit_source, delete_file]
 
 
 def _write_element(backend, subdir: str, name: str, suffix: str, content: str, label: str) -> str:
@@ -241,6 +305,81 @@ def _track_code_mutation(ctx: Any, suffix: str) -> None:
     hook/语法校验结果。"""
     if suffix == ".py":
         ctx.code_mutations_since_validate += 1
+
+
+def _clean_manifest_references(root: Path, virt_path: str) -> list[str] | None:
+    """删除文件前同步清理 architecture.json 引用（FR-003）。
+
+    返回清理描述清单（空 = 无引用需清）；返回 None = 清理失败（清单
+    不可解析/写回失败），调用方必须中止删除保证原子性。
+
+    引用清理规则（与清单字段一一对应）：
+      - middleware/{n}.py / tools/{n}.py → 从各 agent 列表移除 n
+      - skills/{s}/…                     → 从各 agent skills 移除 s
+      - prompt / definition 命中         → 删除该 agent 整条 + 双向委托边
+    """
+    from contracts.architecture_manifest import ARCHITECTURE_MANIFEST_FILENAME
+
+    manifest_file = root / ARCHITECTURE_MANIFEST_FILENAME
+    if not manifest_file.is_file():
+        return []  # 无清单（旧包形态）——无引用可清
+    try:
+        raw = json.loads(manifest_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    agents = raw.get("agents") if isinstance(raw, dict) else None
+    if not isinstance(agents, list):
+        return None
+
+    rel = virt_path.lstrip("/")
+    cleaned: list[str] = []
+
+    def _remove_agent(name: str, reason: str) -> None:
+        kept = [a for a in agents if isinstance(a, dict) and a.get("name") != name]
+        if len(kept) != len(agents):
+            agents[:] = kept
+            cleaned.append(f"移除 agent {name}（{reason}）")
+        for a in agents:
+            if not isinstance(a, dict):
+                continue
+            if isinstance(a.get("delegates"), list) and name in a["delegates"]:
+                a["delegates"].remove(name)
+                cleaned.append(f"{a.get('name')}.delegates 移除 {name}")
+            if a.get("delegated_by") == name:
+                a["delegated_by"] = None
+                cleaned.append(f"{a.get('name')}.delegated_by 清空")
+
+    if rel.startswith(("middleware/", "tools/")):
+        stem = Path(rel).stem
+        field = "middleware" if rel.startswith("middleware/") else "tools"
+        for a in agents:
+            if (isinstance(a, dict) and isinstance(a.get(field), list)
+                    and stem in a[field]):
+                a[field].remove(stem)
+                cleaned.append(f"{a.get('name')}.{field} 移除 {stem}")
+    elif rel.startswith("skills/"):
+        skill = rel.split("/", 2)[1]
+        for a in agents:
+            if (isinstance(a, dict) and isinstance(a.get("skills"), list)
+                    and skill in a["skills"]):
+                a["skills"].remove(skill)
+                cleaned.append(f"{a.get('name')}.skills 移除 {skill}")
+    else:
+        for a in list(agents):
+            if (isinstance(a, dict)
+                    and (a.get("prompt") == rel or a.get("definition") == rel)):
+                reason = "prompt" if a.get("prompt") == rel else "definition"
+                _remove_agent(a.get("name", "?"), reason)
+
+    if cleaned:
+        try:
+            manifest_file.write_text(
+                json.dumps(raw, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            return None
+    return cleaned
 
 
 # edit_source 失败时附带的上下文窗口大小（匹配行 ±N 行）

@@ -6,7 +6,7 @@
   对比磁盘现状与预估写入后内容：
     - 结构契约（范围化：仅新增/变更区块）+ 名称唯一（全局）+ 事件类型词白名单
     - 新建线区块非交汇事件数 = 模板值（主线12/支线6/角色线5/暗线5）
-    - 「最终结局」初构落盘后不可修改/删除
+    - 「最终结局」草稿制：结局类违规豁免拦截（仅记日志观测，REV-结局软化）
   违规 → ToolMessage 硬拦截（business_intercept 模式，错误信息含具体差距）。
 
 防死循环（DEC-006）：
@@ -42,6 +42,19 @@ _STORYLINE_FILE = "/storyline.md"
 
 # 同一规则连续拒绝上限（第 3 次拒绝后，下一次同规则违规放行并强制收尾）
 DEFAULT_MAX_REJECTS = 3
+
+# 结局软化豁免（REV-结局软化）：契约判定器产出的结局类违规只记日志、
+# 不拦截——「最终结局」为草稿制，可随叙事需要修订（质量由 review 结局
+# 对齐判据把关）。规则名/消息含关键词即判为结局类（与 bbb46aee84be 会话
+# 当年同款实现口径一致；contracts 为 executor 私有包，规则名不可静态枚举）。
+ENDING_EXEMPT_KEYWORDS = ("结局", "ending")
+
+
+def _is_ending_violation(violation: Any) -> bool:
+    """判定违规是否为结局类（结局软化豁免口径）：规则名或消息含关键词。"""
+    rule = str(getattr(violation, "rule", ""))
+    message = str(getattr(violation, "message", ""))
+    return any(kw in rule or kw in message for kw in ENDING_EXEMPT_KEYWORDS)
 
 
 class StorylineContractGuardMiddleware(AgentMiddleware):
@@ -152,6 +165,16 @@ class StorylineContractGuardMiddleware(AgentMiddleware):
             projected = current.replace(old_string, new_string, 1)
 
         violations = check_storyline_write(current, projected)
+
+        # 结局软化豁免：结局类违规放行（仅记日志），不进入拦截/防死循环计数
+        ending_violations = [v for v in violations if _is_ending_violation(v)]
+        for v in ending_violations:
+            logger.info(
+                "storyline 护栏结局豁免放行 rule=%s detail=%s",
+                v.rule, v.message,
+            )
+        violations = [v for v in violations if v not in ending_violations]
+
         if not violations:
             self._reject_counts.clear()
             return None

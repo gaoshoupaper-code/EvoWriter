@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import { ArrowLeft, Download } from "lucide-react";
 import {
   exportTraceContent,
@@ -587,7 +588,7 @@ function DemandStrip({
             <div className="bench-delivery-note">读取需求失败：{error}</div>
           ) : demandMd != null ? (
             <div className="prose-doc bench-demand-content">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{demandMd}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{demandMd}</ReactMarkdown>
             </div>
           ) : null}
         </div>

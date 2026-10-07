@@ -2656,6 +2656,13 @@ a {
   line-height: 1.86;
 }
 
+/* 纯文本消息（用户消息/非 markdown 分支）保留换行：REQ-20261007-200019 FR-002 */
+.message-content .message-plaintext {
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+}
+
 .message-content :where(p, ul, ol, pre, blockquote),
 .outline-markdown :where(p, ul, ol, pre, blockquote) {
   margin: 0 0 13px;

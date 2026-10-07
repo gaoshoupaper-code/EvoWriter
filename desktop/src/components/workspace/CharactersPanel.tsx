@@ -1,5 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import { markdownTableComponents } from "../../lib/markdown-components";
 import type { CharacterMarkdownFile } from "../../lib/types";
 
@@ -44,7 +45,7 @@ export function CharactersPanel({ characters, activeFilename, loading, onSelectC
             </aside>
 
             <article className="outline-markdown character-markdown">
-              {activeCharacter?.markdown.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownTableComponents}>{activeCharacter.markdown}</ReactMarkdown> : <p>这个人物文件暂无内容。</p>}
+              {activeCharacter?.markdown.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{activeCharacter.markdown}</ReactMarkdown> : <p>这个人物文件暂无内容。</p>}
             </article>
           </div>
         ) : (

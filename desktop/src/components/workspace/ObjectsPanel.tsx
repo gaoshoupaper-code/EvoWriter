@@ -1,5 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import { markdownTableComponents } from "../../lib/markdown-components";
 import type { ObjectMarkdownFile } from "../../lib/types";
 
@@ -44,7 +45,7 @@ export function ObjectsPanel({ objects, activeFilename, loading, onSelectObject 
             </aside>
 
             <article className="outline-markdown character-markdown">
-              {activeObject?.markdown.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownTableComponents}>{activeObject.markdown}</ReactMarkdown> : <p>这个物品文件暂无内容。</p>}
+              {activeObject?.markdown.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{activeObject.markdown}</ReactMarkdown> : <p>这个物品文件暂无内容。</p>}
             </article>
           </div>
         ) : (

@@ -1,5 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import { markdownTableComponents } from "../../lib/markdown-components";
 
 type WorldviewPanelProps = {
@@ -26,7 +27,7 @@ export function WorldviewPanel({ workspacePath, markdown, loading }: WorldviewPa
         </div>
 
         <div className="outline-markdown script-markdown">
-          {markdown.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownTableComponents}>{markdown}</ReactMarkdown> : <p>工作目录中的 worldview.md 世界观设定文件会在这里显示。</p>}
+          {markdown.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{markdown}</ReactMarkdown> : <p>工作目录中的 worldview.md 世界观设定文件会在这里显示。</p>}
         </div>
       </div>
     </section>

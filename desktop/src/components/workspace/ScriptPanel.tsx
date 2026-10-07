@@ -1,5 +1,6 @@
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import { markdownTableComponents } from "../../lib/markdown-components";
 import type { PanoramaEvent, StorylineEntry } from "../../lib/types";
 
@@ -59,7 +60,7 @@ export function ScriptPanel({
       <div className="content-panel-body">
         {fallbackMarkdownView ? (
           <article className="outline-markdown detail-outline-markdown">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownTableComponents}>{storylineMarkdown}</ReactMarkdown>
+            <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{storylineMarkdown}</ReactMarkdown>
           </article>
         ) : items.length > 0 ? (
           <div className="detail-outline-layout">
@@ -82,7 +83,7 @@ export function ScriptPanel({
             {active && active.key !== CORE_KEY ? (
               <article className="outline-markdown detail-outline-markdown">
                 {active.markdown.trim() ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownTableComponents}>{active.markdown}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{active.markdown}</ReactMarkdown>
                 ) : (
                   <p>该故事线暂无内容。</p>
                 )}
@@ -90,7 +91,7 @@ export function ScriptPanel({
             ) : active ? (
               <article className="outline-markdown detail-outline-markdown">
                 {active.markdown.trim() ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownTableComponents}>{active.markdown}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{active.markdown}</ReactMarkdown>
                 ) : null}
                 {panoramaAvailable ? (
                   <>

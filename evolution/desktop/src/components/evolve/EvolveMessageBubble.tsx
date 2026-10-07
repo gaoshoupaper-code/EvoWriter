@@ -1,6 +1,7 @@
 import { forwardRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import type { EvolveMessage, EvolvePoint } from "@/lib/api";
 import ProposalCard from "./ProposalCard";
 
@@ -105,7 +106,7 @@ const EvolveMessageBubble = forwardRef<HTMLDivElement, Props>(function EvolveMes
           if (seg.type === "text") {
             return (
               <div key={idx} className="msg-markdown">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{seg.text}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{seg.text}</ReactMarkdown>
               </div>
             );
           }

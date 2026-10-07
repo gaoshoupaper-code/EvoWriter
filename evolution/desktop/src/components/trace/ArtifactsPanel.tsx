@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Eye, EyeOff, FileText, History, LoaderCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 
 import {
   getArtifactRevisionContent,
@@ -243,7 +244,7 @@ function RevisionContent({ content }: { content: unknown }) {
   if (typeof content === "string") {
     return (
       <div className="artifact-revision-content prose-doc">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{content}</ReactMarkdown>
       </div>
     );
   }

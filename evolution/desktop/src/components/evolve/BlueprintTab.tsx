@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import { toast } from "sonner";
 import { getEvolveSystemPrompt, type EvolveSystemPrompt } from "@/lib/api";
 
@@ -74,7 +75,7 @@ export default function BlueprintTab() {
         </p>
       </header>
       <article className="blueprint-body">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{data.blueprint}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{data.blueprint}</ReactMarkdown>
       </article>
     </div>
   );

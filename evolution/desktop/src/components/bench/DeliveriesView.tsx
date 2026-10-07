@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Download, FileText, LoaderCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 
 import {
   getArtifactRevisionContent,
@@ -248,7 +249,7 @@ function ContentBody({ content }: { content: unknown }) {
   if (markdown != null) {
     return (
       <div className="bench-delivery-content prose-doc">
-        <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{markdown}</ReactMarkdown>
       </div>
     );
   }

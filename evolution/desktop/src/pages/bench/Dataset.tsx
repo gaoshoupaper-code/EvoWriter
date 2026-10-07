@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
 import {
   createGoldenCase,
   getCaseContent,
@@ -226,7 +227,7 @@ export default function BenchDataset() {
               {contentLoading ? (
                 <div className="page-loading">加载正文…</div>
               ) : (
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{caseContent}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>{caseContent}</ReactMarkdown>
               )}
             </div>
           )}

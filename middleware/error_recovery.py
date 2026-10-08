@@ -77,7 +77,11 @@ class ErrorRecoveryMiddleware(AgentMiddleware):
     # ------------------------------------------------------------------
 
     def wrap_tool_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:
-        """拦截同步工具调用：重试 → 耗尽后注入恢复建议。"""
+        """拦截同步工具调用：重试 → 耗尽后注入恢复建议。
+
+        确定性参数错误（B：智能分流）首败即短路——同参数重试必然复现，
+        不浪费重试次数，直接注入针对性恢复建议。
+        """
         last_exc: BaseException | None = None
         # 1 + max_retries = 总共执行的次数
         for attempt in range(1 + self.max_retries):
@@ -88,6 +92,10 @@ class ErrorRecoveryMiddleware(AgentMiddleware):
                 if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)) or type(exc).__name__ == "GraphInterrupt":
                     raise
                 last_exc = exc
+                # 确定性参数错误：免重试，直接短路
+                if _is_deterministic_param_error(exc):
+                    self._emit_intervention("short_circuit", exc)
+                    return self._tool_error_message(request, last_exc)
                 # task 防重放：命中不可重试工具立即短路，交回 Meta Agent（CON-005）。
                 if attempt < self.max_retries and self._can_retry(request, exc):
                     self._emit_intervention("retry", exc)
@@ -98,7 +106,10 @@ class ErrorRecoveryMiddleware(AgentMiddleware):
         return self._tool_error_message(request, last_exc)
 
     async def awrap_tool_call(self, request: Any, handler: Callable[[Any], Awaitable[Any]]) -> Any:
-        """拦截异步工具调用：重试（带延迟）→ 耗尽后注入恢复建议。"""
+        """拦截异步工具调用：重试（带延迟）→ 耗尽后注入恢复建议。
+
+        确定性参数错误（B：智能分流）首败即短路，不消耗退避延迟。
+        """
         last_exc: BaseException | None = None
         for attempt in range(1 + self.max_retries):
             try:
@@ -107,6 +118,10 @@ class ErrorRecoveryMiddleware(AgentMiddleware):
                 if isinstance(exc, (asyncio.CancelledError, KeyboardInterrupt, SystemExit)) or type(exc).__name__ == "GraphInterrupt":
                     raise
                 last_exc = exc
+                # 确定性参数错误：免重试，直接短路
+                if _is_deterministic_param_error(exc):
+                    self._emit_intervention("short_circuit", exc)
+                    return self._tool_error_message(request, last_exc)
                 # task 防重放：命中不可重试工具立即短路，交回 Meta Agent（CON-005）。
                 if attempt < self.max_retries and self._can_retry(request, exc):
                     self._emit_intervention("retry", exc)
@@ -171,8 +186,17 @@ def _recovery_guidance(exc: BaseException) -> str:
     - IsADirectoryError → 指定文件而非目录路径
     - OSError → 检查磁盘空间或文件锁定
     - JSONDecodeError → 修复 JSON 格式
+    - String not found 类确定性参数错误 → 文件内容与记忆不符，先取回最新内容
     - 其他 → 通用建议
     """
+    if _is_deterministic_param_error(exc):
+        return (
+            "目标字符串在文件中不存在——文件内容已与你上次读取/记忆的版本不一致"
+            "（可能刚被你自己或护栏修改）。不要原样重试。"
+            "请先用 read_file（或 grep）取回目标文件的最新内容，"
+            "从中精确复制目标行作为 old_string，再重新调用 edit_file；"
+            "若改动较大，可直接用 write_file 写入完整新内容。"
+        )
     if isinstance(exc, (UnicodeDecodeError, UnicodeEncodeError)):
         return "内容包含非 UTF-8 兼容字符，请移除或替换这些字符后重试。"
     if isinstance(exc, FileNotFoundError):
@@ -186,6 +210,21 @@ def _recovery_guidance(exc: BaseException) -> str:
     if isinstance(exc, json.JSONDecodeError):
         return "JSON 格式错误，请检查并修复格式后重试。"
     return "请检查输入参数是否正确，或尝试其他方法完成当前任务。"
+
+
+# 确定性参数错误关键词（B：智能分流）——命中即免重试（重试同参数必然同样失败）
+_DETERMINISTIC_ERROR_KEYWORDS = ("String not found",)
+
+
+def _is_deterministic_param_error(exc: BaseException) -> bool:
+    """判定异常是否为确定性参数错误（重试同参数必然复现，盲重试纯浪费）。
+
+    典型：edit_file 的 old_string 与磁盘内容不符（模型凭记忆/旧版本拼串，
+    如 trace-2db7ff68… 六次连败）——重试不改参数不会成功，应由预检层
+    （FileStateTracker）拦截或模型改走 read → 构造 → edit。
+    """
+    message = str(exc)
+    return any(kw in message for kw in _DETERMINISTIC_ERROR_KEYWORDS)
 
 
 def _mapping_value(mapping: object, key: str) -> Any:

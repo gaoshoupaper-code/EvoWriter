@@ -174,6 +174,10 @@ def make_flow_tools() -> list:
              middleware/skills/definition）、委托双向一致与无环、子代理
              数量上限、middleware build(ctx) 钩子存在。改架构 = 改清单，
              清单错 = 装配必炸，这里直接拦。
+          5. UTF-8 完整性：全包文件严格 UTF-8 解码。装配链（prompt/
+             skills 加载）按 UTF-8 读文件，坏字节此前要到发布 probe 才炸
+             （线上 2026-10-08：并发 edit 交叉写坏 .md，probe 干净 checkout
+             装配 UnicodeDecodeError），这里提前到落地阶段拦截。
 
         如果校验失败，按错误信息修复后重新校验。
         **建议最多调用 2 次**——若 2 次仍失败，如实写 change_log 收尾
@@ -197,6 +201,24 @@ def make_flow_tools() -> list:
             except py_compile.PyCompileError as e:
                 rel = py.relative_to(pkg_root)
                 errors.append(f"语法错误 {rel}: {e}")
+
+        # 5. UTF-8 完整性（docstring 校验项 5；放在编译检查旁先跑，廉价先拦）：
+        #    全包文本文件严格解码（包内全是 py/md/json 纯文本，装配链一律按
+        #    UTF-8 读）。坏字节在 .py 会先被 py_compile 拦，.md/.json 只有
+        #    这里拦得到——否则要等发布 probe 的干净 checkout 炸。
+        for f in pkg_root.rglob("*"):
+            if not f.is_file() or "__pycache__" in f.parts or ".git" in f.parts:
+                continue
+            try:
+                f.read_text(encoding="utf-8")
+            except UnicodeDecodeError as e:
+                errors.append(
+                    f"编码损坏 {f.relative_to(pkg_root)}: {e}"
+                    "（文件被写坏成非法 UTF-8——若做过并发编辑，"
+                    "请 read_source 确认当前内容后重写该文件）"
+                )
+            except OSError:
+                continue  # 读失败（权限/竞态删除）由后续装配/probe 兜底
 
         # 2. import 检查：环境差异（app.platform.* 等 evolution 不具备的框架包）单独归类，
         #    不算校验失败——它们在 executor 运行时能正常 import。

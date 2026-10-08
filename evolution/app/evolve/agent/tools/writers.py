@@ -26,6 +26,7 @@ import difflib
 import json
 import logging
 import re
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +40,17 @@ logger = logging.getLogger("evolution.evolve.agent.tools.writers")
 # 合法文件名：字母数字下划线连字符，不允许路径分隔符 / ..
 # 防止 Agent 传 "../etc/passwd" 或 "a/b/../../../c" 之类穿越路径
 _SAFE_NAME = re.compile(r"^[A-Za-z0-9_\-\.]+$")
+
+# harness 包写操作全局串行锁（线上 2026-10-08 session cd9382800535 发布被拒根因）：
+# langgraph ToolNode 用 asyncio.gather 并发执行同一轮的多个 tool_call（同步工具
+# 经 run_in_executor 落线程池）。模型一轮并发 4 个 edit_source 打同一文件时，
+# 各线程「读全文 → 替换 → O_TRUNC 整文件重写」交叉执行，后写的把先写的字节流
+# 拦腰覆盖，产生非法 UTF-8（全角括号被截掉首字节），probe 干净 checkout 装配即
+# UnicodeDecodeError。与 executor 侧同类修复（executor/app/platform/agent/
+# middleware/file_write_serialize.py，按文件粒度）同一决策谱系；这里取全局锁而
+# 非按文件锁：delete_file 需原子改 architecture.json + 目标文件两个文件，按文件
+# 锁需双锁排序纪律，而临界区只是毫秒级磁盘操作，全局锁零死角且无死锁面。
+_HARNESS_WRITE_LOCK = threading.Lock()
 
 # CON-002 物理隔离纵深防御：进化 agent 禁写契约代码（防 reward hacking）。
 # 主隔离靠 FilesystemBackend(root_dir=harness_work_dir, virtual_mode=True)——contracts/
@@ -145,7 +157,8 @@ def make_writer_tools(backend) -> list:
         if ".." in path or path.startswith("/"):
             return f"错误：非法路径 '{path}'（不允许 .. 或绝对路径）"
         virt_path = f"/skills/{path}"
-        result = backend.write(virt_path, content)
+        with _HARNESS_WRITE_LOCK:
+            result = backend.write(virt_path, content)
         if result.error:
             return f"写入失败（{result.error}）。如果文件已存在，请用 edit_source 修改。"
         # 技能可携带 .py 脚本——源码落盘同样计入未校验计数（DEC-003），
@@ -208,7 +221,8 @@ def make_writer_tools(backend) -> list:
                     f"这是防 reward hacking 的红线（契约是评测的确定性依据，"
                     f"进化改契约 = 自己改考卷）。只能改 harness 包内要素。"
                 )
-        result = backend.edit(virt_path, old_string, new_string)
+        with _HARNESS_WRITE_LOCK:
+            result = backend.edit(virt_path, old_string, new_string)
         if result.error:
             # 精确匹配失败时附上文件实际片段（带行号），让模型对照真实字节重试，
             # 而非盲改。old_string 常因全角空格 / em-dash / 换行压缩差一字符而失配。
@@ -259,14 +273,16 @@ def make_writer_tools(backend) -> list:
         if not target.is_file():
             return f"错误：文件不存在 '{file_path}'"
 
-        # 先清清单引用，再删文件——清单清理失败则整体不动（原子性）
-        cleaned = _clean_manifest_references(root, virt_path)
-        if cleaned is None:
-            return (
-                f"错误：architecture.json 引用清理失败，已中止删除。"
-                f"请先 read_source 检查清单 JSON 结构后重试。"
-            )
-        target.unlink()
+        # 先清清单引用，再删文件——清单清理失败则整体不动（原子性）。
+        # 清单 + 目标文件两个文件在同锁内改动（并发 delete/edit 清单同样会交叉写坏）。
+        with _HARNESS_WRITE_LOCK:
+            cleaned = _clean_manifest_references(root, virt_path)
+            if cleaned is None:
+                return (
+                    f"错误：architecture.json 引用清理失败，已中止删除。"
+                    f"请先 read_source 检查清单 JSON 结构后重试。"
+                )
+            target.unlink()
         if virt_path.endswith(".py"):
             ctx.code_mutations_since_validate += 1
         ctx.emit_step("delete_file", "done", path=virt_path, cleaned_refs=cleaned)
@@ -289,7 +305,8 @@ def _write_element(backend, subdir: str, name: str, suffix: str, content: str, l
     except ValueError as e:
         return str(e)
     virt_path = f"/{subdir}/{safe}"
-    result = backend.write(virt_path, content)
+    with _HARNESS_WRITE_LOCK:
+        result = backend.write(virt_path, content)
     if result.error:
         return (
             f"写入失败（{result.error}）。如果文件已存在，请用 edit_source 修改已有文件。"

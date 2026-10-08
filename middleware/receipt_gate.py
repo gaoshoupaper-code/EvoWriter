@@ -250,7 +250,7 @@ class ReceiptGateMiddleware(AgentMiddleware):
             content=(
                 "[回执闸门] 本线程为首轮运行且 storyline.md 尚未创建：理解回执未确认，"
                 "受保护产物（storyline.md / worldview.md / character/*.md）禁止写入。"
-                "请先按系统提示词 §7.1 构造理解回执（需求复述 + 假设清单 + "
+                "请先按初构技能（storybuilding-initial）步骤 0 构造理解回执（需求复述 + 假设清单 + "
                 "故事核心五字段草案），调用 confirm_with_user 工具提交回执等待"
                 "用户确认；工具返回用户意见后方可写产物。"
                 "不要用纯文本回复代替工具调用——产物未写出时终局会被产物校验拦回。"

@@ -159,7 +159,7 @@ class ReviewGateMiddleware(AgentMiddleware):
         self._injections += 1
         return {"messages": [HumanMessage(content=(
             "[review 闸门] 检测到 storyline.md 已产出，但本次运行从未调用 review "
-            "子代理（收尾链被截断）。按系统提示词 §6.5 review 协议：立即调用 "
+            "子代理（收尾链被截断）。按 review 协议（收尾审查一次、按需修订一次）：立即调用 "
             "`review` 子代理统一审查全部产物，读取 review/storybuilding.md 审查"
             "报告，按需修订一次，然后再返回最终结果。产物已修改而未审查，"
             "不得直接结束。"

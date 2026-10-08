@@ -14,7 +14,7 @@
         "object_contract_guard",
         "quota_convergence"
       ],
-      "skills": ["storybuilding-initial", "storybuilding-expand"],
+      "skills": ["storybuilding-initial", "storybuilding-expand", "storybuilding-specs"],
       "tools": [],
       "delegates": ["storybuilding_review"],
       "context_files": ["demand.md"],
@@ -39,6 +39,7 @@
       "tools": [],
       "delegates": [],
       "delegated_by": "storybuilding",
+      "skills": ["storybuilding-specs"],
       "write_permissions": ["/review/storybuilding.md"]
     }
   ]

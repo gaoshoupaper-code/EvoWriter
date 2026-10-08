@@ -211,6 +211,8 @@ class StorylineContractGuardMiddleware(AgentMiddleware):
         return ToolMessage(
             content=(
                 f"storyline.md 写入校验未通过：{detail}。"
+                "完整结构规范（事件数量模板/区块格式/列语义）见技能 storybuilding-specs，"
+                "动笔前未读取请先读取再修正。"
                 "请修正上述问题后重新写入完整内容；同一问题连续 3 次被拒后系统将强制收尾。"
             ),
             name=str(tool_name),

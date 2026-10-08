@@ -175,7 +175,9 @@ class ObjectContractGuardMiddleware(AgentMiddleware):
         else:
             head = f"storyline.md 修订与物品卡冲突：{detail}。"
         return ToolMessage(
-            content=head + "请修正上述问题后重新写入；同一问题连续 3 次被拒后系统将强制收尾。",
+            content=head + "完整物品卡规范（三段式/类型·可见性·变化枚举/轨迹锚点）见技能 "
+            "storybuilding-specs，动笔前未读取请先读取再修正。"
+            "请修正上述问题后重新写入；同一问题连续 3 次被拒后系统将强制收尾。",
             name=str(tool_name),
             tool_call_id=str(tool_call_id or ""),
             status="error",

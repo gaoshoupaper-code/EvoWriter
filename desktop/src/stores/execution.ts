@@ -715,6 +715,9 @@ async function performSubmit(
 
       set((state) => ({
         messages: updateAssistantMessage(state.messages, assistantIdx, (message) => {
+          // FR-001（REQ-20261009-002227）：收到 interrupt 后正文归 interrupt 分支管
+          // （提案问题），流式叙述文本不得把它盖回去。
+          if (message.awaitingInput) return message;
           if (streamedText) return { ...message, content: streamedText, contentFormat: "markdown" };
           return message;
         }),

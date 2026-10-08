@@ -276,6 +276,34 @@ describe("FR-001（REQ-20261009-002227）: interrupt 后正常关流不误报断
     expect(lastMsg?.awaitingInput?.multi_select).toBe(true);
   });
 
+  it("AC-001 补充：model_stream 叙述后收到 interrupt，正文必须是提案问题而非叙述文本", async () => {
+    // 复刻线上形态（2026-10-09 彻查）：agent 先流式输出叙述（已读取需求…端出方案），
+    // 再发 interrupt。修复前每轮 chunk 后的无条件覆盖 set 会把 interrupt 写入的
+    // 提案问题盖回 streamedText——用户只看到叙述 + 连接中断，看不到问题文本。
+    streams = [encode([
+      sseEvent("trace_event", {
+        trace_id: "trace-1", event_id: "evt-1", sequence: 1, type: "run_start", status: "running",
+        timestamp: "2026-01-01T00:00:00Z", source: "system",
+        input: { workspace_id: "ws-1", thread_id: "thread-1", session_name: "测试会话", endpoint: "screenplay.generate.stream" },
+      }),
+      sseEvent("model_stream", { content: "已读取需求，设计做完了，端出三套方案供拍板。" }),
+      sseEvent("interrupt", {
+        kind: "choice", question: "请从三套方案中选择：", options: [
+          { label: "方案一", description: "重生复仇流" },
+          { label: "方案二", description: "无敌碾压流" },
+        ], multi_select: false, source: "interview",
+      }),
+    ])];
+
+    const { lastMsg } = await submitAndWaitIdle("写一个故事");
+
+    expect(lastMsg?.status).not.toBe("failed");
+    expect(lastMsg?.content).not.toContain("连接中断");
+    // 提案问题的正文不得被叙述文本覆盖
+    expect(lastMsg?.content).toBe("请从三套方案中选择：");
+    expect(lastMsg?.awaitingInput?.question).toBe("请从三套方案中选择：");
+  });
+
   it("AC-002 回归：无 interrupt 无 final 的真断流，兜底报错行为保留", async () => {
     streams = [encode([
       sseEvent("trace_event", {

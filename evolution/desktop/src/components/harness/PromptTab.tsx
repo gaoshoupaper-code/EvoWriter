@@ -45,7 +45,7 @@ export function PromptTab({
               <AgentBadge name={agent.name} />
               <h4>系统提示词</h4>
               {showDiff && promptDiff && (
-                <span className="upgrade-change-desc" style={{ fontSize: 11 }}>
+                <span className="upgrade-change-desc" style={{ fontSize: "var(--text-ui-sm)" }}>
                   <span className="diff-tag-add">+{promptDiff.summary.added}</span>
                   {" / "}
                   <span className="diff-tag-del">-{promptDiff.summary.removed}</span>

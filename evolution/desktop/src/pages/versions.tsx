@@ -45,7 +45,7 @@ function VersionSummary({ item }: { item: VersionListItem }) {
       {item.change_summary ? (
         <div className="version-change-summary">{item.change_summary}</div>
       ) : (
-        <p className="text-dim" style={{ fontSize: 13, margin: "12px 0 0" }}>
+        <p className="text-dim" style={{ fontSize: "var(--text-ui-caption)", margin: "12px 0 0" }}>
           （无版本说明——发版时未填账本 note）
         </p>
       )}
@@ -122,7 +122,7 @@ export default function VersionsPage() {
           <div className="versions-list card" style={{ padding: 0 }}>
             <div className="versions-list-head">
               <span className="section-title" style={{ margin: 0 }}>版本</span>
-              <span className="text-mute mono" style={{ fontSize: 11 }}>发版时间线</span>
+              <span className="text-mute mono" style={{ fontSize: "var(--text-ui-sm)" }}>发版时间线</span>
             </div>
             <div className="versions-chain">
               {loading ? (
@@ -130,7 +130,7 @@ export default function VersionsPage() {
                   加载中…
                 </div>
               ) : items.length === 0 ? (
-                <div className="text-dim" style={{ padding: 24, textAlign: "center", fontSize: 13 }}>
+                <div className="text-dim" style={{ padding: 24, textAlign: "center", fontSize: "var(--text-ui-caption)" }}>
                   还没有版本。发版后会在此显示。
                 </div>
               ) : (

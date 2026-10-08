@@ -82,16 +82,16 @@ export default function SkillsPage() {
   return (
     <div style={{ maxWidth: 900, margin: "0 auto", padding: 24 }}>
       <h1>Skill 管理</h1>
-      <p style={{ color: "#64748b", fontSize: 14 }}>
+      <p style={{ color: "#64748b", fontSize: "var(--text-ui-base)" }}>
         你的 Skills 自进化库。每个 Skill 是一个场景的方法论，随使用不断进化（D18）。
       </p>
 
       <div style={{ display: "flex", gap: 24, marginTop: 24 }}>
         {/* 列表 */}
         <div style={{ width: 300 }}>
-          <h2 style={{ fontSize: 16 }}>我的 Skill（{skills.length}）</h2>
+          <h2 style={{ fontSize: "var(--text-ui-lg)" }}>我的 Skill（{skills.length}）</h2>
           {skills.length === 0 ? (
-            <p style={{ color: "#94a3b8", fontSize: 14 }}>
+            <p style={{ color: "#94a3b8", fontSize: "var(--text-ui-base)" }}>
               还没有 Skill。完成一次文生图闭环并同意持久化后，这里会出现你的第一个 Skill。
             </p>
           ) : (
@@ -103,22 +103,22 @@ export default function SkillsPage() {
                     padding: "8px 12px",
                     marginBottom: 4,
                     border: "1px solid #e2e8f0",
-                    borderRadius: 6,
+                    borderRadius: "var(--radius-md)",
                     cursor: "pointer",
                     background: selected?.skill_id === sk.skill_id ? "#eff6ff" : "#fff",
                   }}
                 >
                   <div onClick={() => openSkill(sk.skill_id)}>
                     <strong>{sk.name}</strong>
-                    {sk.scene_tag ? <span style={{ color: "#64748b", fontSize: 12 }}> · {sk.scene_tag}</span> : null}
-                    <div style={{ fontSize: 12, color: "#94a3b8" }}>
+                    {sk.scene_tag ? <span style={{ color: "#64748b", fontSize: "var(--text-ui-sm)" }}> · {sk.scene_tag}</span> : null}
+                    <div style={{ fontSize: "var(--text-ui-sm)", color: "#94a3b8" }}>
                       经 {sk.revision_count} 轮进化
                     </div>
                   </div>
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); handleDelete(sk.skill_id); }}
-                    style={{ fontSize: 12, color: "#ef4444", background: "none", border: "none", cursor: "pointer", marginTop: 4 }}
+                    style={{ fontSize: "var(--text-ui-sm)", color: "#ef4444", background: "none", border: "none", cursor: "pointer", marginTop: 4 }}
                   >
                     删除
                   </button>
@@ -132,23 +132,23 @@ export default function SkillsPage() {
         <div style={{ flex: 1 }}>
           {selected ? (
             <div>
-              <h2 style={{ fontSize: 16 }}>编辑 Skill</h2>
-              <label style={{ display: "block", fontSize: 13, margin: "8px 0 4px" }}>名称</label>
+              <h2 style={{ fontSize: "var(--text-ui-lg)" }}>编辑 Skill</h2>
+              <label style={{ display: "block", fontSize: "var(--text-ui-caption)", margin: "8px 0 4px" }}>名称</label>
               <input
                 value={editName}
                 onChange={(e) => setEditName(e.target.value)}
-                style={{ width: "100%", padding: "6px 8px", borderRadius: 4, border: "1px solid #e2e8f0" }}
+                style={{ width: "100%", padding: "6px 8px", borderRadius: "var(--radius-sm)", border: "1px solid #e2e8f0" }}
               />
-              <label style={{ display: "block", fontSize: 13, margin: "12px 0 4px" }}>
+              <label style={{ display: "block", fontSize: "var(--text-ui-caption)", margin: "12px 0 4px" }}>
                 正文（SKILL.md）
               </label>
               <textarea
                 value={editContent}
                 onChange={(e) => setEditContent(e.target.value)}
                 rows={20}
-                style={{ width: "100%", padding: "8px", borderRadius: 4, border: "1px solid #e2e8f0", fontFamily: "monospace", fontSize: 13 }}
+                style={{ width: "100%", padding: "8px", borderRadius: "var(--radius-sm)", border: "1px solid #e2e8f0", fontFamily: "var(--font-mono)", fontSize: "var(--text-ui-caption)" }}
               />
-              <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>
+              <p style={{ fontSize: "var(--text-ui-sm)", color: "#94a3b8", marginTop: 4 }}>
                 注：正文主要由 Agent 在持久化时生成。手动编辑后需通过 Agent 重新持久化才生效。
               </p>
               <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
@@ -156,14 +156,14 @@ export default function SkillsPage() {
                   type="button"
                   onClick={handleSave}
                   disabled={saving}
-                  style={{ padding: "6px 16px", borderRadius: 4, border: "none", background: "#3b82f6", color: "#fff", cursor: "pointer" }}
+                  style={{ padding: "6px 16px", borderRadius: "var(--radius-sm)", border: "none", background: "#3b82f6", color: "#fff", cursor: "pointer" }}
                 >
                   {saving ? "保存中" : "保存名称"}
                 </button>
                 <button
                   type="button"
                   onClick={() => setSelected(null)}
-                  style={{ padding: "6px 16px", borderRadius: 4, border: "1px solid #e2e8f0", background: "#fff", cursor: "pointer" }}
+                  style={{ padding: "6px 16px", borderRadius: "var(--radius-sm)", border: "1px solid #e2e8f0", background: "#fff", cursor: "pointer" }}
                 >
                   关闭
                 </button>

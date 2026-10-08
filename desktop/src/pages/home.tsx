@@ -19,6 +19,7 @@ import { useExecutionStore, setExecutionDeps, installExecutionPersist } from "@/
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useTraceStore } from "@/stores/trace";
 import { useContentStore } from "@/stores/content";
+import { applyUiFontSize, loadUiFontSize } from "@/components/ui/UiFontSizeControl";
 
 const initialAssistantMessage = {
   role: "assistant" as const,
@@ -134,6 +135,8 @@ export default function Home() {
 
   // ── 主题 ──
   useEffect(() => { useWorkspaceStore.getState().initTheme(); }, []);
+  // ── 界面字号(DESIGN-UI.md):启动恢复上次选择 ──
+  useEffect(() => { applyUiFontSize(loadUiFontSize()); }, []);
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
     if (themeReady) window.localStorage.setItem("writer-theme", theme);

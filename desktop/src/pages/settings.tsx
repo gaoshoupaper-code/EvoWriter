@@ -15,6 +15,7 @@ import {
   updateProviderConfig,
   type ProviderConfig,
 } from "@/lib/api";
+import { UiFontSizeControl } from "@/components/ui/UiFontSizeControl";
 
 type FormMode =
   | { kind: "new" }
@@ -421,7 +422,7 @@ export default function SettingsPage() {
         </header>
         <div className="config-update-section">
           <div className="config-update-info">
-            <strong style={{ fontSize: 15 }}>检查新版本</strong>
+            <strong style={{ fontSize: "var(--text-ui-lg)" }}>检查新版本</strong>
             <p className="auth-hint" style={{ margin: 0 }}>
               有新版本时顶部会显示提示条，点「立即更新」即可下载安装并重启。应用启动时也会自动检查一次。
             </p>
@@ -435,6 +436,22 @@ export default function SettingsPage() {
           >
             {checkingUpdate ? "检查中…" : "检查更新"}
           </button>
+        </div>
+      </section>
+
+      {/* 界面字号(FR-007):只改 --ui-font-size 单变量,几何不缩放;见 DESIGN-UI.md */}
+      <section className="admin-card" style={{ maxWidth: 880, marginTop: 24 }}>
+        <header className="admin-header">
+          <h1 className="auth-title">界面字号</h1>
+        </header>
+        <div className="config-update-section">
+          <div className="config-update-info">
+            <strong style={{ fontSize: "var(--text-ui-lg)" }}>文字大小</strong>
+            <p className="auth-hint" style={{ margin: 0 }}>
+              调整整个界面的文字大小，立即生效；图标与间距保持不变，重启后记住选择。
+            </p>
+          </div>
+          <UiFontSizeControl />
         </div>
       </section>
     </main>

@@ -79,7 +79,7 @@ export default function AdminCreditsSettings() {
               key={key}
               style={{
                 border: "1px solid var(--border)",
-                borderRadius: 12,
+                borderRadius: "var(--radius-lg)",
                 padding: 16,
               }}
             >
@@ -91,11 +91,11 @@ export default function AdminCreditsSettings() {
                 }}
               >
                 <span style={{ fontWeight: 700 }}>{KEY_LABELS[key] ?? key}</span>
-                <code style={{ fontSize: 12, color: "var(--muted-foreground)" }}>{key}</code>
+                <code style={{ fontSize: "var(--text-ui-sm)", color: "var(--muted-foreground)" }}>{key}</code>
               </div>
               <p
                 style={{
-                  fontSize: 13,
+                  fontSize: "var(--text-ui-caption)",
                   color: "var(--muted-foreground)",
                   margin: "8px 0 12px",
                 }}
@@ -120,7 +120,7 @@ export default function AdminCreditsSettings() {
               </div>
               <div
                 style={{
-                  fontSize: 12,
+                  fontSize: "var(--text-ui-sm)",
                   color: "var(--muted-foreground)",
                   marginTop: 8,
                 }}
@@ -135,11 +135,11 @@ export default function AdminCreditsSettings() {
       <div
         style={{
           background: "var(--accent)",
-          borderRadius: 12,
+          borderRadius: "var(--radius-lg)",
           padding: 16,
           marginTop: 24,
           color: "var(--muted-foreground)",
-          fontSize: 13,
+          fontSize: "var(--text-ui-caption)",
           lineHeight: 1.7,
         }}
       >

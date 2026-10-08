@@ -19,6 +19,7 @@ import {
   type LucideIcon } from "lucide-react";
 import { fetchMeOrNull, logout, type AuthMe } from "@/lib/api";
 import UpdateBanner from "@/components/UpdateBanner";
+import { UiFontSizeControl, applyUiFontSize, loadUiFontSize } from "./ui/UiFontSizeControl";
 
 /**
  * Evolution 桌面端主布局（scope 分家 + 管理后台收敛，2026-07-18）。
@@ -104,6 +105,9 @@ export default function Shell() {
     checkAuth();
   }, [navigate]);
 
+  // ── 界面字号(DESIGN-UI.md):启动恢复上次选择 ──
+  useEffect(() => { applyUiFontSize(loadUiFontSize()); }, []);
+
   if (checking || !me) {
     return <div className="shell-loading">加载中…</div>;
   }
@@ -152,6 +156,9 @@ export default function Shell() {
             </div>
           ))}
         </nav>
+        <div className="shell-sidebar-footer">
+          <UiFontSizeControl />
+        </div>
         <div className="shell-user">
           <div className="shell-user-info">
             <span className="shell-user-name">{me.username}</span>

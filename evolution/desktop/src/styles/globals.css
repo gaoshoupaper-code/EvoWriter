@@ -7689,9 +7689,45 @@ html[data-theme="dark"] {
   color: var(--evo-ink-muted);
   white-space: pre-wrap;
 }
-.skill-row.diff-add { background: var(--evo-success-soft); }
 .skill-row.diff-del { background: var(--evo-danger-soft); text-decoration: line-through; }
 .skill-load-error { color: var(--evo-danger); font-size: var(--evo-text-xs); }
+
+/* skills 内容卡片：头 = 展开/收起 + 名称 + 路径，体 = 描述 + markdown 正文 */
+.skill-card {
+  border: 1px solid var(--evo-line);
+  border-radius: var(--evo-radius-md);
+  margin-bottom: var(--evo-space-2);
+  overflow: hidden;
+}
+.skill-card.diff-add > .skill-card-head { background: var(--evo-success-soft); }
+.skill-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--evo-space-2);
+  width: 100%;
+  padding: var(--evo-space-2) var(--evo-space-3);
+  background: var(--evo-surface-2);
+  border: none;
+  cursor: pointer;
+  color: var(--evo-ink);
+  font-size: var(--evo-text-sm);
+  text-align: left;
+}
+.skill-card-head:hover { background: var(--evo-surface); }
+.skill-card-name {
+  font-weight: 600;
+}
+.skill-card-body {
+  padding: var(--evo-space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--evo-space-2);
+}
+.skill-doc {
+  font-size: var(--evo-text-sm);
+  max-height: 480px;
+  overflow-y: auto;
+}
 
 /* tools 平铺列表（Tools Tab）—— 与 skill-row 同族，但平铺不分段 + 右侧 scope 彩签 */
 .tool-list {

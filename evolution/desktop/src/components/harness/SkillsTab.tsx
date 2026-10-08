@@ -1,15 +1,31 @@
 import { useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import type { HarnessElementView, AgentDiff } from "@/lib/api";
 import { AgentBadge } from "./AgentBadge";
 
 /**
- * Skills Tab：按 agent 分段展示各 agent 的技能路径列表。
+ * Skills Tab：按 agent 分段展示各 agent 的技能卡片。
  *
- * - 默认显示当前版本全量 skills 路径（D6）
- * - Tab 内独立"显示 diff"开关（D18），开启后：新增路径绿底、删除路径红底（D13）
- * - 删除的路径当前版本 elements 里不存在，从 diff 数据补出来渲染
+ * - 每个技能一张可折叠卡片：头部 = 名称 + 路径 + frontmatter 描述，
+ *   身体 = SKILL.md 全文（剥 frontmatter）markdown 渲染
+ * - 默认展开——要素页的价值就是看到具体内容，收起只作长文收纳
+ * - Tab 内独立"显示 diff"开关（D18），开启后：新增技能卡片头绿底、
+ *   删除路径红底行（D13，从 diff 数据补出来渲染）
  * - 每段标 Agent 徽章（D5）
  */
+
+/** 剥掉 SKILL.md 开头的 YAML frontmatter（--- 包裹块），返回正文。 */
+function stripFrontmatter(content: string): string {
+  if (!content.startsWith("---")) return content;
+  // 闭合 fence = 独占一行的 "---"；找不到（未闭合）时原样返回，宁可多显示不吞正文
+  const end = content.indexOf("\n---", 3);
+  if (end === -1) return content;
+  return content.slice(end + 4).replace(/^\n+/, "");
+}
+
 export function SkillsTab({
   agents,
   diffs,
@@ -53,15 +69,11 @@ export function SkillsTab({
               </h4>
             </div>
 
-            {/* 当前版本 skills：added 标绿，其余正常 */}
-            {agent.skills.map((sk, i) => {
-              const isAdded = showDiff && skillsDiff?.added.includes(sk.path);
+            {/* 当前版本 skills：added 卡片头标绿，其余正常 */}
+            {agent.skills.map((sk) => {
+              const isAdded = !!(showDiff && skillsDiff?.added.includes(sk.path));
               return (
-                <div key={i} className={`skill-row ${isAdded ? "diff-add" : ""}`}>
-                  <span className="skill-path">{sk.path}</span>
-                  {sk.description && <span className="skill-desc">{sk.description}</span>}
-                  {sk.load_error && <span className="skill-load-error">⚠ {sk.load_error}</span>}
-                </div>
+                <SkillCard key={sk.path} skill={sk} added={isAdded} />
               );
             })}
 
@@ -75,6 +87,49 @@ export function SkillsTab({
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/** 单个技能卡片：头部名称/路径/描述 + 可折叠的 SKILL.md 正文（markdown 渲染）。 */
+function SkillCard({
+  skill,
+  added,
+}: {
+  skill: HarnessElementView["skills"][number];
+  added: boolean;
+}) {
+  // 默认展开——本 Tab 的核心诉求就是看到技能具体内容
+  const [open, setOpen] = useState(true);
+  const body = skill.content ? stripFrontmatter(skill.content) : "";
+
+  return (
+    <div className={`skill-card ${added ? "diff-add" : ""}`}>
+      <button
+        type="button"
+        className="skill-card-head"
+        onClick={() => setOpen(!open)}
+        aria-expanded={open}
+      >
+        {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+        <span className="skill-card-name">{skill.name}</span>
+        <span className="skill-path">{skill.path}</span>
+      </button>
+      <div className="skill-card-body">
+        {skill.description && <p className="skill-desc">{skill.description}</p>}
+        {skill.load_error && <p className="skill-load-error">⚠ {skill.load_error}</p>}
+        {open && (
+          body ? (
+            <div className="prose-doc skill-doc">
+              <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                {body}
+              </ReactMarkdown>
+            </div>
+          ) : (
+            !skill.load_error && <p className="prompt-empty">（无正文内容）</p>
+          )
+        )}
+      </div>
     </div>
   );
 }

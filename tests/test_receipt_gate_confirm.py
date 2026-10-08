@@ -1,16 +1,16 @@
-"""回执轮 interrupt 暂停修复的回归测试（2026-10-02 线上死锁）。
+"""提案轮 interrupt 暂停的回归测试（2026-10-02 死锁修复 + #7 一段式重构）。
 
-死锁链条（修复前）：ReceiptGate 禁写（回执未确认）× ArtifactValidation 拦终局
+死锁链条（#5 修复前）：ReceiptGate 禁写（澄清未确认）× ArtifactValidation 拦终局
 （storyline.md 未产出）互锁——模型文本停轮被拦回，写入被拦截，重复模型调用
 不终止，输入框全程锁死。
 
-修复后语义（进化 #5 方案 B 升级为澄清两段式）：
-  1. 澄清两段式（第 1 段决策卡拍板 / 第 2 段回执终确认）各经 confirm_with_user
-     工具（interrupt 挂起）交互
-  2. 工具两次正常返回（= 用户已 resume 两段）→ ReceiptGate 释放受保护写入；
+现行语义（进化 #7：方向提案一段式）：
+  1. 方向提案经 confirm_with_user 工具（interrupt 挂起）交互——agent 消化
+     需求把设计做完，端出 2-3 套五件套方向方案交用户拍板
+  2. 工具一次正常返回（= 用户已 resume 拍板）→ ReceiptGate 释放受保护写入；
      用户明示跳过短语（「不用问了直接写」等）→ 立即释放
   3. GraphInterrupt 异常路径（挂起本身）不误标已确认
-  4. 两段完成后回执轮指令停止注入（不再压制初构）
+  4. 拍板完成后提案轮指令停止注入（不再压制初构）
 """
 from __future__ import annotations
 
@@ -70,21 +70,16 @@ class ReceiptGateConfirmTest(unittest.TestCase):
         self.assertTrue(self._blocked(_write_request("/character/a.md")))
 
     def test_confirm_return_releases_writes(self):
-        """confirm_with_user 两次正常返回 = 两段完成 → 写入释放。"""
+        """confirm_with_user 一次正常返回 = 提案拍板完成（一段式）→ 写入释放。"""
         first = self.gate.wrap_tool_call(
-            _confirm_request(), handler=lambda req: "按推荐全部拍板"
+            _confirm_request(), handler=lambda req: "选定方案 1"
         )
-        self.assertEqual(first, "按推荐全部拍板")
-        self.assertFalse(self.gate._confirmed)  # 第 1 段后未完成两段式
-        self.assertTrue(self._blocked(_write_request("/storyline.md")))
-        self.gate.wrap_tool_call(
-            _confirm_request(), handler=lambda req: "确认草案，开始初构"
-        )
-        self.assertTrue(self.gate._confirmed)  # 第 2 段完成
+        self.assertEqual(first, "选定方案 1")
+        self.assertTrue(self.gate._confirmed)  # 一次有效回复即拍板
         self.assertFalse(self._blocked(_write_request("/storyline.md")))
 
     def test_skip_phrase_releases_immediately(self):
-        """第 1 段回复命中跳过短语（不用问了直接写）→ 立即释放写入。"""
+        """提案回复命中跳过短语（不用问了直接写）→ 立即释放写入。"""
         self.gate.wrap_tool_call(
             _confirm_request(), handler=lambda req: "不用问了，直接写"
         )
@@ -103,12 +98,10 @@ class ReceiptGateConfirmTest(unittest.TestCase):
         self.assertTrue(self._blocked(_write_request("/storyline.md")))
 
     def test_directive_stops_after_confirm(self):
-        """两段完成后回执轮指令停止注入（不再压制初构推进）。"""
+        """拍板完成后提案轮指令停止注入（不再压制初构推进）。"""
         self.assertIsNotNone(self.gate._inject_receipt_directive())
-        self.gate.wrap_tool_call(_confirm_request(), handler=lambda req: "按推荐")
-        self.assertIsNotNone(self.gate._inject_receipt_directive())  # 第 1 段后指令仍在
         self.gate.wrap_tool_call(
-            _confirm_request(), handler=lambda req: "确认草案，开始初构"
+            _confirm_request(), handler=lambda req: "选定方案 1"
         )
         self.assertIsNone(self.gate._inject_receipt_directive())
 

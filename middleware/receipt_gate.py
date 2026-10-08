@@ -1,13 +1,13 @@
-"""ReceiptGateMiddleware — 澄清两段式硬闸（首运行禁写形态，进化 #5 方案 B）。
+"""ReceiptGateMiddleware — 方向提案硬闸（首运行禁写形态，一段式）。
 
 交互模式（默认）的入口闸门：storyline.md 尚不存在的线程，第 1 次运行
 拦截一切受保护产物写入（storyline.md / worldview.md / character/*.md），
-强制先走澄清两段式（进化 #5 方案 B）：
-  第 1 段决策卡拍板——模型识别表单未覆盖的关键创作决策（冲突复杂度/
-  人物灰度/结局基调等），2-4 张决策卡经 confirm_with_user 交用户拍板；
-  第 2 段理解回执终确认——消化拍板结果成完整回执（需求复述 + 假设清单 +
-  故事核心五字段草案），再次确认。用户在任一段明示跳过（「不用问了直接写」
-  等变体）即视为已拍板，放行写入。
+强制先走方向提案（进化 #7，替代 #5 的两段式）：
+  agent 消化 demand.md、把设计做完，端出 2-3 套真实不同的方向方案
+  （每套五件套：方向名/一句话定位/核心画面/关键锚点/方案间差异）经
+  confirm_with_user 交用户拍板。一次有效回复即拍板（一段式）：选定 →
+  直接动笔；调整/自提 → 消化后直接动笔；用户明示跳过（「不用问了直接写」
+  等变体）→ 以推荐方案直接动笔。
 
 设计（与 ReviewGateMiddleware 同族范式）：
   - 确认信号不解析消息内容——[配比导航]（QuotaConvergence）与
@@ -56,8 +56,8 @@ _PROTECTED_DIR_PREFIX = "/character/"
 # 用户确认工具名（confirm_with_user 正常返回 = 用户已回复，闸门释放）
 _CONFIRM_TOOL_NAME = "confirm_with_user"
 
-# 澄清两段式有效回复次数（第 1 段决策卡拍板 + 第 2 段回执终确认）
-_REQUIRED_CONFIRMS = 2
+# 提案拍板有效回复次数（一段式：一次有效回复即释放写入）
+_REQUIRED_CONFIRMS = 1
 
 # 用户明示跳过澄清的短语（子串匹配，命中即放行；防交互过载的逃生门）
 _SKIP_PHRASES = (
@@ -73,7 +73,7 @@ _SKIP_PHRASES = (
 
 
 class ReceiptGateMiddleware(AgentMiddleware):
-    """理解回执硬闸：首轮未确认回执时，拦截一切受保护产物写入。"""
+    """方向提案硬闸：首轮未拍板时，拦截一切受保护产物写入。"""
 
     def __init__(
         self,
@@ -94,9 +94,9 @@ class ReceiptGateMiddleware(AgentMiddleware):
         self._run_count = 0
         self._blocks = 0
         self._exhausted_logged = False
-        # confirm_with_user 工具正常返回（interrupt 已被用户 resume）= 已确认。
-        # 计数制：两段各一次有效回复（_REQUIRED_CONFIRMS），返回文本命中跳过
-        # 短语则立即置满（用户明示跳过澄清，防交互过载）。
+        # confirm_with_user 工具正常返回（interrupt 已被用户 resume）= 已拍板。
+        # 计数制：一次有效回复（_REQUIRED_CONFIRMS=1，一段式），返回文本命中
+        # 跳过短语则立即置满（用户明示跳过提案，防交互过载）。
         self._confirmed = False
         self._confirm_returns = 0
         # 回执轮指令注入计数（上限防刷屏：模型长跑不结束时停止注入）
@@ -116,7 +116,7 @@ class ReceiptGateMiddleware(AgentMiddleware):
         self._run_count += 1
 
     # ------------------------------------------------------------------
-    # 回执轮指令注入（首次运行：不写产物，只交理解回执）
+    # 提案轮指令注入（首次运行：不写产物，只交方向提案）
     # ------------------------------------------------------------------
 
     def before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
@@ -144,22 +144,17 @@ class ReceiptGateMiddleware(AgentMiddleware):
                 return None
             self._directives += 1
             return {"messages": [HumanMessage(content=(
-                "[交互模式·回执轮] 本轮为首次运行：忽略上面的增量推进导航——"
-                "本轮先不写任何产物（写入会被硬拦截）。读取 demand.md 后执行"
-                "澄清两段式。第 1 段（决策卡拍板）：识别表单未覆盖、你将自行"
-                "默认的关键创作决策（如核心冲突复杂度、人物动机灰度、结局基调、"
-                "金手指边界、情感线浓度），挑 2-4 个影响最大的做成决策卡——每卡"
-                "卡题 + 2-4 个选项（各附具体画面与利弊）+ 推荐答案结论前置；"
-                "调用 confirm_with_user 提交（question=决策卡全文，options=快捷"
-                "路径如「按推荐全部拍板」「我要调整，见补充」）。第 2 段（理解"
-                "回执终确认）：消化拍板结果构造完整回执——需求复述 + 假设清单 + "
-                "故事核心五字段草案（Logline / 核心主题 / 类型基调 / 节奏曲线 / "
-                "最终结局——结局此轮确认为草稿基线，后续轮次可随叙事推进继续"
-                "修订），再次调用 confirm_with_user 提交（options=确认/修改引导，"
-                "如「确认草案，开始初构」「我要修改，见补充」）。第二次工具返回"
-                "后方可写产物；确认 → 以确认稿为锚开始初构；修改 → 按意见调整"
-                "后再动笔。任何一段用户明示「不用问了直接写」即跳过剩余澄清"
-                "直接动笔。"
+                "[交互模式·提案轮] 本轮为首次运行：忽略上面的增量推进导航——"
+                "本轮先不写任何产物（写入会被硬拦截）。读取 demand.md 后按系统"
+                "提示词「方向提案协议」执行：消化需求，把设计做完，端出 2-3 套"
+                "真实不同的方向方案（不是同一故事换皮）——每套五件套：方向名 / "
+                "一句话定位 / 核心画面（2-3 句具体走向）/ 关键锚点（基调/结局"
+                "走向/核心卖点等关键设定由你定好打包，不让用户逐题做抽象决策）/ "
+                "与其他方案的差异；调用 confirm_with_user 提交（question=2-3 套"
+                "方案全文，options=快捷路径如「选定方案 1」「选定方案 2」「选定"
+                "方案 3」「我要调整，见补充」）。一次有效回复即拍板（一段式）："
+                "选定 → 以选定稿为锚开始初构；调整/自提 → 消化吸收后直接动笔；"
+                "用户明示「不用问了直接写」→ 以你的推荐方案直接动笔。"
                 "不要用纯文本回复代替工具调用——产物未写出时终局会被产物校验"
                 "拦回，运行无法结束。"
             ))]}
@@ -196,7 +191,7 @@ class ReceiptGateMiddleware(AgentMiddleware):
         return await handler(request)
 
     def _record_confirm_return(self, result: Any) -> None:
-        """记录一次有效确认返回；达到两段阈值或命中跳过短语即置已确认。"""
+        """记录一次有效拍板返回；达到阈值或命中跳过短语即置已拍板。"""
         self._confirm_returns += 1
         text = result if isinstance(result, str) else ""
         if any(p in text for p in _SKIP_PHRASES):
@@ -284,11 +279,13 @@ class ReceiptGateMiddleware(AgentMiddleware):
         tool_call_id = _mapping_value(tool_call, "id")
         return ToolMessage(
             content=(
-                "[回执闸门] 本线程为首轮运行且 storyline.md 尚未创建：澄清两段式未完成，"
+                "[提案闸门] 本线程为首轮运行且 storyline.md 尚未创建：方向提案未拍板，"
                 "受保护产物（storyline.md / worldview.md / character/*.md）禁止写入。"
-                "请先按初构技能（storybuilding-initial）步骤 0 执行澄清两段式：第 1 段决策卡拍板、"
-                "第 2 段理解回执终确认，各调用一次 confirm_with_user 工具；两次有效回复后"
-                "方可写产物（用户任一段明示「不用问了直接写」即跳过剩余澄清）。"
+                "请先按初构技能（storybuilding-initial）步骤 0 与系统提示词「方向提案协议」执行："
+                "消化 demand.md、把设计做完，端出 2-3 套真实不同的方向方案（每套五件套：方向名/"
+                "一句话定位/核心画面/关键锚点/与其他方案的差异），调用 confirm_with_user 提交；"
+                "一次有效回复即拍板（选定/调整/自提均可），拍板后方可写产物"
+                "（用户明示「不用问了直接写」即跳过提案，以推荐方案直接动笔）。"
                 "不要用纯文本回复代替工具调用——产物未写出时终局会被产物校验拦回。"
             ),
             name=str(_mapping_value(tool_call, "name") or "write_file"),
@@ -321,7 +318,7 @@ def _mapping_value(mapping: object, key: str) -> Any:
 
 
 def build(abc):
-    """架构清单挂载钩子（M2）：domain 闸门——澄清两段式硬闸（首运行禁写形态）。"""
+    """架构清单挂载钩子（M2）：domain 闸门——方向提案硬闸（首运行禁写形态）。"""
     return ReceiptGateMiddleware(abc.workspace_path)
 
 

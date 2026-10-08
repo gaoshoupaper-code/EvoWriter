@@ -3,6 +3,11 @@
 连续增量负载的循环驱动者：每轮模型调用前核对 demand 目标配比与工作区实况，
 把「继续增量 / 已达标收尾 / 预算耗尽强制收尾」三类导航指令注入对话。
 
+初构静默（进化点 #1）：storyline.md 落地前不注入任何导航、不消耗增量
+预算。空工作区分支的「继续增量」指针会与提案闸门（ReceiptGate）的提案轮
+指令每轮同时注入且方向相反，是线上 trace-6734e23e「重读 specs × 9」
+死循环的主因。
+
 设计约束（DEC-011 同一判定器 / DEC-013 软终止）：
   - 配比解析与核对逻辑来自 ``contracts.storybuilding_quota``（唯一实现），
     v13 单 Agent 版与 v14 多 Agent 版挂载同一份本中间件——终止语义机械一致，
@@ -94,6 +99,15 @@ class QuotaConvergenceMiddleware(AgentMiddleware):
     def _build_message(self) -> HumanMessage | None:
         """构造本轮导航指令；软终止模式（target=None）恒返回 None。"""
         if self.target is None:
+            return None
+
+        # 初构静默（进化点 #1）：storyline.md 尚未落地 = 首构未完成（提案轮 +
+        # 拍板后初构期），增量导航没有服务对象——继续注入会与 ReceiptGate 的
+        # 提案轮指令每轮打架（方向相反），把模型夹进「重读 specs × N」死循环
+        # （线上 trace-6734e23e：282 秒零写入零提案，用户手动终止）。静默期
+        # 不消耗增量预算（预算语义 = 增量阶段专用），storyline.md 落地后恢复
+        # 导航。存在性判定与 ReceiptGate 闸门失效条件同口径，行为天然同步。
+        if not (self.workspace_path / "storyline.md").exists():
             return None
 
         self._model_calls += 1

@@ -134,7 +134,7 @@ class ReceiptGateMiddleware(AgentMiddleware):
         )
 
     def _inject_receipt_directive(self) -> dict[str, Any] | None:
-        """回执轮导航指令：压住配比导航的「继续增量」，引导走 confirm 工具。"""
+        """回执轮导航指令：引导走 confirm 工具（QuotaConvergence 已初构静默，提案轮无增量导航需压制）。"""
         try:
             if not self._receipt_round_active():
                 return None
@@ -144,8 +144,8 @@ class ReceiptGateMiddleware(AgentMiddleware):
                 return None
             self._directives += 1
             return {"messages": [HumanMessage(content=(
-                "[交互模式·提案轮] 本轮为首次运行：忽略上面的增量推进导航——"
-                "本轮先不写任何产物（写入会被硬拦截）。读取 demand.md 后按系统"
+                "[交互模式·提案轮] 本轮为首次运行："
+                "先不写任何产物（写入会被硬拦截）。读取 demand.md 后按系统"
                 "提示词「方向提案协议」执行：消化需求，把设计做完，端出 2-3 套"
                 "真实不同的方向方案（不是同一故事换皮）——每套五件套：方向名 / "
                 "一句话定位 / 核心画面（2-3 句具体走向）/ 关键锚点（基调/结局"

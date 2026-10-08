@@ -1,7 +1,7 @@
 ---
 name: storybuilding-specs
 description: >-
-  【动笔撰写或修订任何手写产物前必读】四类手写产物（storyline / character /
+  【同一会话首次动笔前读一次即可】四类手写产物（storyline / character /
   worldview / object）内容规范的唯一真相源：质量总则、世界观、人物档案（含
   外貌段规范）、故事线（线型/拓扑/区块格式/关键规则）、事件（数量模板/
   列语义/事件类型）、创作原则与文风规范（平实叙述）、物品卡（建卡门槛/

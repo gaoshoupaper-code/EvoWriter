@@ -1,10 +1,8 @@
 ---
 name: storybuilding-initial
 description: >-
-  【仅当 storyline.md 不存在时使用】首次故事骨架构建。
-  产出完整骨架：故事核心 + 主线区块（含完整事件表）+ 核心人物 + 世界观。
-  触发条件：工作区为空、无 storyline.md（委托明确指定"初构"，或连续增量自主循环首轮）。
-  若 storyline.md 已存在，应按人物/故事线比值选用增量技能：人物充足（R≥3）用 storybuilding-expand-storyline，人物不足（R<3）用 storybuilding-expand-character。
+  【用】判据（读技能正文前即可判，无需读本技能）：ls 工作区无 storyline.md（委托明确指定"初构"，或连续增量自主循环首轮）。产出完整骨架：故事核心 + 主线区块（含完整事件表）+ 核心人物 + 世界观。
+  【不用·勿读本技能】storyline.md 已存在：按比值 R = 人物数/故事线区块数 分流——R≥3 用 storybuilding-expand-storyline，R<3 用 storybuilding-expand-character。分流判据 ls + 数文件即可判，判据不满足仍读本技能属于误激活（三份流程技能互斥，每个增量单元只执行一份）。
 ---
 
 # storybuilding-initial

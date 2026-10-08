@@ -13,7 +13,8 @@
         "storyline_contract_guard",
         "object_contract_guard",
         "quota_convergence",
-        "receipt_gate"
+        "receipt_gate",
+        "skill_activation_guard"
       ],
       "skills": ["storybuilding-initial", "storybuilding-expand-storyline", "storybuilding-expand-character", "storybuilding-specs"],
       "tools": ["confirm_with_user"],

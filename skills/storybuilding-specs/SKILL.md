@@ -1,14 +1,8 @@
 ---
 name: storybuilding-specs
 description: >-
-  【同一会话首次动笔前读一次即可】四类手写产物（storyline / character /
-  worldview / object）内容规范的唯一真相源：质量总则、世界观、人物档案（含
-  外貌段规范）、故事线（线型/拓扑/区块格式/关键规则）、事件（数量模板/
-  列语义/事件类型）、创作原则与文风规范（平实叙述）、物品卡（建卡门槛/
-  卡片格式/轨迹枚举/暗线纪律）。初构（storybuilding-initial）与增量
-  （storybuilding-expand-storyline / storybuilding-expand-character）流程
-  技能及 review 审查器共用本规范。本技能只含
-  内容规范，不含流程。
+  【用】同一会话首次动笔前读一次（后续轮次沿用，不必重读）。四类手写产物（storyline / character / worldview / object）内容规范的唯一真相源：质量总则、世界观、人物档案（含外貌段规范）、故事线（线型/拓扑/区块格式/关键规则）、事件（数量模板/列语义/事件类型）、创作原则与文风规范（平实叙述）、物品卡（建卡门槛/卡片格式/轨迹枚举/暗线纪律）。本技能只含内容规范、不含流程，初构（storybuilding-initial）与增量（storybuilding-expand-storyline / storybuilding-expand-character）流程技能及 review 审查器共用本规范。
+  【不用·勿读本技能】判断该执行哪个流程技能时（分流判据 ls + 数文件即可判，内容规范帮不了路由）；本会话已完整读取过一次（重读不产生新信息）。
 ---
 
 # storybuilding-specs · 内容规范手册

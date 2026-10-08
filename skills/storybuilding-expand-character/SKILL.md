@@ -1,9 +1,8 @@
 ---
 name: storybuilding-expand-character
 description: >-
-  【人物/故事线比值 R < 3 时使用（或配比导航指针指示新增人物）】增量新增一个人物并融入现有故事，不新增故事线。
-  触发条件：storyline.md 已存在，且 [配比导航] 指令指向新增人物，或（留白档软终止、无导航）自检 R = 人物数/故事线区块数 < 3。
-  人物充足（R ≥ 3）应使用 storybuilding-expand-storyline；storyline.md 不存在应使用 storybuilding-initial。
+  【用】判据（读技能正文前即可判，无需读本技能）：storyline.md 已存在，且 [配比导航] 指令指向新增人物，或（留白档软终止、无导航）自检 R = 人物数/故事线区块数 < 3。增量新增一个人物并融入现有故事，不新增故事线。
+  【不用·勿读本技能】storyline.md 不存在 → 用 storybuilding-initial；人物充足（R ≥ 3）→ 用 storybuilding-expand-storyline。分流判据 ls + 数文件即可判，判据不满足仍读本技能属于误激活（三份流程技能互斥，每个增量单元只执行一份）。
 ---
 
 # storybuilding-expand-character

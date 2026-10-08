@@ -1,4 +1,4 @@
-"""confirm_with_user 工具 — 理解回执轮的用户确认载体（interrupt 暂停）。
+"""confirm_with_user 工具 — 澄清两段式的用户确认载体（interrupt 暂停）。
 
 回执轮死锁根因（2026-10-02 线上）：回执轮靠「输出回执文本后结束运行」暂停，
 但 ArtifactValidationMiddleware 要求 storyline.md 已产出才放行终局——回执轮
@@ -19,12 +19,17 @@ from langchain_core.tools import StructuredTool
 from langgraph.types import interrupt
 from pydantic import BaseModel, Field
 
-CONFIRM_WITH_USER_TOOL_DESCRIPTION = """提交理解回执并暂停等待用户确认（回执轮唯一合法的等待方式）。
+CONFIRM_WITH_USER_TOOL_DESCRIPTION = """提交澄清内容并暂停等待用户回复（澄清轮唯一合法的等待方式）。
 
-调用后运行挂起，用户在前端看到回执全文并回复；回复内容（选中选项 + 可选补充文字）
-作为本工具返回值。用于首轮理解回执：question 放完整回执（需求复述 + 假设清单 +
+调用后运行挂起，用户在前端看到全文并回复；回复内容（选中选项 + 可选补充文字）
+作为本工具返回值。用于首次运行澄清两段式：
+第 1 段（决策卡拍板）——question 放 2-4 张决策卡全文（表单未覆盖、模型将自行
+默认的关键创作决策，每卡 2-4 个选项 + 推荐），options 给快捷路径（如「按推荐
+全部拍板」「我要调整，见补充」）；
+第 2 段（回执终确认）——question 放消化后的完整理解回执（需求复述 + 假设清单 +
 故事核心五字段草案），options 给确认/修改引导（如「确认草案，开始初构」「我要修改，见补充」）。
-用户回复后按其意见继续：确认 → 以确认稿为锚开始初构；修改 → 按修改意见调整后再动笔。
+用户回复后按其意见继续：确认 → 以确认稿为锚开始初构；修改 → 按意见调整后再提交。
+增量委托含糊时的单轮追问也走本工具。
 不要用输出纯文本的方式等待用户回复——产物未写出时终局会被产物校验拦截，运行无法结束。"""
 
 
@@ -92,10 +97,16 @@ def build_confirm_with_user_tool() -> StructuredTool:
     )
 
 
+def build(abc):
+    """架构清单挂载钩子（M2）：返回 confirm_with_user 工具实例。"""
+    return build_confirm_with_user_tool()
+
+
 __all__ = [
     "CONFIRM_WITH_USER_TOOL_DESCRIPTION",
     "ConfirmOption",
     "ConfirmWithUserInput",
+    "build",
     "build_confirm_payload",
     "build_confirm_with_user_tool",
 ]

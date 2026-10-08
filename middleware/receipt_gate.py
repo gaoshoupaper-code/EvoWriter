@@ -1,10 +1,13 @@
-"""ReceiptGateMiddleware — 理解回执硬闸（首运行禁写形态，进化 #5）。
+"""ReceiptGateMiddleware — 澄清两段式硬闸（首运行禁写形态，进化 #5 方案 B）。
 
 交互模式（默认）的入口闸门：storyline.md 尚不存在的线程，第 1 次运行
 拦截一切受保护产物写入（storyline.md / worldview.md / character/*.md），
-强制先交「理解回执」（需求复述 + 假设清单 + 故事核心五字段草案，进化 #2）；
-回执经 confirm_with_user 工具（interrupt 挂起）交用户确认，工具正常返回
-（= 用户已回复）即释放写入；用户回复触发的新运行（运行计数 > 1）同样释放。
+强制先走澄清两段式（进化 #5 方案 B）：
+  第 1 段决策卡拍板——模型识别表单未覆盖的关键创作决策（冲突复杂度/
+  人物灰度/结局基调等），2-4 张决策卡经 confirm_with_user 交用户拍板；
+  第 2 段理解回执终确认——消化拍板结果成完整回执（需求复述 + 假设清单 +
+  故事核心五字段草案），再次确认。用户在任一段明示跳过（「不用问了直接写」
+  等变体）即视为已拍板，放行写入。
 
 设计（与 ReviewGateMiddleware 同族范式）：
   - 确认信号不解析消息内容——[配比导航]（QuotaConvergence）与
@@ -53,6 +56,21 @@ _PROTECTED_DIR_PREFIX = "/character/"
 # 用户确认工具名（confirm_with_user 正常返回 = 用户已回复，闸门释放）
 _CONFIRM_TOOL_NAME = "confirm_with_user"
 
+# 澄清两段式有效回复次数（第 1 段决策卡拍板 + 第 2 段回执终确认）
+_REQUIRED_CONFIRMS = 2
+
+# 用户明示跳过澄清的短语（子串匹配，命中即放行；防交互过载的逃生门）
+_SKIP_PHRASES = (
+    "不用问了",
+    "不用确认",
+    "直接写",
+    "直接开写",
+    "直接开始",
+    "别问了",
+    "跳过澄清",
+    "跳过确认",
+)
+
 
 class ReceiptGateMiddleware(AgentMiddleware):
     """理解回执硬闸：首轮未确认回执时，拦截一切受保护产物写入。"""
@@ -76,8 +94,11 @@ class ReceiptGateMiddleware(AgentMiddleware):
         self._run_count = 0
         self._blocks = 0
         self._exhausted_logged = False
-        # confirm_with_user 工具正常返回（interrupt 已被用户 resume）= 已确认
+        # confirm_with_user 工具正常返回（interrupt 已被用户 resume）= 已确认。
+        # 计数制：两段各一次有效回复（_REQUIRED_CONFIRMS），返回文本命中跳过
+        # 短语则立即置满（用户明示跳过澄清，防交互过载）。
         self._confirmed = False
+        self._confirm_returns = 0
         # 回执轮指令注入计数（上限防刷屏：模型长跑不结束时停止注入）
         self._directives = 0
         self._max_directives = 8
@@ -124,14 +145,21 @@ class ReceiptGateMiddleware(AgentMiddleware):
             self._directives += 1
             return {"messages": [HumanMessage(content=(
                 "[交互模式·回执轮] 本轮为首次运行：忽略上面的增量推进导航——"
-                "本轮先不写任何产物（写入会被硬拦截）。读取 demand.md 后构造理解回执："
-                "需求复述 + 假设清单 + 故事核心五字段草案（Logline / 核心主题 / "
-                "类型基调 / 节奏曲线 / 最终结局——结局此轮确认为草稿基线，"
-                "后续轮次可随叙事推进继续修订），然后调用 confirm_with_user 工具"
-                "提交回执并等待用户确认（question=回执全文，options=确认/修改引导，"
-                "如「确认草案，开始初构」「我要修改，见补充」）。"
-                "工具返回用户的确认或修改意见后：确认 → 以确认稿为锚开始初构；"
-                "修改 → 先按意见调整再动笔。"
+                "本轮先不写任何产物（写入会被硬拦截）。读取 demand.md 后执行"
+                "澄清两段式。第 1 段（决策卡拍板）：识别表单未覆盖、你将自行"
+                "默认的关键创作决策（如核心冲突复杂度、人物动机灰度、结局基调、"
+                "金手指边界、情感线浓度），挑 2-4 个影响最大的做成决策卡——每卡"
+                "卡题 + 2-4 个选项（各附具体画面与利弊）+ 推荐答案结论前置；"
+                "调用 confirm_with_user 提交（question=决策卡全文，options=快捷"
+                "路径如「按推荐全部拍板」「我要调整，见补充」）。第 2 段（理解"
+                "回执终确认）：消化拍板结果构造完整回执——需求复述 + 假设清单 + "
+                "故事核心五字段草案（Logline / 核心主题 / 类型基调 / 节奏曲线 / "
+                "最终结局——结局此轮确认为草稿基线，后续轮次可随叙事推进继续"
+                "修订），再次调用 confirm_with_user 提交（options=确认/修改引导，"
+                "如「确认草案，开始初构」「我要修改，见补充」）。第二次工具返回"
+                "后方可写产物；确认 → 以确认稿为锚开始初构；修改 → 按意见调整"
+                "后再动笔。任何一段用户明示「不用问了直接写」即跳过剩余澄清"
+                "直接动笔。"
                 "不要用纯文本回复代替工具调用——产物未写出时终局会被产物校验"
                 "拦回，运行无法结束。"
             ))]}
@@ -148,7 +176,7 @@ class ReceiptGateMiddleware(AgentMiddleware):
             result = handler(request)
             # 正常返回 = interrupt 已被用户 resume（GraphInterrupt 异常路径
             # 不会走到这里），确认为真实用户信号
-            self._confirmed = True
+            self._record_confirm_return(result)
             return result
         blocked = self._maybe_block(request)
         if blocked is not None:
@@ -160,12 +188,20 @@ class ReceiptGateMiddleware(AgentMiddleware):
     ) -> Any:
         if self._is_confirm_call(request):
             result = await handler(request)
-            self._confirmed = True
+            self._record_confirm_return(result)
             return result
         blocked = self._maybe_block(request)
         if blocked is not None:
             return blocked
         return await handler(request)
+
+    def _record_confirm_return(self, result: Any) -> None:
+        """记录一次有效确认返回；达到两段阈值或命中跳过短语即置已确认。"""
+        self._confirm_returns += 1
+        text = result if isinstance(result, str) else ""
+        if any(p in text for p in _SKIP_PHRASES):
+            self._confirm_returns = _REQUIRED_CONFIRMS
+        self._confirmed = self._confirm_returns >= _REQUIRED_CONFIRMS
 
     def _is_confirm_call(self, request: Any) -> bool:
         """判定是否为 confirm_with_user 工具调用（与 review 计数同款判定式）。"""
@@ -248,11 +284,11 @@ class ReceiptGateMiddleware(AgentMiddleware):
         tool_call_id = _mapping_value(tool_call, "id")
         return ToolMessage(
             content=(
-                "[回执闸门] 本线程为首轮运行且 storyline.md 尚未创建：理解回执未确认，"
+                "[回执闸门] 本线程为首轮运行且 storyline.md 尚未创建：澄清两段式未完成，"
                 "受保护产物（storyline.md / worldview.md / character/*.md）禁止写入。"
-                "请先按初构技能（storybuilding-initial）步骤 0 构造理解回执（需求复述 + 假设清单 + "
-                "故事核心五字段草案），调用 confirm_with_user 工具提交回执等待"
-                "用户确认；工具返回用户意见后方可写产物。"
+                "请先按初构技能（storybuilding-initial）步骤 0 执行澄清两段式：第 1 段决策卡拍板、"
+                "第 2 段理解回执终确认，各调用一次 confirm_with_user 工具；两次有效回复后"
+                "方可写产物（用户任一段明示「不用问了直接写」即跳过剩余澄清）。"
                 "不要用纯文本回复代替工具调用——产物未写出时终局会被产物校验拦回。"
             ),
             name=str(_mapping_value(tool_call, "name") or "write_file"),
@@ -282,6 +318,11 @@ def _mapping_value(mapping: object, key: str) -> Any:
     if isinstance(mapping, dict):
         return mapping.get(key)
     return getattr(mapping, key, None)
+
+
+def build(abc):
+    """架构清单挂载钩子（M2）：domain 闸门——澄清两段式硬闸（首运行禁写形态）。"""
+    return ReceiptGateMiddleware(abc.workspace_path)
 
 
 __all__ = ["ReceiptGateMiddleware"]

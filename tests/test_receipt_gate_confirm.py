@@ -4,11 +4,13 @@
 （storyline.md 未产出）互锁——模型文本停轮被拦回，写入被拦截，重复模型调用
 不终止，输入框全程锁死。
 
-修复后语义：
-  1. 回执轮经 confirm_with_user 工具（interrupt 挂起）等待用户确认
-  2. 工具正常返回（= 用户已 resume）→ ReceiptGate 释放受保护写入
+修复后语义（进化 #5 方案 B 升级为澄清两段式）：
+  1. 澄清两段式（第 1 段决策卡拍板 / 第 2 段回执终确认）各经 confirm_with_user
+     工具（interrupt 挂起）交互
+  2. 工具两次正常返回（= 用户已 resume 两段）→ ReceiptGate 释放受保护写入；
+     用户明示跳过短语（「不用问了直接写」等）→ 立即释放
   3. GraphInterrupt 异常路径（挂起本身）不误标已确认
-  4. 确认后回执轮指令停止注入（不再压制初构）
+  4. 两段完成后回执轮指令停止注入（不再压制初构）
 """
 from __future__ import annotations
 
@@ -68,11 +70,24 @@ class ReceiptGateConfirmTest(unittest.TestCase):
         self.assertTrue(self._blocked(_write_request("/character/a.md")))
 
     def test_confirm_return_releases_writes(self):
-        """confirm_with_user 正常返回 = 用户已回复 → 写入释放。"""
-        result = self.gate.wrap_tool_call(
-            _confirm_request(), handler=lambda req: "用户确认"
+        """confirm_with_user 两次正常返回 = 两段完成 → 写入释放。"""
+        first = self.gate.wrap_tool_call(
+            _confirm_request(), handler=lambda req: "按推荐全部拍板"
         )
-        self.assertEqual(result, "用户确认")
+        self.assertEqual(first, "按推荐全部拍板")
+        self.assertFalse(self.gate._confirmed)  # 第 1 段后未完成两段式
+        self.assertTrue(self._blocked(_write_request("/storyline.md")))
+        self.gate.wrap_tool_call(
+            _confirm_request(), handler=lambda req: "确认草案，开始初构"
+        )
+        self.assertTrue(self.gate._confirmed)  # 第 2 段完成
+        self.assertFalse(self._blocked(_write_request("/storyline.md")))
+
+    def test_skip_phrase_releases_immediately(self):
+        """第 1 段回复命中跳过短语（不用问了直接写）→ 立即释放写入。"""
+        self.gate.wrap_tool_call(
+            _confirm_request(), handler=lambda req: "不用问了，直接写"
+        )
         self.assertTrue(self.gate._confirmed)
         self.assertFalse(self._blocked(_write_request("/storyline.md")))
 
@@ -88,9 +103,13 @@ class ReceiptGateConfirmTest(unittest.TestCase):
         self.assertTrue(self._blocked(_write_request("/storyline.md")))
 
     def test_directive_stops_after_confirm(self):
-        """确认后回执轮指令停止注入（不再压制初构推进）。"""
+        """两段完成后回执轮指令停止注入（不再压制初构推进）。"""
         self.assertIsNotNone(self.gate._inject_receipt_directive())
-        self.gate.wrap_tool_call(_confirm_request(), handler=lambda req: "ok")
+        self.gate.wrap_tool_call(_confirm_request(), handler=lambda req: "按推荐")
+        self.assertIsNotNone(self.gate._inject_receipt_directive())  # 第 1 段后指令仍在
+        self.gate.wrap_tool_call(
+            _confirm_request(), handler=lambda req: "确认草案，开始初构"
+        )
         self.assertIsNone(self.gate._inject_receipt_directive())
 
     def test_directive_teaches_tool_path(self):

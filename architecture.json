@@ -12,10 +12,11 @@
         "storyline_integrity",
         "storyline_contract_guard",
         "object_contract_guard",
-        "quota_convergence"
+        "quota_convergence",
+        "receipt_gate"
       ],
       "skills": ["storybuilding-initial", "storybuilding-expand-storyline", "storybuilding-expand-character", "storybuilding-specs"],
-      "tools": [],
+      "tools": ["confirm_with_user"],
       "delegates": ["storybuilding_review"],
       "context_files": ["demand.md"],
       "write_permissions": [

@@ -1,8 +1,8 @@
-"""ReceiptGateMiddleware — 方向提案硬闸（首运行禁写形态，一段式）。
+"""ReceiptGateMiddleware — 方向提案硬闸（首运行禁写形态，一段式，零注入）。
 
 交互模式（默认）的入口闸门：storyline.md 尚不存在的线程，第 1 次运行
 拦截一切受保护产物写入（storyline.md / worldview.md / character/*.md），
-强制先走方向提案（进化 #7，替代 #5 的两段式）：
+强制先走方向提案（进化 #7，替代 #5 的两段式；#8 零注入重构）：
   agent 消化 demand.md、把设计做完，端出 2-3 套真实不同的方向方案
   （每套五件套：方向名/一句话定位/核心画面/关键锚点/方案间差异）经
   confirm_with_user 交用户拍板。一次有效回复即拍板（一段式）：选定 →
@@ -25,15 +25,26 @@
     ToolMessage（status="error" + business_intercept 标记，对齐
     StorylineSingleLineLimit 的拦截消息规范：不触发写重试、不触发
     PlatformArtifactCapture 回读）。
+  - 提案轮重复读一次性指路（#8）：第 2 次读取同一路径时在返回内容前加
+    一次性提醒「唯一待办是调 confirm_with_user」，第 3 次起按文件放行
+    ——治「零成本打转」（trace-be5d2ddd：模型重读 specs 8 遍，全程不调
+    confirm 不写产物，读文件是唯一无后果动作）。不拦截读取、内容照给，
+    正当核对不受阻。
+  - 零注入纪律（#8）：删除 before_model 周期性指令注入——每次模型调用
+    前注入同一条完整任务书，会把模型反复重置回「准备阶段」，恰是循环
+    的拍器（8 轮注入 = 8 轮循环，精确对齐）。模型对提案轮的全部认知
+    来自系统提示词常驻「方向提案协议」与技能步骤 0（触发判定 =
+    storyline.md 不存在，模型自主探查）；闸门只做事件驱动回应
+    （写入拦截 / 重复读指路），不做周期性催促。
   - storyline.md 已存在（续写线程）→ 闸门自动失效，零成本放行。
   - demand.md 元信息 receipt_skip: true（评估集预置流）→ 闸门跳过。
   - 拦截上限（默认 3 次）防死循环：模型连续无视拦截则放行（降级放行，
     人工 review 兜底），首次留日志——护栏故障不得中断创作主流程
     （对齐 review_gate / storyline_contract_guard 的降级哲学）。
 
-hook 签名（langchain 1.4.3，inspect_middleware_protocol 2026-10-02 核对）：
-  before_agent/abefore_agent(state, runtime)；wrap_tool_call(request, handler) /
-  awrap_tool_call(request, handler)。
+hook 签名（langchain 1.4.3，inspect_middleware_protocol 2026-10-08 核对）：
+  wrap_tool_call(request, handler) / awrap_tool_call(request, handler)。
+  （#8 零注入后本中间件不再覆写 before_agent / before_model。）
 """
 from __future__ import annotations
 
@@ -43,7 +54,7 @@ from pathlib import Path
 from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import ToolMessage
 
 from .path_guard import normalize_workspace_write_path
 
@@ -58,6 +69,9 @@ _CONFIRM_TOOL_NAME = "confirm_with_user"
 
 # 提案拍板有效回复次数（一段式：一次有效回复即释放写入）
 _REQUIRED_CONFIRMS = 1
+
+# 提案轮重复读指路阈值：同一路径第 2 次读取时加一次性提醒（此后放行）
+_REPEAT_READ_REMIND_AT = 2
 
 # 用户明示跳过澄清的短语（子串匹配，命中即放行；防交互过载的逃生门）
 _SKIP_PHRASES = (
@@ -91,7 +105,6 @@ class ReceiptGateMiddleware(AgentMiddleware):
         self.workspace_root = Path(workspace_root).resolve()
         self.max_blocks = max_blocks
         self.storyline_path = self.workspace_root / storyline_relpath
-        self._run_count = 0
         self._blocks = 0
         self._exhausted_logged = False
         # confirm_with_user 工具正常返回（interrupt 已被用户 resume）= 已拍板。
@@ -99,68 +112,74 @@ class ReceiptGateMiddleware(AgentMiddleware):
         # 跳过短语则立即置满（用户明示跳过提案，防交互过载）。
         self._confirmed = False
         self._confirm_returns = 0
-        # 回执轮指令注入计数（上限防刷屏：模型长跑不结束时停止注入）
-        self._directives = 0
-        self._max_directives = 8
         # demand.md 元信息 receipt_skip: true → 评估集预置流跳过回执轮
         self.skip = self._parse_receipt_skip()
+        # 提案轮重复读计数（路径字符串 → 次数；每路径至多提醒一次）
+        self._read_counts: dict[str, int] = {}
+        # 重复读提醒只发一次（全局一次性，避免提示刷屏形成新节奏器）
+        self._read_reminders_exhausted = False
 
     # ------------------------------------------------------------------
-    # 运行计数（用户回复 = 下一次运行；第 2 次运行起视为回执已确认）
+    # 提案轮重复读一次性指路（#8：治零成本打转，不拦截读取）
     # ------------------------------------------------------------------
 
-    def before_agent(self, state: Any, runtime: Any) -> None:
-        self._run_count += 1
+    def _maybe_prefix_repeat_reminder(self, request: Any, result: Any) -> Any:
+        """提案轮内第 2 次读取同一路径 → 返回内容前加一次性提醒头。
 
-    async def abefore_agent(self, state: Any, runtime: Any) -> None:
-        self._run_count += 1
+        内容照给（不拦截读取、不打断正当核对）；此后同路径读取不再加头。
+        任何内部异常原样返回结果（指路故障不得中断创作主流程）。
+        """
+        try:
+            if not self._receipt_round_active() or self._confirmed:
+                return result
+            if self._read_reminders_exhausted:
+                return result
 
-    # ------------------------------------------------------------------
-    # 提案轮指令注入（首次运行：不写产物，只交方向提案）
-    # ------------------------------------------------------------------
+            tool_call = getattr(request, "tool_call", {})
+            tool_name = _mapping_value(tool_call, "name")
+            if str(tool_name or "") != "read_file":
+                return result
 
-    def before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
-        return self._inject_receipt_directive()
+            args = _mapping_value(tool_call, "args")
+            if not isinstance(args, dict):
+                return result
+            path_key = str(args.get("file_path") or args.get("path") or "")
 
-    async def abefore_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
-        return self._inject_receipt_directive()
+            count = self._read_counts.get(path_key, 0) + 1
+            self._read_counts[path_key] = count
+            if count < _REPEAT_READ_REMIND_AT:
+                return result
+            if count > _REPEAT_READ_REMIND_AT:  # 第 3 次起按文件放行（防误伤）
+                return result
+
+            self._read_reminders_exhausted = True
+            if isinstance(result, ToolMessage):
+                original = result.content if isinstance(result.content, str) else ""
+                name = str(result.name or "read_file")
+                tool_call_id = str(result.tool_call_id or "")
+                return ToolMessage(
+                    content=(
+                        "[提案闸门·重复读] 这是本轮第 2 次读取同一文件："
+                        "你已经掌握其内容，重读不会带来新信息，也不可能满足"
+                        "提案轮要求。当前唯一待办：消化 demand.md，端出 2-3 套"
+                        "真实不同的方向方案（每套五件套），调用 confirm_with_user"
+                        " 提交（不要用纯文本回复代替）。以下是所读文件内容：\n\n"
+                        + original
+                    ),
+                    name=name,
+                    tool_call_id=tool_call_id,
+                )
+            return result
+        except Exception:  # noqa: BLE001 — 指路故障不得中断创作主流程
+            return result
 
     def _receipt_round_active(self) -> bool:
-        """回执轮判定：首次运行 + 未跳过 + storyline.md 尚未创建。"""
+        """提案轮判定：未跳过 + 未拍板 + storyline.md 尚未创建。"""
         return (
-            self._run_count == 1
-            and not self.skip
+            not self.skip
+            and not self._confirmed
             and not self.storyline_path.exists()
         )
-
-    def _inject_receipt_directive(self) -> dict[str, Any] | None:
-        """回执轮导航指令：引导走 confirm 工具（QuotaConvergence 已初构静默，提案轮无增量导航需压制）。"""
-        try:
-            if not self._receipt_round_active():
-                return None
-            if self._confirmed:
-                return None
-            if self._directives >= self._max_directives:
-                return None
-            self._directives += 1
-            return {"messages": [HumanMessage(content=(
-                "[交互模式·提案轮] 本轮为首次运行："
-                "先不写任何产物（写入会被硬拦截）。读取 demand.md 后按系统"
-                "提示词「方向提案协议」执行：消化需求，把设计做完，端出 2-3 套"
-                "真实不同的方向方案（不是同一故事换皮）——每套五件套：方向名 / "
-                "一句话定位 / 核心画面（2-3 句具体走向）/ 关键锚点（基调/结局"
-                "走向/核心卖点等关键设定由你定好打包，不让用户逐题做抽象决策）/ "
-                "与其他方案的差异；调用 confirm_with_user 提交（question=2-3 套"
-                "方案全文，options=快捷路径如「选定方案 1」「选定方案 2」「选定"
-                "方案 3」「我要调整，见补充」）。一次有效回复即拍板（一段式）："
-                "选定 → 以选定稿为锚开始初构；调整/自提 → 消化吸收后直接动笔；"
-                "用户明示「不用问了直接写」→ 以你的推荐方案直接动笔。"
-                "不要用纯文本回复代替工具调用——产物未写出时终局会被产物校验"
-                "拦回，运行无法结束。"
-            ))]}
-        except Exception:  # noqa: BLE001 — 指令注入故障不得中断创作主流程
-            logger.exception("ReceiptGate 指令注入异常，跳过")
-            return None
 
     # ------------------------------------------------------------------
     # 产物写入拦截（同步 / 异步）
@@ -176,7 +195,8 @@ class ReceiptGateMiddleware(AgentMiddleware):
         blocked = self._maybe_block(request)
         if blocked is not None:
             return blocked
-        return handler(request)
+        result = handler(request)
+        return self._maybe_prefix_repeat_reminder(request, result)
 
     async def awrap_tool_call(
         self, request: Any, handler: Callable[[Any], Awaitable[Any]]
@@ -188,7 +208,8 @@ class ReceiptGateMiddleware(AgentMiddleware):
         blocked = self._maybe_block(request)
         if blocked is not None:
             return blocked
-        return await handler(request)
+        result = await handler(request)
+        return self._maybe_prefix_repeat_reminder(request, result)
 
     def _record_confirm_return(self, result: Any) -> None:
         """记录一次有效拍板返回；达到阈值或命中跳过短语即置已拍板。"""
@@ -216,8 +237,8 @@ class ReceiptGateMiddleware(AgentMiddleware):
         try:
             # 确认信号（任一即闸门满足）：
             #   1. confirm_with_user 工具正常返回（interrupt 已被用户 resume）
-            #   2. 第 2 次运行起（用户回复 = 新运行触发器，兜底口径）
-            if self._confirmed or self._run_count > 1:
+            #   2. 提案轮已结束（storyline.md 已产出）
+            if self._confirmed or self.storyline_path.exists():
                 return None
             # 跳过开关（评估集预置流）
             if self.skip:

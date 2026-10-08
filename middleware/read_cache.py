@@ -78,6 +78,8 @@ class ReadCacheMiddleware(AgentMiddleware):
 
         # 文件路径 → _CacheEntry
         self._cache: dict[str, _CacheEntry] = {}
+        # 命中次数追踪（路径 → 次数；#8 信号头「第 N 次读取」用）
+        self._hit_counts: dict[str, int] = {}
         # 统计
         self._hits = 0
         self._misses = 0
@@ -215,11 +217,24 @@ class ReadCacheMiddleware(AgentMiddleware):
         return None
 
     def _make_cached_response(self, request: Any, content: str) -> ToolMessage:
-        """构造缓存命中的响应消息。"""
+        """构造缓存命中的响应消息（全文返回 + 重复读信号头）。
+
+        #8：信号头让模型与 trace 都能看见重复读取正在发生——治「打转零
+        感知」（trace-be5d2ddd：模型重读同一文件 8 遍，每遍都得到完整正
+        常响应，重复行为永无阻力）。语义保持透明：全文照给（模型核对当
+        前状态的能力不受影响），只在文首加一行元信息。
+        """
         tool_call = getattr(request, "tool_call", {})
         tool_call_id = _mapping_value(tool_call, "id")
+        file_path = self._get_file_path(request)
+        path_key = str(file_path) if file_path is not None else ""
+        count = self._hit_counts.get(path_key, 0) + 1
+        self._hit_counts[path_key] = count
         return ToolMessage(
-            content=content,
+            content=(
+                f"[read_cache] 本会话第 {count} 次读取同一文件 · 内容未变（缓存命中，全文如下）\n\n"
+                + content
+            ),
             name="read_file",
             tool_call_id=str(tool_call_id or ""),
         )
@@ -272,6 +287,8 @@ class ReadCacheMiddleware(AgentMiddleware):
         key = str(file_path)
         if key in self._cache:
             del self._cache[key]
+            # 写后重读是正当的（内容已变），命中计数同步重置
+            self._hit_counts.pop(key, None)
             logger.debug("ReadCache INVALIDATE on write: %s", file_path)
 
     def _get_file_path(self, request: Any) -> Path | None:

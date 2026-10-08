@@ -320,3 +320,131 @@ describe("FR-001（REQ-20261009-002227）: interrupt 后正常关流不误报断
     expect(domLast).toHaveAttribute("data-status", "failed");
   });
 });
+
+/**
+ * 根因回归（2026-10-09 彻查）：SSE 帧跨 TCP chunk 分片不得丢帧。
+ *
+ * 线上现象：提案轮 interrupt 帧体积超一个 TCP 分段，event: 行与 data: 行落在
+ * 不同 chunk。旧实现按行切分且 eventType 每 chunk 重置——data: 行因 eventType
+ * 为空被静默丢弃，interrupt 从未到达 UI，用户只看到「连接中断」。
+ * 本组用例把完整事件流在任意字节边界切开喂给 reader，验证帧级解析。
+ */
+describe("SSE 帧跨 chunk 分片解析（根因回归）", () => {
+  const RUN_START_FRAME = sseEvent("trace_event", {
+    trace_id: "trace-1", event_id: "evt-1", sequence: 1, type: "run_start", status: "running",
+    timestamp: "2026-01-01T00:00:00Z", source: "system",
+    input: { workspace_id: "ws-1", thread_id: "thread-1", session_name: "测试会话", endpoint: "screenplay.generate.stream" },
+  });
+
+  /** 把完整 SSE 文本在给定字节偏移处切成多个 chunk，模拟 TCP 分段。 */
+  function splitAtBytes(text: string, cutPoints: number[]): Uint8Array[] {
+    const bytes = encoder.encode(text);
+    const cuts = [...new Set(cutPoints)].filter((c) => c > 0 && c < bytes.length).sort((a, b) => a - b);
+    const chunks: Uint8Array[] = [];
+    let prev = 0;
+    for (const cut of cuts) {
+      chunks.push(bytes.slice(prev, cut));
+      prev = cut;
+    }
+    chunks.push(bytes.slice(prev));
+    return chunks;
+  }
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { resetStoresWithOutline: resetStores } = await import("./helpers");
+    await resetStores();
+  });
+
+  async function submitAndWaitIdle(text: string) {
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/"]}><Home /></MemoryRouter>);
+    const input = await screen.findByRole("textbox", {}, { timeout: 10000 });
+    await user.type(input, text);
+    await user.keyboard("{Enter}");
+    const { useExecutionStore } = await import("@/stores/execution");
+    await waitFor(() => {
+      expect(useExecutionStore.getState().loading).toBe(false);
+    }, { timeout: 10000 });
+    const lastMsg = [...useExecutionStore.getState().messages].reverse().find((m) => m.role === "assistant");
+    return { lastMsg };
+  }
+
+  it("interrupt 帧在 event: 行与 data: 行之间切开——问题仍到达 UI，不报连接中断", async () => {
+    const interruptFrame = sseEvent("interrupt", {
+      kind: "choice", question: "请从三套方向提案中拍板：", options: [
+        { label: "方案一", description: "孤岛心理悬疑《灯下之影》" },
+        { label: "方案二", description: "深海温情奇幻《光与岸》" },
+      ], multi_select: false, source: "interview",
+    });
+    // 切点正好落在 "event: interrupt\n" 之后——旧实现的确定性丢帧点。
+    // 偏移按字节算（中文多字节，字符数 ≠ 字节数）。
+    const cut = encoder.encode(RUN_START_FRAME).length + encoder.encode("event: interrupt\n").length;
+    streams = [splitAtBytes(RUN_START_FRAME + interruptFrame, [cut])];
+
+    const { lastMsg } = await submitAndWaitIdle("写一个故事");
+
+    expect(lastMsg?.status).not.toBe("failed");
+    expect(lastMsg?.content).not.toContain("连接中断");
+    expect(lastMsg?.content).toBe("请从三套方向提案中拍板：");
+    expect(lastMsg?.awaitingInput?.options?.length).toBe(2);
+    expect(lastMsg?.awaitingInput?.options?.[0]?.description).toBe("孤岛心理悬疑《灯下之影》");
+  });
+
+  it("interrupt 帧在 data 行中间切开（大帧多分段）——问题完整无乱码", async () => {
+    const interruptFrame = sseEvent("interrupt", {
+      kind: "choice", question: "提案轮：三套方案均为短篇悬念梗概，选定即动笔，不再追问细节。你要哪套？", options: [
+        { label: "选定方案 1", description: "孤岛心理悬疑《灯下之影》" },
+        { label: "选定方案 2", description: "深海温情奇幻《光与岸》" },
+        { label: "选定方案 3", description: "风暴夜救援惊悚《引航员》" },
+        { label: "我要调整", description: "调整方向或混合元素，先补充" },
+      ], multi_select: false, source: "interview",
+    });
+    // 在 data 行正中间多切几刀（字节级，含多字节中文字符中间）
+    const dataStart = encoder.encode(RUN_START_FRAME).length + encoder.encode("event: interrupt\ndata: ").length;
+    const dataLen = encoder.encode(interruptFrame).length - encoder.encode("event: interrupt\ndata: ").length - 2;
+    streams = [splitAtBytes(RUN_START_FRAME + interruptFrame, [
+      dataStart + Math.floor(dataLen / 3),
+      dataStart + Math.floor(dataLen * 2 / 3),
+    ])];
+
+    const { lastMsg } = await submitAndWaitIdle("写一个故事");
+
+    expect(lastMsg?.status).not.toBe("failed");
+    expect(lastMsg?.content).not.toContain("连接中断");
+    expect(lastMsg?.content).not.toContain("\uFFFD");
+    expect(lastMsg?.awaitingInput?.question).toContain("选定即动笔");
+    expect(lastMsg?.awaitingInput?.options?.length).toBe(4);
+  });
+
+  it("final 帧在 event: 行与 data: 行之间切开——落 completed 而非连接中断", async () => {
+    const modelFrame = sseEvent("model_stream", { content: "正文完成" });
+    const finalFrame = sseEvent("final", {
+      mode: "screenplay", thread_id: "thread-1", workspace_id: "ws-1", session_name: "测试会话",
+      workspace_path: "/test", title: "T", content: "正文完成", logline: "", synopsis: "",
+      beats: [],
+    });
+    const prefix = RUN_START_FRAME + modelFrame;
+    const cut = encoder.encode(prefix).length + encoder.encode("event: final\n").length;
+    streams = [splitAtBytes(prefix + finalFrame, [cut])];
+
+    const { lastMsg } = await submitAndWaitIdle("写一个故事");
+
+    expect(lastMsg?.status).toBe("completed");
+    expect(lastMsg?.content).not.toContain("连接中断");
+    expect(lastMsg?.content).toBe("正文完成");
+  });
+
+  it("model_stream 帧 data 行中间切开——叙述文本完整拼接", async () => {
+    const modelFrame1 = sseEvent("model_stream", { content: "提案轮设计完成，" });
+    const modelFrame2 = sseEvent("model_stream", { content: "端出三套方向供拍板。" });
+    const prefix = RUN_START_FRAME + modelFrame1;
+    const cut = encoder.encode(prefix).length + encoder.encode("event: model_stream\ndata: ").length + 6;
+    streams = [splitAtBytes(prefix + modelFrame2, [cut])];
+
+    const { lastMsg } = await submitAndWaitIdle("写一个故事");
+
+    // 无 final 无 interrupt → 走 FR-002 兜底，但叙述文本必须完整（旧实现会缺帧）
+    expect(lastMsg?.content).toContain("提案轮设计完成，端出三套方向供拍板。");
+  });
+});

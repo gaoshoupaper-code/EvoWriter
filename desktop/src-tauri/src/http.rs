@@ -230,18 +230,39 @@ pub async fn stream_request(
     let stream_id_task = stream_id.clone();
     tokio::spawn(async move {
         let mut stream = resp.bytes_stream();
+        // UTF-8 残尾缓冲：TCP chunk 可能在多字节字符（中文 3 字节）中间截断，
+        // 直接 from_utf8_lossy 会把前后两半各换成一个 U+FFFD——SSE 帧跨 chunk
+        // 时中文正文（提案问题/小说流文本）被污染。这里只解码到最后一个完整
+        // 字符，残尾留到下一个 chunk 拼上后再解码。
+        let mut pending: Vec<u8> = Vec::new();
         while let Some(chunk_result) = stream.next().await {
             match chunk_result {
                 Ok(bytes) => {
-                    let text = String::from_utf8_lossy(&bytes).to_string();
-                    if text.is_empty() {
+                    if bytes.is_empty() {
+                        continue;
+                    }
+                    pending.extend_from_slice(&bytes);
+                    let (decoded, valid_len) = match std::str::from_utf8(&pending) {
+                        Ok(text) => (text.to_owned(), pending.len()),
+                        Err(err) => {
+                            let valid_up_to = err.valid_up_to();
+                            (
+                                String::from_utf8_lossy(&pending[..valid_up_to]).into_owned(),
+                                valid_up_to,
+                            )
+                        }
+                    };
+                    if valid_len > 0 {
+                        pending.drain(..valid_len);
+                    }
+                    if decoded.is_empty() {
                         continue;
                     }
                     let _ = app_clone.emit(
                         "sse_chunk",
                         SseChunk {
                             stream_id: stream_id_task.clone(),
-                            chunk: text,
+                            chunk: decoded,
                         },
                     );
                 }
@@ -256,6 +277,19 @@ pub async fn stream_request(
                     );
                     return;
                 }
+            }
+        }
+        // 流结束：残尾只可能是流被截断时的半个字符，lossy 收尾（最多 1 个 U+FFFD）。
+        if !pending.is_empty() {
+            let tail = String::from_utf8_lossy(&pending).to_string();
+            if !tail.is_empty() {
+                let _ = app_clone.emit(
+                    "sse_chunk",
+                    SseChunk {
+                        stream_id: stream_id_task.clone(),
+                        chunk: tail,
+                    },
+                );
             }
         }
         // 流正常结束

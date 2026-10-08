@@ -606,110 +606,113 @@ async function performSubmit(
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
+      // 按完整 SSE 帧（\n\n 分隔）解析，与 performImageStream 对齐。
+      // 大帧（interrupt 提案 / final / tool_output）超过一个 TCP 分段时，
+      // event: 行与 data: 行会落在不同 chunk——旧实现按行切分且 eventType 每
+      // chunk 重置，data: 行因 eventType 为空被静默丢帧（线上 interrupt 从未
+      // 到达 UI 的根因，2026-10-09 彻查）。
+      const frames = buffer.split("\n\n");
+      buffer = frames.pop() || "";
 
-      let eventType = "";
-      let eventData = "";
+      for (const frame of frames) {
+        const lines = frame.split("\n");
+        let eventType = "";
+        let eventData = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) eventType = line.slice(7).trim();
+          else if (line.startsWith("data: ")) eventData += line.slice(6);
+        }
+        if (!eventType || !eventData) continue; // 心跳注释帧（: ping）等无数据帧
+        try {
+          const event = { type: eventType as StreamEvent["type"], data: JSON.parse(eventData) as Record<string, unknown> };
 
-      for (const line of lines) {
-        if (line.startsWith("event: ")) {
-          eventType = line.slice(7).trim();
-        } else if (line.startsWith("data: ") && eventType) {
-          eventData = line.slice(6).trim();
-          try {
-            const event = { type: eventType as StreamEvent["type"], data: JSON.parse(eventData) as Record<string, unknown> };
-
-            if (event.type === "model_stream") {
-              streamedText += String(event.data.content ?? "");
-            } else if (event.type === "reasoning_stream") {
-              // T21: 累积 reasoning token 到瞬态 activeReasoning（不写 message，不持久化）
-              reasoningText += String(event.data.content ?? "");
-              set({ activeReasoning: reasoningText });
-            } else if (event.type === "trace_event") {
-              const traceEvent = event.data as TraceLogEvent;
-              if (traceEvent.type === "run_start") {
-                set((state) => ({
-                  messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, traceId: traceEvent.trace_id })),
-                }));
-              }
-              d.setTraceRuns((current: any) => {
-                if (traceEvent.type === "run_start") return upsertTraceRun(current, runFromTraceEvent(traceEvent));
-                return current.map((run: any) => (run.trace_id === traceEvent.trace_id ? updateTraceRunFromEvent(run, traceEvent) : run));
-              });
-              d.setTraceDetail((current: any) => {
-                const fallbackRun = current?.run.trace_id === traceEvent.trace_id
-                  ? current.run
-                  : d.getTraceRuns().find((run: any) => run.trace_id === traceEvent.trace_id) ??
-                    fallbackRunFromTraceEvent(traceEvent, userMessageThreadId, activeWorkspaceId, d.getActiveThreadSessionName(), d.getActiveThreadWorkspacePath());
-                return appendLiveTraceEvent(current, traceEvent, fallbackRun);
-              });
-              d.setActiveTraceId(traceEvent.trace_id);
-              d.setLiveTraceId(traceEvent.trace_id);
-              if (traceEvent.type === "run_end" || traceEvent.type === "run_error") {
-                d.setLiveTraceId("");
-              }
-            } else if (event.type === "trace_snapshot") {
-              const detail = event.data as any;
-              d.setTraceDetail(() => detail);
-              d.setTraceRuns((current: any) => upsertTraceRun(current, detail.run));
-              d.setActiveTraceId(detail.run.trace_id);
-              d.setLiveTraceId(detail.run.status === "running" ? detail.run.trace_id : "");
-            } else if (event.type === "model_output") {
-              hasModelOutput = true;
-            } else if (event.type === "tool_call") {
+          if (event.type === "model_stream") {
+            streamedText += String(event.data.content ?? "");
+          } else if (event.type === "reasoning_stream") {
+            // T21: 累积 reasoning token 到瞬态 activeReasoning（不写 message，不持久化）
+            reasoningText += String(event.data.content ?? "");
+            set({ activeReasoning: reasoningText });
+          } else if (event.type === "trace_event") {
+            const traceEvent = event.data as TraceLogEvent;
+            if (traceEvent.type === "run_start") {
               set((state) => ({
-                messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, tools: upsertRunningTool(message.tools, event) })),
-              }));
-            } else if (event.type === "tool_output") {
-              set((state) => ({
-                messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, tools: markToolComplete(message.tools, event) })),
-              }));
-            } else if (event.type === "tool_error") {
-              set((state) => ({
-                messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, tools: markToolFailed(message.tools, event) })),
-              }));
-            } else if (event.type === "final") {
-              finalData = event.data as ScreenplayResponse;
-            } else if (event.type === "credit_exhausted") {
-              const msg = (event.data as { message?: string })?.message ?? "积分耗尽";
-              d.setLiveTraceId("");
-              toast.error(msg);
-              set((state) => ({
-                messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
-                  ...message,
-                  status: "failed",
-                  content: `⚠️ ${msg}\n\n已创作的内容已保存，补充积分后可继续创作。`,
-                  contentFormat: "markdown",
-                })),
-              }));
-              break;
-            } else if (event.type === "interrupt") {
-              const iv = event.data as {
-                kind?: string; question?: string; options?: AskUserOption[] | null; multi_select?: boolean; source?: string;
-                round?: number; versions?: unknown[];
-              };
-              gotInterrupt = true;
-              const interruptKind = iv.kind ?? "choice";
-              set((state) => ({
-                messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
-                  ...message,
-                  content: interruptKind === "image_review"
-                    ? `第 ${iv.round ?? "?"} 轮图像评审：3 版 6 图已生成，请打分`
-                    : iv.question || "等待你的输入",
-                  awaitingInput: {
-                    kind: interruptKind, question: iv.question || "", options: iv.options ?? null,
-                    multi_select: iv.multi_select ?? false, source: iv.source, round: iv.round, versions: iv.versions,
-                    askedAt: new Date().toISOString(),
-                  },
-                })),
+                messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, traceId: traceEvent.trace_id })),
               }));
             }
-          } catch {
-            // partial JSON
+            d.setTraceRuns((current: any) => {
+              if (traceEvent.type === "run_start") return upsertTraceRun(current, runFromTraceEvent(traceEvent));
+              return current.map((run: any) => (run.trace_id === traceEvent.trace_id ? updateTraceRunFromEvent(run, traceEvent) : run));
+            });
+            d.setTraceDetail((current: any) => {
+              const fallbackRun = current?.run.trace_id === traceEvent.trace_id
+                ? current.run
+                : d.getTraceRuns().find((run: any) => run.trace_id === traceEvent.trace_id) ??
+                  fallbackRunFromTraceEvent(traceEvent, userMessageThreadId, activeWorkspaceId, d.getActiveThreadSessionName(), d.getActiveThreadWorkspacePath());
+              return appendLiveTraceEvent(current, traceEvent, fallbackRun);
+            });
+            d.setActiveTraceId(traceEvent.trace_id);
+            d.setLiveTraceId(traceEvent.trace_id);
+            if (traceEvent.type === "run_end" || traceEvent.type === "run_error") {
+              d.setLiveTraceId("");
+            }
+          } else if (event.type === "trace_snapshot") {
+            const detail = event.data as any;
+            d.setTraceDetail(() => detail);
+            d.setTraceRuns((current: any) => upsertTraceRun(current, detail.run));
+            d.setActiveTraceId(detail.run.trace_id);
+            d.setLiveTraceId(detail.run.status === "running" ? detail.run.trace_id : "");
+          } else if (event.type === "model_output") {
+            hasModelOutput = true;
+          } else if (event.type === "tool_call") {
+            set((state) => ({
+              messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, tools: upsertRunningTool(message.tools, event) })),
+            }));
+          } else if (event.type === "tool_output") {
+            set((state) => ({
+              messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, tools: markToolComplete(message.tools, event) })),
+            }));
+          } else if (event.type === "tool_error") {
+            set((state) => ({
+              messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, tools: markToolFailed(message.tools, event) })),
+            }));
+          } else if (event.type === "final") {
+            finalData = event.data as ScreenplayResponse;
+          } else if (event.type === "credit_exhausted") {
+            const msg = (event.data as { message?: string })?.message ?? "积分耗尽";
+            d.setLiveTraceId("");
+            toast.error(msg);
+            set((state) => ({
+              messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
+                ...message,
+                status: "failed",
+                content: `⚠️ ${msg}\n\n已创作的内容已保存，补充积分后可继续创作。`,
+                contentFormat: "markdown",
+              })),
+            }));
+            break;
+          } else if (event.type === "interrupt") {
+            const iv = event.data as {
+              kind?: string; question?: string; options?: AskUserOption[] | null; multi_select?: boolean; source?: string;
+              round?: number; versions?: unknown[];
+            };
+            gotInterrupt = true;
+            const interruptKind = iv.kind ?? "choice";
+            set((state) => ({
+              messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
+                ...message,
+                content: interruptKind === "image_review"
+                  ? `第 ${iv.round ?? "?"} 轮图像评审：3 版 6 图已生成，请打分`
+                  : iv.question || "等待你的输入",
+                awaitingInput: {
+                  kind: interruptKind, question: iv.question || "", options: iv.options ?? null,
+                  multi_select: iv.multi_select ?? false, source: iv.source, round: iv.round, versions: iv.versions,
+                  askedAt: new Date().toISOString(),
+                },
+              })),
+            }));
           }
-          eventType = "";
-          eventData = "";
+        } catch {
+          // partial JSON
         }
       }
 

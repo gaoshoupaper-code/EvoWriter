@@ -4,7 +4,7 @@ description: >-
   【仅当 storyline.md 不存在时使用】首次故事骨架构建。
   产出完整骨架：故事核心 + 主线区块（含完整事件表）+ 核心人物 + 世界观。
   触发条件：工作区为空、无 storyline.md（委托明确指定"初构"，或连续增量自主循环首轮）。
-  若 storyline.md 已存在，应使用 storybuilding-expand。
+  若 storyline.md 已存在，应按人物/故事线比值选用增量技能：人物充足（R≥3）用 storybuilding-expand-storyline，人物不足（R<3）用 storybuilding-expand-character。
 ---
 
 # storybuilding-initial

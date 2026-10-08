@@ -6,7 +6,8 @@ description: >-
   外貌四层规范）、故事线（线型/拓扑/区块格式/关键规则）、事件（数量模板/
   列语义/事件类型）、创作原则与文风规范（平实叙述）、物品卡（建卡门槛/
   卡片格式/轨迹枚举/暗线纪律）。初构（storybuilding-initial）与增量
-  （storybuilding-expand）流程技能及 review 审查器共用本规范。本技能只含
+  （storybuilding-expand-storyline / storybuilding-expand-character）流程
+  技能及 review 审查器共用本规范。本技能只含
   内容规范，不含流程。
 ---
 

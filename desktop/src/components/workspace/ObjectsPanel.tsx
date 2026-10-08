@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -13,6 +14,12 @@ type ObjectsPanelProps = {
 
 export function ObjectsPanel({ objects, activeFilename, loading, onSelectObject }: ObjectsPanelProps) {
   const activeObject = objects.find((object) => object.filename === activeFilename) ?? objects[0];
+  const contentRef = useRef<HTMLDivElement | null>(null);
+
+  // 切换物品后内容列回顶（FR-003）；依赖 filename 而非 markdown——同条目刷新不打断阅读
+  useEffect(() => {
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  }, [activeObject?.filename]);
 
   return (
     <section className="panel-surface content-panel" aria-label="物品状态卡">
@@ -44,9 +51,11 @@ export function ObjectsPanel({ objects, activeFilename, loading, onSelectObject 
               </div>
             </aside>
 
-            <article className="outline-markdown character-markdown">
-              {activeObject?.markdown.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{activeObject.markdown}</ReactMarkdown> : <p>这个物品文件暂无内容。</p>}
-            </article>
+            <div className="character-content" ref={contentRef}>
+              <article className="outline-markdown character-markdown">
+                {activeObject?.markdown.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{activeObject.markdown}</ReactMarkdown> : <p>这个物品文件暂无内容。</p>}
+              </article>
+            </div>
           </div>
         ) : (
           <div className="empty-state">

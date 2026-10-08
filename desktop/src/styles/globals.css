@@ -436,6 +436,13 @@ a {
   overflow-y: auto;
 }
 
+/* 人物/物品/大纲双栏面板：body 唯一子项的轨道铺满一屏，两栏改为各自独立滚动，
+   body 自身不再滚动（REQ-20261008-201413 FR-001） */
+.content-panel-body:has(> .character-layout),
+.content-panel-body:has(> .detail-outline-layout) {
+  align-content: stretch;
+}
+
 .panel-heading {
   display: flex;
   align-items: center;
@@ -3104,7 +3111,9 @@ a {
   display: grid;
   grid-template-columns: minmax(180px, 240px) 1fr;
   gap: 16px;
-  min-height: 420px;
+  /* 高度由 body 拉伸轨道给定（一屏）；min-height:0 允许压进一屏，列内各自滚动（FR-001）。
+     原 min-height:420px 已删除——卡片高度完全由内容决定（FR-002） */
+  min-height: 0;
 }
 
 .character-sidebar {
@@ -3113,6 +3122,9 @@ a {
   padding: 14px;
   background: var(--panel-soft);
   box-shadow: none;
+  /* grid 子项默认最小内容尺寸会顶破一屏，必须放开后列表才能自身滚动 */
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .character-list {
@@ -3171,11 +3183,19 @@ a {
   box-shadow: none;
 }
 
+/* 内容列：右栏滚动容器；卡片在列内贴合内容高度，多余空间露出面板背景（FR-002） */
+.character-content {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .detail-outline-layout {
   display: grid;
   grid-template-columns: minmax(180px, 240px) 1fr;
   gap: 16px;
-  min-height: 420px;
+  /* 同 .character-layout：一屏内两栏独立滚动，卡片贴合内容（FR-001/FR-002） */
+  min-height: 0;
 }
 
 .detail-outline-sidebar {
@@ -3184,6 +3204,8 @@ a {
   padding: 14px;
   background: var(--panel-soft);
   box-shadow: none;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .detail-outline-list {
@@ -3229,6 +3251,23 @@ a {
   padding: 24px 28px;
   background: color-mix(in srgb, var(--panel-solid) 84%, transparent);
   box-shadow: none;
+}
+
+/* 内容列：同 .character-content（FR-002） */
+.detail-outline-content {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 双栏各自滚动后必须显示细滚动条——滚动位置是唯一"还有多少内容"的线索（DEC-005）；
+   颜色取主题 --ink，亮/暗自适应 */
+.character-sidebar,
+.character-content,
+.detail-outline-sidebar,
+.detail-outline-content {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--ink) 30%, transparent) transparent;
 }
 
 .novel-layout {

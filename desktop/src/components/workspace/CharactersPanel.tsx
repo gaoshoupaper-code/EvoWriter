@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -13,6 +14,12 @@ type CharactersPanelProps = {
 
 export function CharactersPanel({ characters, activeFilename, loading, onSelectCharacter }: CharactersPanelProps) {
   const activeCharacter = characters.find((character) => character.filename === activeFilename) ?? characters[0];
+  const contentRef = useRef<HTMLDivElement | null>(null);
+
+  // 切换人物后内容列回顶（FR-003）；依赖 filename 而非 markdown——同条目刷新不打断阅读
+  useEffect(() => {
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  }, [activeCharacter?.filename]);
 
   return (
     <section className="panel-surface content-panel" aria-label="人物角色">
@@ -44,9 +51,11 @@ export function CharactersPanel({ characters, activeFilename, loading, onSelectC
               </div>
             </aside>
 
-            <article className="outline-markdown character-markdown">
-              {activeCharacter?.markdown.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{activeCharacter.markdown}</ReactMarkdown> : <p>这个人物文件暂无内容。</p>}
-            </article>
+            <div className="character-content" ref={contentRef}>
+              <article className="outline-markdown character-markdown">
+                {activeCharacter?.markdown.trim() ? <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{activeCharacter.markdown}</ReactMarkdown> : <p>这个人物文件暂无内容。</p>}
+              </article>
+            </div>
           </div>
         ) : (
           <div className="empty-state">

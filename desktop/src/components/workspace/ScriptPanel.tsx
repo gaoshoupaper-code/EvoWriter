@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -43,6 +44,12 @@ export function ScriptPanel({
     ? activeStorylineFilename
     : (items[0]?.key ?? "");
   const active = items.find((e) => e.key === activeKey);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+
+  // 切换故事线后内容列回顶（FR-003）；依赖选中键而非 markdown——同线刷新不打断阅读
+  useEffect(() => {
+    if (contentRef.current) contentRef.current.scrollTop = 0;
+  }, [activeKey]);
 
   // v2 解析失败（panorama 空）→ 降级渲染 storyline.md 原文；legacy → 按线分区块（FR-013 降级）
   const panoramaAvailable = !isLegacy && storylinePanorama.length > 0;
@@ -81,18 +88,21 @@ export function ScriptPanel({
             </aside>
 
             {active && active.key !== CORE_KEY ? (
-              <article className="outline-markdown detail-outline-markdown">
-                {active.markdown.trim() ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{active.markdown}</ReactMarkdown>
-                ) : (
-                  <p>该故事线暂无内容。</p>
-                )}
-              </article>
+              <div className="detail-outline-content" ref={contentRef}>
+                <article className="outline-markdown detail-outline-markdown">
+                  {active.markdown.trim() ? (
+                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{active.markdown}</ReactMarkdown>
+                  ) : (
+                    <p>该故事线暂无内容。</p>
+                  )}
+                </article>
+              </div>
             ) : active ? (
-              <article className="outline-markdown detail-outline-markdown">
-                {active.markdown.trim() ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{active.markdown}</ReactMarkdown>
-                ) : null}
+              <div className="detail-outline-content" ref={contentRef}>
+                <article className="outline-markdown detail-outline-markdown">
+                  {active.markdown.trim() ? (
+                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{active.markdown}</ReactMarkdown>
+                  ) : null}
                 {panoramaAvailable ? (
                   <>
                     <h3>跨线全景</h3>
@@ -127,7 +137,8 @@ export function ScriptPanel({
                     </div>
                   </>
                 ) : null}
-              </article>
+                </article>
+              </div>
             ) : (
               <div className="empty-state">
                 <span className="placeholder-mark">暂无大纲</span>

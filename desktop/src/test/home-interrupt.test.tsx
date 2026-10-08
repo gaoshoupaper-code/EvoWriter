@@ -52,12 +52,12 @@ const FINAL_CHUNKS = encode([
   }),
 ]);
 
-// streamRequest 按调用序号返回不同的流
-let callCount = 0;
+// streamRequest 按调用序号从 streams 队列取流；每个用例可在 beforeEach 之后自行注入
+// （默认 [INTERRUPT_CHUNKS, FINAL_CHUNKS] 维持 T0b 既有两用例的行为）
+let streams: Uint8Array[][] = [];
 vi.mock("@/lib/stream", () => ({
   streamRequest: vi.fn().mockImplementation(() => {
-    const chunks = callCount === 0 ? INTERRUPT_CHUNKS : FINAL_CHUNKS;
-    callCount++;
+    const chunks = streams.shift() ?? FINAL_CHUNKS;
     let index = 0;
     return Promise.resolve({
       read: () => {
@@ -128,7 +128,7 @@ const Home = (await import("@/pages/home")).default;
 
 describe("T0b: HITL interrupt → resume", () => {
   beforeEach(async () => {
-    callCount = 0;
+    streams = [INTERRUPT_CHUNKS, FINAL_CHUNKS];
     vi.clearAllMocks();
     const { resetStoresWithOutline: resetStores } = await import("./helpers");
     await resetStores();
@@ -191,5 +191,104 @@ describe("T0b: HITL interrupt → resume", () => {
     expect(secondCall[1].body).toHaveProperty("trace_id", "trace-1");
     // resume 模式不应有 prompt 字段
     expect(secondCall[1].body).not.toHaveProperty("prompt");
+  });
+});
+
+/**
+ * REQ-20261009-002227：提案轮正常关流不得误报「连接中断」。
+ *
+ * 服务端 interrupt 后 return 正常关闭 SSE 流（等用户选方案再 resume）。
+ * 修复前：前端主创作流收到 interrupt 未标记终态，流关闭后落入 FR-002
+ * 断流兜底——误弹「连接中断（未收到完成信号）」并把消息标 failed。
+ */
+describe("FR-001（REQ-20261009-002227）: interrupt 后正常关流不误报断连", () => {
+  beforeEach(async () => {
+    streams = [INTERRUPT_CHUNKS, FINAL_CHUNKS];
+    vi.clearAllMocks();
+    const { resetStoresWithOutline: resetStores } = await import("./helpers");
+    await resetStores();
+  });
+
+  async function submitAndWaitIdle(text: string) {
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/"]}><Home /></MemoryRouter>);
+    const input = await screen.findByRole("textbox", {}, { timeout: 10000 });
+    await user.type(input, text);
+    await user.keyboard("{Enter}");
+    // 兜底判定发生在流关闭之后、finally 复位 loading 之前——等 loading 归 false
+    // 即代表本轮流（含兜底分支，如触发）已全部执行完。
+    const { useExecutionStore } = await import("@/stores/execution");
+    await waitFor(() => {
+      expect(useExecutionStore.getState().loading).toBe(false);
+    }, { timeout: 10000 });
+    const lastMsg = [...useExecutionStore.getState().messages].reverse().find((m) => m.role === "assistant");
+    const domLast = document.querySelectorAll(".message.assistant");
+    return { lastMsg, domLast: domLast[domLast.length - 1] };
+  }
+
+  it("AC-001 主路径：interrupt 后流关闭，不落 failed、不报连接中断、awaitingInput 保留", async () => {
+    const { lastMsg, domLast } = await submitAndWaitIdle("写一个故事");
+
+    expect(screen.getByTestId("interview-options")).toBeInTheDocument();
+    expect(lastMsg?.status).not.toBe("failed");
+    expect(lastMsg?.content).not.toContain("连接中断");
+    expect(lastMsg?.awaitingInput?.kind).toBe("choice");
+    expect(lastMsg?.awaitingInput?.options?.length).toBe(2);
+    expect(domLast).not.toHaveAttribute("data-status", "failed");
+  });
+
+  it("AC-001 边界：interrupt 无 options（options: null）同样不误报", async () => {
+    streams = [encode([
+      sseEvent("trace_event", {
+        trace_id: "trace-1", event_id: "evt-1", sequence: 1, type: "run_start", status: "running",
+        timestamp: "2026-01-01T00:00:00Z", source: "system",
+        input: { workspace_id: "ws-1", thread_id: "thread-1", session_name: "测试会话", endpoint: "screenplay.generate.stream" },
+      }),
+      sseEvent("interrupt", { kind: "choice", question: "要调整哪个方向？", options: null, multi_select: false, source: "interview" }),
+    ])];
+
+    const { lastMsg } = await submitAndWaitIdle("写一个故事");
+
+    expect(lastMsg?.status).not.toBe("failed");
+    expect(lastMsg?.content).not.toContain("连接中断");
+    expect(lastMsg?.awaitingInput?.question).toBe("要调整哪个方向？");
+    expect(lastMsg?.awaitingInput?.options).toBeNull();
+  });
+
+  it("AC-001 边界：multi_select=true 的 interrupt 不误报且标志保留", async () => {
+    streams = [encode([
+      sseEvent("trace_event", {
+        trace_id: "trace-1", event_id: "evt-1", sequence: 1, type: "run_start", status: "running",
+        timestamp: "2026-01-01T00:00:00Z", source: "system",
+        input: { workspace_id: "ws-1", thread_id: "thread-1", session_name: "测试会话", endpoint: "screenplay.generate.stream" },
+      }),
+      sseEvent("interrupt", {
+        kind: "choice", question: "选择要保留的版本", options: [
+          { label: "版本 A", description: "" }, { label: "版本 B", description: "" },
+        ], multi_select: true, source: "interview",
+      }),
+    ])];
+
+    const { lastMsg } = await submitAndWaitIdle("写一个故事");
+
+    expect(lastMsg?.status).not.toBe("failed");
+    expect(lastMsg?.content).not.toContain("连接中断");
+    expect(lastMsg?.awaitingInput?.multi_select).toBe(true);
+  });
+
+  it("AC-002 回归：无 interrupt 无 final 的真断流，兜底报错行为保留", async () => {
+    streams = [encode([
+      sseEvent("trace_event", {
+        trace_id: "trace-1", event_id: "evt-1", sequence: 1, type: "run_start", status: "running",
+        timestamp: "2026-01-01T00:00:00Z", source: "system",
+        input: { workspace_id: "ws-1", thread_id: "thread-1", session_name: "测试会话", endpoint: "screenplay.generate.stream" },
+      }),
+    ])];
+
+    const { lastMsg, domLast } = await submitAndWaitIdle("写一个故事");
+
+    expect(lastMsg?.status).toBe("failed");
+    expect(lastMsg?.content).toContain("连接中断");
+    expect(domLast).toHaveAttribute("data-status", "failed");
   });
 });

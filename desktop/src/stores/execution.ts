@@ -579,6 +579,9 @@ async function performSubmit(
     let streamedText = "";
     let reasoningText = ""; // T21: reasoning_stream 累积（瞬态，不写 message）
     let hasModelOutput = false;
+    // FR-001（REQ-20261009-002227）：收到过 interrupt 后流关闭是服务端正常关流
+    // （提问后 return，等用户选方案再 resume），断流兜底不得误报——见循环后分支。
+    let gotInterrupt = false;
     let finalData: ScreenplayResponse | null = null;
 
     while (true) {
@@ -686,6 +689,7 @@ async function performSubmit(
                 kind?: string; question?: string; options?: AskUserOption[] | null; multi_select?: boolean; source?: string;
                 round?: number; versions?: unknown[];
               };
+              gotInterrupt = true;
               const interruptKind = iv.kind ?? "choice";
               set((state) => ({
                 messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
@@ -733,8 +737,10 @@ async function performSubmit(
     } else {
       // FR-002 断流兜底：SSE 正常关闭但未收到 final——落 failed 终态，不永挂思考态。
       // 幂等：credit_exhausted 等分支 break 前已设终态，这里不覆盖。
+      // FR-001（REQ-20261009-002227）：收到过 interrupt 的关流是服务端正常结束
+      // （提问后关流等 resume），保持 awaitingInput，不误报断连、不落 failed。
       const current = get().messages[assistantIdx];
-      if (current && current.role === "assistant" && !current.status) {
+      if (current && current.role === "assistant" && !current.status && !gotInterrupt) {
         const brokenMessage = "⚠️ 连接中断（未收到完成信号），已生成的内容已保存，可以重试。";
         d.setLiveTraceId("");
         toast.error(brokenMessage);

@@ -1,17 +1,19 @@
 """storyline.md 结构契约判定器（REQ-20260930-194437 FR-003/004/005）。
 
+REQ-20261009-182730：移除事件数量等值校验（原 DEC-007 口径）与事件类型词
+白名单——数量/类型词改由 harness 侧观测模式承载（只记日志不拦截），参考
+区间与参考词表随 harness 包演进；contracts 只保留结构语法判定。
+
 「判定器唯一实现」原则（沿用 DEC-011）：契约判定放 contracts，
 executor 测试（``assert_storyline_v2_contract``）与 harness 运行时护栏
 （StorylineContractGuardMiddleware）共用本模块，两侧不得各自实现。
 
-运行时口径（DEC-007 / DEC-010）：
+运行时口径（DEC-007 / DEC-010；数量口径由 REQ-20261009-182730 取代）：
   - 结构规则（区块头类型词、线头两字段、事件表存在且有数据行、列数一致、
-    T 号合法、事件类型词白名单、禁 S/E/G 与旧字段残留）只校验**新增或变更
-    区块**——resume 场景的存量历史瑕疵不误伤合法续写。
+    T 号合法、禁 S/E/G 与旧字段残留）只校验**新增或变更区块**——resume
+    场景的存量历史瑕疵不误伤合法续写。
   - 唯一性规则（线名、事件名）全局生效。
-  - 事件数量：**新建**线区块的非交汇事件数（「交汇」列为空）必须等于模板值
-    （主线 12 / 支线 6 / 角色线 5 / 暗线 5）；交汇事件额外插入不计入；
-    既有区块变更不触发数量校验。
+  - 事件数量与事件类型词不校验、不拦截（harness 侧观测，见护栏观测模式）。
   - 最终结局：初构首次落盘后不得修改或删除（磁盘态对比，跨装配幂等）。
 """
 from __future__ import annotations
@@ -38,19 +40,16 @@ _TABLE_HEADER_HINT = re.compile(r"^\|.*时序.*\|.*事件.*\|")
 _TABLE_SEPARATOR = re.compile(r"\|[\s|:-]+\|")
 _ENDING_RE = re.compile(r"(?m)^(?:-\s*)?(?:\*\*)?最终结局(?:\*\*)?\s*[：:]\s*(.+?)\s*$")
 
-# 事件「类型」列叙事功能白名单（提示词 §五 七类；「交汇」事件以「交汇」列
-# 非空判定——类型列允许标「交汇」或按实际叙事功能标注）
-EVENT_TYPES = ("冲突", "危机", "反转", "揭露", "悬念", "胜利", "交汇")
-
-# 新建线区块的非交汇事件数模板（DEC-007 非交汇计数口径）
-EVENT_COUNT_TEMPLATE = {"主线": 12, "支线": 6, "角色线": 5, "暗线": 5}
+# （REQ-20261009-182730）事件类型词白名单 EVENT_TYPES 与事件数模板
+# EVENT_COUNT_TEMPLATE 已移除：数量/类型词不再工程校验，参考区间与词表
+# 由 harness 包观测配置持有（DEC-004/DEC-006），观测逻辑见护栏中间件。
 
 
 @dataclass(frozen=True)
 class GuardViolation:
     """一条护栏违规：rule 用于防死循环计数，message 用于拒绝提示。"""
 
-    rule: str  # "contract" | "event_count" | "ending"
+    rule: str  # "contract" | "ending"
     message: str
 
 
@@ -195,6 +194,53 @@ def extract_event_names(md: str) -> list[str]:
     return names
 
 
+# ── 公共结构解析（REQ-20261009-182730：harness 观测侧复用，判定器唯一原则）──
+
+
+@dataclass(frozen=True)
+class LineBlock:
+    """一个线区块的结构化解析结果（纯结构，无语义口径）。
+
+    events 为事件表数据行按序的 (类型列原文, 是否交汇)——类型列缺失/留空
+    时原文为空串；「交汇」列非空即 True。参考区间与参考词表等语义口径
+    不进 contracts，由 harness 观测配置持有。
+    """
+
+    name: str
+    type: str
+    text: str
+    events: tuple[tuple[str, bool], ...]
+
+
+def iter_line_blocks(md: str) -> list[LineBlock]:
+    """按区块头切分 storyline.md，返回各线区块的结构解析（含事件行）。
+
+    与判定器共用同一套区块/表格切分（唯一实现）；无表区块 events 为空元组。
+    """
+    blocks: list[LineBlock] = []
+    for b in _parse_blocks(md):
+        data, header_row = _data_rows(b.text)
+        events: list[tuple[str, bool]] = []
+        if header_row is not None:
+            type_idx = _col_index(header_row, "类型")
+            crossing_idx = _col_index(header_row, "交汇")
+            for ln in data:
+                cells = _split_cells(ln)
+                type_word = (
+                    _clean(cells[type_idx])
+                    if type_idx is not None and type_idx < len(cells)
+                    else ""
+                )
+                crossing = (
+                    crossing_idx is not None
+                    and crossing_idx < len(cells)
+                    and bool(_clean(cells[crossing_idx]))
+                )
+                events.append((type_word, crossing))
+        blocks.append(LineBlock(b.name, b.type, b.text, tuple(events)))
+    return blocks
+
+
 # ── 运行时写入校验（写前拦截判定入口）────────────────────────
 
 
@@ -276,7 +322,6 @@ def check_storyline_write(current: str, projected: str) -> list[GuardViolation]:
             continue
 
         expect_cols = header_row.strip().strip("|").count("|") + 1
-        type_idx = _col_index(header_row, "类型")
         for ln in data:
             cells = _split_cells(ln)
             if len(cells) != expect_cols:
@@ -290,15 +335,6 @@ def check_storyline_write(current: str, projected: str) -> list[GuardViolation]:
                     "contract", f"区块「{b.name}」时序号非法（{t_raw}，应为 T1/T12.5 形式）",
                 ))
                 break
-            if type_idx is not None and type_idx < len(cells):
-                type_word = _clean(cells[type_idx])
-                if type_word and type_word not in EVENT_TYPES:
-                    violations.append(GuardViolation(
-                        "contract",
-                        f"区块「{b.name}」事件「{_clean(cells[1])}」类型词非法"
-                        f"（{type_word}，须为 {'/'.join(EVENT_TYPES)}）",
-                    ))
-                    break
 
     # ── 唯一性规则：全局（线名、事件名）──
     proj_line_names = [b.name for b in proj_blocks]
@@ -309,37 +345,15 @@ def check_storyline_write(current: str, projected: str) -> list[GuardViolation]:
     if len(all_event_names) != len(set(all_event_names)):
         violations.append(GuardViolation("contract", "事件名重复（全文件唯一，创建后不改）"))
 
-    # ── 事件数量模板：仅新建区块，非交汇计数（DEC-007）──
-    for b in proj_blocks:
-        if b.name in cur_names or b.type not in EVENT_COUNT_TEMPLATE:
-            continue
-        data, header_row = _data_rows(b.text)
-        if header_row is None or not data:
-            continue  # 缺表已由结构规则点名，数量不重复报
-        crossing_idx = _col_index(header_row, "交汇")
-        non_crossing = sum(
-            1 for ln in data
-            if crossing_idx is None
-            or crossing_idx >= len(_split_cells(ln))
-            or not _clean(_split_cells(ln)[crossing_idx])
-        )
-        expected = EVENT_COUNT_TEMPLATE[b.type]
-        if non_crossing != expected:
-            violations.append(GuardViolation(
-                "event_count",
-                f"{b.type}区块「{b.name}」非交汇事件 {non_crossing} 个，模板要求 {expected} 个"
-                f"（交汇事件额外插入不计入；既有区块变更不适用本规则）",
-            ))
-
     return violations
 
 
 __all__ = [
-    "EVENT_COUNT_TEMPLATE",
-    "EVENT_TYPES",
     "GuardViolation",
+    "LineBlock",
     "assert_storyline_v2_contract",
     "check_storyline_write",
     "extract_event_names",
     "extract_final_ending",
+    "iter_line_blocks",
 ]

@@ -1,16 +1,18 @@
-"""StorylineContractGuardMiddleware — storyline.md 结构契约运行时护栏（REQ-20260930-194437）。
+"""StorylineContractGuardMiddleware — storyline.md 结构契约运行时护栏 + 数量/类型词观测。
 
-职责（FR-003/004/005/007）：
-  拦截 storybuilding 子代理对 ``/storyline.md`` 的 write_file / edit_file 调用，
-  用 ``contracts.storyline_contract.check_storyline_write``（判定器唯一实现）
-  对比磁盘现状与预估写入后内容：
-    - 结构契约（范围化：仅新增/变更区块）+ 名称唯一（全局）+ 事件类型词白名单
-    - 新建线区块非交汇事件数 = 模板值（主线12/支线6/角色线5/暗线5）
-    - 「最终结局」初构落盘后不可修改/删除
-  违规 → ToolMessage 硬拦截（business_intercept 模式，错误信息含具体差距）。
+REQ-20260930-194437 原始职责（FR-003/004/005/007）+ REQ-20261009-182730 变更：
+  拦截 storybuilding 子代理对 ``/storyline.md`` 的 write_file / edit_file 调用：
+    - 结构契约（区块头类型词、线头两字段、事件表、T 号、列数一致、
+      名称唯一、结局不可变）继续硬拦截——判定器唯一实现
+      ``contracts.check_storyline_write``，两侧不得各自实现。
+    - 事件数量与类型词**不再拦截**（REQ-20261009-182730，取代原 DEC-007
+      等值计数与七词白名单）：改走观测模式——用 ``contracts.iter_line_blocks``
+      解析新增/变更区块，按本包观测配置（storyline_observation_config.json：
+      参考区间 + 参考词表，随 harness 版本演进）记录遵循率日志；
+      配置缺失/损坏降级为只记实际数；观测自身异常降级跳过，不影响写入。
 
-防死循环（DEC-006）：
-  同一规则连续拒绝 3 次后不再拦截该规则的违规（放行写入），并在下一轮
+防死循环（DEC-006，现仅覆盖结构规则）：
+  同一结构规则连续拒绝 3 次后不再拦截该规则的违规（放行写入），并在下一轮
   模型调用前注入「强制收尾」指令（复用 QuotaConvergence 预算耗尽的收尾
   注入语义）；每次拦截记 executor 日志（规则名/拒绝序号/差距值）——
   拦截数据即线上遵循率观测源。
@@ -23,7 +25,7 @@
   - 护栏自身异常 → 降级放行 + 日志（护栏故障不得中断创作主流程）。
 """
 from __future__ import annotations
-
+import json
 import logging
 from collections.abc import Awaitable, Callable
 from pathlib import Path
@@ -32,7 +34,7 @@ from typing import Any
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import HumanMessage, ToolMessage
 
-from contracts.storyline_contract import check_storyline_write
+from contracts.storyline_contract import check_storyline_write, iter_line_blocks
 
 from .path_guard import normalize_workspace_write_path
 
@@ -42,6 +44,29 @@ _STORYLINE_FILE = "/storyline.md"
 
 # 同一规则连续拒绝上限（第 3 次拒绝后，下一次同规则违规放行并强制收尾）
 DEFAULT_MAX_REJECTS = 3
+
+# ── 观测参考配置（REQ-20261009-182730 FR-003）──────────────────
+# 参考区间 + 参考词表：语义参数唯一落点在 harness 包（DEC-004），随包版本
+# 演进——进化侧调整提示词区间时同 commit 更新本文件（单一事实源）。
+
+_OBSERVATION_CONFIG_PATH = Path(__file__).resolve().parent / "storyline_observation_config.json"
+
+
+def _load_observation_config() -> tuple[dict[str, tuple[int, int]], frozenset[str]] | None:
+    """加载观测参考配置；缺失/损坏返回 None（观测降级为只记实际数）。"""
+    try:
+        raw = json.loads(_OBSERVATION_CONFIG_PATH.read_text(encoding="utf-8"))
+        ranges = {str(t): (int(lo), int(hi)) for t, (lo, hi) in raw["count_ranges"].items()}
+        return ranges, frozenset(str(w) for w in raw.get("reference_types", ()))
+    except Exception:
+        logger.exception(
+            "storyline 观测配置加载失败，观测降级为只记实际数 config=%s",
+            _OBSERVATION_CONFIG_PATH,
+        )
+        return None
+
+
+_OBSERVATION_CONFIG = _load_observation_config()
 
 
 class StorylineContractGuardMiddleware(AgentMiddleware):
@@ -154,6 +179,7 @@ class StorylineContractGuardMiddleware(AgentMiddleware):
         violations = check_storyline_write(current, projected)
         if not violations:
             self._reject_counts.clear()
+            self._observe_write(current, projected)
             return None
 
         # 防死循环：已达连续拒绝上限的规则 → 放行其违规并排队强制收尾
@@ -171,7 +197,9 @@ class StorylineContractGuardMiddleware(AgentMiddleware):
                 blocked_rules.add(v.rule)
 
         if not blocked_msgs:
-            return None  # 全部违规规则均到上限：放行本次写入，收尾指令待注入
+            # 全部违规规则均到上限：放行本次写入，收尾指令待注入；写入会落盘 → 观测
+            self._observe_write(current, projected)
+            return None
 
         for rule in sorted(blocked_rules):
             self._reject_counts[rule] = self._reject_counts.get(rule, 0) + 1
@@ -195,6 +223,61 @@ class StorylineContractGuardMiddleware(AgentMiddleware):
             status="error",
             response_metadata={"business_intercept": True},
         )
+
+    # ── 数量/类型词观测（REQ-20261009-182730 FR-004：只记日志，永不拦截）──
+
+    def _observe_write(self, current: str, projected: str) -> None:
+        """对本次落盘内容的新增/变更线区块记录观测日志（遵循率数据源）。
+
+        口径与结构规则同源：仅新增或变更区块；非交汇事件计数（「交汇」列
+        非空不计入数量与类型词分布）；缺表区块跳过（已由结构规则点名）。
+        观测自身异常降级跳过，不影响写入（AC-005）。
+        """
+        try:
+            cur_texts = {b.name: b.text for b in iter_line_blocks(current)}
+            for blk in iter_line_blocks(projected):
+                if blk.name in cur_texts and cur_texts[blk.name] == blk.text:
+                    continue
+                if not blk.events:
+                    continue
+                non_crossing = [tw for tw, crossing in blk.events if not crossing]
+                dist: dict[str, int] = {}
+                for tw in non_crossing:
+                    if tw:
+                        dist[tw] = dist.get(tw, 0) + 1
+                types_part = "/".join(f"{w}x{c}" for w, c in dist.items()) or "-"
+
+                config = _OBSERVATION_CONFIG
+                if config is None:
+                    logger.info(
+                        "storyline 观测 line_type=%s block=%s non_crossing=%d "
+                        "range=None in_range=None types=%s custom=None（配置缺失，只记实际数）",
+                        blk.type, blk.name, len(non_crossing), types_part,
+                    )
+                    continue
+
+                ranges, reference = config
+                rng = ranges.get(blk.type)
+                if rng is None:
+                    logger.info(
+                        "storyline 观测 line_type=%s block=%s non_crossing=%d "
+                        "range=None in_range=None types=%s（该线类型无参考区间）",
+                        blk.type, blk.name, len(non_crossing), types_part,
+                    )
+                    continue
+                lo, hi = rng
+                in_range = lo <= len(non_crossing) <= hi
+                custom_part = (
+                    "/".join(f"{w}x{c}" for w, c in dist.items() if w not in reference) or "-"
+                )
+                logger.info(
+                    "storyline 观测 line_type=%s block=%s non_crossing=%d "
+                    "range=[%d,%d] in_range=%s types=%s custom=%s",
+                    blk.type, blk.name, len(non_crossing), lo, hi, in_range,
+                    types_part, custom_part,
+                )
+        except Exception:  # noqa: BLE001 — 观测异常不得影响写入
+            logger.exception("storyline 观测异常，降级跳过本次观测")
 
     def _read_current(self) -> str:
         physical = self.workspace_path / "storyline.md"

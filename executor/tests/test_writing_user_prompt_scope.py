@@ -62,6 +62,41 @@ def test_user_prompt_states_single_expert_scope() -> None:
     assert "storybuilding-expand" in prompt
 
 
+def _thread_with_workspace(tmp_path: Path):
+    return type(
+        "T",
+        (),
+        {
+            "thread_id": "t-test",
+            "session_name": "s",
+            "workspace_path": str(tmp_path),
+        },
+    )()
+
+
+def _service() -> MetaAgentService:
+    return MetaAgentService.__new__(MetaAgentService)
+
+
+def test_first_build_injects_clarify_gate(tmp_path: Path) -> None:
+    """FR-003（REQ-20261009-224433）：storyline.md 不存在时，委托文本注入澄清前置指令。"""
+    payload = ScreenplayGenerateRequest(prompt="写一部玄幻长篇", thread_id="t-test")
+    prompt = _service()._build_user_prompt(payload, _thread_with_workspace(tmp_path))  # type: ignore[arg-type]
+
+    for fragment in ("需求澄清", "ask_user", "跳过澄清", "demand.md"):
+        assert fragment in prompt, f"首发委托文本缺澄清指令: {fragment}"
+
+
+def test_revision_after_outline_has_no_clarify_gate(tmp_path: Path) -> None:
+    """FR-003：storyline.md 已存在（修订/增量）时不得注入澄清指令，避免干扰迭代。"""
+    (tmp_path / "storyline.md").write_text("# 故事核心\n\n- **Logline**：测试", encoding="utf-8")
+    payload = ScreenplayGenerateRequest(prompt="主角动机再改改", thread_id="t-test")
+    prompt = _service()._build_user_prompt(payload, _thread_with_workspace(tmp_path))  # type: ignore[arg-type]
+
+    assert "需求澄清" not in prompt
+    assert "ask_user" not in prompt
+
+
 def _fake_thread(tmp_path: Path):
     return type(
         "T",

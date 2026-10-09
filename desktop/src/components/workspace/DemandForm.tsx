@@ -1,10 +1,11 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   DEMAND_REQUIRED_FIELDS,
   isDemandValid,
   type DemandFields,
 } from "../../lib/demand";
+import { readLastDemandFields } from "../../lib/session-persist";
 
 type DemandFormProps = {
   onSubmit: (fields: DemandFields) => Promise<void>;
@@ -12,25 +13,55 @@ type DemandFormProps = {
   submitting?: boolean;
 };
 
+const EMPTY_FIELDS: DemandFields = {
+  genre: "",
+  premise: "",
+  protagonist: "",
+  focus: "",
+  stylePrefs: "",
+};
+
 /**
  * 需求表单——首次生成的唯一入口（FR-002 / DEC-013）。
  *
  * 必填三项 + 选填两项；提交后模板化渲染 demand.md 交给故事专家，
- * 全程无中途提问（DEC-012 一口气生成）。大纲产出后本表单退场，
- * 修订走 ChatPanel 对话入口（FR-004）。
+ * 专家先就关键盲点澄清再构建（REQ-20261009-224433，取代旧「一口气生成」）。
+ * 大纲产出后本表单退场，修订走 ChatPanel 对话入口（FR-004）。
+ *
+ * FR-001（REQ-20261009-224433）：挂载时预填上次提交的记忆（按账号隔离）；
+ * 用户已动手填写则不打扰；「清空」一键回到空白表单。
  */
 export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) {
-  const [fields, setFields] = useState<DemandFields>({
-    genre: "",
-    premise: "",
-    protagonist: "",
-    focus: "",
-    stylePrefs: "",
-  });
+  const [fields, setFields] = useState<DemandFields>(EMPTY_FIELDS);
   const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const dirtyRef = useRef(false);
+
+  // 预填是异步读盘，回来时用户可能已在输入——dirty 则放弃覆盖
+  useEffect(() => {
+    let cancelled = false;
+    void readLastDemandFields().then((saved) => {
+      if (cancelled || !saved || dirtyRef.current) return;
+      setFields(saved);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const valid = isDemandValid(fields);
   const busy = disabled || submitting;
+  const hasContent = Object.values(fields).some((v) => v.length > 0);
+
+  function updateField(key: keyof DemandFields, value: string) {
+    dirtyRef.current = true;
+    setFields((f) => ({ ...f, [key]: value }));
+  }
+
+  function clearFields() {
+    dirtyRef.current = true;
+    setFields(EMPTY_FIELDS);
+    setTouched({});
+  }
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -48,10 +79,21 @@ export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) 
     <form className="demand-form" onSubmit={handleSubmit} aria-label="创作需求表单">
       <div className="demand-form-heading">
         <span className="section-kicker">Brief</span>
-        <h3>创作需求</h3>
+        <div className="demand-form-heading-row">
+          <h3>创作需求</h3>
+          <button
+            className="demand-form-clear"
+            type="button"
+            onClick={clearFields}
+            disabled={busy || !hasContent}
+            title="清空全部字段，回到空白表单"
+          >
+            清空
+          </button>
+        </div>
         <p className="demand-form-desc">
-          填写三项必填即可开始——故事专家将据此生成大纲三件套（故事线 / 人物 / 世界观），
-          审查修订全程自动完成。
+          填写三项必填即可开始——故事专家会先就关键盲点向你提问澄清，
+          确认后再生成大纲三件套（故事线 / 人物 / 世界观），着急可跳过澄清。
         </p>
       </div>
 
@@ -60,7 +102,7 @@ export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) 
         <input
           className={`thread-input${fieldError("genre") ? " demand-field-error" : ""}`}
           value={fields.genre}
-          onChange={(e) => setFields((f) => ({ ...f, genre: e.target.value }))}
+          onChange={(e) => updateField("genre", e.target.value)}
           onBlur={() => setTouched((t) => ({ ...t, genre: true }))}
           placeholder="例：玄幻 · 热血升级流"
           disabled={busy}
@@ -73,7 +115,7 @@ export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) 
         <textarea
           className={`thread-input demand-textarea${fieldError("premise") ? " demand-field-error" : ""}`}
           value={fields.premise}
-          onChange={(e) => setFields((f) => ({ ...f, premise: e.target.value }))}
+          onChange={(e) => updateField("premise", e.target.value)}
           onBlur={() => setTouched((t) => ({ ...t, premise: true }))}
           placeholder="主角是谁 + 核心困境 + 独特抓手（爽点钩子）"
           rows={3}
@@ -86,7 +128,7 @@ export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) 
         <textarea
           className={`thread-input demand-textarea${fieldError("protagonist") ? " demand-field-error" : ""}`}
           value={fields.protagonist}
-          onChange={(e) => setFields((f) => ({ ...f, protagonist: e.target.value }))}
+          onChange={(e) => updateField("protagonist", e.target.value)}
           onBlur={() => setTouched((t) => ({ ...t, protagonist: true }))}
           placeholder="身份起点 / 核心欲望 / 弱点软肋 / 金手指边界（能做什么、不能做什么）"
           rows={3}
@@ -99,7 +141,7 @@ export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) 
         <input
           className="thread-input"
           value={fields.focus}
-          onChange={(e) => setFields((f) => ({ ...f, focus: e.target.value }))}
+          onChange={(e) => updateField("focus", e.target.value)}
           placeholder="例：重人物弧光与关系张力；世界观点到为止"
           disabled={busy}
         />
@@ -110,7 +152,7 @@ export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) 
         <input
           className="thread-input"
           value={fields.stylePrefs}
-          onChange={(e) => setFields((f) => ({ ...f, stylePrefs: e.target.value }))}
+          onChange={(e) => updateField("stylePrefs", e.target.value)}
           placeholder="例：热血燃向、快节奏、避免慢热开头"
           disabled={busy}
         />

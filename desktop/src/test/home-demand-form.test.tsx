@@ -45,6 +45,25 @@ streamRequest.mockImplementation(() => {
   });
 });
 
+// FR-001（REQ-20261009-224433）：表单记忆经 tauri plugin-store 落盘，内存 mock 之
+const stores = new Map<string, Map<string, unknown>>();
+vi.mock("@tauri-apps/plugin-store", () => ({
+  load: async (path: string) => {
+    if (!stores.has(path)) stores.set(path, new Map());
+    const map = stores.get(path)!;
+    return {
+      set: async (key: string, value: unknown) => { map.set(key, JSON.parse(JSON.stringify(value))); },
+      get: async (key: string) => {
+        const v = map.get(key);
+        return v === undefined ? undefined : JSON.parse(JSON.stringify(v));
+      },
+      delete: async (key: string) => map.delete(key),
+      entries: async () => Array.from(map.entries()),
+      save: async () => {},
+    };
+  },
+}));
+
 vi.mock("@/lib/api", () => ({
   API_BASE_URL: "",
   fetchMeOrNull: vi.fn().mockResolvedValue({ user_id: "u1", username: "test", is_admin: false, has_api_key: true }),
@@ -64,9 +83,13 @@ vi.mock("@/lib/api", () => ({
   }),
   trackCopy: vi.fn(),
   trackRegenerate: vi.fn(),
-  createThread: vi.fn().mockResolvedValue({
-    thread_id: "thread-1", workspace_id: "ws-1", session_name: "会话 1", workspace_path: "/test",
-    created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+  // 每次返回新 thread_id——「新建会话」场景需要切到不同会话触发消息重置
+  createThread: vi.fn(async () => {
+    threadSeq += 1;
+    return {
+      thread_id: `thread-${threadSeq}`, workspace_id: "ws-1", session_name: `会话 ${threadSeq}`, workspace_path: "/test",
+      created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+    };
   }),
   updateThread: vi.fn().mockResolvedValue({
     thread_id: "thread-1", workspace_id: "ws-1", session_name: "玄幻·热血升级流", workspace_path: "/test",
@@ -91,6 +114,8 @@ const { MemoryRouter } = await import("react-router-dom");
 const { render } = await import("@testing-library/react");
 const Home = (await import("@/pages/home")).default;
 
+let threadSeq = 1; // 初次进入时 bootstrap 已有 thread-1，新建从 thread-2 起
+
 function renderHome() {
   return render(<MemoryRouter initialEntries={["/"]}><Home /></MemoryRouter>);
 }
@@ -98,6 +123,8 @@ function renderHome() {
 describe("v9 表单直入（FR-002）", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
+    threadSeq = 1;
+    stores.clear();
     const { resetStores } = await import("./helpers");
     await resetStores();
   });
@@ -106,8 +133,10 @@ describe("v9 表单直入（FR-002）", () => {
     const user = userEvent.setup();
     renderHome();
 
-    // 表单出现（大纲未产出）
+    // 表单出现（大纲未产出）——FR-002（REQ-20261009-224433）：居中态主区
     const genreInput = await screen.findByPlaceholderText("例：玄幻 · 热血升级流", {}, { timeout: 10000 });
+    expect(document.querySelector(".demand-stage")).toBeTruthy();
+    expect(document.querySelector(".demand-stage-welcome")?.textContent).toContain("我们开始新的故事吧");
 
     // 未填必填时提交按钮禁用
     const submitBtn = screen.getByRole("button", { name: "生成大纲" });
@@ -128,8 +157,58 @@ describe("v9 表单直入（FR-002）", () => {
     const call = streamRequest.mock.calls[0];
     const body = call[1].body as Record<string, string>;
     expect(body.prompt).toContain("demand.md");
+    // FR-003（REQ-20261009-224433）：kickoff 改为先澄清，不再是一口气生成
+    expect(body.prompt).toContain("ask_user");
+    expect(body.prompt).toContain("澄清");
     expect(body.demand_md).toContain("玄幻·热血升级流");
     expect(body.demand_md).toContain("status: confirmed");
     expect(body.demand_md).toContain("expected_subagents");
+  });
+});
+
+describe("表单记忆（FR-001，REQ-20261009-224433）", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    threadSeq = 1;
+    stores.clear();
+    // 隔离上一个用例留下的 store 实例缓存（否则读到旧 map 的记忆数据）
+    const { _resetPersistForTests } = await import("@/lib/session-persist");
+    _resetPersistForTests();
+    const { resetStores } = await import("./helpers");
+    await resetStores();
+  });
+
+  async function fillAndSubmit(user: ReturnType<typeof userEvent.setup>) {
+    const genreInput = await screen.findByPlaceholderText("例：玄幻 · 热血升级流", {}, { timeout: 10000 });
+    await user.type(genreInput, "玄幻·热血升级流");
+    await user.type(screen.getByPlaceholderText(/主角是谁 \+ 核心困境/), "废物少年觉醒万器图录");
+    await user.type(screen.getByPlaceholderText(/身份起点 \/ 核心欲望/), "铁匠之子");
+    await user.click(screen.getByRole("button", { name: "生成大纲" }));
+    // final 事件后表单退场、composer 回归
+    await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeTruthy(), { timeout: 10000 });
+  }
+
+  it("提交后新建会话预填上次字段；未提交的修改不覆盖记忆；清空回空白", async () => {
+    const user = userEvent.setup();
+    renderHome();
+    await fillAndSubmit(user);
+
+    // 新建会话 → 表单重现且预填上次提交的题材
+    await user.click(screen.getByRole("button", { name: "新建会话" }));
+    const genreInput = await screen.findByDisplayValue("玄幻·热血升级流", {}, { timeout: 10000 });
+    // premise / protagonist 同样预填
+    expect(screen.getByDisplayValue("废物少年觉醒万器图录")).toBeTruthy();
+    expect(screen.getByDisplayValue("铁匠之子")).toBeTruthy();
+
+    // 改字段但不提交 → 再新建 → 记忆仍是上次提交的值（AC-001：未提交不更新记忆）
+    await user.type(genreInput, "（临时改动）");
+    await user.click(screen.getByRole("button", { name: "新建会话" }));
+    await screen.findByDisplayValue("玄幻·热血升级流", {}, { timeout: 10000 });
+    expect(screen.queryByDisplayValue("玄幻·热血升级流（临时改动）")).toBeNull();
+
+    // 一键清空：全部字段回空白
+    await user.click(screen.getByRole("button", { name: "清空" }));
+    expect(screen.queryByDisplayValue("玄幻·热血升级流")).toBeNull();
+    expect(screen.queryByDisplayValue("废物少年觉醒万器图录")).toBeNull();
   });
 });

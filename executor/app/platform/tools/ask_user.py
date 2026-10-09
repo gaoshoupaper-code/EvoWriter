@@ -24,7 +24,9 @@ ASK_USER_TOOL_DESCRIPTION = """向用户提出一个带结构化选项的问题�
 最匹配上下文的选项排在数组首位。description 用一句话解释选项含义，帮非网文专业用户理解。
 开放维度（核心创意/金手指/对标）的选项是启发性候选，用户大概率自定义或大幅修改。
 multi_select 按维度判断：对标作品/禁忌红线/配角与关系网/目标受众等天然多选维度填 true，其余默认 false。
-无需在 options 里加"自定义"项——前端固定提供「自定义/补充」入口兜底。"""
+无需在 options 里加"自定义"项——前端固定提供「自定义/补充」入口兜底。
+source（可选）：问题来源场景标记（如 "demand-clarification"），随 interrupt 透传给前端，
+用于按场景路由 UI（如需求澄清问题附「跳过澄清」入口）；无场景语义时省略。"""
 
 
 class AskUserOption(BaseModel):
@@ -45,12 +47,18 @@ class AskUserInput(BaseModel):
         default=False,
         description="是否允许多选。对标/禁忌/配角/受众等天然多选维度填 true，其余 false",
     )
+    source: str = Field(
+        default="",
+        max_length=64,
+        description='问题来源场景标记（如 "demand-clarification"），透传给前端做场景路由；无场景语义时省略',
+    )
 
 
 def ask_user(
     question: str,
     options: list[AskUserOption],
     multi_select: bool = False,
+    source: str = "",
 ) -> str:
     # interrupt() 暂停整个图：payload 冒泡到主 agent 的 result.interrupts，
     # Command(resume=用户回答) 后，resume 值作为返回值回到子代理继续推理。
@@ -59,6 +67,8 @@ def ask_user(
         "options": [opt.model_dump() for opt in options],
         "multi_select": multi_select,
     }
+    if source:
+        payload["source"] = source
     answer: str = interrupt(payload)
     return answer
 

@@ -10,7 +10,7 @@ import { ImageReviewCard } from "./ImageReviewCard";
 import { SessionMenu } from "./SessionMenu";
 import { ExecutionView } from "./ExecutionView";
 import { DemandForm } from "./DemandForm";
-import type { DemandFields } from "../../lib/demand";
+import { DEMAND_SKIP_CLARIFICATION_PROMPT, type DemandFields } from "../../lib/demand";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -84,6 +84,10 @@ export function ChatPanel({
   // 交付态提示「要改的话跟我说」却无处可输（线上 bug：回执阶段输入框卡死）。
   const hasUserMessage = messages.some((m) => m.role === "user");
   const revisionLocked = writingDomain && !outlineReady && !hasUserMessage;
+  // FR-002（REQ-20261009-224433）表单居中态：写作域首屏（未提交需求）时，
+  // 欢迎语 + 表单整体垂直居中主区，替代旧「贴底 composer」布局。
+  const demandStage = writingDomain && !outlineReady && !hasUserMessage && !!onDemandSubmit;
+  const welcomeText = messages[0]?.role === "assistant" ? messages[0].content : "我们开始新的故事吧～";
 
   useEffect(() => {
     const input = inputRef.current;
@@ -111,7 +115,10 @@ export function ChatPanel({
   }
 
   return (
-    <section className="conversation-panel panel-surface" aria-label="创作对话">
+    <section
+      className={`conversation-panel panel-surface${demandStage ? " demand-stage-mode" : ""}`}
+      aria-label="创作对话"
+    >
       <div className="panel-heading">
         <div>
           <span className="section-kicker">Dialogue</span>
@@ -145,6 +152,22 @@ export function ChatPanel({
         </div>
       </div>
 
+      {/* v9 表单直入（FR-002）：写作域首次生成走需求表单；大纲产出前对话入口不可用（FR-004）。
+          居中态（FR-002，REQ-20261009-224433）：欢迎语 + 表单垂直居中主区。
+          key=activeThreadId：切换/新建会话时强制重挂——预填回到上次提交的记忆，
+          未提交的草稿不跨会话残留（FR-001）。 */}
+      {demandStage ? (
+        <div className="demand-stage">
+          <p className="demand-stage-welcome">{welcomeText}</p>
+          <DemandForm
+            key={activeThreadId}
+            onSubmit={onDemandSubmit}
+            disabled={!hasActiveWorkspace}
+            submitting={loading}
+          />
+        </div>
+      ) : (
+      <>
       <div className="message-list" ref={listRef}>
         {messages.map((message, index) => {
           const label = message.role === "assistant" ? "小衍" : "你";
@@ -189,12 +212,30 @@ export function ChatPanel({
                     disabled={loading}
                   />
                 ) : message.awaitingInput.options?.length ? (
-                  <InterviewOptions
-                    options={message.awaitingInput.options}
-                    multiSelect={!!message.awaitingInput.multi_select}
-                    onSubmit={onResumeSubmit}
-                    disabled={loading}
-                  />
+                  <>
+                    <InterviewOptions
+                      options={message.awaitingInput.options}
+                      multiSelect={!!message.awaitingInput.multi_select}
+                      onSubmit={onResumeSubmit}
+                      disabled={loading}
+                    />
+                    {/* FR-003 / DEC-004（REQ-20261009-224433）：需求澄清问题附带
+                        「跳过」入口——跳过只能由用户显式触发，agent 不得自行跳过。 */}
+                    {message.awaitingInput.source === "demand-clarification" ? (
+                      <div className="clarification-skip">
+                        <button
+                          type="button"
+                          className="clarification-skip-button"
+                          disabled={loading}
+                          onClick={() => {
+                            void onResumeSubmit(DEMAND_SKIP_CLARIFICATION_PROMPT);
+                          }}
+                        >
+                          跳过澄清，直接生成
+                        </button>
+                      </div>
+                    ) : null}
+                  </>
                 ) : null
               ) : null}
               {/* shimmer 兜底：最后一条 assistant + loading + 无 ExecutionView 渲染时 */}
@@ -210,12 +251,7 @@ export function ChatPanel({
         })}
       </div>
 
-      {/* v9 表单直入（FR-002）：写作域首次生成走需求表单；大纲产出前对话入口不可用（FR-004） */}
-      {writingDomain && !outlineReady && !hasUserMessage && onDemandSubmit ? (
-        <div className="demand-form-wrap">
-          <DemandForm onSubmit={onDemandSubmit} disabled={!hasActiveWorkspace} submitting={loading} />
-        </div>
-      ) : (
+      {/* v9 表单直入（FR-002）：提交后表单退场，进入对话态。 */}
       <form className="chat-composer" onSubmit={onSubmit}>
         <div className={`chat-input-wrap${expanded ? " expanded" : ""}`}>
           <textarea
@@ -266,6 +302,7 @@ export function ChatPanel({
           </Button>
         </div>
       </form>
+      </>
       )}
     </section>
   );

@@ -5984,17 +5984,102 @@ html[data-theme="dark"] .provider-item {
 }
 
 /* ── v9 需求表单（FR-002 表单直入，REQ-20260920-150149）── */
-.demand-form-wrap {
-  border-top: 1px solid var(--border-subtle, rgba(15, 23, 42, 0.08));
-  padding: 16px 18px 18px;
-  max-height: 46vh;
+/* ── 表单居中态（FR-002，REQ-20261009-224433）：未提交需求时欢迎语+表单垂直居中主区 ── */
+.conversation-panel.demand-stage-mode {
+  grid-template-rows: auto 1fr;
+}
+
+.demand-stage {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 24px;
   overflow-y: auto;
+}
+
+.demand-stage-welcome {
+  margin: 0;
+  font-size: var(--text-ui-lg);
+  font-weight: 700;
+  opacity: 0.85;
+  text-align: center;
+}
+
+.demand-stage .demand-form {
+  width: min(640px, 100%);
+  background: var(--panel-solid, #fff);
+  border: 1px solid var(--border-subtle, rgba(15, 23, 42, 0.08));
+  border-radius: 18px;
+  padding: 22px 24px;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.08);
 }
 
 .demand-form {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.demand-form-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.demand-form-clear {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-ui-sm);
+  padding: 4px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    background var(--motion-duration) var(--motion-ease),
+    color var(--motion-duration) var(--motion-ease);
+}
+
+.demand-form-clear:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.demand-form-clear:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ── 需求澄清跳过入口（FR-003 / DEC-004，REQ-20261009-224433）── */
+.clarification-skip {
+  display: flex;
+  justify-content: center;
+  margin-top: 4px;
+}
+
+.clarification-skip-button {
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-ui-sm);
+  padding: 8px 14px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition:
+    color var(--motion-duration) var(--motion-ease),
+    border-color var(--motion-duration) var(--motion-ease);
+}
+
+.clarification-skip-button:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--ink);
+}
+
+.clarification-skip-button:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .demand-form-heading h3 {

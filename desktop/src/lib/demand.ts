@@ -38,7 +38,7 @@ export function renderDemandMd(fields: DemandFields, workspaceTitle?: string): s
     : "";
 
   return `<!--
-元信息（程序可解析；v7+ 表单直入，无访谈环节）：
+元信息（程序可解析；表单直入 + 构建前澄清，REQ-20261009-224433）：
 - mode: auto
 - status: confirmed
 - updated: ${now}
@@ -63,8 +63,9 @@ export function renderDemandMd(fields: DemandFields, workspaceTitle?: string): s
 ${focusSection}${styleSection}
 ## 留白说明
 
-未填写的维度（世界观细节、配角关系网、篇幅档位、目标配比等）由故事专家按题材惯例
-自行创作补齐，保持四层 12 维框架完整。
+未填写的维度（世界观细节、配角关系网、篇幅档位、目标配比等）优先经构建前
+澄清向用户确认；未澄清到的由故事专家按题材惯例自行补齐，保持四层 12 维
+框架完整。澄清达成的共识由故事专家按本文件原结构合并回写（只增补）。
 `;
 }
 
@@ -73,6 +74,13 @@ export function demandSummary(fields: DemandFields): string {
   return `【创作需求】${fields.genre.trim()} —— ${fields.premise.trim().slice(0, 80)}${fields.premise.trim().length > 80 ? "…" : ""}`;
 }
 
-/** 发给故事专家的 kickoff 指令（demand.md 已由执行端写入 workspace）。 */
+/** 发给故事专家的 kickoff 指令（demand.md 已由执行端写入 workspace）。
+ * REQ-20261009-224433 FR-003：构建前先澄清，取代旧「一口气生成」。 */
 export const DEMAND_KICKOFF_PROMPT =
-  "请阅读 demand.md 中的创作需求，生成大纲三件套（storyline / character / worldview），完成后交由 reviewer 审查。";
+  "请阅读 demand.md 中的创作需求。构建开始前，先用 ask_user 就 demand.md 未覆盖的关键盲点向我逐个提问澄清" +
+  "（source 填 \"demand-clarification\"，最多 5 轮）；我答复含「跳过澄清」或关键盲点问完后，" +
+  "把澄清共识按 demand.md 原结构合并写回，再生成大纲三件套（storyline / character / worldview），" +
+  "完成后交由 reviewer 审查。";
+
+/** 「跳过澄清」入口发出的 resume 指令——与 kickoff / harness 提示词的跳过语义保持一致（DEC-004）。 */
+export const DEMAND_SKIP_CLARIFICATION_PROMPT = "跳过澄清，直接开始构建大纲。";

@@ -21,6 +21,7 @@ import { derivePhaseFromMessage } from "@/lib/execution-phase";
 import {
   flushThreadPersist,
   restoreThreadMessages,
+  saveLastDemandFields,
   scheduleThreadPersist,
 } from "@/lib/session-persist";
 import {
@@ -384,6 +385,8 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   submitDemand: async (fields) => {
     // 表单直入（FR-002/DEC-013）：渲染 demand.md，kickoff 指令发给故事专家，
     // 对话里展示的是需求摘要而不是整个模板。
+    // FR-001（REQ-20261009-224433）：发起提交即记忆上次表单（未提交的填写不落记忆）。
+    void saveLastDemandFields(fields);
     const { renderDemandMd, demandSummary, DEMAND_KICKOFF_PROMPT } = await import("@/lib/demand");
     const workspaceStore = await import("@/stores/workspace").then((m) => m.useWorkspaceStore.getState());
     const activeWorkspaceId = workspaceStore.activeWorkspaceId;

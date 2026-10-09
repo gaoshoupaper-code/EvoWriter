@@ -40,8 +40,10 @@ import {
   initSessionPersist,
   normalizeRestoredMessages,
   persistThreadMessages,
+  readLastDemandFields,
   readLastPosition,
   restoreThreadMessages,
+  saveLastDemandFields,
   saveLastPosition,
   scheduleThreadPersist,
 } from "@/lib/session-persist";
@@ -177,6 +179,27 @@ describe("上次位置（FR-001）", () => {
     expect(await readLastPosition()).toEqual({ workspaceId: "ws9", threadId: "th9" });
     initSessionPersist({ getUsername: () => "bob" });
     expect(await readLastPosition()).toBeNull();
+  });
+});
+
+describe("需求表单记忆（FR-001，REQ-20261009-224433）", () => {
+  it("save 后可 read 回来；账号间隔离", async () => {
+    const fields = { genre: "玄幻·热血升级流", premise: "废物少年逆袭", protagonist: "铁匠之子", focus: "", stylePrefs: "" };
+    await saveLastDemandFields(fields);
+    expect(await readLastDemandFields()).toEqual(fields);
+    initSessionPersist({ getUsername: () => "bob" });
+    expect(await readLastDemandFields()).toBeNull();
+  });
+
+  it("覆盖语义：第二次提交覆盖第一次", async () => {
+    await saveLastDemandFields({ genre: "A", premise: "p", protagonist: "m", focus: "", stylePrefs: "" });
+    await saveLastDemandFields({ genre: "B", premise: "p", protagonist: "m", focus: "", stylePrefs: "" });
+    expect((await readLastDemandFields())!.genre).toBe("B");
+  });
+
+  it("损坏数据（非对象 fields）返回 null，不抛异常", async () => {
+    stores.set("sessions/alice.store", new Map([["__last_demand__", { fields: "broken" }]]));
+    expect(await readLastDemandFields()).toBeNull();
   });
 });
 

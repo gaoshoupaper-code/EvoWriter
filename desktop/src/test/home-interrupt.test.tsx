@@ -448,3 +448,70 @@ describe("SSE 帧跨 chunk 分片解析（根因回归）", () => {
     expect(lastMsg?.content).toContain("提案轮设计完成，端出三套方向供拍板。");
   });
 });
+
+/**
+ * FR-003 / DEC-004（REQ-20261009-224433）：需求澄清问题的「跳过」入口。
+ *
+ * source="demand-clarification" 的 interrupt（构建前澄清）在选项区下方
+ * 渲染「跳过澄清，直接生成」；点击后以固定跳过指令 resume。非澄清来源
+ * （如 writing-subagent）不显示该入口——跳过只能由用户在澄清场景显式触发。
+ */
+const CLARIFY_INTERRUPT_CHUNKS = encode([
+  sseEvent("trace_event", {
+    trace_id: "trace-1", event_id: "evt-1", sequence: 1, type: "run_start", status: "running",
+    timestamp: "2026-01-01T00:00:00Z", source: "system",
+    input: { workspace_id: "ws-1", thread_id: "thread-1", session_name: "测试会话", endpoint: "screenplay.generate.stream" },
+  }),
+  sseEvent("interrupt", {
+    kind: "choice",
+    question: "金手指走哪种体系？",
+    options: [
+      { label: "系统流", description: "升级体系清晰" },
+      { label: "血脉觉醒", description: "血统压制" },
+    ],
+    multi_select: false,
+    source: "demand-clarification",
+  }),
+]);
+
+describe("FR-003/DEC-004（REQ-20261009-224433）：需求澄清跳过入口", () => {
+  beforeEach(async () => {
+    streams = [CLARIFY_INTERRUPT_CHUNKS, FINAL_CHUNKS];
+    vi.clearAllMocks();
+    const { resetStoresWithOutline: resetStores } = await import("./helpers");
+    await resetStores();
+  });
+
+  it("澄清问题显示跳过按钮；点击后以固定跳过指令 resume", async () => {
+    const { streamRequest } = await import("@/lib/stream");
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/"]}><Home /></MemoryRouter>);
+
+    const input = await screen.findByRole("textbox", {}, { timeout: 10000 });
+    await user.type(input, "写故事");
+    await user.keyboard("{Enter}");
+
+    await screen.findByTestId("interview-options", {}, { timeout: 10000 });
+    const skipBtn = await screen.findByRole("button", { name: "跳过澄清，直接生成" });
+    await user.click(skipBtn);
+
+    await waitFor(() => {
+      expect(streamRequest).toHaveBeenCalledTimes(2);
+    }, { timeout: 10000 });
+    const secondCall = (streamRequest as ReturnType<typeof vi.fn>).mock.calls[1];
+    expect(secondCall[1].body).toHaveProperty("resume", "跳过澄清，直接开始构建大纲。");
+  });
+
+  it("非澄清来源的问题不显示跳过按钮", async () => {
+    streams = [INTERRUPT_CHUNKS, FINAL_CHUNKS];
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/"]}><Home /></MemoryRouter>);
+
+    const input = await screen.findByRole("textbox", {}, { timeout: 10000 });
+    await user.type(input, "写故事");
+    await user.keyboard("{Enter}");
+
+    await screen.findByTestId("interview-options", {}, { timeout: 10000 });
+    expect(screen.queryByRole("button", { name: "跳过澄清，直接生成" })).toBeNull();
+  });
+});

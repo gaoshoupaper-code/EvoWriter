@@ -19,6 +19,7 @@
  */
 import { load, type Store } from "@tauri-apps/plugin-store";
 import type { ChatMessage } from "@/lib/types";
+import type { DemandFields } from "@/lib/demand";
 
 /** 卡点有效期，与服务器 awaiting_input 超时（2h → cancelled）对齐；改动需两侧同步。 */
 export const AWAITING_INPUT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
@@ -204,6 +205,40 @@ export async function deleteWorkspaceRecords(workspaceId: string) {
     await store.save();
   } catch {
     /* 同上 */
+  }
+}
+
+// ── 需求表单记忆（FR-001，REQ-20261009-224433）──
+
+interface LastDemandRecord {
+  fields: DemandFields;
+  savedAt: string;
+}
+
+const LAST_DEMAND_KEY = "__last_demand__";
+
+/** 记住本次提交的表单字段，供下次新建会话预填。写失败静默，不阻塞提交流程。 */
+export async function saveLastDemandFields(fields: DemandFields): Promise<void> {
+  try {
+    const store = await getStore();
+    if (!store) return;
+    await store.set(LAST_DEMAND_KEY, { fields, savedAt: new Date().toISOString() } satisfies LastDemandRecord);
+    await store.save();
+  } catch {
+    /* 记忆失败静默：下次退化为空白表单 */
+  }
+}
+
+/** 读上次提交的表单字段（预填用）。未记录 / 数据损坏 / 读失败返回 null。 */
+export async function readLastDemandFields(): Promise<DemandFields | null> {
+  try {
+    const store = await getStore();
+    if (!store) return null;
+    const record = await store.get<LastDemandRecord>(LAST_DEMAND_KEY);
+    if (!record?.fields || typeof record.fields !== "object") return null;
+    return record.fields;
+  } catch {
+    return null;
   }
 }
 

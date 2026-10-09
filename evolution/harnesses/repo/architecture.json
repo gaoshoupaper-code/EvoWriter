@@ -15,14 +15,15 @@
         "quota_convergence"
       ],
       "skills": ["storybuilding-initial", "storybuilding-expand"],
-      "tools": [],
+      "tools": ["ask_user"],
       "delegates": ["storybuilding_review"],
       "context_files": ["demand.md"],
       "write_permissions": [
         "/character/*.md",
         "/worldview.md",
         "/storyline.md",
-        "/object/*.md"
+        "/object/*.md",
+        "/demand.md"
       ],
       "artifact_paths": ["storyline.md"],
       "max_revisions": 1

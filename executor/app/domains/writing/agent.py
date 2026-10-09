@@ -944,11 +944,25 @@ class MetaAgentService(BaseAgentService):
         context = "\n".join(context_lines) or "用户没有提供结构化字段。"
         request_text = free_text or "请根据已有工作目录内容继续优化大纲。"
 
+        # FR-003（REQ-20261009-224433）：首次构建（storyline.md 尚不存在）注入
+        # 澄清前置指令；修订/增量轮不注入，保持迭代委托文本干净。
+        workspace_path = getattr(thread, "workspace_path", "") or ""
+        first_build = bool(workspace_path) and not (Path(workspace_path) / "storyline.md").exists()
+        clarify_section = (
+            "## 需求澄清（首次构建前置，硬性）\n\n"
+            "写任何产物文件之前，先用 ask_user 工具就 demand.md 未覆盖的关键盲点"
+            "向用户逐个提问（source 填 \"demand-clarification\"，最多 5 轮）；"
+            "用户回答含「跳过澄清」指令时立即停止提问。澄清结束后把共识按"
+            "demand.md 原结构合并写回（只增补，不改写表单原文），再进入故事构建。\n\n"
+            if first_build
+            else ""
+        )
+
         return (
             "请根据用户需求执行创作任务。\n"
             "当前工作目录：/\n"
             f"当前 session：{thread.thread_id}\n\n"
-
+            f"{clarify_section}"
             "## 故事构建流程\n\n"
             "当前系统为单故事专家架构：大纲阶段由 storybuilding 一个专家完成，"
             "没有细纲/正文等后续阶段——不要创建 detail/、chapter/ 目录，"

@@ -184,4 +184,11 @@ def _mapping_value(mapping: object, key: str) -> Any:
     return getattr(mapping, key, None)
 
 
-__all__ = ["ReviewGateMiddleware"]
+def build(abc):
+    """架构清单挂载钩子（M2，进化 #10）：review 执行下限闸——每轮运行
+    产物有产出而 review 未执行时，终局前强制补审一次（对齐「每个增量
+    单元完成后必审」的每单元审语义）。"""
+    return ReviewGateMiddleware(abc.workspace_path)
+
+
+__all__ = ["ReviewGateMiddleware", "build"]

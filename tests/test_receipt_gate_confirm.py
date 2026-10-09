@@ -1,20 +1,19 @@
-"""提案轮 interrupt 暂停的回归测试（2026-10-02 死锁修复 + #7 一段式 + #8 零注入）。
+"""每轮任务拍板闸门的回归测试（#7 一段式 + #8 零注入 + #10 每轮泛化）。
 
-死锁链条（#5 修复前）：ReceiptGate 禁写（澄清未确认）× ArtifactValidation 拦终局
-（storyline.md 未产出）互锁——模型文本停轮被拦回，写入被拦截，重复模型调用
-不终止，输入框全程锁死。
+历史死锁链条（#5 修复前）：ReceiptGate 禁写（澄清未确认）× ArtifactValidation
+拦终局（storyline.md 未产出）互锁——模型文本停轮被拦回，写入被拦截，重复模型
+调用不终止，输入框全程锁死。#7/#8 已修：拍板经 confirm_with_user（interrupt
+挂起）交互，一次有效回复即释放。
 
-现行语义（进化 #7 一段式 + #8 零注入）：
-  1. 方向提案经 confirm_with_user 工具（interrupt 挂起）交互——agent 消化
-     需求把设计做完，端出 2-3 套五件套方向方案交用户拍板
-  2. 工具一次正常返回（= 用户已 resume 拍板）→ ReceiptGate 释放受保护写入；
-     用户明示跳过短语（「不用问了直接写」等）→ 立即释放
+现行语义（进化 #10 每轮拍板硬闸）：
+  1. 每轮运行（用户的每次新消息）在 confirm_with_user 一次有效返回前，
+     拦截一切受保护产物写入（storyline / worldview / character/* / object/*）
+  2. confirm_with_user 正常返回 = 用户拍板 → 本轮放行到底；用户明示跳过短语
+     （「不用问了直接写」等）→ 立即释放
   3. GraphInterrupt 异常路径（挂起本身）不误标已确认
-  4. #8 零注入：不再周期性注入提案轮指令（trace-be5d2ddd 显示 8 轮注入 =
-     8 轮重读 specs 循环，注入是循环拍器）；模型对提案轮的认知来自系统
-     提示词与技能自判（storyline.md 不存在）。闸门只做事件驱动回应：
-     写入拦截 + 提案轮重复读一次性指路（第 2 次读取同文件加指路头引导
-     confirm，第 3 次起放行；拍板后不再打扰正当核对）。
+  4. before_agent 每轮重置：新运行（新任务）重新拍板——上轮拍板不跨轮生效
+  5. storyline.md 已存在不再释放闸门（每轮任务都要重新拍板，与工作区状态
+     解耦）；重复读一次性指路保留（第 2 次读取同文件加指路头，第 3 次起放行）
 """
 from __future__ import annotations
 
@@ -81,11 +80,12 @@ class ReceiptGateConfirmTest(unittest.TestCase):
     def _blocked(self, request) -> bool:
         return self.gate._maybe_block(request) is not None
 
-    def test_unconfirmed_first_run_blocks_writes(self):
-        """未确认时受保护产物写入仍被拦截（旧行为保持）。"""
+    def test_unconfirmed_blocks_writes(self):
+        """未拍板时四类受保护产物写入一律被拦截（#10 含 object/*）。"""
         self.assertTrue(self._blocked(_write_request("/storyline.md")))
         self.assertTrue(self._blocked(_write_request("/worldview.md")))
         self.assertTrue(self._blocked(_write_request("/character/a.md")))
+        self.assertTrue(self._blocked(_write_request("/object/青锋剑.md")))
 
     def test_confirm_return_releases_writes(self):
         """confirm_with_user 一次正常返回 = 提案拍板完成（一段式）→ 写入释放。"""
@@ -143,12 +143,27 @@ class ReceiptGateConfirmTest(unittest.TestCase):
             )
             self.assertEqual(str(result.content), "文件内容")
 
-    def test_storyline_exists_releases(self):
-        """storyline.md 已产出（提案轮结束）→ 写入放行（#8 存在性口径）。"""
+    def test_storyline_exists_still_blocks_until_confirmed(self):
+        """storyline.md 已存在（增量轮）→ 未拍板仍拦截（#10 每轮口径，
+        与工作区状态解耦）；拍板后放行。"""
         (self.workspace / "storyline.md").write_text(
             "# 已有故事线", encoding="utf-8"
         )
+        self.assertTrue(self._blocked(_write_request("/storyline.md")))
+        self.gate.wrap_tool_call(
+            _confirm_request(), handler=lambda req: "确认任务卡"
+        )
         self.assertFalse(self._blocked(_write_request("/storyline.md")))
+
+    def test_before_agent_resets_confirmation(self):
+        """before_agent 每轮重置：上轮拍板不跨轮生效（#10）。"""
+        self.gate.wrap_tool_call(
+            _confirm_request(), handler=lambda req: "选定方案 1"
+        )
+        self.assertTrue(self.gate._confirmed)
+        self.gate.before_agent(SimpleNamespace(), SimpleNamespace())
+        self.assertFalse(self.gate._confirmed)
+        self.assertTrue(self._blocked(_write_request("/storyline.md")))
 
 
 class ConfirmPayloadTest(unittest.TestCase):

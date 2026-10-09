@@ -1,13 +1,14 @@
-"""ReceiptGateMiddleware — 方向提案硬闸（首运行禁写形态，一段式，零注入）。
+"""ReceiptGateMiddleware — 每轮任务拍板硬闸（每运行禁写形态，事件驱动回应）。
 
-交互模式（默认）的入口闸门：storyline.md 尚不存在的线程，第 1 次运行
-拦截一切受保护产物写入（storyline.md / worldview.md / character/*.md），
-强制先走方向提案（进化 #7，替代 #5 的两段式；#8 零注入重构）：
-  agent 消化 demand.md、把设计做完，端出 2-3 套真实不同的方向方案
-  （每套五件套：方向名/一句话定位/核心画面/关键锚点/方案间差异）经
-  confirm_with_user 交用户拍板。一次有效回复即拍板（一段式）：选定 →
-  直接动笔；调整/自提 → 消化后直接动笔；用户明示跳过（「不用问了直接写」
-  等变体）→ 以推荐方案直接动笔。
+交互模式（默认）的每轮入口闸门（进化 #10 泛化：从「首运行提案轮」推广
+到「每次用户发起新任务」）：**每轮运行**在 confirm_with_user 一次有效
+回复（用户拍板）之前，拦截一切受保护产物写入（storyline.md /
+worldview.md / character/*.md / object/*.md）。每轮的「澄清 → 拍板」由
+系统提示词 §二三层流程承载：澄清层允许多轮纯文本互动，任务卡/方案包
+（首轮 = 方向提案 2-3 套五件套；增量轮 = 轻量任务卡或方案包）经
+confirm_with_user 交用户拍板。一次有效回复即拍板（选定 → 直接动笔；
+调整/自提 → 消化后直接动笔；用户明示跳过（「不用问了直接写」等变体）
+→ 以推荐方案直接动笔）。拍板后本轮放行到底（下一轮 before_agent 重置）。
 
 设计（与 ReviewGateMiddleware 同族范式）：
   - 确认信号不解析消息内容——[配比导航]（QuotaConvergence）与
@@ -36,15 +37,19 @@
     来自系统提示词常驻「方向提案协议」与技能步骤 0（触发判定 =
     storyline.md 不存在，模型自主探查）；闸门只做事件驱动回应
     （写入拦截 / 重复读指路），不做周期性催促。
-  - storyline.md 已存在（续写线程）→ 闸门自动失效，零成本放行。
+  - 计数周期 = 每轮运行（进化 #10）：before_agent 重置确认与计数状态
+    （用户的新消息 = 新任务 = 重新拍板）。原「首运行 + storyline.md
+    不存在」判定废弃——每轮任务的产物写入都必须发生在本轮拍板之后，
+    storyline.md 已存在与否不再影响闸门。
   - demand.md 元信息 receipt_skip: true（评估集预置流）→ 闸门跳过。
   - 拦截上限（默认 3 次）防死循环：模型连续无视拦截则放行（降级放行，
     人工 review 兜底），首次留日志——护栏故障不得中断创作主流程
     （对齐 review_gate / storyline_contract_guard 的降级哲学）。
 
-hook 签名（langchain 1.4.3，inspect_middleware_protocol 2026-10-08 核对）：
+hook 签名（langchain 1.4.3，inspect_middleware_protocol 2026-10-09 核对）：
+  before_agent(state, runtime) / abefore_agent(state, runtime) /
   wrap_tool_call(request, handler) / awrap_tool_call(request, handler)。
-  （#8 零注入后本中间件不再覆写 before_agent / before_model。）
+  （进化 #10 新增 before_agent 周期重置；before_model 注入维持零。）
 """
 from __future__ import annotations
 
@@ -62,7 +67,7 @@ logger = logging.getLogger(__name__)
 
 # 受保护产物路径（normalize 后的虚拟路径口径，与 SingleLineLimit 一致）
 _PROTECTED_FILES = ("/storyline.md", "/worldview.md")
-_PROTECTED_DIR_PREFIX = "/character/"
+_PROTECTED_DIR_PREFIXES = ("/character/", "/object/")
 
 # 用户确认工具名（confirm_with_user 正常返回 = 用户已回复，闸门释放）
 _CONFIRM_TOOL_NAME = "confirm_with_user"
@@ -87,7 +92,7 @@ _SKIP_PHRASES = (
 
 
 class ReceiptGateMiddleware(AgentMiddleware):
-    """方向提案硬闸：首轮未拍板时，拦截一切受保护产物写入。"""
+    """任务拍板硬闸：每轮运行未拍板时，拦截一切受保护产物写入。"""
 
     def __init__(
         self,
@@ -120,7 +125,32 @@ class ReceiptGateMiddleware(AgentMiddleware):
         self._read_reminders_exhausted = False
 
     # ------------------------------------------------------------------
-    # 提案轮重复读一次性指路（#8：治零成本打转，不拦截读取）
+    # 运行周期重置（每轮运行开始：新任务 = 新拍板周期，进化 #10）
+    # ------------------------------------------------------------------
+
+    def before_agent(self, state: Any, runtime: Any) -> None:
+        """每轮运行开始重置状态：用户的新消息 = 新任务 = 重新拍板。
+
+        resume 续跑不触发本钩子（恢复执行从工具节点进入，不经 agent 入口），
+        拍板确认在 confirm 工具返回时记录，不受重置影响。
+        """
+        self._confirmed = False
+        self._confirm_returns = 0
+        self._blocks = 0
+        self._exhausted_logged = False
+        self._read_counts = {}
+        self._read_reminders_exhausted = False
+
+    async def abefore_agent(self, state: Any, runtime: Any) -> None:
+        self._confirmed = False
+        self._confirm_returns = 0
+        self._blocks = 0
+        self._exhausted_logged = False
+        self._read_counts = {}
+        self._read_reminders_exhausted = False
+
+    # ------------------------------------------------------------------
+    # 拍板前重复读一次性指路（#8：治零成本打转，不拦截读取）
     # ------------------------------------------------------------------
 
     def _maybe_prefix_repeat_reminder(self, request: Any, result: Any) -> Any:
@@ -174,12 +204,8 @@ class ReceiptGateMiddleware(AgentMiddleware):
             return result
 
     def _receipt_round_active(self) -> bool:
-        """提案轮判定：未跳过 + 未拍板 + storyline.md 尚未创建。"""
-        return (
-            not self.skip
-            and not self._confirmed
-            and not self.storyline_path.exists()
-        )
+        """拍板待决判定：未跳过 + 本轮未拍板（进化 #10：每轮口径）。"""
+        return not self.skip and not self._confirmed
 
     # ------------------------------------------------------------------
     # 产物写入拦截（同步 / 异步）
@@ -235,16 +261,12 @@ class ReceiptGateMiddleware(AgentMiddleware):
             ToolMessage 表示拦截；None 表示放行。任何内部异常降级放行。
         """
         try:
-            # 确认信号（任一即闸门满足）：
-            #   1. confirm_with_user 工具正常返回（interrupt 已被用户 resume）
-            #   2. 提案轮已结束（storyline.md 已产出）
-            if self._confirmed or self.storyline_path.exists():
+            # 确认信号：confirm_with_user 工具正常返回（interrupt 已被
+            # 用户 resume）= 本轮已拍板
+            if self._confirmed:
                 return None
             # 跳过开关（评估集预置流）
             if self.skip:
-                return None
-            # 续写线程：storyline.md 已存在，闸门失效
-            if self.storyline_path.exists():
                 return None
 
             tool_call = getattr(request, "tool_call", {})
@@ -293,20 +315,24 @@ class ReceiptGateMiddleware(AgentMiddleware):
         """受保护路径判定（normalize 后的虚拟路径口径）。"""
         if normalized_path in _PROTECTED_FILES:
             return True
-        return normalized_path.startswith(_PROTECTED_DIR_PREFIX)
+        return any(
+            normalized_path.startswith(prefix)
+            for prefix in _PROTECTED_DIR_PREFIXES
+        )
 
     def _block_message(self, tool_call: Any) -> ToolMessage:
         """构造拦截消息：引导走 confirm 工具（对齐业务拦截消息规范）。"""
         tool_call_id = _mapping_value(tool_call, "id")
         return ToolMessage(
             content=(
-                "[提案闸门] 本线程为首轮运行且 storyline.md 尚未创建：方向提案未拍板，"
-                "受保护产物（storyline.md / worldview.md / character/*.md）禁止写入。"
-                "请先按初构技能（storybuilding-initial）步骤 0 与系统提示词「方向提案协议」执行："
-                "消化 demand.md、把设计做完，端出 2-3 套真实不同的方向方案（每套五件套：方向名/"
-                "一句话定位/核心画面/关键锚点/与其他方案的差异），调用 confirm_with_user 提交；"
-                "一次有效回复即拍板（选定/调整/自提均可），拍板后方可写产物"
-                "（用户明示「不用问了直接写」即跳过提案，以推荐方案直接动笔）。"
+                "[任务拍板闸门] 本轮任务的确认（拍板）尚未完成：受保护产物"
+                "（storyline.md / worldview.md / character/*.md / object/*.md）"
+                "禁止写入。请先按系统提示词 §二三层流程执行——澄清层消化需求与"
+                "现有产物（需求已明确时跳过互动，直接出任务卡/方案包），经 "
+                "confirm_with_user 提交（轻量任务 = 一句话任务卡 + 快捷确认；"
+                "重量任务 / 首轮 = 2-3 套真实不同的方案包，每套五件套），一次"
+                "有效回复即拍板，拍板后方可写产物（用户明示「不用问了直接写」"
+                "即跳过拍板，以推荐方案直接动笔）。"
                 "不要用纯文本回复代替工具调用——产物未写出时终局会被产物校验拦回。"
             ),
             name=str(_mapping_value(tool_call, "name") or "write_file"),

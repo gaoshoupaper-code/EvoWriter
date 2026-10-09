@@ -945,15 +945,16 @@ class MetaAgentService(BaseAgentService):
         request_text = free_text or "请根据已有工作目录内容继续优化大纲。"
 
         # FR-003（REQ-20261009-224433）：首次构建（storyline.md 尚不存在）注入
-        # 澄清前置指令；修订/增量轮不注入，保持迭代委托文本干净。
+        # 澄清前置指令（工具无关——澄清/拍板的具体工具与流程以系统提示词为准，
+        # 生产 harness 为 confirm_with_user + 方向提案，种子 harness 为 ask_user）；
+        # 修订/增量轮不注入，保持迭代委托文本干净。
         workspace_path = getattr(thread, "workspace_path", "") or ""
         first_build = bool(workspace_path) and not (Path(workspace_path) / "storyline.md").exists()
         clarify_section = (
             "## 需求澄清（首次构建前置，硬性）\n\n"
-            "写任何产物文件之前，先用 ask_user 工具就 demand.md 未覆盖的关键盲点"
-            "向用户逐个提问（source 填 \"demand-clarification\"，最多 5 轮）；"
-            "用户回答含「跳过澄清」指令时立即停止提问。澄清结束后把共识按"
-            "demand.md 原结构合并写回（只增补，不改写表单原文），再进入故事构建。\n\n"
+            "写任何产物文件之前，先按你的系统提示词流程就 demand.md 未覆盖的关键盲点"
+            "向用户澄清并请其拍板（方案/问题以选项形式端出）；用户明示「不用问了，直接写」"
+            "即视为拍板，以其推荐方案构建。拍板前不得写入任何受保护产物。\n\n"
             if first_build
             else ""
         )

@@ -75,12 +75,14 @@ export function demandSummary(fields: DemandFields): string {
 }
 
 /** 发给故事专家的 kickoff 指令（demand.md 已由执行端写入 workspace）。
- * REQ-20261009-224433 FR-003：构建前先澄清，取代旧「一口气生成」。 */
+ * REQ-20261009-224433 FR-003：构建前先澄清拍板，取代旧「一口气生成」。
+ * 工具无关措辞——澄清/拍板的具体工具以 harness 系统提示词为准
+ * （生产为 confirm_with_user 方向提案，种子线为 ask_user 连问）。 */
 export const DEMAND_KICKOFF_PROMPT =
-  "请阅读 demand.md 中的创作需求。构建开始前，先用 ask_user 就 demand.md 未覆盖的关键盲点向我逐个提问澄清" +
-  "（source 填 \"demand-clarification\"，最多 5 轮）；我答复含「跳过澄清」或关键盲点问完后，" +
-  "把澄清共识按 demand.md 原结构合并写回，再生成大纲三件套（storyline / character / worldview），" +
-  "完成后交由 reviewer 审查。";
+  "请阅读 demand.md 中的创作需求。构建开始前，先按你的系统提示词流程就需求未覆盖的" +
+  "关键盲点向我澄清并请我拍板，拍板前不写任何产物；我明示「不用问了，直接写」后，" +
+  "按推荐方案生成大纲三件套（storyline / character / worldview），完成后交由 reviewer 审查。";
 
-/** 「跳过澄清」入口发出的 resume 指令——与 kickoff / harness 提示词的跳过语义保持一致（DEC-004）。 */
-export const DEMAND_SKIP_CLARIFICATION_PROMPT = "跳过澄清，直接开始构建大纲。";
+/** 「跳过澄清」入口发出的 resume 指令——与 harness 提示词的跳过口径
+ * （「明示『不用问了直接写』即拍板」）逐字对齐（DEC-004）。 */
+export const DEMAND_SKIP_CLARIFICATION_PROMPT = "不用问了，直接写。";

@@ -79,12 +79,17 @@ def _service() -> MetaAgentService:
 
 
 def test_first_build_injects_clarify_gate(tmp_path: Path) -> None:
-    """FR-003（REQ-20261009-224433）：storyline.md 不存在时，委托文本注入澄清前置指令。"""
+    """FR-003（REQ-20261009-224433）：storyline.md 不存在时，委托文本注入澄清前置指令。
+
+    措辞工具无关——澄清/拍板的具体工具以 harness 系统提示词为准
+    （生产为 confirm_with_user，种子线为 ask_user），委托文本不点名工具。
+    """
     payload = ScreenplayGenerateRequest(prompt="写一部玄幻长篇", thread_id="t-test")
     prompt = _service()._build_user_prompt(payload, _thread_with_workspace(tmp_path))  # type: ignore[arg-type]
 
-    for fragment in ("需求澄清", "ask_user", "跳过澄清", "demand.md"):
+    for fragment in ("需求澄清", "拍板", "不用问了，直接写", "demand.md"):
         assert fragment in prompt, f"首发委托文本缺澄清指令: {fragment}"
+    assert "ask_user" not in prompt, "委托文本不得点名具体工具（与 harness 版本解耦）"
 
 
 def test_revision_after_outline_has_no_clarify_gate(tmp_path: Path) -> None:

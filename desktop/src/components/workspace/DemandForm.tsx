@@ -92,8 +92,8 @@ export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) 
           </button>
         </div>
         <p className="demand-form-desc">
-          填写三项必填即可开始——故事专家会先就关键盲点向你提问澄清，
-          确认后再生成大纲三件套（故事线 / 人物 / 世界观），着急可跳过澄清。
+          填写三项必填即可开始——故事专家会先就关键盲点与你确认方向，
+          拍板后再生成大纲三件套（故事线 / 人物 / 世界观），着急可跳过。
         </p>
       </div>
 

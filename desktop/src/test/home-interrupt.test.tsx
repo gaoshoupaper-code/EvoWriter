@@ -450,68 +450,86 @@ describe("SSE 帧跨 chunk 分片解析（根因回归）", () => {
 });
 
 /**
- * FR-003 / DEC-004（REQ-20261009-224433）：需求澄清问题的「跳过」入口。
+ * FR-003 / DEC-004（REQ-20261009-224433）：首轮拍板的「跳过」入口（组件级）。
  *
- * source="demand-clarification" 的 interrupt（构建前澄清）在选项区下方
- * 渲染「跳过澄清，直接生成」；点击后以固定跳过指令 resume。非澄清来源
- * （如 writing-subagent）不显示该入口——跳过只能由用户在澄清场景显式触发。
+ * 生产 harness（进化版）首轮以方向提案 / 澄清问题（choice interrupt）请用户
+ * 拍板；大纲未产出时选项区下方固定渲染「跳过澄清，直接生成」，点击以固定
+ * 指令 resume（与提示词「不用问了直接写」口径一致）。修订轮（大纲已产出）
+ * 不显示——跳过只能由用户在首轮显式触发。
  */
-const CLARIFY_INTERRUPT_CHUNKS = encode([
-  sseEvent("trace_event", {
-    trace_id: "trace-1", event_id: "evt-1", sequence: 1, type: "run_start", status: "running",
-    timestamp: "2026-01-01T00:00:00Z", source: "system",
-    input: { workspace_id: "ws-1", thread_id: "thread-1", session_name: "测试会话", endpoint: "screenplay.generate.stream" },
-  }),
-  sseEvent("interrupt", {
-    kind: "choice",
-    question: "金手指走哪种体系？",
-    options: [
-      { label: "系统流", description: "升级体系清晰" },
-      { label: "血脉觉醒", description: "血统压制" },
-    ],
-    multi_select: false,
-    source: "demand-clarification",
-  }),
-]);
+import type { ChatMessage } from "@/lib/types";
+import { ChatPanel } from "@/components/workspace/ChatPanel";
 
-describe("FR-003/DEC-004（REQ-20261009-224433）：需求澄清跳过入口", () => {
-  beforeEach(async () => {
-    streams = [CLARIFY_INTERRUPT_CHUNKS, FINAL_CHUNKS];
-    vi.clearAllMocks();
-    const { resetStoresWithOutline: resetStores } = await import("./helpers");
-    await resetStores();
-  });
+function panelRender(props: Partial<Parameters<typeof ChatPanel>[0]> = {}) {
+  const awaitingMessage: ChatMessage = {
+    role: "assistant",
+    content: "请从以下方向中拍板：",
+    awaitingInput: {
+      kind: "choice",
+      question: "请从以下方向中拍板：",
+      options: [
+        { label: "方案A", description: "热血复仇线" },
+        { label: "方案B", description: "权谋成长线" },
+      ],
+      multi_select: false,
+      source: "confirm_with_user",
+      askedAt: new Date().toISOString(),
+    },
+  };
+  const base: Parameters<typeof ChatPanel>[0] = {
+    // 已提交过表单（有 user 消息）→ 对话态；awaiting 消息可见
+    messages: [{ role: "user", content: "【创作需求】玄幻 —— 测试" }, awaitingMessage],
+    prompt: "",
+    loading: false,
+    threads: [],
+    activeThreadId: "thread-1",
+    hasActiveWorkspace: true,
+    sessionMenuOpen: false,
+    creatingThread: false,
+    deleting: false,
+    onPromptChange: () => {},
+    onSubmit: (() => {}) as unknown as React.FormEventHandler<HTMLFormElement>,
+    onResumeSubmit: vi.fn(async () => {}),
+    onImageReviewSubmit: vi.fn(async () => {}),
+    onStop: () => {},
+    onToggleSessionMenu: () => {},
+    onCloseSessionMenu: () => {},
+    onCreateThread: () => {},
+    onSelectThread: () => {},
+    onDeleteThread: () => {},
+    writingDomain: true,
+    outlineReady: false,
+    onDemandSubmit: vi.fn(async () => {}),
+    ...props,
+  };
+  return { props: base, ...render(<ChatPanel {...base} />) };
+}
 
-  it("澄清问题显示跳过按钮；点击后以固定跳过指令 resume", async () => {
-    const { streamRequest } = await import("@/lib/stream");
+describe("FR-003/DEC-004（REQ-20261009-224433）：首轮拍板跳过入口", () => {
+  it("大纲未产出时的 choice interrupt 显示跳过按钮；点击发跳过指令 resume", async () => {
     const user = userEvent.setup();
-    render(<MemoryRouter initialEntries={["/"]}><Home /></MemoryRouter>);
+    const { props } = panelRender();
 
-    const input = await screen.findByRole("textbox", {}, { timeout: 10000 });
-    await user.type(input, "写故事");
-    await user.keyboard("{Enter}");
-
-    await screen.findByTestId("interview-options", {}, { timeout: 10000 });
+    await screen.findByTestId("interview-options", {}, { timeout: 5000 });
     const skipBtn = await screen.findByRole("button", { name: "跳过澄清，直接生成" });
     await user.click(skipBtn);
 
     await waitFor(() => {
-      expect(streamRequest).toHaveBeenCalledTimes(2);
-    }, { timeout: 10000 });
-    const secondCall = (streamRequest as ReturnType<typeof vi.fn>).mock.calls[1];
-    expect(secondCall[1].body).toHaveProperty("resume", "跳过澄清，直接开始构建大纲。");
+      expect(props.onResumeSubmit).toHaveBeenCalledWith("不用问了，直接写。");
+    });
   });
 
-  it("非澄清来源的问题不显示跳过按钮", async () => {
-    streams = [INTERRUPT_CHUNKS, FINAL_CHUNKS];
-    const user = userEvent.setup();
-    render(<MemoryRouter initialEntries={["/"]}><Home /></MemoryRouter>);
+  it("大纲已产出（修订轮 confirm）不显示跳过按钮", async () => {
+    panelRender({ outlineReady: true });
 
-    const input = await screen.findByRole("textbox", {}, { timeout: 10000 });
-    await user.type(input, "写故事");
-    await user.keyboard("{Enter}");
+    await screen.findByTestId("interview-options", {}, { timeout: 5000 });
+    expect(screen.queryByRole("button", { name: "跳过澄清，直接生成" })).toBeNull();
+  });
 
-    await screen.findByTestId("interview-options", {}, { timeout: 10000 });
+  it("非写作域面板不显示跳过按钮", async () => {
+    panelRender({ writingDomain: false });
+
+    await screen.findByTestId("interview-options", {}, { timeout: 5000 });
     expect(screen.queryByRole("button", { name: "跳过澄清，直接生成" })).toBeNull();
   });
 });

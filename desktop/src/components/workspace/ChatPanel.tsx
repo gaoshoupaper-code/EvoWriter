@@ -219,9 +219,11 @@ export function ChatPanel({
                       onSubmit={onResumeSubmit}
                       disabled={loading}
                     />
-                    {/* FR-003 / DEC-004（REQ-20261009-224433）：需求澄清问题附带
-                        「跳过」入口——跳过只能由用户显式触发，agent 不得自行跳过。 */}
-                    {message.awaitingInput.source === "demand-clarification" ? (
+                    {/* FR-003 / DEC-004（REQ-20261009-224433）：大纲未产出（首轮
+                        方向提案/澄清拍板）时附「跳过」入口——跳过只能由用户显式
+                        触发；发出的指令与 harness 提示词「不用问了直接写」口径
+                        对齐。修订轮（大纲已产出）不显示。 */}
+                    {writingDomain && !outlineReady ? (
                       <div className="clarification-skip">
                         <button
                           type="button"

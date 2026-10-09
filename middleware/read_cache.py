@@ -65,6 +65,9 @@ class ReadSentinelMiddleware(AgentMiddleware):
         self._content_hash: dict[str, str] = {}
         # 文件路径 → 重复读取次数（首次读为 1；同参数同内容再读才 +1）
         self._repeat_counts: dict[str, int] = {}
+        # (文件路径, 参数指纹) 已见集合——同参数重复读才算打转
+        # （v38 重写时漏初始化，此处补上；bug ② 修复）
+        self._args_seen: set[tuple[str, str]] = set()
         # 上报计数（防干预回调被高频触发刷屏）
         self._signaled: int = 0
 
@@ -128,9 +131,12 @@ class ReadSentinelMiddleware(AgentMiddleware):
         seen_key = (key, args_key)
 
         # 同内容 + 同参数（此前至少读过一次该参数）→ 重复读
+        # （判定用元组键 seen_key，与存入 _args_seen 的形态一致——v38
+        # 重写时误用裸字符串 args_key 对元组集合恒 False，哨兵信号永不
+        # 触发；bug ③ 修复）
         if (
             prev_hash == new_hash
-            and args_key in self._args_seen
+            and seen_key in self._args_seen
         ):
             self._repeat_counts[key] = self._repeat_counts.get(key, 1) + 1
             count = self._repeat_counts[key]
@@ -253,6 +259,18 @@ class ReadSentinelMiddleware(AgentMiddleware):
     @staticmethod
     def _sha256(text: str) -> str:
         return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+
+
+def _mapping_value(mapping: object, key: str) -> Any:
+    """安全地从字典或对象中取值（与其它中间件一致的取值方式）。
+
+    v38 重写时调用点抄来、定义漏带（4 处调用 0 处定义），每次工具调用
+    必崩 NameError（trace-b39c83df66fc4f7e：ls/glob/read_file 全灭）——
+    bug ① 修复：按代码库惯例（其余中间件均自带）补回定义。
+    """
+    if isinstance(mapping, dict):
+        return mapping.get(key)
+    return getattr(mapping, key, None)
 
 
 # 兼容别名：解释器若按类名 ReadCacheMiddleware import，行为等价（哨兵版）

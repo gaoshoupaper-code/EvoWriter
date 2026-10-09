@@ -56,6 +56,7 @@ export type WorkspaceStorylineContent = {
   entries: StorylineEntry[];
   file_count: number;
   panorama: PanoramaEvent[]; // 跨线全景事件（仅 v2；legacy 为空数组，前端降级）
+  rhythm?: RhythmData | null; // 节奏数据包（REQ-20261010-000638 FR-006；旧大纲无张力为 null，旧后端缺字段为 undefined）
 };
 
 // 大纲全景表事件行（FR-003/REQ-20260930-163019）：时序/所属线/事件/类型/角色/地点/描述
@@ -67,6 +68,45 @@ export type PanoramaEvent = {
   characters: string;
   location: string;
   desc: string;
+  tension?: number | null; // 张力 1~5（旧大纲缺失）
+  payoff?: string; // ""/—/小/大
+};
+
+// 节奏数据（REQ-20261010-000638 FR-006 / DEC-009/012）
+export type RhythmPoint = {
+  t: string; // 原始时序号（T1 / T12.5）
+  name: string;
+  tension: number | null; // 1~5；缺失为 null
+  payoff: string; // ""/—/小/大
+  line: string; // 主属线名
+  surface?: boolean; // 暗线浮出时点标记（FR-006）
+};
+
+export type ShapeSlot = {
+  slot: string; // 首事件 / 前段末 / 中点谷 / 终局
+  op: string; // >= | <= | ≈ | =
+  values: number[];
+  twin_peak: boolean;
+};
+
+export type PromiseProgress = {
+  id: string;
+  text: string;
+  level: string; // 主线大期待 / 线级期待 / 事件钩子
+  line: string; // 所属线（大期待为「全局」）
+  status: string; // 已许诺 / 推进中 / 已兑现 / 已放弃
+  promise_events: string[];
+  progress_events: string[];
+  payoff_events: string[];
+  note: string;
+};
+
+export type RhythmData = {
+  mainline: RhythmPoint[]; // 主线张力曲线（与目标形态对比）
+  synthesis: RhythmPoint[]; // 全局合成曲线（明线合并、同时点取最大张力）
+  dark: Record<string, RhythmPoint[]>; // 暗线各自曲线（读者不可见，不计入合成）
+  shape_slots: ShapeSlot[];
+  promises: PromiseProgress[];
 };
 
 export type WorkspaceWorldviewContent = {

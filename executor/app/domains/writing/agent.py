@@ -948,13 +948,19 @@ class MetaAgentService(BaseAgentService):
         # 澄清前置指令（工具无关——澄清/拍板的具体工具与流程以系统提示词为准，
         # 生产 harness 为 confirm_with_user + 方向提案，种子 harness 为 ask_user）；
         # 修订/增量轮不注入，保持迭代委托文本干净。
+        # FR-001（REQ-20261010-000638）：澄清必含「设计原则」候选问（DEC-016）。
         workspace_path = getattr(thread, "workspace_path", "") or ""
         first_build = bool(workspace_path) and not (Path(workspace_path) / "storyline.md").exists()
         clarify_section = (
             "## 需求澄清（首次构建前置，硬性）\n\n"
             "写任何产物文件之前，先按你的系统提示词流程就 demand.md 未覆盖的关键盲点"
-            "向用户澄清并请其拍板（方案/问题以选项形式端出）；用户明示「不用问了，直接写」"
-            "即视为拍板，以其推荐方案构建。拍板前不得写入任何受保护产物。\n\n"
+            "向用户澄清并请其拍板（方案/问题以选项形式端出）；"
+            "澄清必含「设计原则」一问——给出 2~3 个候选设计原则"
+            "（各配一句展开说明：这个故事独有的叙事逻辑压成一句话，"
+            "所有事件都是这句话的展开）供用户挑选或修改，答案会显著改变大纲走向；"
+            "用户明示「不用问了，直接写」即视为拍板，以其推荐方案构建，"
+            "设计原则由你自行拟定一条并在澄清汇总中明示。"
+            "拍板前不得写入任何受保护产物。\n\n"
             if first_build
             else ""
         )

@@ -53,7 +53,9 @@ class PanoramaEvent(BaseModel):
     """大纲全景表事件行（FR-003/DEC-005：时序/所属线/事件/类型/角色/地点/描述）。
 
     t = 原始时序号文本（T1 / T12.5，保留插入语义——DEC-010）；
-    storylines = 全部参与线名（多条 = 交汇事件，DEC-010）。
+    storylines = 全部参与线名（多条 = 交汇事件，DEC-010）；
+    tension/payoff = 节奏标注（REQ-20261010-000638 FR-006；旧大纲无此列为
+    tension=None / payoff 空串）。
     """
 
     t: str = ""
@@ -63,6 +65,59 @@ class PanoramaEvent(BaseModel):
     characters: str = ""
     location: str = ""
     desc: str = ""
+    tension: int | None = None
+    payoff: str = ""
+
+
+class RhythmPoint(BaseModel):
+    """张力曲线上的一个点（REQ-20261010-000638 FR-006 / DEC-009）。"""
+
+    t: str = ""          # 原始时序号（T1 / T12.5）
+    name: str = ""       # 事件名
+    tension: int | None = None  # 1~5；旧大纲缺失为 None
+    payoff: str = ""     # ""/—/小/大
+    line: str = ""       # 主属线名
+    surface: bool = False  # 暗线浮出时点标记（FR-006）
+
+
+class ShapeSlotModel(BaseModel):
+    """目标形态的一个槽位锚点（DEC-008）。"""
+
+    slot: str = ""       # 首事件 / 前段末 / 中点谷 / 终局
+    op: str = "≈"        # >= | <= | ≈ | =
+    values: list[int] = Field(default_factory=list)
+    twin_peak: bool = False
+
+
+class PromiseProgress(BaseModel):
+    """许诺进度行（FR-004 台账的前端视图）。"""
+
+    id: str = ""
+    text: str = ""
+    level: str = ""      # 主线大期待 / 线级期待 / 事件钩子
+    line: str = ""       # 所属线（大期待为「全局」）
+    status: str = ""     # 已许诺 / 推进中 / 已兑现 / 已放弃
+    promise_events: list[str] = Field(default_factory=list)
+    progress_events: list[str] = Field(default_factory=list)
+    payoff_events: list[str] = Field(default_factory=list)
+    note: str = ""
+
+
+class RhythmDataModel(BaseModel):
+    """节奏数据包（REQ-20261010-000638 FR-006 / DEC-009/012）。
+
+    mainline = 主线张力曲线（与目标形态对比的对象）；
+    synthesis = 全局合成曲线（全部明线事件按 T 号合并、同时点取各线最大张力）；
+    dark = 暗线各自曲线（读者不可见，不计入 synthesis）；
+    shape_slots = 故事核心「节奏曲线」槽位锚点；promises = 许诺进度。
+    全部事件无张力标注（旧大纲）→ 整体为 None，前端显示降级提示（DEC-015）。
+    """
+
+    mainline: list[RhythmPoint] = Field(default_factory=list)
+    synthesis: list[RhythmPoint] = Field(default_factory=list)
+    dark: dict[str, list[RhythmPoint]] = Field(default_factory=dict)
+    shape_slots: list[ShapeSlotModel] = Field(default_factory=list)
+    promises: list[PromiseProgress] = Field(default_factory=list)
 
 
 class WorkspaceStorylineContent(BaseModel):
@@ -73,6 +128,7 @@ class WorkspaceStorylineContent(BaseModel):
     format="legacy"：旧多文件格式（storyline/ 目录）——维持旧读取行为（FR-013 降级）。
     panorama：跨线全景事件列表（FR-003/REQ-20260930-163019，仅 v2 有值——
     legacy 旧格式不解析，前端降级为按线分区块视图）。
+    rhythm：节奏数据包（REQ-20261010-000638 FR-006，仅 v2 且事件含张力标注）。
     """
 
     workspace_id: str
@@ -82,6 +138,7 @@ class WorkspaceStorylineContent(BaseModel):
     entries: list[StorylineEntry] = Field(default_factory=list)
     file_count: int = 0
     panorama: list[PanoramaEvent] = Field(default_factory=list)
+    rhythm: RhythmDataModel | None = None
 
 
 class WorkspaceWorldviewContent(BaseModel):

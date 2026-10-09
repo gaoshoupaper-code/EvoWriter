@@ -5,41 +5,56 @@
       "name": "storybuilding",
       "role": "main",
       "display_name": "故事专家",
-      "description": "适用：需要构建或扩展小说故事世界时调用——包括人物、世界观、故事核心、故事线（含事件表）与物品卡（关键物品档案）。单文件产物：storyline.md 承载故事核心 + 一线一区块（线头 + 事件表）；物品卡 object/*.md 在故事线完成后集中建立；全景时间轴与泳道图由程序派生，agent 不维护。增量迭代：按人物/故事线比值分流两种互斥模式——人物充足(≥3)新增一条故事线，人物不足(<3)新增一个人物并融入现有故事、不新增故事线；每次调用只执行一种模式。内置统一审查：产出后调用 review 审查跨维度一致性，单次审查修订（仅 1 次）。委托时必须说明：使用初构还是增量 Skill、本轮焦点、用户扩展方向。",
+      "description": "适用：需要构建或扩展小说故事世界时调用——包括人物、世界观、故事核心、故事线（含事件表）与物品卡（关键物品档案）、许诺台账（PPP 期待管理）。单文件产物：storyline.md 承载故事核心 + 一线一区块（线头 + 事件表）；物品卡 object/*.md 在故事线完成后集中建立；全景时间轴与泳道图由程序派生，agent 不维护。增量迭代：按人物/故事线比值分流两种互斥模式——人物充足(≥3)新增一条故事线，人物不足(<3)新增一个人物并融入现有故事、不新增故事线；每次调用只执行一种模式。内置统一审查：产出后调用 review 审查跨维度一致性，单次审查修订（仅 1 次）。委托时必须说明：使用初构还是增量 Skill、本轮焦点、用户扩展方向。",
       "prompt": "prompts/storybuilding_system.md",
       "middleware": [
         "storyline_single_line_limit",
         "storyline_integrity",
         "storyline_contract_guard",
         "object_contract_guard",
-        "quota_convergence"
+        "quota_convergence",
+        "promises_contract_guard"
       ],
-      "skills": ["storybuilding-initial", "storybuilding-expand"],
+      "skills": [
+        "storybuilding-initial",
+        "storybuilding-expand"
+      ],
       "tools": [],
-      "delegates": ["storybuilding_review"],
-      "context_files": ["demand.md"],
+      "delegates": [
+        "storybuilding_review"
+      ],
+      "context_files": [
+        "demand.md"
+      ],
       "write_permissions": [
         "/character/*.md",
         "/worldview.md",
         "/storyline.md",
-        "/object/*.md"
+        "/object/*.md",
+        "/promises.md"
       ],
-      "artifact_paths": ["storyline.md"],
+      "artifact_paths": [
+        "storyline.md"
+      ],
       "max_revisions": 1
     },
     {
       "name": "storybuilding_review",
       "role": "sub",
       "display_name": "故事审查",
-      "description": "统一审查所有故事维度（人物、世界观、故事核心、故事线、事件表）的跨维度一致性与结构合规。自主读取所有产物，写入 review/storybuilding.md，返回评分和修订建议。",
+      "description": "统一审查所有故事维度（人物、世界观、故事核心、故事线、事件表、许诺台账与节奏）的跨维度一致性与结构合规。自主读取所有产物，写入 review/storybuilding.md，返回评分和修订建议。",
       "runtime_name": "review",
       "prompt": "prompts/storybuilding_review.md",
-      "middleware": [],
+      "middleware": [
+        "pacing_report"
+      ],
       "skills": [],
       "tools": [],
       "delegates": [],
       "delegated_by": "storybuilding",
-      "write_permissions": ["/review/storybuilding.md"]
+      "write_permissions": [
+        "/review/storybuilding.md"
+      ]
     }
   ]
 }

@@ -30,6 +30,7 @@ description: >-
 1. `worldview.md`（世界观是底层基础）
 2. `character/*.md`（人物在世界观中活动）
 3. `storyline.md`（故事核心 + 主线 1 个区块，内含完整事件表）
+4. `hooks.md`（主线事件表落定后建立钩子登记首表——本次主线事件对读者吊起了什么，按 storybuilding-specs 第八章登记，埋设/兑现事件名逐字引用事件表）
 
 **storyline.md 是唯一手写的故事线产物**——不要创建 storyline/ 目录，不要创建 timeline.md（全景时间轴由系统自动派生）。
 
@@ -38,6 +39,7 @@ description: >-
 - storyline.md 中的主线区块（`## {主线名} · 主线 · 活跃` + 线头两行 + 完整事件表，非交汇事件数按 storybuilding-specs 数量模板，时序号 T1 起；系统写前校验数量）
 - 至少 1 个主角档案（角色类型标注为"主角"）
 - 基础世界观框架（至少包含时代背景、核心冲突根源）
+- `hooks.md` 钩子登记首表（主线关键转折埋钩，建议 4-6 条；格式与类型/状态枚举见 storybuilding-specs 第八章）
 
 初构阶段不生成支线 / 暗线 / 角色线，它们由增量 Skill 按需添加。
 

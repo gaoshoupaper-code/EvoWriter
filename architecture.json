@@ -24,7 +24,8 @@
         "/character/*.md",
         "/worldview.md",
         "/storyline.md",
-        "/object/*.md"
+        "/object/*.md",
+        "/hooks.md"
       ],
       "artifact_paths": ["storyline.md"],
       "max_revisions": 1

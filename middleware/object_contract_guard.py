@@ -202,7 +202,11 @@ class ObjectContractGuardMiddleware(AgentMiddleware):
                 return []
             if old_string not in current:
                 return []  # 模拟替换失败：交 file_state_tracker 拦
-            projected = current.replace(old_string, new_string, 1)
+                        # replace_all=True 且多处出现 → 全量替换（与工具落盘语义一致，防首处外绕过）
+            if args.get("replace_all") and current.count(old_string) > 1:
+                projected = current.replace(old_string, new_string)
+            else:
+                projected = current.replace(old_string, new_string, 1)
 
         existing = {
             p.name: self._read_file(p)
@@ -227,7 +231,11 @@ class ObjectContractGuardMiddleware(AgentMiddleware):
                 return []
             if old_string not in current:
                 return []
-            projected = current.replace(old_string, new_string, 1)
+                        # replace_all=True 且多处出现 → 全量替换（与工具落盘语义一致，防首处外绕过）
+            if args.get("replace_all") and current.count(old_string) > 1:
+                projected = current.replace(old_string, new_string)
+            else:
+                projected = current.replace(old_string, new_string, 1)
 
         all_cards = {
             p.name: self._read_file(p)

@@ -83,9 +83,12 @@ def test_manifest_shape_matches_v7(build_ctx):
     assert review.role == "sub" and review.delegated_by == "storybuilding"
     assert main.delegates == ["storybuilding_review"]
     assert review.runtime_name == "review"
+    # v42 谱系：三系统门（receipt/skill_activation/review_gate）+ v2 hooks 护栏
     assert main.middleware == [
         "storyline_single_line_limit", "storyline_integrity",
-        "storyline_contract_guard", "object_contract_guard", "quota_convergence",
+        "storyline_contract_guard", "object_contract_guard",
+        "receipt_gate", "skill_activation_guard", "review_gate",
+        "hooks_contract_guard",
     ]
 
 
@@ -101,8 +104,11 @@ def test_subagent_spec_equivalence(build_ctx):
         review = manifest.agent("storybuilding_review")
         spec = _build_agent(ctx, manifest, review, mod_name, HARNESS_PKG)
         assert spec["name"] == "review"
-        # 基础链 8 模块（artifact_snapshot 因无 trace 回调不挂载 → 7）+ domain 0
-        assert len(spec["middleware"]) == len(BASE_CHAIN_MODULES) - 1
+        # 基础链 8 模块（artifact_snapshot 因无 trace 回调不挂载 → 7）
+        # + domain 1（pacing_report 节奏体检报告注入，REQ-20261010-000638 FR-005）
+        names = [str(m) for m in spec["middleware"]]
+        assert len(spec["middleware"]) == len(BASE_CHAIN_MODULES) - 1 + 1
+        assert any("pacing_report" in n for n in names)
         perms = spec["permissions"]
         assert perms[0].operations == ["read"] and perms[0].mode == "allow"
         write_allows = [p for p in perms if p.operations == ["write"] and p.mode == "allow"]

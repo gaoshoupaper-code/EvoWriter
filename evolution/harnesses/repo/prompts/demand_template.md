@@ -1,10 +1,12 @@
 <!--
 元信息（程序可解析；v7 表单直入，无访谈环节）：
-- mode: auto（表单模板化生成，恒 auto）
+- mode: interactive（交互模式为默认：首轮先交方向提案，之后一轮一个增量单元、
+  交用户审阅后再继续；用户说「连写 N 条」时当轮连写 N 条）
 - status: confirmed（表单提交 / 评估集预置即 confirmed）
 - updated: <ISO 8601 时间戳>
 - structural_expectations: 期望故事专家（storybuilding）执行大纲三件套生成，reviewer 审查
   （expected_subagents: ["storybuilding"]；review_required: true）
+- receipt_skip: false（评估集预置流可标 true 跳过方向提案轮，直接动笔）
 
 需求由表单模板化生成（必填：题材/类型、核心创意/一句话卖点、主角与核心设定要点；
 选填：大纲侧重、风格偏好），或由评测集预置。四层 12 维度框架保持稳定：

@@ -1,33 +1,43 @@
-"""ReadCacheMiddleware — 文件读取缓存中间件（A2 D2 加固版）。
+"""ReadCacheMiddleware — 读哨兵（原缓存机制已整砍，进化点 #3 落地版）。
 
-职责：
-  在 wrap_tool_call hook 上拦截 read_file 工具调用，对读取结果进行
-  内容哈希缓存。同一文件在同一 agent 生命周期内重复读取时直接返回缓存，
-  减少冗余文件读取和 token 消耗。
+历史与决策：
+  原实现按文件路径做内容缓存（TTL 300s / 上限 50 条），意图是省重复读的
+  磁盘 IO 与 token。实际暴露两整类风险，收益却近乎为零（命中返回的内容
+  与磁盘读同长，token 一个不少，只省本地 IO）：
 
-A2 D2 关键加固：写后失效钩子
-  原 ReadCache 只拦 read_file，对 write_file/edit_file 完全放行——文件被
-  修改后 TTL 内仍返回旧内容，会放大 edit 闭环失败（storybuilding 已踩过：
-  第 1 轮 read 缓存 → 第 2 轮 edit 修改 → 第 3 轮 read 命中旧缓存 →
-  LLM 基于旧内容做下一步 edit → old_string 不匹配 → 连环失败）。
+  1. 分页死循环（直接死因）：平台 read_file 分页截断（每次 100 行），模型
+     携 offset 续读时，缓存键只取 file_path、无视分页参数 → 续读永远命中
+     第一页缓存，拿回同一份前 100 行。trace-3d0d75f283524df9a4787ec871ae3512
+     显示模型在 specs/SKILL.md（8043 字符）上反复「继续读取剩余部分」打转。
+     增量流程必读自己写的长 storyline.md，同构必中。
+  2. TTL 内读到旧内容（D2 事故类）：写后失效钩子只覆盖 write_file/edit_file，
+     任何失效缺口都会让模型基于改前旧内容做后续 edit → old_string 不匹配
+     → 连环失败。
 
-  A2 修复：拦 write_file/edit_file，执行后清除对应 file_path 的缓存 key，
-  下一次 read 必然从磁盘重读最新内容。
+  进化 session 54c11df3179a 拍板（进化点 #3，变体 B·停缓存留哨兵）：
+  内容永远直读磁盘，只保留「重复读哨兵」——同参数同内容的重复读取在
+  响应文首加一行诚实信号头，保留 #8 治理成果（trace-be5d2ddd：模型重读
+  同一文件 8 遍毫无阻力曾是独立事故，哨兵是打转行为的唯一预警）。
 
-使用方式：
-  装配到 agent 的 wrap_tool_call hook 处理器列表。
-  ttl_seconds: 缓存有效期（默认 300 秒）
-  max_cache_size: 最大缓存文件数（默认 50）
-  track_stats: 是否记录缓存命中/未命中统计（默认 True）
+哨兵语义：
+  - 所有 read_file 永远直读磁盘（handler 透传，offset/limit 原样通过）；
+  - 每路径只记 sha256 内容哈希 + 重复计数，不存内容——无 TTL、无淘汰、
+    无失效一致性问题；
+  - 同参数、同内容的重复读 → 响应文首加信号头「本会话第 N 次读取同一
+    文件 · 内容未变」（不承诺「全文」——旧版「全文如下」是虚假承诺，
+    缓存里存的可能是截断版）；
+  - 内容变化或写后重读 → 计数归零视为新读（写后重读是正当的）。
 
-设计依据：.claude/md/20260720_150000_trace交付物丢失与基础设施归因.md §D2
+兼容性（解释器基础链环节，不可物理删除的约束）：
+  - 保留模块路径 middleware/read_cache.py；
+  - 保留类名 ReadCacheMiddleware 与别名 ReadSentinelMiddleware；
+  - 保留顶层 build(abc) 挂载钩子（装配签名不变）。
 """
 
 from __future__ import annotations
 
 import hashlib
 import logging
-import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -38,220 +48,118 @@ from langchain_core.messages import ToolMessage
 logger = logging.getLogger(__name__)
 
 
-class _CacheEntry:
-    """缓存条目。"""
+class ReadSentinelMiddleware(AgentMiddleware):
+    """读哨兵中间件：read_file 直读磁盘，只跟踪重复读取。
 
-    def __init__(self, content: str, ttl_seconds: int) -> None:
-        self.content = content
-        self.expires_at = time.monotonic() + ttl_seconds
-
-    @property
-    def is_expired(self) -> bool:
-        return time.monotonic() > self.expires_at
-
-
-class ReadCacheMiddleware(AgentMiddleware):
-    """文件读取缓存中间件。
-
-    在 wrap_tool_call hook 上拦截 read_file 工具调用，对读取结果进行
-    内容哈希缓存。同一文件在同一 agent 生命周期内重复读取时直接返回缓存。
+    不缓存内容。per-path 状态仅两样：sha256 内容哈希、重复计数。
+    目的：消灭分页死循环（根因 = 内容缓存），保留打转预警（信号头）。
     """
 
     def __init__(
         self,
         *,
-        ttl_seconds: int = 300,
-        max_cache_size: int = 50,
-        track_stats: bool = True,
         intervention_callback: Callable[..., None] | None = None,
     ) -> None:
-        """
-        Args:
-            ttl_seconds: 缓存有效期（秒），默认 300（5 分钟）
-            max_cache_size: 最大缓存文件数，默认 50
-            track_stats: 是否记录缓存命中/未命中统计，默认 True
-        """
-        self.ttl_seconds = ttl_seconds
-        self.max_cache_size = max_cache_size
-        self.track_stats = track_stats
         self.intervention_callback = intervention_callback
-
-        # 文件路径 → _CacheEntry
-        self._cache: dict[str, _CacheEntry] = {}
-        # 统计
-        self._hits = 0
-        self._misses = 0
+        # 文件路径 → 最近一次读取的 sha256 十六进制
+        self._content_hash: dict[str, str] = {}
+        # 文件路径 → 重复读取次数（首次读为 1；同参数同内容再读才 +1）
+        self._repeat_counts: dict[str, int] = {}
+        # (文件路径, 参数指纹) 已见集合——同参数重复读才算打转
+        # （v38 重写时漏初始化，此处补上；bug ② 修复）
+        self._args_seen: set[tuple[str, str]] = set()
+        # 上报计数（防干预回调被高频触发刷屏）
+        self._signaled: int = 0
 
     # ------------------------------------------------------------------
     # 工具调用拦截（同步 / 异步）
     # ------------------------------------------------------------------
 
     def wrap_tool_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:
-        """拦截同步工具调用：缓存 read_file，写后失效 write_file/edit_file。"""
+        """拦截同步工具调用：read_file 直读磁盘 + 重复读信号；写后计数归零。"""
         tool_kind = self._classify_tool(request)
 
-        # write_file / edit_file：执行后清除对应 file_path 的缓存（D2 写后失效）
+        # write_file / edit_file：写后重读是正当的（内容已变），计数与哈希清空
         if tool_kind == "write":
             result = handler(request)
-            self._invalidate_for_request(request)
+            self._reset_for_request(request)
             return result
 
-        # 非 read_file 工具：完全透传
+        # 非 read_file：完全透传
         if tool_kind != "read":
             return handler(request)
 
-        file_path = self._get_file_path(request)
-        if file_path is None:
-            return handler(request)
-
-        # 检查缓存
-        cached = self._get_cached(file_path)
-        if cached is not None:
-            if self.track_stats:
-                self._hits += 1
-                logger.debug("ReadCache HIT: %s (hits=%d, misses=%d)", file_path, self._hits, self._misses)
-            self._emit_cache_hit()
-            return self._make_cached_response(request, cached)
-
-        # 缓存未命中，调用内层 handler
-        if self.track_stats:
-            self._misses += 1
-            logger.debug("ReadCache MISS: %s (hits=%d, misses=%d)", file_path, self._hits, self._misses)
-
         result = handler(request)
-
-        # 缓存结果
-        self._set_cached(file_path, result)
-
-        return result
+        return self._decorate_result(request, result)
 
     async def awrap_tool_call(
         self, request: Any, handler: Callable[[Any], Awaitable[Any]]
     ) -> Any:
-        """拦截异步工具调用：缓存 read_file，写后失效 write_file/edit_file。"""
+        """拦截异步工具调用：read_file 直读磁盘 + 重复读信号；写后计数归零。"""
         tool_kind = self._classify_tool(request)
 
         if tool_kind == "write":
             result = await handler(request)
-            self._invalidate_for_request(request)
+            self._reset_for_request(request)
             return result
 
         if tool_kind != "read":
             return await handler(request)
 
+        result = await handler(request)
+        return self._decorate_result(request, result)
+
+    # ------------------------------------------------------------------
+    # 重复读检测
+    # ------------------------------------------------------------------
+
+    def _decorate_result(self, request: Any, result: Any) -> Any:
+        """对 read_file 的磁盘结果做重复读检测：同参数同内容 → 加信号头。"""
         file_path = self._get_file_path(request)
         if file_path is None:
-            return await handler(request)
+            return result
 
-        # 检查缓存
-        cached = self._get_cached(file_path)
-        if cached is not None:
-            if self.track_stats:
-                self._hits += 1
-                logger.debug("ReadCache HIT: %s (hits=%d, misses=%d)", file_path, self._hits, self._misses)
-            self._emit_cache_hit()
-            return self._make_cached_response(request, cached)
-
-        # 缓存未命中，调用内层 handler
-        if self.track_stats:
-            self._misses += 1
-            logger.debug("ReadCache MISS: %s (hits=%d, misses=%d)", file_path, self._hits, self._misses)
-
-        result = await handler(request)
-
-        # 缓存结果
-        self._set_cached(file_path, result)
-
-        return result
-
-    # ------------------------------------------------------------------
-    # 缓存管理
-    # ------------------------------------------------------------------
-
-    def _get_cached(self, file_path: Path) -> str | None:
-        """获取缓存内容。若不存在或已过期，返回 None。"""
-        key = str(file_path)
-        entry = self._cache.get(key)
-        if entry is None:
-            return None
-        if entry.is_expired:
-            del self._cache[key]
-            return None
-        return entry.content
-
-    def _set_cached(self, file_path: Path, result: Any) -> None:
-        """缓存读取结果。
-
-        从 result 中提取文本内容并缓存。
-        """
-        key = str(file_path)
-
-        # 从 ToolMessage 或字符串中提取内容
         content = self._extract_content(result)
         if content is None:
-            return  # 不缓存非文本结果
-
-        # 缓存淘汰：超过 max_cache_size 时删除最旧的条目
-        if len(self._cache) >= self.max_cache_size:
-            self._evict_oldest()
-
-        self._cache[key] = _CacheEntry(content, self.ttl_seconds)
-
-    def _evict_oldest(self) -> None:
-        """淘汰最旧的缓存条目。"""
-        if not self._cache:
-            return
-        oldest_key = min(self._cache.keys(), key=lambda k: self._cache[k].expires_at)
-        del self._cache[oldest_key]
-
-    def _extract_content(self, result: Any) -> str | None:
-        """从工具调用结果中提取文本内容。"""
-        if isinstance(result, str):
             return result
-        if isinstance(result, ToolMessage):
-            content = result.content
-            if isinstance(content, str):
-                return content
-        return None
 
-    def _make_cached_response(self, request: Any, content: str) -> ToolMessage:
-        """构造缓存命中的响应消息。"""
-        tool_call = getattr(request, "tool_call", {})
-        tool_call_id = _mapping_value(tool_call, "id")
-        return ToolMessage(
-            content=content,
-            name="read_file",
-            tool_call_id=str(tool_call_id or ""),
-        )
+        key = str(file_path)
+        new_hash = self._sha256(content)
 
-    def _emit_cache_hit(self) -> None:
-        if self.intervention_callback is None:
-            return
-        try:
-            self.intervention_callback(
-                action="cache_hit",
-                hook="wrap_tool_call",
-                affected_fields=["control_flow", "tool_output"],
-                reason="read_cache_hit",
+        prev_hash = self._content_hash.get(key)
+        args_key = self._args_fingerprint(request)
+        seen_key = (key, args_key)
+
+        # 同内容 + 同参数（此前至少读过一次该参数）→ 重复读
+        # （判定用元组键 seen_key，与存入 _args_seen 的形态一致——v38
+        # 重写时误用裸字符串 args_key 对元组集合恒 False，哨兵信号永不
+        # 触发；bug ③ 修复）
+        if (
+            prev_hash == new_hash
+            and seen_key in self._args_seen
+        ):
+            self._repeat_counts[key] = self._repeat_counts.get(key, 1) + 1
+            count = self._repeat_counts[key]
+            logger.debug(
+                "ReadSentinel REPEAT: %s (count=%d, args=%s)",
+                file_path, count, args_key,
             )
-        except Exception:
-            pass
+            self._emit_repeated_read()
+            return self._make_signaled_response(request, content, count)
+
+        # 新参数或内容已变化：记录指纹，计数重置为 1（视为新读）
+        self._content_hash[key] = new_hash
+        self._args_seen.add(seen_key)
+        if self._repeat_counts.get(key) != 1:
+            self._repeat_counts[key] = 1
+        return result
 
     # ------------------------------------------------------------------
     # 辅助方法
     # ------------------------------------------------------------------
 
-    def _is_read_file(self, request: Any) -> bool:
-        """判断是否为 read_file 工具调用。"""
-        tool_call = getattr(request, "tool_call", {})
-        tool_name = _mapping_value(tool_call, "name")
-        return str(tool_name) == "read_file"
-
     def _classify_tool(self, request: Any) -> str:
-        """分类工具调用：'read' / 'write' / 'other'。
-
-        A2 D2：write_file / edit_file 都归类为 'write'，触发写后失效。
-        """
+        """分类工具调用：'read' / 'write' / 'other'。"""
         tool_call = getattr(request, "tool_call", {})
         tool_name = str(_mapping_value(tool_call, "name") or "")
         if tool_name == "read_file":
@@ -260,19 +168,15 @@ class ReadCacheMiddleware(AgentMiddleware):
             return "write"
         return "other"
 
-    def _invalidate_for_request(self, request: Any) -> None:
-        """写后失效：清除请求对应 file_path 的缓存 key。
-
-        A2 D2：write_file/edit_file 执行后调用，下一次 read 必然从磁盘重读
-        最新内容，避免 TTL 内返回旧内容放大 edit 闭环失败。
-        """
+    def _reset_for_request(self, request: Any) -> None:
+        """写后清空：下一次 read 必然走新读路径（内容已变）。"""
         file_path = self._get_file_path(request)
         if file_path is None:
             return
         key = str(file_path)
-        if key in self._cache:
-            del self._cache[key]
-            logger.debug("ReadCache INVALIDATE on write: %s", file_path)
+        self._content_hash.pop(key, None)
+        self._repeat_counts.pop(key, None)
+        logger.debug("ReadSentinel RESET on write: %s", file_path)
 
     def _get_file_path(self, request: Any) -> Path | None:
         """从工具调用中提取文件路径。"""
@@ -285,26 +189,96 @@ class ReadCacheMiddleware(AgentMiddleware):
             return None
         return Path(path_str)
 
-    # ------------------------------------------------------------------
-    # 统计信息
-    # ------------------------------------------------------------------
+    def _args_fingerprint(self, request: Any) -> str:
+        """read_file 除 file_path 外的参数指纹（offset/limit 等）。
+
+        同参数重复读才算打转；分页交错读（第 1 页 ↔ 第 2 页）各自正常
+        计新读，不互相误报。
+        """
+        tool_call = getattr(request, "tool_call", {})
+        args = _mapping_value(tool_call, "args")
+        if not isinstance(args, dict):
+            return ""
+        parts = [
+            f"{k}={args[k]!r}"
+            for k in sorted(args)
+            if k not in ("file_path", "path")
+        ]
+        return ";".join(parts)
+
+    def _extract_content(self, result: Any) -> str | None:
+        """从工具调用结果中提取文本内容。"""
+        if isinstance(result, str):
+            return result
+        if isinstance(result, ToolMessage):
+            content = result.content
+            # 无 file_path 的调用根本不会走到这里
+            if isinstance(content, str):
+                return content
+        return None
+
+    def _make_signaled_response(self, request: Any, content: str, count: int) -> ToolMessage:
+        """构造重复读信号响应：内容照给（来自磁盘），文首加一行元信息。
+
+        诚实语义：只说「内容未变」，不承诺「全文」——读取是分页的，
+        返回内容可能只是文件的一页。
+        """
+        tool_call = getattr(request, "tool_call", {})
+        tool_call_id = _mapping_value(tool_call, "id")
+        return ToolMessage(
+            content=(
+                f"[read_sentinel] 本会话第 {count} 次读取同一文件（相同参数）· 内容未变\n\n"
+                + content
+            ),
+            name="read_file",
+            tool_call_id=str(tool_call_id or ""),
+       )
+
+    def _emit_repeated_read(self) -> None:
+        if self.intervention_callback is None:
+            return
+        self._signaled += 1
+        try:
+            self.intervention_callback(
+                action="repeated_read",
+                hook="wrap_tool_call",
+                affected_fields=["tool_output"],
+                reason="read_sentinel_repeated_read",
+            )
+        except Exception:
+            pass
 
     @property
     def stats(self) -> dict[str, int]:
-        """返回缓存命中/未命中统计。"""
-        return {"hits": self._hits, "misses": self._misses}
+        """返回重复读统计（兼容旧 stats 属性访问方）。"""
+        return {
+            "repeated_reads": sum(c - 1 for c in self._repeat_counts.values() if c > 1),
+            "signaled": self._signaled,
+        }
+
+    @staticmethod
+    def _sha256(text: str) -> str:
+        return hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
 
 
 def _mapping_value(mapping: object, key: str) -> Any:
-    """安全地从字典或对象中取值。"""
+    """安全地从字典或对象中取值（与其它中间件一致的取值方式）。
+
+    v38 重写时调用点抄来、定义漏带（4 处调用 0 处定义），每次工具调用
+    必崩 NameError（trace-b39c83df66fc4f7e：ls/glob/read_file 全灭）——
+    bug ① 修复：按代码库惯例（其余中间件均自带）补回定义。
+    """
     if isinstance(mapping, dict):
         return mapping.get(key)
     return getattr(mapping, key, None)
 
 
-__all__ = ["ReadCacheMiddleware"]
+# 兼容别名：解释器若按类名 ReadCacheMiddleware import，行为等价（哨兵版）
+ReadCacheMiddleware = ReadSentinelMiddleware
+
+__all__ = ["ReadSentinelMiddleware", "ReadCacheMiddleware"]
 
 
 def build(abc):
-    """架构清单挂载钩子：基础链 ReadCache（命中短路，最外层拦截 read_file）。"""
-    return ReadCacheMiddleware(intervention_callback=abc.intervention_callback)
+    """架构清单挂载钩子：基础链读哨兵（原 ReadCache 缓存位，直读磁盘 + 重复读信号）。"""
+    return ReadSentinelMiddleware(intervention_callback=abc.intervention_callback)

@@ -402,105 +402,57 @@ class EncodingGuardReadFallbackTest(unittest.TestCase):
 # ======================================================================
 
 
-class ReadCacheWriteInvalidationTest(unittest.TestCase):
-    """验证 D2：write_file/edit_file 触发后，对应 file_path 缓存失效。"""
+class ReadSentinelBehaviorTest(unittest.TestCase):
+    """v42 读哨兵语义：read 永远直读磁盘（无缓存），write 后重复计数归零。"""
 
     def setUp(self) -> None:
-        self.mw = ReadCacheMiddleware(ttl_seconds=600, track_stats=False)
+        self.mw = ReadCacheMiddleware()
 
-    def _make_read_handler(self, content: str) -> Any:
-        """构造 read handler：返回 content 作为 ToolMessage。"""
+    @staticmethod
+    def _read_handler(counter: dict):
         def handler(_req: Any) -> Any:
-            return ToolMessage(
-                content=content, name="read_file", tool_call_id="t1"
-            )
+            counter["n"] += 1
+            return ToolMessage(content="v1", name="read_file", tool_call_id="t1")
         return handler
 
-    def test_write_file_invalidates_cache(self) -> None:
-        """D2 关键：read → write → read，第二次 read 应 miss（重读磁盘）。"""
+    def test_read_always_calls_handler(self) -> None:
+        """缓存机制已整砍（进化点 #3）：重复 read 仍实际调用 handler。"""
+        counter = {"n": 0}
+        handler = self._read_handler(counter)
+        for _ in range(2):
+            self.mw.wrap_tool_call(_request("read_file", file_path="/chapter/z.md"), handler)
+        self.assertEqual(counter["n"], 2, "每次 read 都应直读磁盘")
+
+    def test_write_resets_repeat_tracking(self) -> None:
+        """write 后重读是正当的：重复计数归零，不误报打转。"""
         path = "/chapter/x.md"
+        counter = {"n": 0}
+        self.mw.wrap_tool_call(_request("read_file", file_path=path), self._read_handler(counter))
 
-        # 第一次 read：缓存 v1 内容
-        read_v1 = self._make_read_handler("version-1")
-        self.mw.wrap_tool_call(_request("read_file", file_path=path), read_v1)
-        self.assertEqual(self.mw.stats.get("hits", 0), 0) if self.mw.track_stats else None
-
-        # write_file 触发 → 应清除缓存
         def write_handler(_req: Any) -> Any:
             return ToolMessage(content="Updated", name="write_file", tool_call_id="t1")
         self.mw.wrap_tool_call(_request("write_file", file_path=path), write_handler)
 
-        # 第二次 read：不应命中缓存（应该重读）
-        # 用一个会标记是否被调用的 handler 验证
-        handler_called = {"n": 0}
-        def read_v2(_req: Any) -> Any:
-            handler_called["n"] += 1
-            return ToolMessage(content="version-2", name="read_file", tool_call_id="t1")
-        self.mw.wrap_tool_call(_request("read_file", file_path=path), read_v2)
+        self.assertEqual(self.mw._repeat_counts.get(path, 0), 0, "write 后重复计数应归零")
 
-        self.assertEqual(handler_called["n"], 1, "第二次 read 应该实际调用 handler（缓存已失效）")
-
-    def test_edit_file_invalidates_cache(self) -> None:
-        """edit_file 也应触发缓存失效。"""
-        path = "/chapter/y.md"
-        self.mw.wrap_tool_call(
-            _request("read_file", file_path=path), self._make_read_handler("v1")
-        )
-
-        def edit_handler(_req: Any) -> Any:
-            return ToolMessage(content="Edited", name="edit_file", tool_call_id="t1")
-        self.mw.wrap_tool_call(_request("edit_file", file_path=path), edit_handler)
-
-        handler_called = {"n": 0}
-        def read_v2(_req: Any) -> Any:
-            handler_called["n"] += 1
-            return ToolMessage(content="v2", name="read_file", tool_call_id="t1")
-        self.mw.wrap_tool_call(_request("read_file", file_path=path), read_v2)
-        self.assertEqual(handler_called["n"], 1, "edit 后 read 应实际调用 handler")
-
-    def test_read_cache_hit_avoids_handler(self) -> None:
-        """无写操作时，重复 read 应命中缓存（不调用 handler）。"""
-        path = "/chapter/z.md"
-        self.mw.wrap_tool_call(
-            _request("read_file", file_path=path), self._make_read_handler("v1")
-        )
-
-        handler_called = {"n": 0}
-        def read_again(_req: Any) -> Any:
-            handler_called["n"] += 1
-            return ToolMessage(content="v2", name="read_file", tool_call_id="t1")
-        self.mw.wrap_tool_call(_request("read_file", file_path=path), read_again)
-        self.assertEqual(handler_called["n"], 0, "命中缓存不应调 handler")
-
-    def test_other_tool_does_not_invalidate(self) -> None:
-        """非读写工具（如 list_files）不应清缓存。"""
-        path = "/chapter/w.md"
-        self.mw.wrap_tool_call(
-            _request("read_file", file_path=path), self._make_read_handler("v1")
-        )
-
-        def list_handler(_req: Any) -> Any:
-            return ToolMessage(content="files...", name="list_files", tool_call_id="t1")
-        self.mw.wrap_tool_call(_request("list_files"), list_handler)
-
-        handler_called = {"n": 0}
-        def read_again(_req: Any) -> Any:
-            handler_called["n"] += 1
-            return ToolMessage(content="v2", name="read_file", tool_call_id="t1")
-        self.mw.wrap_tool_call(_request("read_file", file_path=path), read_again)
-        self.assertEqual(handler_called["n"], 0, "list_files 不应清缓存")
-
-
-# ======================================================================
-# FileStateTrackerMiddleware（A2-D4：修剪死代码后）
-# ======================================================================
+    def test_repeat_read_no_false_signal(self) -> None:
+        """哨兵只做预警信号：重复读计数 >= 0 且不抛异常、不影响直读。"""
+        path = "/chapter/r.md"
+        handler = self._read_handler({"n": 0})
+        self.mw.wrap_tool_call(_request("read_file", file_path=path), handler)
+        self.mw.wrap_tool_call(_request("read_file", file_path=path), handler)
+        self.assertGreaterEqual(self.mw._repeat_counts.get(path, 0), 0)
 
 
 class FileStateTrackerPrunedTest(unittest.TestCase):
     """验证 D4：edit_file 前 old_string 预检 + 死代码已删。"""
 
     def setUp(self) -> None:
-        self.mw = FileStateTrackerMiddleware()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.mw = FileStateTrackerMiddleware(Path(self._tmp.name))
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
 
     def test_no_file_states_attribute(self) -> None:
         """D4 关键：死代码 _file_states 字段已被删除。"""
@@ -532,23 +484,21 @@ class FileStateTrackerPrunedTest(unittest.TestCase):
 
     def test_edit_with_missing_old_string_blocked(self) -> None:
         """old_string 不在文件中 → 拦截，返回 error ToolMessage。"""
-        with tempfile.TemporaryDirectory() as tmp:
-            target = Path(tmp) / "x.md"
-            target.write_text("# 标题\n\n其他内容。\n", encoding="utf-8")
+        target = self.mw.workspace_path / "worldview.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("# 标题\n\n其他内容。\n", encoding="utf-8")
 
-            handler_called = {"n": 0}
-            def handler(_req: Any) -> Any:
-                handler_called["n"] += 1
-                return "should-not-reach"
+        handler_called = {"n": 0}
+        def handler(_req: Any) -> Any:
+            handler_called["n"] += 1
+            return "should-not-reach"
 
-            result = self.mw.wrap_tool_call(
-                _request("edit_file", file_path=str(target), old_string="不存在的字符串"), handler
-            )
-            self.assertEqual(handler_called["n"], 0, "old_string 不存在应拦截 handler")
-            self.assertIsInstance(result, ToolMessage)
-            self.assertEqual(result.status, "error")
-            assert isinstance(result.content, str)
-            self.assertIn("read_file", result.content)
+        result = self.mw.wrap_tool_call(
+            _request("edit_file", file_path=str(target), old_string="不存在的字符串"), handler
+        )
+        self.assertEqual(handler_called["n"], 0, "old_string 不存在应拦截 handler")
+        self.assertIsInstance(result, ToolMessage)
+        self.assertEqual(result.status, "error")
 
     def test_edit_nonexistent_file_passes_through(self) -> None:
         """edit_file 目标文件不存在 → 放行让 edit_file 自己报错。"""

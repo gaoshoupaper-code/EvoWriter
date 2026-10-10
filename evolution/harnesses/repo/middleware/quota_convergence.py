@@ -3,6 +3,11 @@
 连续增量负载的循环驱动者：每轮模型调用前核对 demand 目标配比与工作区实况，
 把「继续增量 / 已达标收尾 / 预算耗尽强制收尾」三类导航指令注入对话。
 
+初构静默（进化点 #1）：storyline.md 落地前不注入任何导航、不消耗增量
+预算。空工作区分支的「继续增量」指针会与提案闸门（ReceiptGate）的提案轮
+指令每轮同时注入且方向相反，是线上 trace-6734e23e「重读 specs × 9」
+死循环的主因。
+
 设计约束（DEC-011 同一判定器 / DEC-013 软终止）：
   - 配比解析与核对逻辑来自 ``contracts.storybuilding_quota``（唯一实现），
     v13 单 Agent 版与 v14 多 Agent 版挂载同一份本中间件——终止语义机械一致，
@@ -14,6 +19,11 @@
 
 指令注入采用每轮一条短 HumanMessage（ReAct 循环中持续提醒，防止长上下文
 淡忘早期目标）。三类指令文本即「循环驱动方法论」本体，双臂逐字同源。
+
+进化点 #4（导航路由）：未达标指令内联增量模式指针——按人物/故事线比值 R
+机械分流（R ≥ 3 走 storybuilding-expand-storyline；R < 3 且加一人后可达 3
+走 storybuilding-expand-character；加一人后仍 < 3 直接走 storyline，防人物
+持续累积）。判定与技能自检同口径（C = character/*.md 数，S = 线区块数）。
 """
 from __future__ import annotations
 
@@ -91,6 +101,15 @@ class QuotaConvergenceMiddleware(AgentMiddleware):
         if self.target is None:
             return None
 
+        # 初构静默（进化点 #1）：storyline.md 尚未落地 = 首构未完成（提案轮 +
+        # 拍板后初构期），增量导航没有服务对象——继续注入会与 ReceiptGate 的
+        # 提案轮指令每轮打架（方向相反），把模型夹进「重读 specs × N」死循环
+        # （线上 trace-6734e23e：282 秒零写入零提案，用户手动终止）。静默期
+        # 不消耗增量预算（预算语义 = 增量阶段专用），storyline.md 落地后恢复
+        # 导航。存在性判定与 ReceiptGate 闸门失效条件同口径，行为天然同步。
+        if not (self.workspace_path / "storyline.md").exists():
+            return None
+
         self._model_calls += 1
         cycle = self._model_calls
 
@@ -115,11 +134,60 @@ class QuotaConvergenceMiddleware(AgentMiddleware):
                 "然后按流程调用 review 审查并按需修订一次，最后返回。"
             ))
 
+        # 进化点 #4（方案 B·导航路由）：模式判定机械化——导航指令直接注入
+        # 本轮应执行的技能指针（expand-storyline / expand-character），
+        # 模型只跟随执行；技能内自检保留，兜无导航（软终止）模式的底。
+        directive = self._increment_directive(by_type)
         return HumanMessage(content=(
             f"[配比导航 第{cycle}轮] {status.summary_line()}。"
-            "继续下一轮增量：按系统提示词的增量分流规则（人物/故事线比值 R）"
-            "选择新增故事线或新增人物，直至达标或预算耗尽。"
+            f"继续下一轮增量：{directive}直至达标或预算耗尽。"
         ))
+
+
+    # ── 增量模式指针（进化点 #4：机械分流，模型只跟随） ──────────
+
+    def _increment_directive(self, by_type: dict[str, int]) -> str:
+        """构造本轮增量模式的技能指针文本。
+
+        分流口径与技能自检一致：R = 人物数 C / 故事线数 S（S = 各线型
+        区块数之和）。R ≥ 3 → 新增故事线；R < 3 且加一人后可达 3 →
+        新增人物；R < 3 但加一人后仍 < 3 → 防死循环（人物持续累积而
+        故事线迟迟不扩），直接指示新增故事线。
+        """
+        s = sum(by_type.values()) if by_type else 0
+        if s == 0:
+            return (
+                "本轮执行技能 storybuilding-expand-storyline（新增一条完整"
+                "故事线）——工作区尚无故事线区块。"
+            )
+        c = _count_characters(self.workspace_path)
+        r = c / s
+        if r >= 3:
+            return (
+                "本轮执行技能 storybuilding-expand-storyline（新增一条完整"
+                f"故事线）——人物/故事线比值 R = {c}/{s} ≈ {r:.2f} ≥ 3，"
+                "人物充足。"
+            )
+        if c + 1 < 3 * s:
+            return (
+                "本轮执行技能 storybuilding-expand-storyline（新增一条完整"
+                f"故事线）——R = {c}/{s} ≈ {r:.2f} < 3，但预判新增一个人物"
+                "后比值仍 < 3，为避免人物持续累积、故事线迟迟不扩，本轮直接"
+                "新增故事线。"
+            )
+        return (
+            "本轮执行技能 storybuilding-expand-character（新增一个人物并"
+            f"融入现有故事，不新增故事线）——人物/故事线比值 R = {c}/{s} "
+            f"≈ {r:.2f} < 3，人物不足（新增一人后比值可达 3）。"
+        )
+
+
+def _count_characters(workspace_path: Path) -> int:
+    """人物数 C：character/ 目录下的角色档案文件数（与技能自检同口径）。"""
+    char_dir = Path(workspace_path) / "character"
+    if not char_dir.is_dir():
+        return 0
+    return sum(1 for p in char_dir.glob("*.md") if p.is_file())
 
 
 __all__ = ["DEFAULT_MAX_MODEL_CALLS", "QuotaConvergenceMiddleware"]

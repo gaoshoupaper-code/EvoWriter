@@ -22,6 +22,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from contracts.hooks_contract import parse_hooks
+from contracts.storyline_contract import extract_rhythm_field, parse_shape_slots
+
 # ---------------------------------------------------------------------------
 # 正则：宽松匹配规范格式，兼容 LLM 产出的常见漂移
 # ---------------------------------------------------------------------------
@@ -68,6 +71,8 @@ class Event:
     t_raw: str = ""  # 时序号原文（"T1"/"T12.5"）——全景表按原文展示（DEC-010）
     desc: str = ""
     doc_order: int = 0  # 在 storyline.md 中的行号（解析兜底与稳定 tiebreak）
+    tension: int | None = None  # 张力标注 1~5（REQ-20261010-000638；旧大纲缺失为 None）
+    payoff: str = ""  # 爽点标注 ""/—/小/大
 
 
 @dataclass
@@ -109,6 +114,10 @@ def _parse_table_header_map(header_row: str) -> dict[str, int] | None:
             col_map["角色"] = ci
         elif "交汇" in cell_clean:
             col_map["交汇"] = ci
+        elif "张力" in cell_clean:
+            col_map["张力"] = ci
+        elif "爽点" in cell_clean:
+            col_map["爽点"] = ci
         elif "描述" in cell_clean:
             col_map["描述"] = ci
     if "事件" not in col_map:
@@ -179,6 +188,10 @@ def _parse_storyline_md(text: str) -> tuple[list[Storyline], dict[str, Event]]:
             ev.location = ev.location or cell(cells, "地点")
             ev.characters = ev.characters or cell(cells, "角色")
             ev.desc = ev.desc or cell(cells, "描述")
+            tension_raw = cell(cells, "张力")
+            if tension_raw and tension_raw.isdigit() and 1 <= int(tension_raw) <= 5:
+                ev.tension = int(tension_raw)
+            ev.payoff = ev.payoff or cell(cells, "爽点")
             if t_match:
                 ev.t_num = float(t_match.group(1))
             if t_raw:
@@ -323,6 +336,146 @@ def build_panorama_events(workspace_path: Path) -> list[Event] | None:
     if data is None:
         return None
     return sorted(data.events.values(), key=lambda e: (e.t_num, e.doc_order))
+
+
+# ---------------------------------------------------------------------------
+# 节奏数据（REQ-20261010-000638 FR-006：张力曲线 / 形态锚点 / 许诺进度）
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RhythmPoint:
+    """张力曲线上的一个点：T 号原文 + 张力/爽点 + 主属线。
+
+    surface=True 标记暗线「浮出时点」（FR-006）：区块状态为 可浮出/浮空 的
+    暗线，其最后一个事件即浮出时点，前端打标。
+    """
+
+    t: str
+    name: str
+    tension: int | None
+    payoff: str
+    line: str
+    surface: bool = False
+
+
+@dataclass
+class ShapeSlotView:
+    """目标形态槽位（解析自故事核心「节奏曲线」，contracts 判定器唯一实现）。"""
+
+    slot: str
+    op: str
+    values: tuple[int, ...]
+    twin_peak: bool
+
+
+@dataclass
+class HookView:
+    """钩子登记行（hooks.md 解析结果，contracts 判定器唯一实现）。"""
+
+    id: str
+    text: str
+    level: str
+    type: str
+    status: str
+    plant_events: tuple[str, ...]
+    progress_events: tuple[str, ...]
+    payoff_events: tuple[str, ...]
+    note: str
+
+
+@dataclass
+class RhythmData:
+    """节奏数据包（DEC-009：主线对比形态；合成曲线=明线按 T 合并取最大张力）。"""
+
+    mainline: list[RhythmPoint]
+    synthesis: list[RhythmPoint]
+    dark: dict[str, list[RhythmPoint]]
+    shape_slots: list[ShapeSlotView]
+    hooks: list[HookView]
+
+
+def _t_value(t_raw: str) -> float:
+    m = _T_NUM.match(t_raw.strip()) if t_raw else None
+    return float(m.group(1)) if m else 0.0
+
+
+def build_rhythm_data(workspace_path: Path) -> RhythmData | None:
+    """派生节奏数据包（FR-006 / DEC-009/015）。
+
+    全部事件都无张力标注（旧大纲）→ None：前端据此显示「无节奏数据」
+    降级提示，不阻塞其余面板。派生失败同样返回 None（派生视图不上抛）。
+    """
+    try:
+        data = build_storyline_graph_data(workspace_path)
+        if data is None:
+            return None
+        text = _read_text(workspace_path / "storyline.md")
+        if not any(ev.tension is not None for ev in data.events.values()):
+            return None
+
+        mainline: list[RhythmPoint] = []
+        synthesis: list[RhythmPoint] = []
+        dark: dict[str, list[RhythmPoint]] = {}
+        for sl in data.storylines:
+            own = sorted(
+                (ev for ev in data.events.values() if ev.storylines[:1] == (sl.id,)),
+                key=lambda e: (e.t_num, e.doc_order),
+            )
+            if sl.type == "暗线":  # 暗线不计入读者体验合成曲线（DEC-009）
+                dark_pts = [
+                    RhythmPoint(ev.t_raw, ev.name, ev.tension, ev.payoff, sl.id) for ev in own
+                ]
+                # 浮出时点打标（FR-006）：状态 可浮出/浮空 的暗线，最后事件即浮出点
+                if dark_pts and any(k in sl.status for k in ("可浮出", "浮出", "浮空")):
+                    last = dark_pts[-1]
+                    dark_pts[-1] = RhythmPoint(
+                        last.t, last.name, last.tension, last.payoff, last.line, surface=True,
+                    )
+                dark[sl.id] = dark_pts
+                continue
+            pts = [RhythmPoint(ev.t_raw, ev.name, ev.tension, ev.payoff, sl.id) for ev in own]
+            synthesis.extend(pts)
+            if sl.type == "主线":
+                mainline.extend(pts)
+
+        # 合成曲线按 T 序合并；同一时点多线并存取张力最大者（读者体感由最强线决定）。
+        # 仅对双方 T 号都可解析且数值相等的点合并——不可解析 T（空/带注记）不参与
+        # 同点合并，否则全部坍缩在 0.0 上互相吞并、事件静默消失。
+        synthesis.sort(key=lambda p: _t_value(p.t))
+        dedup: list[RhythmPoint] = []
+        for p in synthesis:
+            if (
+                dedup
+                and _T_NUM.match(dedup[-1].t.strip())
+                and _T_NUM.match(p.t.strip())
+                and _t_value(dedup[-1].t) == _t_value(p.t)
+            ):
+                if (p.tension or 0) > (dedup[-1].tension or 0):
+                    dedup[-1] = p
+            else:
+                dedup.append(p)
+
+        shape_slots = [
+            ShapeSlotView(s.slot, s.op, s.values, s.twin_peak)
+            for s in (parse_shape_slots(extract_rhythm_field(text) or "") or ())
+        ]
+
+        hooks: list[HookView] = []
+        hooks_path = workspace_path / "hooks.md"
+        if hooks_path.exists():
+            hooks = [
+                HookView(
+                    row.id, row.hook, row.level, row.type, row.status,
+                    row.plant_events, row.progress_events, row.payoff_events, row.note,
+                )
+                for row in parse_hooks(_read_text(hooks_path))
+            ]
+
+        return RhythmData(mainline, dedup, dark, shape_slots, hooks)
+    except Exception as exc:  # noqa: BLE001 — 派生视图：解析异常不阻断
+        print(f"[storyline_graph] 节奏数据派生失败（{type(exc).__name__}: {exc}）")
+        return None
 
 
 def is_stale(workspace_path: Path) -> bool:

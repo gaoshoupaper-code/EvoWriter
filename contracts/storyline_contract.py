@@ -4,17 +4,26 @@ REQ-20261009-182730：移除事件数量等值校验（原 DEC-007 口径）与�
 白名单——数量/类型词改由 harness 侧观测模式承载（只记日志不拦截），参考
 区间与参考词表随 harness 包演进；contracts 只保留结构语法判定。
 
+REQ-20261010-000638 新增结构契约（FR-001/002/003；v42 谱系合并版）：
+  - 故事核心六字段（Logline/设计原则/核心主题/类型基调/节奏曲线/最终结局）
+    初构必齐；「设计原则」初构落盘后钉死
+  - 「最终结局」为草稿制（v42 进化口径，卡②A）：不钉死、可随叙事修订，
+    契约不再校验结局不可变
+  - 「节奏曲线」四槽位锚点语法（首事件/前段末/中点谷/终局，值 1~5）：
+    初构与改写该字段时校验（字段本身不钉死，语法必须合法）
+  - 新增/变更区块事件表须含「张力」（1~5 整数）「爽点」（—/小/大）列
+
 「判定器唯一实现」原则（沿用 DEC-011）：契约判定放 contracts，
 executor 测试（``assert_storyline_v2_contract``）与 harness 运行时护栏
 （StorylineContractGuardMiddleware）共用本模块，两侧不得各自实现。
 
 运行时口径（DEC-007 / DEC-010；数量口径由 REQ-20261009-182730 取代）：
   - 结构规则（区块头类型词、线头两字段、事件表存在且有数据行、列数一致、
-    T 号合法、禁 S/E/G 与旧字段残留）只校验**新增或变更区块**——resume
-    场景的存量历史瑕疵不误伤合法续写。
+    T 号合法、禁 S/E/G 与旧字段残留、张力/爽点列）只校验**新增或变更区块**——
+    resume 场景的存量历史瑕疵（含 DEC-015 旧 schema 八列区块）不误伤合法续写。
   - 唯一性规则（线名、事件名）全局生效。
   - 事件数量与事件类型词不校验、不拦截（harness 侧观测，见护栏观测模式）。
-  - 最终结局：初构首次落盘后不得修改或删除（磁盘态对比，跨装配幂等）。
+  - 设计原则：初构首次落盘后不得修改或删除（磁盘态对比，跨装配幂等）。
 """
 from __future__ import annotations
 
@@ -38,7 +47,86 @@ _LEGACY_IDS = re.compile(r"\b[Ss]\d{2}\b|\b[Ee]\d{3}\b|\b[Gg]\d{2}\b")
 _LEGACY_FIELDS = re.compile(r"(?m)^(?:-\s*)?(?:\*\*)?(事件组|所属故事线|关键事件)(?:\*\*)?\s*[：:]")
 _TABLE_HEADER_HINT = re.compile(r"^\|.*时序.*\|.*事件.*\|")
 _TABLE_SEPARATOR = re.compile(r"\|[\s|:-]+\|")
-_ENDING_RE = re.compile(r"(?m)^(?:-\s*)?(?:\*\*)?最终结局(?:\*\*)?\s*[：:]\s*(.+?)\s*$")
+
+# ── REQ-20261010-000638：故事核心六字段 / 设计原则钉死 / 槽位形态 / 张力爽点 ──
+
+CORE_FIELDS = ("Logline", "设计原则", "核心主题", "类型基调", "节奏曲线", "最终结局")
+
+_DESIGN_PRINCIPLE_RE = re.compile(
+    r"(?m)^(?:-\s*)?(?:\*\*)?设计原则(?:\*\*)?\s*[：:][ \t]*([^\n]+?)[ \t]*$"
+)
+_RHYTHM_FIELD_RE = re.compile(
+    r"(?m)^(?:-\s*)?(?:\*\*)?节奏曲线(?:\*\*)?\s*[：:][ \t]*([^\n]+?)[ \t]*$"
+)
+
+# 槽位锚点：`首事件≈2 · 前段末≥4 · 中点谷≤2 · 终局双峰5,5`
+# 槽名固定四个；值 1~5；双值（双峰）只允许终局槽；运算符缺省视为 ≈
+_SHAPE_SLOT_NAMES = ("首事件", "前段末", "中点谷", "终局")
+_SHAPE_SLOT_TOKEN = re.compile(
+    r"^(首事件|前段末|中点谷|终局)\s*(双峰)?\s*(>=|<=|≥|≤|≈|=)?\s*([1-5])(?:\s*[,，]\s*([1-5]))?$"
+)
+_SHAPE_EXAMPLE = "首事件≈2 · 前段末≥4 · 中点谷≤2 · 终局双峰5,5"
+_OP_NORMALIZE = {">=": ">=", "≥": ">=", "<=": "<=", "≤": "<=", "≈": "≈", "=": "=", None: "≈"}
+
+_TENSION_RE = re.compile(r"^[1-5]$")
+PAYOFF_VALUES = ("—", "-", "–", "小", "大")  # 空串=普通事件，也合法
+
+
+@dataclass(frozen=True)
+class ShapeSlot:
+    """一个形态槽位：槽名 + 运算符 + 目标值（终局槽允许双值=双峰）。"""
+
+    slot: str  # 首事件 / 前段末 / 中点谷 / 终局
+    op: str  # >= | <= | ≈ | =（缺省 ≈）
+    values: tuple[int, ...]  # 1~2 个 1~5 值
+    twin_peak: bool = False
+
+
+def parse_shape_slots(value: str) -> list[ShapeSlot] | None:
+    """解析「节奏曲线」字段值为四槽位锚点；任一 token 非法返回 None。"""
+    tokens = [t.strip() for t in re.split(r"[·•；;]", value) if t.strip()]
+    if not tokens:
+        return None
+    slots: list[ShapeSlot] = []
+    seen: set[str] = set()
+    for tok in tokens:
+        m = _SHAPE_SLOT_TOKEN.match(tok)
+        if m is None:
+            return None
+        name, twin, op, v1, v2 = m.groups()
+        if name in seen:
+            return None
+        seen.add(name)
+        if v2 is not None and (name != "终局" or not twin):
+            return None  # 双值只允许终局槽且须带「双峰」标记
+        if twin and v2 is None:
+            return None  # 「双峰」必须给两个值
+        values = (int(v1),) if v2 is None else (int(v1), int(v2))
+        slots.append(ShapeSlot(name, _OP_NORMALIZE[op], values, bool(twin)))
+    if seen != set(_SHAPE_SLOT_NAMES):
+        return None  # 四槽位必须齐
+    return slots
+
+
+def _shape_violation() -> GuardViolation:
+    return GuardViolation(
+        "contract",
+        f"「节奏曲线」槽位语法非法（四槽位：{'/'.join(_SHAPE_SLOT_NAMES)}，值 1~5；"
+        f"合法写法如：{_SHAPE_EXAMPLE}）",
+    )
+
+
+def extract_design_principle(md: str) -> str | None:
+    """提取故事核心「设计原则」字段值；缺失返回 None。"""
+    m = _DESIGN_PRINCIPLE_RE.search(md)
+    return _clean(m.group(1)) if m else None
+
+
+def extract_rhythm_field(md: str) -> str | None:
+    """提取故事核心「节奏曲线」字段值；缺失返回 None。"""
+    m = _RHYTHM_FIELD_RE.search(md)
+    return _clean(m.group(1)) if m else None
+
 
 # （REQ-20261009-182730）事件类型词白名单 EVENT_TYPES 与事件数模板
 # EVENT_COUNT_TEMPLATE 已移除：数量/类型词不再工程校验，参考区间与词表
@@ -198,18 +286,34 @@ def extract_event_names(md: str) -> list[str]:
 
 
 @dataclass(frozen=True)
+class EventRow:
+    """事件表数据行的结构化解析（纯结构，无语义口径）。
+
+    t_num 为时序号数值（T1 → 1.0；缺时序为 None）；tension/payoff 为列原文
+    （缺失/留空为空串）——刻度与合法值域等语义口径不进 contracts，由
+    harness 观测配置持有。
+    """
+
+    name: str
+    type_word: str = ""
+    crossing: bool = False
+    t_num: float | None = None
+    tension: str = ""
+    payoff: str = ""
+
+
+@dataclass(frozen=True)
 class LineBlock:
     """一个线区块的结构化解析结果（纯结构，无语义口径）。
 
-    events 为事件表数据行按序的 (类型列原文, 是否交汇)——类型列缺失/留空
-    时原文为空串；「交汇」列非空即 True。参考区间与参考词表等语义口径
-    不进 contracts，由 harness 观测配置持有。
+    events 为事件表数据行按序的 EventRow；参考区间、参考词表、张力刻度等
+    语义口径不进 contracts，由 harness 观测配置持有。
     """
 
     name: str
     type: str
     text: str
-    events: tuple[tuple[str, bool], ...]
+    events: tuple[EventRow, ...]
 
 
 def iter_line_blocks(md: str) -> list[LineBlock]:
@@ -220,34 +324,40 @@ def iter_line_blocks(md: str) -> list[LineBlock]:
     blocks: list[LineBlock] = []
     for b in _parse_blocks(md):
         data, header_row = _data_rows(b.text)
-        events: list[tuple[str, bool]] = []
+        events: list[EventRow] = []
         if header_row is not None:
+            name_idx = _col_index(header_row, "事件")
+            t_idx = _col_index(header_row, "时序")
             type_idx = _col_index(header_row, "类型")
             crossing_idx = _col_index(header_row, "交汇")
+            tension_idx = _col_index(header_row, "张力")
+            payoff_idx = _col_index(header_row, "爽点")
+
+            def _cell(cells: list[str], idx: int | None) -> str:
+                return _clean(cells[idx]) if idx is not None and idx < len(cells) else ""
+
             for ln in data:
                 cells = _split_cells(ln)
-                type_word = (
-                    _clean(cells[type_idx])
-                    if type_idx is not None and type_idx < len(cells)
-                    else ""
-                )
-                crossing = (
-                    crossing_idx is not None
+                t_raw = _cell(cells, t_idx)
+                t_num = None
+                if t_raw:
+                    digits = re.search(r"\d+(?:\.\d+)?", t_raw)
+                    t_num = float(digits.group(0)) if digits else None
+                events.append(EventRow(
+                    name=_cell(cells, name_idx),
+                    type_word=_cell(cells, type_idx),
+                    crossing=crossing_idx is not None
                     and crossing_idx < len(cells)
-                    and bool(_clean(cells[crossing_idx]))
-                )
-                events.append((type_word, crossing))
+                    and bool(_clean(cells[crossing_idx])),
+                    t_num=t_num,
+                    tension=_cell(cells, tension_idx),
+                    payoff=_cell(cells, payoff_idx),
+                ))
         blocks.append(LineBlock(b.name, b.type, b.text, tuple(events)))
     return blocks
 
 
 # ── 运行时写入校验（写前拦截判定入口）────────────────────────
-
-
-def extract_final_ending(md: str) -> str | None:
-    """提取故事核心「最终结局」字段值；缺失返回 None。"""
-    m = _ENDING_RE.search(md)
-    return _clean(m.group(1)) if m else None
 
 
 def check_storyline_write(current: str, projected: str) -> list[GuardViolation]:
@@ -260,18 +370,40 @@ def check_storyline_write(current: str, projected: str) -> list[GuardViolation]:
     """
     violations: list[GuardViolation] = []
 
-    # ── 最终结局不可变（FR-005；磁盘态对比，初构无基线不校验）──
-    cur_ending = extract_final_ending(current)
-    if cur_ending is not None:
-        proj_ending = extract_final_ending(projected)
-        if proj_ending is None:
+    # ── 设计原则不可变（FR-001 合并版；最终结局为草稿制不校验，见 docstring）──
+    cur_principle = extract_design_principle(current)
+    if cur_principle is not None:
+        proj_principle = extract_design_principle(projected)
+        if proj_principle is None:
             violations.append(GuardViolation(
-                "ending", "storyline.md 的「最终结局」不可删除（初构后钉死）",
+                "design_principle", "storyline.md 的「设计原则」不可删除（初构后钉死）",
             ))
-        elif proj_ending != cur_ending:
+        elif proj_principle != cur_principle:
             violations.append(GuardViolation(
-                "ending", f"storyline.md 的「最终结局」不可修改（初构后钉死，当前为「{cur_ending}」）",
+                "design_principle",
+                f"storyline.md 的「设计原则」不可修改（初构后钉死，当前为「{cur_principle}」）",
             ))
+
+    # ── 初构六字段必齐（值非空）+ 槽位形态语法（FR-001/002）──
+    if not current.strip():
+        for field in CORE_FIELDS:
+            if not re.search(
+                rf"(?m)^(?:-\s*)?(?:\*\*)?{re.escape(field)}(?:\*\*)?\s*[：:][ \t]*[^\n]", projected
+            ):
+                violations.append(GuardViolation(
+                    "contract",
+                    f"故事核心缺「{field}」字段或值为空（六字段：{'/'.join(CORE_FIELDS)}，值须与字段同行非空）",
+                ))
+        proj_rhythm = extract_rhythm_field(projected)
+        if proj_rhythm is not None and parse_shape_slots(proj_rhythm) is None:
+            violations.append(_shape_violation())
+    else:
+        # 写入「节奏曲线」字段（新增或改写）：值必须槽位合法（字段本身不钉死）
+        cur_rhythm = extract_rhythm_field(current)
+        proj_rhythm = extract_rhythm_field(projected)
+        if proj_rhythm is not None and proj_rhythm != cur_rhythm:
+            if parse_shape_slots(proj_rhythm) is None:
+                violations.append(_shape_violation())
 
     # ── 区块切分与范围判定 ──
     cur_blocks = _parse_blocks(current)
@@ -336,6 +468,33 @@ def check_storyline_write(current: str, projected: str) -> list[GuardViolation]:
                 ))
                 break
 
+        # 张力/爽点列（FR-003；新增/变更区块须含且取值合法）
+        tension_idx = _col_index(header_row, "张力")
+        payoff_idx = _col_index(header_row, "爽点")
+        if tension_idx is None or payoff_idx is None:
+            violations.append(GuardViolation(
+                "contract",
+                f"区块「{b.name}」事件表缺「张力」「爽点」列"
+                f"（新增/变更区块须为十列：…/交汇/张力/爽点/描述）",
+            ))
+        else:
+            for ln in data:
+                cells = _split_cells(ln)
+                tension = _clean(cells[tension_idx]) if tension_idx < len(cells) else ""
+                payoff = _clean(cells[payoff_idx]) if payoff_idx < len(cells) else ""
+                if not _TENSION_RE.match(tension):
+                    violations.append(GuardViolation(
+                        "contract",
+                        f"区块「{b.name}」张力取值「{tension}」非法（张力须为 1~5 整数）：{ln[:30]}…",
+                    ))
+                    break
+                if payoff != "" and payoff not in PAYOFF_VALUES:
+                    violations.append(GuardViolation(
+                        "contract",
+                        f"区块「{b.name}」爽点取值「{payoff}」非法（爽点须为 —/小/大，普通事件留空）：{ln[:30]}…",
+                    ))
+                    break
+
     # ── 唯一性规则：全局（线名、事件名）──
     proj_line_names = [b.name for b in proj_blocks]
     if len(proj_line_names) != len(set(proj_line_names)):
@@ -349,11 +508,17 @@ def check_storyline_write(current: str, projected: str) -> list[GuardViolation]:
 
 
 __all__ = [
+    "CORE_FIELDS",
+    "PAYOFF_VALUES",
+    "EventRow",
     "GuardViolation",
     "LineBlock",
+    "ShapeSlot",
     "assert_storyline_v2_contract",
     "check_storyline_write",
+    "extract_design_principle",
     "extract_event_names",
-    "extract_final_ending",
+    "extract_rhythm_field",
     "iter_line_blocks",
+    "parse_shape_slots",
 ]

@@ -1,6 +1,6 @@
 
 import { useEffect, useRef } from "react";
-import type { CharacterMarkdownFile, ObjectMarkdownFile, PanoramaEvent, StorylineEntry } from "./types";
+import type { CharacterMarkdownFile, ObjectMarkdownFile, PanoramaEvent, RhythmData, StorylineEntry } from "./types";
 import type { WorkspacePanel } from "./types";
 import {
   fetchWorkspaceCharacters,
@@ -29,6 +29,7 @@ export interface PanelPollingSetters {
   setStorylineMarkdown: (s: string) => void;
   setStorylineEntries: (e: StorylineEntry[]) => void;
   setStorylinePanorama: (e: PanoramaEvent[]) => void;
+  setStorylineRhythm: (v: RhythmData | null) => void;
   setStorylineFormat: (v: string) => void;
   setActiveStorylineFilename: (fn: (cur: string) => string) => void;
 
@@ -108,11 +109,12 @@ export function usePanelPolling({
   ): Promise<boolean> => {
     let gotAny = false;
     if (panel === "script" || panel === "all") {
-      // script 面板展示 storyline（含全景表数据 panorama，FR-003）。
+      // script 面板展示 storyline（含全景表 panorama 与节奏数据 rhythm，FR-003/FR-006）。
       const data = await fetchWorkspaceStoryline(workspaceId);
       s.setStorylineMarkdown(data.index_markdown);
       s.setStorylineEntries(data.entries);
       s.setStorylinePanorama(data.panorama);
+      s.setStorylineRhythm(data.rhythm ?? null);
       s.setStorylineFormat(data.format);
       s.setActiveStorylineFilename((cur) => keepActiveFilename(cur, data.entries.map((e) => e.title)));
       if (data.index_markdown?.trim() || data.entries.length) gotAny = true;

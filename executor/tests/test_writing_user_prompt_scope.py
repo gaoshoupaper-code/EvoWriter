@@ -87,7 +87,11 @@ def test_first_build_injects_clarify_gate(tmp_path: Path) -> None:
     payload = ScreenplayGenerateRequest(prompt="写一部玄幻长篇", thread_id="t-test")
     prompt = _service()._build_user_prompt(payload, _thread_with_workspace(tmp_path))  # type: ignore[arg-type]
 
-    for fragment in ("需求澄清", "拍板", "不用问了，直接写", "demand.md"):
+    for fragment in (
+        "需求澄清", "拍板", "不用问了，直接写", "demand.md",
+        # FR-001（REQ-20261010-000638 合并版）：设计原则随首轮方向方案包拍板
+        "首轮方向方案包", "设计原则", "用户选方案即选设计原则", "明示所选设计原则",
+    ):
         assert fragment in prompt, f"首发委托文本缺澄清指令: {fragment}"
     assert "ask_user" not in prompt, "委托文本不得点名具体工具（与 harness 版本解耦）"
 

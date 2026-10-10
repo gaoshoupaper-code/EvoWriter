@@ -3,12 +3,14 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { markdownTableComponents } from "../../lib/markdown-components";
-import type { PanoramaEvent, StorylineEntry } from "../../lib/types";
+import { RhythmChart } from "./RhythmChart";
+import type { PanoramaEvent, RhythmData, StorylineEntry } from "../../lib/types";
 
 type ScriptPanelProps = {
   storylineMarkdown: string;
   storylineEntries: StorylineEntry[];
   storylinePanorama: PanoramaEvent[];
+  storylineRhythm?: RhythmData | null;
   storylineFormat: string;
   activeStorylineFilename: string;
   onSelectStoryline: (filename: string) => void;
@@ -31,6 +33,7 @@ export function ScriptPanel({
   storylineMarkdown,
   storylineEntries,
   storylinePanorama,
+  storylineRhythm = null,
   storylineFormat,
   activeStorylineFilename,
   onSelectStoryline,
@@ -54,6 +57,12 @@ export function ScriptPanel({
   // v2 解析失败（panorama 空）→ 降级渲染 storyline.md 原文；legacy → 按线分区块（FR-013 降级）
   const panoramaAvailable = !isLegacy && storylinePanorama.length > 0;
   const fallbackMarkdownView = !isLegacy && !panoramaAvailable && storylineMarkdown.trim().length > 0;
+
+  // 曲线点 → 联动全景表滚动定位（FR-006：点曲线上的点定位事件）
+  const scrollToEvent = (name: string) => {
+    const row = contentRef.current?.querySelector(`tr[data-event="${CSS.escape(name)}"]`);
+    row?.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
 
   return (
     <section className="panel-surface content-panel" aria-label="大纲全景">
@@ -103,7 +112,17 @@ export function ScriptPanel({
                   {active.markdown.trim() ? (
                     <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{active.markdown}</ReactMarkdown>
                   ) : null}
-                {panoramaAvailable ? (
+                  {/* 节奏区块（FR-006/DEC-012）：张力曲线 + 爽点标记 + 形态带 + 许诺进度 */}
+                  {!isLegacy ? (
+                    storylineRhythm ? (
+                      <RhythmChart rhythm={storylineRhythm} onEventClick={scrollToEvent} />
+                    ) : panoramaAvailable ? (
+                      <p className="field-label" aria-label="无节奏数据提示">
+                        暂无节奏数据（本大纲未含张力/爽点/许诺台账标注）。
+                      </p>
+                    ) : null
+                  ) : null}
+                  {panoramaAvailable ? (
                   <>
                     <h3>跨线全景</h3>
                     <p className="field-label">全部故事线的事件按剧情时序合并——交汇事件的所属线列出全部参与线。</p>
@@ -122,7 +141,7 @@ export function ScriptPanel({
                         </thead>
                         <tbody>
                           {storylinePanorama.map((ev) => (
-                            <tr key={`${ev.t}-${ev.name}`}>
+                            <tr key={`${ev.t}-${ev.name}`} data-event={ev.name}>
                               <td>{ev.t}</td>
                               <td>{ev.storylines.join("、")}</td>
                               <td>{ev.name}</td>

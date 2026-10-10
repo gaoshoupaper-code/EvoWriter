@@ -175,7 +175,9 @@ class ObjectContractGuardMiddleware(AgentMiddleware):
         else:
             head = f"storyline.md 修订与物品卡冲突：{detail}。"
         return ToolMessage(
-            content=head + "请修正上述问题后重新写入；同一问题连续 3 次被拒后系统将强制收尾。",
+            content=head + "完整物品卡规范（三段式/类型·可见性·变化枚举/轨迹锚点）见技能 "
+            "storybuilding-specs，动笔前未读取请先读取再修正。"
+            "请修正上述问题后重新写入；同一问题连续 3 次被拒后系统将强制收尾。",
             name=str(tool_name),
             tool_call_id=str(tool_call_id or ""),
             status="error",
@@ -200,7 +202,11 @@ class ObjectContractGuardMiddleware(AgentMiddleware):
                 return []
             if old_string not in current:
                 return []  # 模拟替换失败：交 file_state_tracker 拦
-            projected = current.replace(old_string, new_string, 1)
+                        # replace_all=True 且多处出现 → 全量替换（与工具落盘语义一致，防首处外绕过）
+            if args.get("replace_all") and current.count(old_string) > 1:
+                projected = current.replace(old_string, new_string)
+            else:
+                projected = current.replace(old_string, new_string, 1)
 
         existing = {
             p.name: self._read_file(p)
@@ -225,7 +231,11 @@ class ObjectContractGuardMiddleware(AgentMiddleware):
                 return []
             if old_string not in current:
                 return []
-            projected = current.replace(old_string, new_string, 1)
+                        # replace_all=True 且多处出现 → 全量替换（与工具落盘语义一致，防首处外绕过）
+            if args.get("replace_all") and current.count(old_string) > 1:
+                projected = current.replace(old_string, new_string)
+            else:
+                projected = current.replace(old_string, new_string, 1)
 
         all_cards = {
             p.name: self._read_file(p)

@@ -119,7 +119,9 @@ class TestV7PackageContent(unittest.TestCase):
             "prompts/demand_template.md",
             "middleware/object_contract_guard.py",
             "skills/storybuilding-initial/SKILL.md",
-            "skills/storybuilding-expand/SKILL.md",
+            "skills/storybuilding-specs/SKILL.md",
+            "skills/storybuilding-expand-storyline/SKILL.md",
+            "skills/storybuilding-expand-character/SKILL.md",
         ]:
             self.assertTrue((_HARNESS_DIR / rel).exists(), f"故事专家资产应保留: {rel}")
 

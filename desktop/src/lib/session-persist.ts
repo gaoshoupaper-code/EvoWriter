@@ -84,6 +84,13 @@ export function normalizeRestoredMessages(messages: ChatMessage[], now = Date.no
     if (next.tools?.some((t) => t.status === "running")) {
       next.tools = next.tools.map((t) => (t.status === "running" ? { ...t, status: "done" as const } : t));
     }
+    // 思考段恢复（FR-005，REQ-20261010-182114）：持久化时点仍在 streaming 的
+    // 思考段，重启后不可能再续——标 interrupted（DEC-007：保留到中断点可回看）
+    if (next.thoughts?.some((t) => t.status === "streaming")) {
+      next.thoughts = next.thoughts.map((t) =>
+        t.status === "streaming" ? { ...t, status: "interrupted" as const } : t,
+      );
+    }
     delete next.executionPhase;
     if (next.awaitingInput) {
       const askedAt = next.awaitingInput.askedAt ? Date.parse(next.awaitingInput.askedAt) : NaN;

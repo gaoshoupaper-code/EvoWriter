@@ -3,7 +3,11 @@ from types import SimpleNamespace
 
 from langchain_core.messages import AIMessage, AIMessageChunk
 
-from app.domains.writing.deepseek_thinking import DeepSeekThinkingChatModel, ReasoningSidecarStore
+from app.domains.writing.deepseek_thinking import (
+    DeepSeekThinkingChatModel,
+    ReasoningSidecarStore,
+    ReasoningStreamChatModel,
+)
 from app.domains.writing.models import build_writer_model, parse_writer_model
 
 
@@ -63,6 +67,75 @@ class WriterModelTest(unittest.TestCase):
 
         self.assertEqual(model.model_name, "gpt-4o-mini")
         self.assertIsNone(model.extra_body)
+
+    # FR-001（REQ-20261010-182114）：openai 路径必须用思考流透传适配器。
+    # GLM 等 OpenAI 兼容模型在 delta 上返回 reasoning_content，langchain 默认
+    # 转换会丢弃——线上实测透传为 0，WritingEventSink 抓不到思考链。
+    def test_build_writer_model_uses_reasoning_passthrough_for_openai_provider(self) -> None:
+        for raw_model in ("glm-5.3", "openai:gpt-4o-mini", "qwen3.8-max-preview"):
+            with self.subTest(raw_model=raw_model):
+                model = build_writer_model(
+                    SimpleNamespace(
+                        writer_model=raw_model,
+                        writer_temperature=None,
+                        writer_top_p=None,
+                        openai_api_key="test-key",
+                        openai_base_url="https://api.example.com/v1",
+                    )
+                )
+                self.assertIsInstance(model, ReasoningStreamChatModel)
+                self.assertIsNone(model.extra_body)
+
+    def test_reasoning_stream_model_passes_through_reasoning_delta(self) -> None:
+        model = ReasoningStreamChatModel(model="glm-5.3", api_key="test-key", stream_usage=False)
+
+        chunk = model._convert_chunk_to_generation_chunk(
+            {"choices": [{"delta": {"role": "assistant", "reasoning_content": "Let me think"}}]},
+            AIMessageChunk,
+            None,
+        )
+
+        self.assertIsNotNone(chunk)
+        self.assertEqual(chunk.message.additional_kwargs["reasoning_content"], "Let me think")
+
+    def test_reasoning_stream_model_keeps_plain_content_chunk_intact(self) -> None:
+        model = ReasoningStreamChatModel(model="glm-5.3", api_key="test-key", stream_usage=False)
+
+        chunk = model._convert_chunk_to_generation_chunk(
+            {"choices": [{"delta": {"role": "assistant", "content": "hello"}}]},
+            AIMessageChunk,
+            None,
+        )
+
+        self.assertIsNotNone(chunk)
+        self.assertEqual(chunk.message.content, "hello")
+        self.assertNotIn("reasoning_content", chunk.message.additional_kwargs)
+
+    def test_reasoning_stream_model_handles_content_and_reasoning_in_same_delta(self) -> None:
+        model = ReasoningStreamChatModel(model="glm-5.3", api_key="test-key", stream_usage=False)
+
+        chunk = model._convert_chunk_to_generation_chunk(
+            {"choices": [{"delta": {"role": "assistant", "content": "答", "reasoning_content": "想"}}]},
+            AIMessageChunk,
+            None,
+        )
+
+        self.assertIsNotNone(chunk)
+        self.assertEqual(chunk.message.content, "答")
+        self.assertEqual(chunk.message.additional_kwargs["reasoning_content"], "想")
+
+    def test_reasoning_stream_model_empty_choices_chunk_yields_no_reasoning(self) -> None:
+        model = ReasoningStreamChatModel(model="glm-5.3", api_key="test-key", stream_usage=False)
+
+        chunk = model._convert_chunk_to_generation_chunk(
+            {"choices": []},
+            AIMessageChunk,
+            None,
+        )
+
+        # 基类对空 choices 返回空 chunk（非 None）：透传层不得注入 reasoning
+        self.assertIsNotNone(chunk)
+        self.assertNotIn("reasoning_content", chunk.message.additional_kwargs)
 
     def test_build_writer_model_disables_sdk_retries_explicitly(self) -> None:
         # CON-003/DEC-003：SDK 内部重试必须显式关闭，重试预算由 WriterRetryController 统一持有。

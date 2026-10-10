@@ -9,8 +9,8 @@
  *   status === completed  → delivering
  *   status === failed     → failed
  *   status === stopped    → stopped
- *   有 writing tool running → writing
  *   有任何 tool running    → thinking（涵盖 storybuilding/detail-outline/general）
+ *   有思考段仍在流式      → thinking（reasoning 先于首个 tool_call 到达，FR-003）
  *   content 为空/占位     → booting（黑屏期）
  *   有流式正文但无 tool    → thinking
  *   其他                   → idle
@@ -23,9 +23,12 @@ export function derivePhaseFromMessage(message: ChatMessage): ExecutionPhase {
   if (message.status === "failed") return "failed";
   if (message.status === "stopped") return "stopped";
 
-  // 有任何 tool running → thinking
+  // 有任何 tool running 或思考段仍在流式 → thinking
+  //（REQ-20261010-182114：reasoning 到达时不得停留在 booting 黑屏期，
+  //  思考行本身就是执行中的信号）
   const hasRunning = message.tools?.some((t) => t.status === "running");
-  if (hasRunning) return "thinking";
+  const hasStreamingThought = message.thoughts?.some((t) => t.status === "streaming");
+  if (hasRunning || hasStreamingThought) return "thinking";
 
   // content 为空或占位 → booting（黑屏期，loading 中但还没收到事件）
   if (!message.content || message.content === "正在执行..." || message.content === "正在生成..." || message.content === "正在优化...") {

@@ -4656,6 +4656,136 @@ html[data-theme="dark"] .panel-heading {
   font-family: var(--font-mono, monospace);
 }
 
+/* ── ThinkingTimeline（思考流时间线，REQ-20261010-182114）── */
+.yan-thought-timeline {
+  margin: 4px 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.yan-thought-row {
+  display: flex;
+  flex-direction: column;
+}
+.yan-thought-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 5px 12px;
+  border-radius: var(--radius-lg);
+  background: rgba(116, 103, 196, 0.06);
+  border: none;
+  cursor: pointer;
+  font-size: var(--text-ui-caption);
+  color: var(--ink);
+  align-self: flex-start;
+  max-width: 100%;
+  transition: background var(--motion-duration) var(--motion-ease);
+}
+.yan-thought-trigger:hover {
+  background: rgba(116, 103, 196, 0.12);
+}
+.yan-thought-label {
+  font-size: var(--text-ui-xs);
+  color: var(--muted);
+  padding: 0 6px;
+  border-left: 1px solid var(--border);
+  white-space: nowrap;
+}
+.yan-thought-live-title {
+  white-space: nowrap;
+  animation: stage-focus-breathe 1.8s ease-in-out infinite;
+}
+.yan-thought-done-title {
+  white-space: nowrap;
+  color: var(--muted);
+}
+.yan-thought-interrupted {
+  color: var(--danger, #c2452d);
+  animation: none;
+}
+.yan-thought-live {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--muted);
+  direction: ltr;
+}
+.yan-thought-caret {
+  font-size: var(--text-ui-xs);
+  color: var(--muted);
+  flex: none;
+}
+/* 展开态：一句一段（DEC-002），纯文本（FR-007），吸底跟随（FR-004） */
+.yan-thought-text {
+  margin: 4px 0 4px 20px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--border);
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.yan-thought-para {
+  margin: 0;
+  font-size: var(--text-ui-sm);
+  color: var(--ink);
+  opacity: 0.75;
+  line-height: 1.7;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+/* 兜底行（DEC-004）：无思考流时显示真实进度 */
+.yan-thought-fallback {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: var(--radius-lg);
+  background: rgba(116, 103, 196, 0.06);
+  font-size: var(--text-ui-caption);
+  color: var(--ink);
+  align-self: flex-start;
+}
+.yan-thought-fallback-text {
+  animation: stage-focus-breathe 1.8s ease-in-out infinite;
+}
+/* 工具行：穿插在思考段之间（FR-003） */
+.yan-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 1px 12px 1px 20px;
+  font-size: var(--text-ui-sm);
+  color: var(--muted);
+}
+.yan-tool-row-mark {
+  width: 14px;
+  text-align: center;
+  flex: none;
+}
+.yan-tool-row[data-status="done"] .yan-tool-row-mark {
+  color: var(--good, #3a9d5d);
+}
+.yan-tool-row[data-status="running"] .yan-tool-row-mark {
+  color: var(--ink);
+  animation: stage-focus-breathe 1.8s ease-in-out infinite;
+}
+.yan-tool-row[data-status="failed"],
+.yan-tool-row[data-status="failed"] .yan-tool-row-name {
+  color: var(--danger, #c2452d);
+}
+.yan-tool-row-name {
+  color: var(--ink);
+}
+.yan-tool-row-elapsed {
+  font-size: var(--text-ui-xs);
+}
+
 /* ── ThinkingView 展开态步骤列表（FR-006）── */
 .yan-thinking-steps-current {
   font-size: var(--text-ui-sm);

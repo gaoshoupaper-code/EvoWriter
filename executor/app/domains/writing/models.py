@@ -1,7 +1,7 @@
 from langchain_openai import ChatOpenAI
 
 from app.platform.core.settings import Settings
-from app.domains.writing.deepseek_thinking import DeepSeekThinkingChatModel
+from app.domains.writing.deepseek_thinking import DeepSeekThinkingChatModel, ReasoningStreamChatModel
 from contracts.platform import LlmConfigSnapshot
 
 DEEPSEEK_PROVIDER = "deepseek"
@@ -63,7 +63,9 @@ def build_writer_model(
         provider_options["extra_body"] = {"thinking": {"type": "enabled"}}
         model_class = DeepSeekThinkingChatModel
     else:
-        model_class = ChatOpenAI
+        # FR-001（REQ-20261010-182114）：openai 兼容路径用思考流透传适配器，
+        # GLM 等模型的 delta.reasoning_content 不再被 langchain 默认转换丢弃。
+        model_class = ReasoningStreamChatModel
 
     # AD9：平台代付——优先用 PLATFORM_API_KEY（积分制专用），其次兼容旧 OPENAI_API_KEY。
     # api_key 参数仅为测试/旧路径保留，生产路径不再传用户 key（D22 一刀切）。

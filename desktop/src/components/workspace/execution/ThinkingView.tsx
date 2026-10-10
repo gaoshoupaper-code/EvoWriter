@@ -1,7 +1,8 @@
 /**
- * ThinkingView —— 思考流·默认折叠摘要
+ * ThinkingView —— 图片流思考态（拟人文案轮播 + 步骤列表）
  *
- * 触发：收到 trace_event（run_start）且未进入 writing 阶段。
+ * DEC-006（REQ-20261010-182114）：仅图片生成域使用（activeStreamKind=image，
+ * 图片后端无 reasoning_stream）；写作域走 ThinkingTimeline（真实思考流时间线）。
  *
  * 折叠态（默认）：拟人化摘要一行 + 脉动圆点。
  *   FR-004：文案按当前运行中的工具信号选主题池，工具一变文案立即变；
@@ -9,8 +10,7 @@
  *   FR-005：同一主题停留超 THINKING_ROTATE_MS 换句，不重复最近 2 句；
  *           渲染本身不重抽（旧版 render-per-random 导致文案狂跳）。
  *   FR-007：图片流（activeStreamKind=image）用图片主题池。
- * 展开态：显示真实 reasoning 文本（来自 activeReasoning，P2 reasoning_stream）；
- *         无 reasoning 时显示执行步骤列表（FR-006，见 StepsList）。
+ * 展开态：执行步骤列表（FR-006，见 StepsList）。
  */
 import { useEffect, useRef, useState } from "react";
 import type { ChatMessage } from "@/lib/types";
@@ -23,7 +23,6 @@ import {
   pickThinkingCopy,
   resolveThinkingTheme,
 } from "@/lib/yan-copy";
-import { useExecutionStore } from "@/stores/execution";
 
 interface ThinkingViewProps {
   message: ChatMessage;
@@ -32,16 +31,14 @@ interface ThinkingViewProps {
 
 export function ThinkingView({ message, stageFlow }: ThinkingViewProps) {
   const [expanded, setExpanded] = useState(false);
-  // T22: 从 executionStore 读瞬态 reasoning（不持久化）
-  const activeReasoning = useExecutionStore((s) => s.activeReasoning);
-  const activeStreamKind = useExecutionStore((s) => s.activeStreamKind);
 
-  // FR-004 信号：优先当前 running tool 的 subagentType，降级 stageFlow 运行中阶段
+  // FR-004 信号：优先当前 running tool 的 subagentType，降级 stageFlow 运行中阶段。
+  // 本视图仅图片流使用（DEC-006），streamKind 固定 image（FR-007 图片文案池）。
   const runningTool = message.tools?.findLast((t) => t.status === "running");
   const theme = resolveThinkingTheme({
     toolName: runningTool?.name,
     subagentType: runningTool?.subagentType ?? stageFlow?.stages.find((s) => s.status === "running")?.type,
-    streamKind: activeStreamKind,
+    streamKind: "image",
   });
   const stageType = runningTool?.subagentType ?? stageFlow?.stages.find((s) => s.status === "running")?.type ?? runningTool?.subagentName;
   const stageName = getStageDisplayName(stageType);
@@ -84,16 +81,12 @@ export function ThinkingView({ message, stageFlow }: ThinkingViewProps) {
         <span className="yan-status-dot" data-status="running" />
         <span className="yan-thinking-text">{summaryText}{iterationSuffix}</span>
         <span className="yan-thinking-stage">{stageName}</span>
-        {activeReasoning ? <span className="yan-thinking-expand-hint">{expanded ? "▴" : "▾"}</span> : null}
+        <span className="yan-thinking-expand-hint">{expanded ? "▴" : "▾"}</span>
       </button>
 
       {expanded ? (
         <div className="yan-thinking-detail">
-          {activeReasoning ? (
-            <pre className="yan-thinking-reasoning">{activeReasoning}</pre>
-          ) : (
-            <StepsList message={message} stageName={stageName} />
-          )}
+          <StepsList message={message} stageName={stageName} />
         </div>
       ) : null}
     </div>

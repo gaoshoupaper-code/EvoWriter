@@ -240,8 +240,9 @@ export function ChatPanel({
                   </>
                 ) : null
               ) : null}
-              {/* shimmer 兜底：最后一条 assistant + loading + 无 ExecutionView 渲染时 */}
-              {isLastAssistant && loading && !message.content && !message.tools?.length ? (
+              {/* shimmer 兜底：最后一条 assistant + loading + 无 ExecutionView 内容时
+                  （FR-002：思考行到达后 shimmer 退场，时间线本身即执行反馈） */}
+              {isLastAssistant && loading && !message.content && !message.tools?.length && !message.thoughts?.length ? (
                 <div className="grid gap-2 mt-2">
                   <Skeleton className="h-4 w-3/4" />
                   <Skeleton className="h-4 w-1/2" />

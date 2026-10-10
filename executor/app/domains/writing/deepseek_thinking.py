@@ -36,6 +36,32 @@ class ReasoningSidecarStore:
         return None
 
 
+class ReasoningStreamChatModel(ChatOpenAI):
+    """OpenAI 兼容端点的思考流透传适配器（FR-001，REQ-20261010-182114）。
+
+    GLM 等 OpenAI 兼容模型在流式 delta 上返回 reasoning_content，但
+    langchain-openai 的默认 chunk 转换会丢弃该字段——线上实测（glm-5.3）
+    astream 透传为 0，WritingEventSink 因此抓不到思考链。这里只补
+    delta.reasoning_content → additional_kwargs 的流式透传，不做
+    DeepSeekThinkingChatModel 的请求侧 hydration（GLM 不需要把历史
+    reasoning 回填进请求，也不注入 thinking extra_body）。
+    """
+
+    def _convert_chunk_to_generation_chunk(
+        self,
+        chunk: dict,
+        default_chunk_class: type,
+        base_generation_info: dict | None,
+    ) -> ChatGenerationChunk | None:
+        generation_chunk = super()._convert_chunk_to_generation_chunk(chunk, default_chunk_class, base_generation_info)
+        if generation_chunk is None:
+            return None
+        reasoning_content = _reasoning_content_from_stream_chunk(chunk)
+        if reasoning_content and isinstance(generation_chunk.message, AIMessageChunk):
+            generation_chunk.message.additional_kwargs[_REASONING_CONTENT_KEY] = reasoning_content
+        return generation_chunk
+
+
 class DeepSeekThinkingChatModel(ChatOpenAI):
     """DeepSeek 思考模式适配器。
 
@@ -221,6 +247,7 @@ def _string_or_none(value: object) -> str | None:
 __all__ = [
     "DeepSeekThinkingChatModel",
     "ReasoningSidecarStore",
+    "ReasoningStreamChatModel",
     "extract_reasoning_content",
     "tool_call_ids_from_message",
 ]

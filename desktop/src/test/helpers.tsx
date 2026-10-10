@@ -139,7 +139,7 @@ export async function resetStores() {
 
   useExecutionStore.setState({
     messages: [{ role: "assistant", content: "先选择一个工作目录，再开启或恢复创作会话。" }],
-    prompt: "", loading: false, result: null, activeReasoning: "",
+    prompt: "", loading: false, result: null,
     hasHistory: false, streamReader: null, threadMessages: new Map(),
   });
   useWorkspaceStore.setState({

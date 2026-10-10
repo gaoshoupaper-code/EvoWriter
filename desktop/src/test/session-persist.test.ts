@@ -77,6 +77,25 @@ describe("恢复管线 normalizeRestoredMessages（FR-004/FR-005）", () => {
     expect(out[0].executionPhase).toBeUndefined();
   });
 
+  // FR-005/FR-006（REQ-20261010-182114）：持久化时点仍在流式的思考段，
+  // 重启后标 interrupted（保留到中断点可回看）；done/interrupted 段原样保留；
+  // 旧格式记录（无 thoughts 字段）不动、正常加载。
+  it("streaming 思考段恢复为 interrupted，其余思考段与旧格式不动", () => {
+    const out = normalizeRestoredMessages([
+      msg({
+        thoughts: [
+          { id: 1, text: "done 段", startedAt: 1, endedAt: 2, status: "done" },
+          { id: 2, text: "断在这里", startedAt: 3, status: "streaming" },
+        ],
+      }),
+      msg({ content: "旧格式无 thoughts" }),
+    ]);
+    expect(out[0].thoughts?.[0].status).toBe("done");
+    expect(out[0].thoughts?.[1].status).toBe("interrupted");
+    expect(out[0].thoughts?.[1].text).toBe("断在这里");
+    expect(out[1].thoughts).toBeUndefined();
+  });
+
   it("终态消息（completed/failed/stopped）原样保留", () => {
     const out = normalizeRestoredMessages([
       msg({ status: "completed" }),

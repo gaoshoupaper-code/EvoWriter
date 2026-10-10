@@ -307,10 +307,24 @@ export type ExecutionPhase =
   | "failed"
   | "stopped";
 
+// 思考段（FR-003，REQ-20261010-182114）：一轮 LLM 调用的 reasoning 流，
+// 按 tool 事件边界切段；随消息持久化（DEC-003），历史可回看。
+export type ThoughtSegment = {
+  id: number;
+  text: string;
+  // 开段时快照的活跃子任务人话名（由 tools 状态推断，FR-003）
+  label?: string;
+  startedAt: number;
+  endedAt?: number;
+  status: "streaming" | "done" | "interrupted";
+};
+
 export type ChatMessage = {
   role: "assistant" | "user";
   content: string;
   tools?: ToolStatus[];
+  // 思考流分段（DEC-005：思考段与工具行穿插的时间线；恢复/回看共用）
+  thoughts?: ThoughtSegment[];
   contentFormat?: "text" | "markdown";
   // D2: 关联本次提交的 trace run（一次提交 = 一条 assistant message = 一个 trace）
   traceId?: string;

@@ -8,13 +8,15 @@
  * - traceStore：traceRuns / setTraceRuns / setTraceDetail / setActiveTraceId / setLiveTraceId
  *
  * 设计约束（来自设计文档 20260710_140000）：
- * - 高频更新（model_stream）用 RAF 批量同步（P1-A 先用直接更新，RAF 在 T2 后续优化）
- * - executionPhase 存 message（与 status 并存）—— P1-A 先保留原 status 逻辑，phase 在 P1-C 补
- * - reasoning 仅瞬态不持久化（activeReasoning）—— P2 补
+ * - 高频更新（model_stream/thoughts）按 reader chunk 批量同步
+ * - executionPhase 存 message（与 status 并存）
+ * - 思考流分段随 message 持久化（DEC-003，REQ-20261010-182114），
+ *   纯函数分段逻辑见 lib/thoughts.ts
  */
 import { create } from "zustand";
 import { toast } from "sonner";
-import type { AskUserOption, ChatMessage, ScreenplayResponse, StreamEvent, ToolStatus, TraceLogEvent, TraceRunSummary } from "@/lib/types";
+import type { AskUserOption, ChatMessage, ScreenplayResponse, StreamEvent, ThoughtSegment, ToolStatus, TraceLogEvent, TraceRunSummary } from "@/lib/types";
+import { appendReasoning, closeStreamingThought, currentTaskLabel } from "@/lib/thoughts";
 import { streamRequest } from "@/lib/stream";
 import { appendLiveTraceEvent } from "@/lib/trace";
 import { derivePhaseFromMessage } from "@/lib/execution-phase";
@@ -296,7 +298,6 @@ interface ExecutionState {
   result: ScreenplayResponse | null;
 
   // ── 瞬态（运行中，不持久）──
-  activeReasoning: string; // P2: reasoning_stream 累积
   hasHistory: boolean; // T18: 当前会话是否已有历史交互（驱动记忆感开场白）
   activeStreamKind: "" | "writing" | "image"; // FR-007: 当前流类型（图片流思考态选专属文案池）
 
@@ -324,7 +325,6 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   prompt: "",
   loading: false,
   result: null,
-  activeReasoning: "",
   hasHistory: false,
   activeStreamKind: "",
   streamReader: null,
@@ -543,6 +543,20 @@ async function performSubmit(
 
   set({ streamReader: null });
 
+  // 思考流分段（FR-003，REQ-20261010-182114）：帧批内累积，按 reader chunk
+  // 与 streamedText 同步 flush 进 message.thoughts（随消息持久化，DEC-003）。
+  // 声明在 try 外：catch 的各失败分支也要把 streaming 段标 interrupted（DEC-007）。
+  let thoughtSegments: ThoughtSegment[] = [];
+  let thoughtsDirty = false;
+  // 关闭末尾 streaming 段；状态变化时置脏（无 streaming 段为幂等 no-op）
+  const closeThoughts = (status: "done" | "interrupted") => {
+    const closed = closeStreamingThought(thoughtSegments, status);
+    if (closed !== thoughtSegments) {
+      thoughtSegments = closed;
+      thoughtsDirty = true;
+    }
+  };
+
   try {
     let userMessageThreadId = activeThreadId;
     const displayText = opts.userDisplay ?? trimmedPrompt;
@@ -580,7 +594,6 @@ async function performSubmit(
     const decoder = new TextDecoder();
     let buffer = "";
     let streamedText = "";
-    let reasoningText = ""; // T21: reasoning_stream 累积（瞬态，不写 message）
     let hasModelOutput = false;
     // FR-001（REQ-20261009-002227）：收到过 interrupt 后流关闭是服务端正常关流
     // （提问后 return，等用户选方案再 resume），断流兜底不得误报——见循环后分支。
@@ -632,9 +645,10 @@ async function performSubmit(
           if (event.type === "model_stream") {
             streamedText += String(event.data.content ?? "");
           } else if (event.type === "reasoning_stream") {
-            // T21: 累积 reasoning token 到瞬态 activeReasoning（不写 message，不持久化）
-            reasoningText += String(event.data.content ?? "");
-            set({ activeReasoning: reasoningText });
+            // FR-003：reasoning token 续写末段或开新段；label 快照自当前 tools
+            const label = currentTaskLabel(get().messages[assistantIdx]?.tools);
+            thoughtSegments = appendReasoning(thoughtSegments, String(event.data.content ?? ""), label);
+            thoughtsDirty = true;
           } else if (event.type === "trace_event") {
             const traceEvent = event.data as TraceLogEvent;
             if (traceEvent.type === "run_start") {
@@ -670,24 +684,30 @@ async function performSubmit(
             set((state) => ({
               messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, tools: upsertRunningTool(message.tools, event) })),
             }));
+            // FR-003：tool 事件是思考段边界——当前段收作 done，下个 reasoning 开新段
+            closeThoughts("done");
           } else if (event.type === "tool_output") {
             set((state) => ({
               messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, tools: markToolComplete(message.tools, event) })),
             }));
+            closeThoughts("done");
           } else if (event.type === "tool_error") {
             set((state) => ({
               messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, tools: markToolFailed(message.tools, event) })),
             }));
+            closeThoughts("done");
           } else if (event.type === "final") {
             finalData = event.data as ScreenplayResponse;
           } else if (event.type === "credit_exhausted") {
             const msg = (event.data as { message?: string })?.message ?? "积分耗尽";
             d.setLiveTraceId("");
+            closeThoughts("interrupted");
             toast.error(msg);
             set((state) => ({
               messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
                 ...message,
                 status: "failed",
+                thoughts: thoughtSegments,
                 content: `⚠️ ${msg}\n\n已创作的内容已保存，补充积分后可继续创作。`,
                 contentFormat: "markdown",
               })),
@@ -700,12 +720,15 @@ async function performSubmit(
             };
             gotInterrupt = true;
             const interruptKind = iv.kind ?? "choice";
+            // DEC-007：提问中断——末段思考标 interrupted（时间线保留到中断点）
+            closeThoughts("interrupted");
             set((state) => ({
               messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
                 ...message,
                 content: interruptKind === "image_review"
                   ? `第 ${iv.round ?? "?"} 轮图像评审：3 版 6 图已生成，请打分`
                   : iv.question || "等待你的输入",
+                thoughts: thoughtSegments,
                 awaitingInput: {
                   kind: interruptKind, question: iv.question || "", options: iv.options ?? null,
                   multi_select: iv.multi_select ?? false, source: iv.source, round: iv.round, versions: iv.versions,
@@ -721,13 +744,17 @@ async function performSubmit(
 
       set((state) => ({
         messages: updateAssistantMessage(state.messages, assistantIdx, (message) => {
-          // FR-001（REQ-20261009-002227）：收到 interrupt 后正文归 interrupt 分支管
-          // （提案问题），流式叙述文本不得把它盖回去。
-          if (message.awaitingInput) return message;
-          if (streamedText) return { ...message, content: streamedText, contentFormat: "markdown" };
-          return message;
+          // FR-001（REQ-20260909-002227）：收到 interrupt 后正文归 interrupt 分支管
+          // （提案问题），流式叙述文本不得把它盖回去；思考段照常写入。
+          let next = message;
+          if (thoughtsDirty) next = { ...next, thoughts: thoughtSegments };
+          if (!next.awaitingInput && streamedText) {
+            next = { ...next, content: streamedText, contentFormat: "markdown" };
+          }
+          return next;
         }),
       }));
+      thoughtsDirty = false;
     }
 
     if (finalData) {
@@ -735,10 +762,12 @@ async function performSubmit(
       d.setThreads((current: any[]) =>
         current.map((thread: any) => (thread.thread_id === finalData!.thread_id ? { ...thread, updated_at: new Date().toISOString() } : thread)),
       );
+      closeThoughts("done");
       set((state) => ({
         messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
           ...message,
           status: "completed",
+          thoughts: thoughtSegments,
           content: streamedText || `已生成《${finalData.session_name}》的故事材料，工作目录是 ${finalData.workspace_path}`,
           contentFormat: "markdown",
         })),
@@ -752,11 +781,13 @@ async function performSubmit(
       if (current && current.role === "assistant" && !current.status && !gotInterrupt) {
         const brokenMessage = "⚠️ 连接中断（未收到完成信号），已生成的内容已保存，可以重试。";
         d.setLiveTraceId("");
+        closeThoughts("interrupted");
         toast.error(brokenMessage);
         set((state) => ({
           messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
             ...message,
             status: "failed",
+            thoughts: thoughtSegments,
             content: message.content === "正在执行..." ? brokenMessage : `${message.content}\n\n${brokenMessage}`,
             contentFormat: "markdown",
           })),
@@ -767,10 +798,11 @@ async function performSubmit(
     const errMsg = submitError instanceof Error ? submitError.message : "";
     if (errMsg.includes("积分") || errMsg.includes("403") || errMsg.includes("冻结")) {
       d.setLiveTraceId("");
+      closeThoughts("interrupted");
       toast.error("积分余额不足，账户已冻结。请联系管理员补充积分。");
       set((state) => ({
         messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
-          ...message, status: "failed", content: "⚠️ 积分余额不足，无法开始创作。请联系管理员补充积分。", contentFormat: "markdown",
+          ...message, status: "failed", thoughts: thoughtSegments, content: "⚠️ 积分余额不足，无法开始创作。请联系管理员补充积分。", contentFormat: "markdown",
         })),
       }));
       if (isResume) throw submitError;
@@ -778,9 +810,10 @@ async function performSubmit(
     }
     if (submitError instanceof DOMException && submitError.name === "AbortError") {
       d.setLiveTraceId("");
+      closeThoughts("interrupted");
       set((state) => ({
         messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
-          ...message, status: "stopped",
+          ...message, status: "stopped", thoughts: thoughtSegments,
           content: message.content === "正在执行..." ? "已手动停止。" : `${message.content}\n\n已手动停止。`, contentFormat: "markdown",
         })),
       }));
@@ -791,10 +824,11 @@ async function performSubmit(
     if (submitError instanceof Error && submitError.message === "HEARTBEAT_TIMEOUT") {
       const heartbeatMessage = `连接已断开（超过 ${HEARTBEAT_TIMEOUT_MS / 1000} 秒未收到数据），请重试。`;
       d.setLiveTraceId("");
+      closeThoughts("interrupted");
       toast.error(heartbeatMessage);
       set((state) => ({
         messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
-          ...message, status: "failed",
+          ...message, status: "failed", thoughts: thoughtSegments,
           content: message.content === "正在执行..." ? `⚠️ ${heartbeatMessage}` : `${message.content}\n\n⚠️ ${heartbeatMessage}`, contentFormat: "markdown",
         })),
       }));
@@ -802,10 +836,11 @@ async function performSubmit(
       return;
     }
 
+    closeThoughts("interrupted");
     toast.error(submitError instanceof Error ? submitError.message : "Unexpected request failure.");
     set((state) => ({
       messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
-        ...message, status: "failed",
+        ...message, status: "failed", thoughts: thoughtSegments,
         content: message.content === "正在执行..."
           ? "请求失败了。检查后端是否启动后，可以在同一个会话里重试。"
           : `${message.content}\n\n⚠️ 请求失败，可重试。`, contentFormat: "markdown",

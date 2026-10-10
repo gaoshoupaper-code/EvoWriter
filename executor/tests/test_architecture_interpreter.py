@@ -86,10 +86,7 @@ def test_manifest_shape_matches_v7(build_ctx):
     assert main.middleware == [
         "storyline_single_line_limit", "storyline_integrity",
         "storyline_contract_guard", "object_contract_guard", "quota_convergence",
-        "promises_contract_guard",
     ]
-    # FR-005（REQ-20261010-000638）：review 子代理挂载节奏体检报告注入
-    assert review.middleware == ["pacing_report"]
 
 
 def test_subagent_spec_equivalence(build_ctx):
@@ -104,11 +101,8 @@ def test_subagent_spec_equivalence(build_ctx):
         review = manifest.agent("storybuilding_review")
         spec = _build_agent(ctx, manifest, review, mod_name, HARNESS_PKG)
         assert spec["name"] == "review"
-        # 基础链 8 模块（artifact_snapshot 因无 trace 回调不挂载 → 7）
-        # + domain 1（pacing_report 节奏体检报告注入，REQ-20261010-000638 FR-005）
-        names = [str(m) for m in spec["middleware"]]
-        assert len(spec["middleware"]) == len(BASE_CHAIN_MODULES) - 1 + 1
-        assert any("pacing_report" in n for n in names)
+        # 基础链 8 模块（artifact_snapshot 因无 trace 回调不挂载 → 7）+ domain 0
+        assert len(spec["middleware"]) == len(BASE_CHAIN_MODULES) - 1
         perms = spec["permissions"]
         assert perms[0].operations == ["read"] and perms[0].mode == "allow"
         write_allows = [p for p in perms if p.operations == ["write"] and p.mode == "allow"]

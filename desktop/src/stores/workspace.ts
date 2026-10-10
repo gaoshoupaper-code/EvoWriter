@@ -8,7 +8,7 @@
  */
 import { create } from "zustand";
 import { toast } from "sonner";
-import type { RhythmData, Style, ThreadSummary, WorkspacePanel, WorkspaceSummary } from "@/lib/types";
+import type { Style, ThreadSummary, WorkspacePanel, WorkspaceSummary } from "@/lib/types";
 import {
   activateStyle as activateStyleRequest,
   createStyle as createStyleRequest,
@@ -38,8 +38,7 @@ import {
 export interface ContentData {
   storylineMarkdown: string;
   storylineEntries: { filename: string; title: string; markdown: string }[];
-  storylinePanorama: { t: string; name: string; type: string; storylines: string[]; characters: string; location: string; desc: string; tension?: number | null; payoff?: string }[];
-  storylineRhythm: RhythmData | null;
+  storylinePanorama: { t: string; name: string; type: string; storylines: string[]; characters: string; location: string; desc: string }[];
   storylineFormat: string;
   activeStorylineFilename: string;
   worldviewMarkdown: string;
@@ -392,7 +391,6 @@ async function loadWorkspaceData(
       storylineMarkdown: data.storyline?.index_markdown || "",
       storylineEntries: data.storyline?.entries || [],
       storylinePanorama: data.storyline?.panorama || [],
-      storylineRhythm: data.storyline?.rhythm ?? null,
       storylineFormat: data.storyline?.format || "v2",
       activeStorylineFilename: "",
       worldviewMarkdown: data.worldview?.markdown || "",

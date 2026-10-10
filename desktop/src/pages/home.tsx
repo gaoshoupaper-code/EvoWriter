@@ -86,7 +86,6 @@ export default function Home() {
   const storylineMarkdown = useContentStore((s) => s.storylineMarkdown);
   const storylineEntries = useContentStore((s) => s.storylineEntries);
   const storylinePanorama = useContentStore((s) => s.storylinePanorama);
-  const storylineRhythm = useContentStore((s) => s.storylineRhythm);
   const storylineFormat = useContentStore((s) => s.storylineFormat);
   const activeStorylineFilename = useContentStore((s) => s.activeStorylineFilename);
 
@@ -253,7 +252,6 @@ export default function Home() {
       setWorldviewMarkdown: (v) => useContentStore.getState().setWorldviewMarkdown(v),
       setWorldviewLoading: (v) => useContentStore.getState().setWorldviewLoading(v),
       setStorylinePanorama: (v) => useContentStore.getState().setStorylinePanorama(v),
-      setStorylineRhythm: (v) => useContentStore.getState().setStorylineRhythm(v),
       setStorylineFormat: (v) => useContentStore.getState().setStorylineFormat(v),
     },
   });
@@ -424,7 +422,6 @@ export default function Home() {
             storylineMarkdown={storylineMarkdown}
             storylineEntries={storylineEntries}
             storylinePanorama={storylinePanorama}
-            storylineRhythm={storylineRhythm}
             storylineFormat={storylineFormat}
             activeStorylineFilename={activeStorylineFilename}
             onSelectStoryline={(f) => useContentStore.getState().setActiveStorylineFilename(f)}

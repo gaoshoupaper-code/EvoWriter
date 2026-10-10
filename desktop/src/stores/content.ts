@@ -6,7 +6,7 @@
  * 轮询逻辑保留在 usePanelPolling hook（它直接读这个 store 的 setter）。
  */
 import { create } from "zustand";
-import type { CharacterMarkdownFile, ObjectMarkdownFile, PanoramaEvent, RhythmData, StorylineEntry } from "../lib/types";
+import type { CharacterMarkdownFile, ObjectMarkdownFile, PanoramaEvent, StorylineEntry } from "../lib/types";
 import type { ContentData } from "./workspace";
 
 interface ContentState {
@@ -18,7 +18,6 @@ interface ContentState {
   storylineMarkdown: string;
   storylineEntries: StorylineEntry[];
   storylinePanorama: PanoramaEvent[];
-  storylineRhythm: RhythmData | null;
   storylineFormat: string;
   activeStorylineFilename: string;
   objects: ObjectMarkdownFile[];
@@ -31,7 +30,6 @@ interface ContentState {
   setStorylineMarkdown: (v: string) => void;
   setStorylineEntries: (v: StorylineEntry[]) => void;
   setStorylinePanorama: (v: PanoramaEvent[]) => void;
-  setStorylineRhythm: (v: RhythmData | null) => void;
   setStorylineFormat: (v: string) => void;
   setActiveStorylineFilename: (v: string) => void;
   setWorldviewMarkdown: (v: string) => void;
@@ -53,7 +51,6 @@ export const useContentStore = create<ContentState>((set) => ({
   storylineMarkdown: "",
   storylineEntries: [],
   storylinePanorama: [],
-  storylineRhythm: null,
   storylineFormat: "v2",
   activeStorylineFilename: "",
   objects: [],
@@ -65,7 +62,6 @@ export const useContentStore = create<ContentState>((set) => ({
       storylineMarkdown: data.storylineMarkdown,
       storylineEntries: data.storylineEntries,
       storylinePanorama: data.storylinePanorama,
-      storylineRhythm: data.storylineRhythm,
       storylineFormat: data.storylineFormat,
       activeStorylineFilename: data.activeStorylineFilename,
       worldviewMarkdown: data.worldviewMarkdown,
@@ -80,7 +76,6 @@ export const useContentStore = create<ContentState>((set) => ({
       storylineMarkdown: "",
       storylineEntries: [],
       storylinePanorama: [],
-      storylineRhythm: null,
       storylineFormat: "v2",
       activeStorylineFilename: "",
       worldviewMarkdown: "",
@@ -93,7 +88,6 @@ export const useContentStore = create<ContentState>((set) => ({
   setStorylineMarkdown: (v) => set({ storylineMarkdown: v }),
   setStorylineEntries: (v) => set({ storylineEntries: v }),
   setStorylinePanorama: (v) => set({ storylinePanorama: v }),
-  setStorylineRhythm: (v) => set({ storylineRhythm: v }),
   setStorylineFormat: (v) => set({ storylineFormat: v }),
   setActiveStorylineFilename: (v) => set({ activeStorylineFilename: v }),
   setWorldviewMarkdown: (v) => set({ worldviewMarkdown: v }),

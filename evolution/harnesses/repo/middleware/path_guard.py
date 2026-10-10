@@ -47,7 +47,6 @@ WRITING_WRITE_PATTERNS = (
     re.compile(r"^/storyline\.md$"),           # 故事线主产物（单文件：故事核心+线区块）
     re.compile(r"^/worldview\.md$"),           # 世界观
     re.compile(r"^/object/[^/]+\.md$"),        # 物品卡（REQ-20261004-221109，一物品一文件）
-    re.compile(r"^/promises\.md$"),            # 许诺台账（REQ-20261010-000638，单文件）
     re.compile(r"^/review/[^/]+\.md$"),        # 审查报告（reviewer 共用本护栏）
 )
 _ALLOWED_WRITE_PATHS = WRITING_WRITE_PATTERNS  # 向后兼容别名

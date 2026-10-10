@@ -35,7 +35,6 @@ function makeSetters(): PanelPollingSetters {
     setStorylineMarkdown: vi.fn(),
     setStorylineEntries: vi.fn(),
     setStorylinePanorama: vi.fn(),
-    setStorylineRhythm: vi.fn(),
     setStorylineFormat: vi.fn(),
     setActiveStorylineFilename: vi.fn(),
     setCharacters: vi.fn(),

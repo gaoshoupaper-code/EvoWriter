@@ -17,17 +17,10 @@ from fastapi.responses import StreamingResponse
 from watchfiles import awatch
 
 from app.auth import CurrentUser, current_user
-from app.domains.writing.expert_agent.services.storyline_graph import (
-    build_panorama_events,
-    build_rhythm_data,
-)
+from app.domains.writing.expert_agent.services.storyline_graph import build_panorama_events
 from app.routers.context import _log, get_agent_service, get_character_service, get_thread_store
 from app.schemas.screenplay import (
     PanoramaEvent,
-    PromiseProgress,
-    RhythmDataModel,
-    RhythmPoint,
-    ShapeSlotModel,
     WorkspaceBootstrapResponse,
     WorkspaceCharacterContent,
     WorkspaceCreateRequest,
@@ -43,54 +36,23 @@ router = APIRouter()
 def _attach_panorama(
     content: WorkspaceStorylineContent | None, workspace_path: Path
 ) -> WorkspaceStorylineContent | None:
-    """给 v2 storyline 内容补跨线全景事件（FR-003）+ 节奏数据（FR-006）。
+    """给 v2 storyline 内容补跨线全景事件（FR-003）。
 
     组装在路由层完成——platform 层（artifact_store）禁止依赖 domains 层解析器
-    （分层规则 R1）。旧格式（legacy）不解析：panorama/rhythm 保持空，前端降级。
+    （分层规则 R1）。旧格式（legacy）不解析：panorama 保持空列表，前端降级。
     """
     if content is None or content.format != "v2":
         return content
     events = build_panorama_events(workspace_path)
-    if events is not None:
-        content.panorama = [
-            PanoramaEvent(
-                t=ev.t_raw, name=ev.name, type=ev.type, storylines=list(ev.storylines),
-                characters=ev.characters, location=ev.location, desc=ev.desc,
-                tension=ev.tension, payoff=ev.payoff,
-            )
-            for ev in events
-        ]
-    rhythm = build_rhythm_data(workspace_path)
-    if rhythm is not None:
-        content.rhythm = RhythmDataModel(
-            mainline=[
-                RhythmPoint(t=p.t, name=p.name, tension=p.tension, payoff=p.payoff, line=p.line, surface=p.surface)
-                for p in rhythm.mainline
-            ],
-            synthesis=[
-                RhythmPoint(t=p.t, name=p.name, tension=p.tension, payoff=p.payoff, line=p.line, surface=p.surface)
-                for p in rhythm.synthesis
-            ],
-            dark={
-                line: [
-                    RhythmPoint(t=p.t, name=p.name, tension=p.tension, payoff=p.payoff, line=p.line, surface=p.surface)
-                    for p in pts
-                ]
-                for line, pts in rhythm.dark.items()
-            },
-            shape_slots=[
-                ShapeSlotModel(slot=s.slot, op=s.op, values=list(s.values), twin_peak=s.twin_peak)
-                for s in rhythm.shape_slots
-            ],
-            promises=[
-                PromiseProgress(
-                    id=r.id, text=r.text, level=r.level, line=r.line, status=r.status,
-                    promise_events=list(r.promise_events), progress_events=list(r.progress_events),
-                    payoff_events=list(r.payoff_events), note=r.note,
-                )
-                for r in rhythm.promises
-            ],
+    if events is None:
+        return content
+    content.panorama = [
+        PanoramaEvent(
+            t=ev.t_raw, name=ev.name, type=ev.type, storylines=list(ev.storylines),
+            characters=ev.characters, location=ev.location, desc=ev.desc,
         )
+        for ev in events
+    ]
     return content
 
 
@@ -114,7 +76,7 @@ def _classify_changes(changes, workspace_path: Path) -> set[str]:
         if not parts:
             continue
         top = parts[0]
-        if top in ("storyline.md", "timeline.md", "promises.md") or (len(parts) > 1 and parts[0] == "storyline"):
+        if top in ("storyline.md", "timeline.md") or (len(parts) > 1 and parts[0] == "storyline"):
             categories.add("storyline")
         elif top == "worldview.md":
             categories.add("worldview")

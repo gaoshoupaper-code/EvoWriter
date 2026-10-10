@@ -41,7 +41,6 @@ _load_real_harness()
 from harness_current.middleware.storyline_contract_guard import (  # noqa: E402
     StorylineContractGuardMiddleware,
 )
-import harness_current.middleware.pacing_config as pacing_config_mod  # noqa: E402
 import harness_current.middleware.storyline_contract_guard as guard_mod  # noqa: E402
 
 from contracts.storyline_contract import check_storyline_write  # noqa: E402
@@ -55,7 +54,7 @@ _GUARD_LOGGER = "harness_current.middleware.storyline_contract_guard"
 
 def _events(n: int, prefix: str, t_start: int = 1) -> str:
     rows = [
-        f"| T{t_start + i} | {prefix}-事件{i + 1} | {_TYPES[i % 4]} | 发展 | 青云宗 | 林寒 | | {(i % 5) + 1} | — | 略 |"
+        f"| T{t_start + i} | {prefix}-事件{i + 1} | {_TYPES[i % 4]} | 发展 | 青云宗 | 林寒 | | 略 |"
         for i in range(n)
     ]
     return "\n".join(rows)
@@ -70,28 +69,19 @@ def _block(
 ) -> str:
     words = list(types) if types is not None else [_TYPES[i % 4] for i in range(n)]
     rows = [
-        f"| T{i + 1} | {name}-事件{i + 1} | {w} | 发展 | 青云宗 | 林寒 | | {(i % 5) + 1} | — | 略 |"
+        f"| T{i + 1} | {name}-事件{i + 1} | {w} | 发展 | 青云宗 | 林寒 | | 略 |"
         for i, w in enumerate(words)
     ]
     for j in range(extra_crossing):
-        rows.append(f"| T8.{j + 1} | {name}-交汇{j + 1} | 交汇 | 发展 | 青云宗 | 林寒 | 别的线 | 4 | 小 | 交汇描述 |")
+        rows.append(f"| T8.{j + 1} | {name}-交汇{j + 1} | 交汇 | 发展 | 青云宗 | 林寒 | 别的线 | 交汇描述 |")
     return (
         f"## {name} · {ltype} · 活跃\n\n- 主要地点：青云宗\n- 全局走向：略\n\n"
-        "| 时序 | 事件 | 类型 | 阶段 | 地点 | 角色 | 交汇 | 张力 | 爽点 | 描述 |\n"
-        "|------|------|------|------|------|------|------|------|------|------|\n" + "\n".join(rows) + "\n"
+        "| 时序 | 事件 | 类型 | 阶段 | 地点 | 角色 | 交汇 | 描述 |\n"
+        "|------|------|------|------|------|------|------|------|\n" + "\n".join(rows) + "\n"
     )
 
 
-# REQ-20261010-000638：六字段故事核心（设计原则 + 槽位目标形态）
-_CORE = (
-    "# 故事核心\n\n"
-    "- Logline：略\n"
-    "- 设计原则：越强的力量越要付出人性代价\n"
-    "- 核心主题：代价与成长\n"
-    "- 类型基调：东方玄幻·热血\n"
-    "- 节奏曲线：首事件≈2 · 前段末≥4 · 中点谷≤2 · 终局双峰5,5\n"
-    "- 最终结局：重铸天道\n"
-)
+_CORE = "# 故事核心\n\n- Logline：略\n- 最终结局：重铸天道\n"
 
 
 # ── contracts 判定器 ────────────────────────────────────────
@@ -295,7 +285,7 @@ class ObservationModeTest(unittest.TestCase):
         return workspace
 
     def test_in_range_observation_logged(self) -> None:
-        """观测日志含线类型 / 实际数 / 区间判定 / 类型词分布 / 张力爽点分布 / 自定义词。"""
+        """AC-004：观测日志含线类型 / 实际数 / 区间判定 / 类型词分布 / 自定义词。"""
         with tempfile.TemporaryDirectory() as tmpdir:
             workspace = self._seeded(tmpdir)
             mw = StorylineContractGuardMiddleware(workspace)
@@ -318,9 +308,6 @@ class ObservationModeTest(unittest.TestCase):
             self.assertIn("危机x2", out)
             self.assertIn("牺牲x3", out)
             self.assertIn("custom=牺牲x3", out)
-            # 张力分布（夹具 n=6 → 1,2,3,4,5,1）与爽点分布（全 —）
-            self.assertIn("tension=1x2/2x1/3x1/4x1/5x1", out)
-            self.assertIn("payoff=—x6", out)
 
     def test_out_of_range_observation_logged_but_never_blocks(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -345,7 +332,7 @@ class ObservationModeTest(unittest.TestCase):
             mw = StorylineContractGuardMiddleware(workspace)
             tracker = _CallTracker()
             text = (workspace / "storyline.md").read_text(encoding="utf-8")
-            with mock.patch.object(guard_mod, "_PACING_CONFIG", None), \
+            with mock.patch.object(guard_mod, "_OBSERVATION_CONFIG", None), \
                     self.assertLogs(_GUARD_LOGGER, level="INFO") as cm:
                 self.assertEqual(
                     mw.wrap_tool_call(_request_write(text + _block("支线一", "支线", 6)), tracker),
@@ -356,8 +343,6 @@ class ObservationModeTest(unittest.TestCase):
             self.assertIn("in_range=None", out)
             self.assertIn("只记实际数", out)
             self.assertIn("non_crossing=6", out)
-            self.assertIn("tension=", out)
-            self.assertIn("payoff=", out)
 
     def test_observation_exception_degrades_to_pass(self) -> None:
         """AC-005：观测自身异常 → 降级跳过并记异常日志，写入照常放行。"""
@@ -413,8 +398,7 @@ class ObservationModeTest(unittest.TestCase):
             tracker = _CallTracker()
             text = (workspace / "storyline.md").read_text(encoding="utf-8")
             with mock.patch.object(
-                guard_mod, "_PACING_CONFIG",
-                pacing_config_mod.PacingConfig(count_ranges={}, reference_types=frozenset()),
+                guard_mod, "_OBSERVATION_CONFIG", ({}, frozenset()),
             ), self.assertLogs(_GUARD_LOGGER, level="INFO") as cm:
                 self.assertEqual(
                     mw.wrap_tool_call(_request_write(text + _block("支线一", "支线", 6)), tracker),
@@ -428,18 +412,17 @@ class ObservationModeTest(unittest.TestCase):
         """加载器异常分支：损坏 JSON → 返回 None + 错误日志（降级只记实际数）。"""
         import tempfile as _tf
 
-        _PACING_LOGGER = "harness_current.middleware.pacing_config"
         with _tf.TemporaryDirectory() as tmpdir:
             bad = Path(tmpdir) / "bad_config.json"
             bad.write_text("{ not-json", encoding="utf-8")
-            with mock.patch.object(pacing_config_mod, "_CONFIG_PATH", bad), \
-                    self.assertLogs(_PACING_LOGGER, level="ERROR"):
-                self.assertIsNone(pacing_config_mod.load_pacing_config())
+            with mock.patch.object(guard_mod, "_OBSERVATION_CONFIG_PATH", bad), \
+                    self.assertLogs(_GUARD_LOGGER, level="ERROR"):
+                self.assertIsNone(guard_mod._load_observation_config())
             # 合法但缺 count_ranges 键 → 同样降级
             bad.write_text('{"foo": 1}', encoding="utf-8")
-            with mock.patch.object(pacing_config_mod, "_CONFIG_PATH", bad), \
-                    self.assertLogs(_PACING_LOGGER, level="ERROR"):
-                self.assertIsNone(pacing_config_mod.load_pacing_config())
+            with mock.patch.object(guard_mod, "_OBSERVATION_CONFIG_PATH", bad), \
+                    self.assertLogs(_GUARD_LOGGER, level="ERROR"):
+                self.assertIsNone(guard_mod._load_observation_config())
 
     def test_config_matches_prompt_intervals(self) -> None:
         """DEC-005 单一事实源：观测配置区间与提示词 §5.1 区间表述一致。"""
@@ -464,7 +447,7 @@ class ObservationModeTest(unittest.TestCase):
 
 
 class PathGuardWhitelistTest(unittest.TestCase):
-    def test_harness_whitelist_is_six_entries(self) -> None:
+    def test_harness_whitelist_is_five_entries(self) -> None:
         _load_real_harness()
         from harness_current.middleware.path_guard import WRITING_WRITE_PATTERNS
 
@@ -474,10 +457,9 @@ class PathGuardWhitelistTest(unittest.TestCase):
             r"^/storyline\.md$",
             r"^/worldview\.md$",
             r"^/object/[^/]+\.md$",
-            r"^/promises\.md$",
             r"^/review/[^/]+\.md$",
         })
-        for forbidden in ("/outline.md", "/novel.md", "/chapter/x.md", "/detail/x.md", "/state_log.md", "/storyline/x.md", "/promises/x.md"):
+        for forbidden in ("/outline.md", "/novel.md", "/chapter/x.md", "/detail/x.md", "/state_log.md", "/storyline/x.md"):
             self.assertFalse(
                 any(p.match(forbidden) for p in WRITING_WRITE_PATTERNS),
                 f"{forbidden} 不应再被白名单放行",
@@ -489,7 +471,7 @@ class PathGuardWhitelistTest(unittest.TestCase):
 
 class AssemblyTest(unittest.TestCase):
     def test_max_revisions_one_and_guard_mounted(self) -> None:
-        """M2 清单架构：单次审查修订 + 契约/台账护栏挂载与 promises 写权限声明。"""
+        """M2 清单架构：单次审查修订 + 结构契约护栏挂载均声明在 architecture.json。"""
         import json
 
         pkg_dir = Path(__file__).resolve().parents[2] / "evolution" / "harnesses" / "repo"
@@ -497,14 +479,9 @@ class AssemblyTest(unittest.TestCase):
             (pkg_dir / "architecture.json").read_text(encoding="utf-8")
         )
         story = next(a for a in manifest["agents"] if a["name"] == "storybuilding")
-        review = next(a for a in manifest["agents"] if a["name"] == "storybuilding_review")
 
         self.assertEqual(story.get("max_revisions", 1), 1)
         self.assertIn("storyline_contract_guard", story["middleware"])
-        self.assertIn("promises_contract_guard", story["middleware"])
-        self.assertIn("/promises.md", story["write_permissions"])
-        # review 子代理挂载节奏体检报告注入（FR-005）
-        self.assertIn("pacing_report", review["middleware"])
 
 
 if __name__ == "__main__":

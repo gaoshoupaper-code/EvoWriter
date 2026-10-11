@@ -1110,19 +1110,29 @@ class MetaAgentService(BaseAgentService):
         content: str,
         thread: ThreadSummary,
     ) -> ScreenplayGenerateResponse:
-        """收尾锚点检查（FR-007/REQ-20260930-163019）：只锚定 storyline.md。
+        """收尾锚点检查（FR-007/REQ-20260930-163019）：确认本轮确有产物落盘。
 
         v8 时代还强制要求 outline.md / evaluation.md——v9+ 单故事专家不产出
         这两个文件，旧检查曾使全新工作目录的任务收尾必炸（DEC-008/009）。
+        双泳道管线（REQ-20261011-142529）同理：管线工作区锚定 outline/
+        产物（任一 .md），legacy 工作区维持 storyline.md 锚定——锚点跟
+        产物走，否则管线工作区每轮收尾必炸（trace 误标 failed）。
         """
-        title = payload.fallback_title()
-        storyline_path = Path(thread.workspace_path) / "storyline.md"
-        if not storyline_path.exists():
-            raise FileNotFoundError(f"未产出故事线（storyline.md 缺失）: {storyline_path}")
+        from app.domains.writing.pipeline import classify_workspace
 
-        storyline_markdown = storyline_path.read_text(encoding="utf-8").strip()
-        if not storyline_markdown:
-            raise ValueError(f"未产出故事线（storyline.md 为空）: {storyline_path}")
+        title = payload.fallback_title()
+        workspace_path = Path(thread.workspace_path)
+        if classify_workspace(workspace_path) == "legacy":
+            storyline_path = workspace_path / "storyline.md"
+            if not storyline_path.exists():
+                raise FileNotFoundError(f"未产出故事线（storyline.md 缺失）: {storyline_path}")
+            if not storyline_path.read_text(encoding="utf-8").strip():
+                raise ValueError(f"未产出故事线（storyline.md 为空）: {storyline_path}")
+        else:
+            outline_dir = workspace_path / "outline"
+            # _pipeline.json 是状态文件不是产物，rglob("*.md") 天然排除
+            if not (outline_dir.is_dir() and any(outline_dir.rglob("*.md"))):
+                raise FileNotFoundError(f"未产出大纲（outline/ 目录无产物）: {outline_dir}")
 
         return ScreenplayGenerateResponse(
             mode="live",

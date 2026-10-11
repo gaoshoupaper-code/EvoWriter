@@ -117,22 +117,34 @@ def _fake_thread(tmp_path: Path):
 
 
 def test_finalization_anchors_on_storyline_only(tmp_path: Path) -> None:
-    """FR-007：收尾只检查 storyline.md 存在且非空；outline/evaluation 缺失不再是失败条件。"""
+    """FR-007 收尾锚点（REQ-20261011-142529 双锚点）：legacy 锚 storyline.md，
+    管线工作区锚 outline/ 产物——锚点跟产物走，否则管线收尾必炸误标 failed。"""
     service = MetaAgentService.__new__(MetaAgentService)
     payload = ScreenplayGenerateRequest(prompt="x", thread_id="t-test")
 
-    # storyline.md 缺失 → 收尾失败，错误指向故事线
-    with pytest.raises(FileNotFoundError, match="storyline"):
+    # 全新空工作区（pipeline 口径）→ 收尾失败，错误指向 outline 产物
+    with pytest.raises(FileNotFoundError, match="outline"):
         service._response_from_workspace_artifacts(payload, "done", _fake_thread(tmp_path))
 
-    # storyline.md 为空 → 收尾失败
+    # legacy：storyline.md 存在但为空 → 收尾失败
     (tmp_path / "storyline.md").write_text("", encoding="utf-8")
     with pytest.raises(ValueError, match="storyline"):
         service._response_from_workspace_artifacts(payload, "done", _fake_thread(tmp_path))
 
-    # storyline.md 有内容且无 outline.md / evaluation.md → 收尾成功
+    # legacy：storyline.md 有内容 → 收尾成功
     (tmp_path / "storyline.md").write_text("# 故事核心\n\n- **Logline**：测试", encoding="utf-8")
     response = service._response_from_workspace_artifacts(payload, "done", _fake_thread(tmp_path))
     assert response.mode == "live"
     assert not hasattr(response, "markdown") or not response.markdown
     assert not hasattr(response, "evaluation_markdown") or not response.evaluation_markdown
+
+    # pipeline：outline/ 有产物（含子目录）→ 收尾成功；_pipeline.json 不算产物
+    ws2 = tmp_path / "ws-pipeline"
+    (ws2 / "outline").mkdir(parents=True)
+    (ws2 / "outline" / "_pipeline.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(FileNotFoundError, match="outline"):
+        service._response_from_workspace_artifacts(payload, "done", _fake_thread(ws2))
+    (ws2 / "outline" / "06-章纲").mkdir()
+    (ws2 / "outline" / "06-章纲" / "第001章.md").write_text("# 章", encoding="utf-8")
+    response2 = service._response_from_workspace_artifacts(payload, "done", _fake_thread(ws2))
+    assert response2.mode == "live"

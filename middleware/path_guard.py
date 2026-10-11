@@ -5,21 +5,17 @@
   校验并规范化写入路径，防止越权或路径穿越攻击。
 
 安全规则：
-  1. 只允许写入预定义的工作区文件路径（正则白名单）
+  1. 只允许写入预定义的工作区文件路径（白名单）
   2. 禁止路径穿越（../）和访问用户主目录（~/）
   3. 禁止网络路径（//）和 Windows 扩展路径前缀（//?/）
   4. Windows 绝对路径会自动转换为虚拟路径（需在工作区内）
   5. 运行时可通过 allowed_write_paths 参数动态扩展白名单
 
-允许的写入路径白名单（v9+ 单故事专家产物集，REQ-20260930-194437 FR-008）：
-  - /character/<name>.md   — 角色档案文件
-  - /storyline.md          — 故事线主产物（单文件：故事核心 + 一线一区块）
-  - /worldview.md          — 世界观文件
-  - /review/<name>.md      — 审查报告文件（reviewer 共用本护栏，需写报告）
-  v8 旧路径（outline.md / novel.md / chapter/ / detail/ / state_log.md /
-  storyline/ 目录）已全部移除——越权写章节类风险的根因之一，写入即被硬拦。
-  （timeline.md / storyline_graph.md 为程序派生产物，由后端直写磁盘，
-   不经 agent 写入链路，不在白名单内）
+白名单来源（REQ-20261011-142529 双泳道起）：
+  架构清单 write_permissions glob（wcmatch BRACE|GLOBSTAR，与 deepagents
+  FilesystemPermission / receipt_gate 同语义）——build 钩子从 AgentSpec
+  读取传入，两层权限判定保持同一真相源。清单未声明时回退
+  WRITING_WRITE_PATTERNS（旧五件套正则，兼容旧清单与单测直构场景）。
 
 使用方式：
   在构建代理时传入 workspace_path（工作区根目录）和可选的额外白名单路径。
@@ -33,11 +29,16 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import wcmatch.glob as wcglob
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
 # 需要拦截的文件系统写入工具名称
 _FILESYSTEM_WRITE_TOOLS = {"write_file", "edit_file"}
+
+# glob 白名单匹配语义：BRACE|GLOBSTAR（** 跨段），与 deepagents
+# FilesystemPermission、receipt_gate 的受保护面判定一致。
+_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
 
 # 允许的写入路径正则白名单（虚拟路径格式，如 /storyline.md）。
 # 导出为 WRITING_WRITE_PATTERNS，供 writing domain 显式传入（DD6a 参数化）。
@@ -73,6 +74,7 @@ class FilesystemPathGuardMiddleware(AgentMiddleware):
         workspace_path: Path,
         allowed_write_paths: tuple[str, ...] = (),
         allowed_patterns: tuple[re.Pattern[str], ...] | None = None,
+        allowed_globs: tuple[str, ...] | None = None,
         intervention_callback: Callable[..., None] | None = None,
     ) -> None:
         """
@@ -82,10 +84,15 @@ class FilesystemPathGuardMiddleware(AgentMiddleware):
             allowed_patterns:    允许的写入路径正则模式元组（DD6a 参数化）。
                                  None 时用 WRITING_WRITE_PATTERNS（向后兼容写作默认）。
                                  各 domain 传自己的模式：image 传 images/skills 白名单。
+            allowed_globs:       允许的写入路径 glob 元组（清单 write_permissions，
+                                 wcmatch BRACE|GLOBSTAR 语义）。非 None 时取代
+                                 allowed_patterns 作为白名单（清单是唯一真相源）。
+            intervention_callback: trace 干预回调（装配期注入）
         """
         self.workspace_path = workspace_path.resolve()
         self.allowed_write_paths = set(allowed_write_paths)
         self.allowed_patterns = allowed_patterns  # None → normalize 内回退写作默认
+        self.allowed_globs = tuple(allowed_globs) if allowed_globs else None
         self.intervention_callback = intervention_callback
 
     # ------------------------------------------------------------------
@@ -136,6 +143,7 @@ class FilesystemPathGuardMiddleware(AgentMiddleware):
                 self.workspace_path,
                 self.allowed_write_paths,
                 allowed_patterns=self.allowed_patterns,
+                allowed_globs=self.allowed_globs,
             )
         except ValueError as exc:
             # 路径不合法，返回错误消息
@@ -194,6 +202,8 @@ def normalize_workspace_write_path(
     allowed_write_paths: set[str] | None = None,
     *,
     allowed_patterns: tuple[re.Pattern[str], ...] | None = None,
+    allowed_globs: tuple[str, ...] | None = None,
+    validate: bool = True,
 ) -> str:
     """校验并规范化工作区写入路径。
 
@@ -203,10 +213,16 @@ def normalize_workspace_write_path(
     Args:
         raw_path:             原始路径（可以是字符串、虚拟路径或 Windows 绝对路径）
         workspace_path:       工作区根目录（用于解析 Windows 绝对路径）
-        allowed_write_paths:  额外允许的写入路径集合（精确匹配）
+        allowed_write_paths:  额外允许的精确写入路径集合（精确匹配）
         allowed_patterns:     允许的写入路径正则模式元组（DD6a）。
                               None 时用 WRITING_WRITE_PATTERNS（向后兼容写作默认）。
                               传空元组 () 表示无正则白名单（仅精确匹配 allowed_write_paths）。
+        allowed_globs:        允许的写入路径 glob 元组（清单 write_permissions）。
+                              非 None 时取代 allowed_patterns 生效（清单唯一真相源）。
+        validate:             False 时只做规范化（穿越/绝对路径检查照旧），
+                              不做白名单校验——供仅需规范化路径的消费方
+                              （receipt_gate 受保护面判定 / file_state_tracker
+                              预检）使用，白名单判定不归它们管。
 
     Returns:
         规范化后的虚拟路径字符串
@@ -256,20 +272,29 @@ def normalize_workspace_write_path(
     if normalized != "/":
         normalized = normalized.rstrip("/")
 
+    # 仅规范化模式：白名单判定不归本次调用管（调用方自带保护面逻辑）
+    if not validate:
+        return normalized
+
     # 检查是否在额外白名单中（动态扩展路径）
     if normalized in allowed_write_paths:
         return normalized
 
-    # 检查是否匹配正则白名单（DD6a：patterns 可注入，默认写作白名单）
-    if not any(pattern.fullmatch(normalized) for pattern in patterns):
+    # 检查是否匹配白名单：清单 glob 优先（唯一真相源），否则回退正则白名单
+    if allowed_globs is not None:
+        if any(wcglob.globmatch(normalized, g, flags=_WCMATCH_FLAGS) for g in allowed_globs):
+            return normalized
+        allowed = ", ".join(allowed_globs)
+    elif any(pattern.fullmatch(normalized) for pattern in patterns):
+        return normalized
+    else:
         allowed = _describe_patterns(patterns)
-        if allowed_write_paths:
-            allowed = f"{allowed}, {', '.join(sorted(allowed_write_paths))}"
-        raise ValueError(
-            "Write path is outside the allowed workspace files: "
-            f"{normalized}. Allowed: {allowed}"
-        )
-    return normalized
+    if allowed_write_paths:
+        allowed = f"{allowed}, {', '.join(sorted(allowed_write_paths))}"
+    raise ValueError(
+        "Write path is outside the allowed workspace files: "
+        f"{normalized}. Allowed: {allowed}"
+    )
 
 
 def _describe_patterns(patterns: tuple[re.Pattern[str], ...]) -> str:
@@ -321,8 +346,15 @@ def _tool_error(tool_name: object, tool_call_id: object, message: str) -> ToolMe
 
 
 def build(abc):
-    """架构清单挂载钩子：基础链 PathGuard（路径白名单 + 规范化）。"""
+    """架构清单挂载钩子：基础链 PathGuard（路径白名单 + 规范化）。
+
+    白名单来源 = 本 agent 清单 write_permissions（wcmatch glob，
+    与 deepagents FilesystemPermission 同语义，两层判定同一真相源）；
+    清单未声明时回退 WRITING_WRITE_PATTERNS（旧五件套，兼容旧清单）。
+    """
+    perms = list(getattr(abc.agent, "write_permissions", []) or [])
     return FilesystemPathGuardMiddleware(
         abc.workspace_path,
+        allowed_globs=tuple(perms) if perms else None,
         intervention_callback=abc.intervention_callback,
     )

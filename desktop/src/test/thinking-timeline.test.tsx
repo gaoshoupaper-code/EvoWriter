@@ -53,27 +53,62 @@ describe("FR-003/AC-002：时间线分段与工具行交替", () => {
   });
 });
 
-describe("FR-002/AC-001：streaming 段折叠行实时摘要", () => {
-  it("折叠行显示「正在思考」+ 思考文本最新一行（DEC-008 英文原文直出）", () => {
+describe("FR-002/AC-001：streaming 态逐行显示（按行 flush）", () => {
+  it("streaming 默认展开：已完成行整行渲染，未换行的尾行不显示", () => {
     const m = message({
-      thoughts: [thought({ text: "The user wants a story.\nLet me think about the twist." })],
+      thoughts: [thought({ text: "The user wants a story.\nLet me think about the twist.\nunfinished ta" })],
     });
     render(<ThinkingTimeline message={m} loading />);
 
     const trigger = document.querySelector(".yan-thought-trigger")!;
     expect(trigger.textContent).toContain("正在思考");
-    const live = document.querySelector(".yan-thought-live")!;
-    expect(live.textContent).toBe("Let me think about the twist.");
+    expect(trigger.querySelector(".yan-thought-live")).toBeNull();
+
+    const paras = document.querySelectorAll(".yan-thought-para");
+    expect(paras.length).toBe(2);
+    expect(paras[0].textContent).toBe("The user wants a story.");
+    expect(paras[1].textContent).toBe("Let me think about the twist.");
   });
 
-  it("文本增长后摘要行跟随最新一行", () => {
-    const m = message({ thoughts: [thought({ text: "first line" })] });
-    const { rerender } = render(<ThinkingTimeline message={m} loading />);
-    expect(document.querySelector(".yan-thought-live")?.textContent).toBe("first line");
+  it("无换行时内容块为空，不逐字闪动", () => {
+    const m = message({ thoughts: [thought({ text: "first partial li" })] });
+    render(<ThinkingTimeline message={m} loading />);
+    expect(document.querySelectorAll(".yan-thought-para").length).toBe(0);
+  });
 
-    m.thoughts = [thought({ text: "first line\nsecond line" })];
+  it("点击标题可收起行流，再点展开", async () => {
+    const user = userEvent.setup();
+    const m = message({ thoughts: [thought({ text: "first line\nsecond line" })] });
+    const { rerender } = render(<ThinkingTimeline message={m} loading />);
+    expect(document.querySelectorAll(".yan-thought-para").length).toBe(1);
+
+    await user.click(document.querySelector(".yan-thought-trigger")!);
+    expect(document.querySelector(".yan-thought-text")).toBeNull();
+
+    await user.click(document.querySelector(".yan-thought-trigger")!);
+    expect(document.querySelectorAll(".yan-thought-para").length).toBe(1);
+
+    // 收起偏好跨内容更新保留：新行到达仍保持展开态显示
+    m.thoughts = [thought({ text: "first line\nsecond line\nthird line" })];
     rerender(<ThinkingTimeline message={m} loading />);
-    expect(document.querySelector(".yan-thought-live")?.textContent).toBe("second line");
+    expect(document.querySelectorAll(".yan-thought-para").length).toBe(2);
+  });
+
+  it("streaming 转 done 后默认收起为摘要行，用户点过展开则保持展开", async () => {
+    const user = userEvent.setup();
+    const m = message({ thoughts: [thought({ text: "first line\nsecond line" })] });
+    const { rerender } = render(<ThinkingTimeline message={m} loading />);
+    expect(document.querySelectorAll(".yan-thought-para").length).toBe(1);
+
+    m.thoughts = [thought({ text: "first line\nsecond line", status: "done", endedAt: NOW + 8000 })];
+    rerender(<ThinkingTimeline message={m} loading={false} />);
+    expect(document.querySelector(".yan-thought-text")).toBeNull();
+    expect(document.querySelector(".yan-thought-done-title")?.textContent).toContain("8 秒");
+
+    await user.click(document.querySelector(".yan-thought-trigger")!);
+    const paras = document.querySelectorAll(".yan-thought-para");
+    expect(paras.length).toBe(2);
+    expect(paras[1].textContent).toBe("second line");
   });
 });
 

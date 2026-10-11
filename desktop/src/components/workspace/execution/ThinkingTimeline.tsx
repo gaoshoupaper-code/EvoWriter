@@ -32,14 +32,11 @@ function formatElapsed(ms: number): string {
   return sec < 60 ? `${sec} 秒` : `${Math.floor(sec / 60)} 分 ${sec % 60} 秒`;
 }
 
-/** 思考文本最后一个非空行（FR-007：折叠行只渲染这一行，DEC-008 直接展示原文）。 */
-function lastNonEmptyLine(text: string): string {
-  const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
-    if (line) return line;
-  }
-  return "";
+/** streaming 态只渲染已完成行（换行符之前的行）：未写完的尾行不显示，
+ * 等换行后整行出现——避免 token 级逐字闪动，视觉上一行一行往下长。 */
+function completedLines(text: string): string {
+  const idx = text.lastIndexOf("\n");
+  return idx === -1 ? "" : text.slice(0, idx + 1);
 }
 
 export function ThinkingTimeline({ message, loading = false }: ThinkingTimelineProps) {
@@ -102,16 +99,12 @@ function FallbackRow({ message }: { message: ChatMessage }) {
 
 /** 思考段行：折叠触发器（状态 + 摘要）+ 展开正文（FR-002/004）。 */
 function ThoughtRow({ seg }: { seg: ThoughtSegment }) {
-  const [expanded, setExpanded] = useState(false);
-  const liveRef = useRef<HTMLSpanElement>(null);
+  // 用户点过折叠/展开则一直尊重；否则 streaming 默认展开（实时看行流）、
+  // 终态默认折叠（只留摘要行）。streaming 转终态时内容块随之收起，
+  // 消息气泡高度不被 token 推着伸缩。
+  const [userExpanded, setUserExpanded] = useState<boolean | null>(null);
   const live = seg.status === "streaming";
-  const summary = live ? lastNonEmptyLine(seg.text) : "";
-
-  // 滚动摘要（ZCode 同款）：内容增长后把单行视口推到末尾，最新 token 始终可见
-  useEffect(() => {
-    const el = liveRef.current;
-    if (el) el.scrollLeft = el.scrollWidth;
-  }, [summary]);
+  const expanded = userExpanded ?? live;
 
   const duration =
     seg.status === "streaming"
@@ -124,16 +117,13 @@ function ThoughtRow({ seg }: { seg: ThoughtSegment }) {
         type="button"
         className="yan-thought-trigger"
         data-testid={`yan-thought-trigger-${seg.id}`}
-        onClick={() => setExpanded((v) => !v)}
+        onClick={() => setUserExpanded(!expanded)}
         aria-expanded={expanded}
       >
         <span className="yan-status-dot" data-status={live ? "running" : seg.status === "interrupted" ? "failed" : "completed"} />
         {seg.label ? <span className="yan-thought-label">{seg.label}</span> : null}
         {live ? (
-          <>
-            <span className="yan-thought-live-title">正在思考</span>
-            <span className="yan-thought-live" ref={liveRef}>{summary}</span>
-          </>
+          <span className="yan-thought-live-title">正在思考</span>
         ) : seg.status === "interrupted" ? (
           <span className="yan-thought-live-title yan-thought-interrupted">思考中断</span>
         ) : (
@@ -141,7 +131,7 @@ function ThoughtRow({ seg }: { seg: ThoughtSegment }) {
         )}
         <span className="yan-thought-caret">{expanded ? "▴" : "▾"}</span>
       </button>
-      {expanded ? <ThoughtText text={seg.text} /> : null}
+      {expanded ? <ThoughtText text={live ? completedLines(seg.text) : seg.text} /> : null}
     </div>
   );
 }

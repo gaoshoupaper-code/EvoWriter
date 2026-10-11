@@ -4706,14 +4706,6 @@ html[data-theme="dark"] .panel-heading {
   color: var(--danger, #c2452d);
   animation: none;
 }
-.yan-thought-live {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  color: var(--muted);
-  direction: ltr;
-}
 .yan-thought-caret {
   font-size: var(--text-ui-xs);
   color: var(--muted);

@@ -68,25 +68,25 @@ def _invoke(tool, ctx, **kw):
 def test_delete_file_removes_middleware_and_cleans_manifest(pkg_copy):
     """删 domain middleware：文件删除 + 清单列表引用清理（AC-005 前置）。"""
     tools, ctx = _make_writers(pkg_copy)
-    result = _invoke(tools["delete_file"], ctx, file_path="middleware/quota_convergence.py")
+    result = _invoke(tools["delete_file"], ctx, file_path="middleware/object_contract_guard.py")
     assert "已删除" in result, result
-    assert not (pkg_copy / "middleware" / "quota_convergence.py").exists()
+    assert not (pkg_copy / "middleware" / "object_contract_guard.py").exists()
     manifest = json.loads((pkg_copy / "architecture.json").read_text(encoding="utf-8"))
-    story = next(a for a in manifest["agents"] if a["name"] == "storybuilding")
-    assert "quota_convergence" not in story["middleware"]
+    # 双泳道（DEC-011）：object_contract_guard 挂在 storystructure
+    structure = next(a for a in manifest["agents"] if a["name"] == "storystructure")
+    assert "object_contract_guard" not in structure["middleware"]
     assert ctx.code_mutations_since_validate == 1
 
 
 def test_delete_prompt_removes_agent_and_edges(pkg_copy):
-    """删 agent 的 prompt：整条 agent 移除 + 委托边清理。"""
+    """删 agent 的 prompt：整条 agent 移除（双泳道无委托边，等价为清 agents 条目）。"""
     tools, ctx = _make_writers(pkg_copy)
-    result = _invoke(tools["delete_file"], ctx, file_path="prompts/storybuilding_review.md")
+    result = _invoke(tools["delete_file"], ctx, file_path="prompts/storystructure_system.md")
     assert "已删除" in result, result
     manifest = json.loads((pkg_copy / "architecture.json").read_text(encoding="utf-8"))
     names = [a["name"] for a in manifest["agents"]]
-    assert "storybuilding_review" not in names
-    story = next(a for a in manifest["agents"] if a["name"] == "storybuilding")
-    assert story["delegates"] == []
+    assert "storystructure" not in names
+    assert "storydesign" in names
 
 
 def test_delete_file_refuses_manifest_and_contracts(pkg_copy):

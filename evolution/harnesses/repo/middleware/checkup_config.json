@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "default": {
+    "max_big_payoff_gap": 5,
+    "stale_chapters": 30,
+    "target_chapter_words": "2000-2200",
+    "batch_size": "5-10"
+  },
+  "tracks": {
+    "番茄": { "max_big_payoff_gap": 5, "stale_chapters": 30 },
+    "起点": { "max_big_payoff_gap": 8, "stale_chapters": 40 },
+    "七猫": { "max_big_payoff_gap": 5, "stale_chapters": 30 }
+  }
+}

@@ -64,42 +64,46 @@ class MiddlewareProjectionTest(unittest.TestCase):
                 {"orchestrator", "worldview", "character", "storyline", "storybuilding_review"},
             )
         else:
-            # manifest 与 v7 同构：故事专家（main）+ 审查器（sub）
-            self.assertEqual(set(self.stacks), {"storybuilding", "storybuilding_review"})
+            # 双泳道（REQ-20261011-142529 DEC-006）：两条 main 泳道
+            self.assertEqual(set(self.stacks), {"storydesign", "storystructure"})
 
     def test_projects_real_class_names_and_hooks(self) -> None:
-        """故事专家泳道：类名 + hooks 投影（v14 形态下无该泳道，跳过）。"""
-        if "storybuilding" not in self.stacks:
-            self.skipTest("working 包为 v14 多 Agent 形态，v7 泳道断言不适用")
-        story = {item["class_name"]: item for item in self.stacks["storybuilding"]}
+        """双泳道：类名 + hooks 投影（v14 形态下无该泳道，跳过）。"""
+        if "storydesign" not in self.stacks or "storystructure" not in self.stacks:
+            self.skipTest("working 包非双泳道形态，断言不适用")
+        design = {item["class_name"]: item for item in self.stacks["storydesign"]}
+        # 拍板闸 hooks 投影（单元拍板硬闸）
         self.assertEqual(
-            story["StorylineSingleLineLimitMiddleware"]["hooks"],
+            design["ReceiptGateMiddleware"]["hooks"],
             ["before_agent", "wrap_tool_call"],
         )
-        # 清单 context_files=["demand.md"]（v7 assemble 同参）→ ContextAssembler 实挂
-        self.assertIn("ContextAssemblerMiddleware", story)
-        self.assertFalse(story["ArtifactValidationMiddleware"]["optional"])
+        # 清单 context_files=["demand.md"]（两泳道同参）→ ContextAssembler 实挂
+        self.assertIn("ContextAssemblerMiddleware", design)
+        # 双泳道无委托/无 artifact_paths → 投影不含审查闭环件（RevisionLimit/
+        # ArtifactValidation 是有委托+产物校验的审查形态，DEC-016 review 延后）
+        self.assertNotIn("RevisionLimitMiddleware", design)
+        self.assertNotIn("ArtifactValidationMiddleware", design)
         self.assertTrue(
             all(item["hooks"] for stack in self.stacks.values() for item in stack)
         )
 
     def test_story_expert_stack_has_guards_and_limits(self) -> None:
-        """故事专家栈含护栏 + 修订上限 + 产物校验。"""
-        if "storybuilding" not in self.stacks:
-            self.skipTest("working 包为 v14 多 Agent 形态，v7 泳道断言不适用")
-        story = {item["class_name"] for item in self.stacks["storybuilding"]}
+        """双泳道栈含基础护栏 + 修订上限 + 产物校验 + 单元拍板闸。"""
+        if "storydesign" not in self.stacks or "storystructure" not in self.stacks:
+            self.skipTest("working 包非双泳道形态，断言不适用")
+        design = {item["class_name"] for item in self.stacks["storydesign"]}
         for required in (
             "ErrorRecoveryMiddleware",
             "FilesystemPathGuardMiddleware",
             "WriteResultInspectorMiddleware",
-            "RevisionLimitMiddleware",
-            "ArtifactValidationMiddleware",
-            "StorylineSingleLineLimitMiddleware",
+            "ReceiptGateMiddleware",
+            "OutlineContractGuardMiddleware",
         ):
-            self.assertIn(required, story)
-        # meta 层概念随 v7 退役
-        self.assertNotIn("MetaReadOnlyMiddleware", story)
-        self.assertNotIn("GoalMiddleware", story)
+            self.assertIn(required, design)
+        # 已清理的旧模式中间件不得回归（DEC-011）
+        self.assertNotIn("MetaReadOnlyMiddleware", design)
+        self.assertNotIn("GoalMiddleware", design)
+        self.assertNotIn("StorylineSingleLineLimitMiddleware", design)
 
 
 class V14ProjectionSyntheticTest(unittest.TestCase):

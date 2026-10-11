@@ -3,6 +3,7 @@ import { Button } from "@/components/ui/button";
 import {
   DEMAND_REQUIRED_FIELDS,
   isDemandValid,
+  normalizeDemandFields,
   type DemandFields,
 } from "../../lib/demand";
 import { readLastDemandFields } from "../../lib/session-persist";
@@ -14,6 +15,8 @@ type DemandFormProps = {
 };
 
 const EMPTY_FIELDS: DemandFields = {
+  platform: "番茄",
+  category: "玄幻",
   genre: "",
   premise: "",
   protagonist: "",
@@ -36,12 +39,13 @@ export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) 
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const dirtyRef = useRef(false);
 
-  // 预填是异步读盘，回来时用户可能已在输入——dirty 则放弃覆盖
+  // 预填是异步读盘，回来时用户可能已在输入——dirty 则放弃覆盖；
+  // 旧记忆缺赛道键时合并默认值（normalizeDemandFields）
   useEffect(() => {
     let cancelled = false;
     void readLastDemandFields().then((saved) => {
       if (cancelled || !saved || dirtyRef.current) return;
-      setFields(saved);
+      setFields(normalizeDemandFields(saved));
     });
     return () => {
       cancelled = true;
@@ -92,9 +96,32 @@ export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) 
           </button>
         </div>
         <p className="demand-form-desc">
-          填写三项必填即可开始——故事专家会先就关键盲点与你确认方向，
-          拍板后再生成大纲三件套（故事线 / 人物 / 世界观），着急可跳过。
+          填写三项必填即可开始——设计教练从赛道确认起步，一步一步拍板推进
+          七步管线（赛道 → 设计原则 → 冲突引擎 → 力量体系 → 总纲 → 卷纲 → 章纲）。
         </p>
+      </div>
+
+      <div className="demand-field-row">
+        <label className="demand-field">
+          <span className="demand-field-label">平台（赛道）</span>
+          <input
+            className="thread-input"
+            value={fields.platform}
+            onChange={(e) => updateField("platform", e.target.value)}
+            placeholder="番茄（默认）"
+            disabled={busy}
+          />
+        </label>
+        <label className="demand-field">
+          <span className="demand-field-label">品类（赛道）</span>
+          <input
+            className="thread-input"
+            value={fields.category}
+            onChange={(e) => updateField("category", e.target.value)}
+            placeholder="玄幻（默认）"
+            disabled={busy}
+          />
+        </label>
       </div>
 
       <label className="demand-field demand-field-required">

@@ -1,4 +1,29 @@
-export type WorkspacePanel = "chat" | "characters" | "objects" | "script" | "worldview";
+export type WorkspacePanel = "chat" | "characters" | "objects" | "script" | "worldview" | "outline";
+
+// ── 双 agent 管线（REQ-20261011-142529 FR-010，DEC-006/020）──
+
+/** 管线阶段条状态（executor pipeline_status 输出） */
+export type PipelineStatus = {
+  kind: string; // pipeline | legacy
+  phase: string; // storydesign | storystructure | legacy
+  next_unit: string;
+  design_done: boolean;
+  rework: { ticket: string; title: string; stage: string } | null;
+  awaiting: Record<string, string>;
+  updated_at?: string;
+  agent?: string | null;
+};
+
+export type OutlineFileEntry = {
+  rel: string;
+  markdown: string;
+};
+
+export type WorkspaceOutlineContent = {
+  kind: string;
+  pipeline: PipelineStatus;
+  files: OutlineFileEntry[];
+};
 
 export type Style = {
   style_id: string;
@@ -326,6 +351,9 @@ export type ChatMessage = {
   // 思考流分段（DEC-005：思考段与工具行穿插的时间线；恢复/回看共用）
   thoughts?: ThoughtSegment[];
   contentFormat?: "text" | "markdown";
+  // 双管线泳道徽章（REQ-20261011-142529 DEC-020 第 7 条）：assistant 消息
+  // 创建时从 contentStore.pipelinePhase 盖章（storydesign/storystructure）
+  agent?: string;
   // D2: 关联本次提交的 trace run（一次提交 = 一条 assistant message = 一个 trace）
   traceId?: string;
   // D2/P7: 本条消息的执行态（streaming=进行中 / completed / failed / stopped）
@@ -403,4 +431,5 @@ export type WorkspaceBootstrapResponse = {
   characters: WorkspaceCharacterContent | null;
   worldview: WorkspaceWorldviewContent | null;
   objects: WorkspaceObjectContent | null;
+  outline: WorkspaceOutlineContent | null;
 };

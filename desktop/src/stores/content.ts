@@ -6,7 +6,7 @@
  * 轮询逻辑保留在 usePanelPolling hook（它直接读这个 store 的 setter）。
  */
 import { create } from "zustand";
-import type { CharacterMarkdownFile, ObjectMarkdownFile, PanoramaEvent, RhythmData, StorylineEntry } from "../lib/types";
+import type { CharacterMarkdownFile, ObjectMarkdownFile, OutlineFileEntry, PanoramaEvent, PipelineStatus, RhythmData, StorylineEntry } from "../lib/types";
 import type { ContentData } from "./workspace";
 
 interface ContentState {
@@ -24,6 +24,11 @@ interface ContentState {
   objects: ObjectMarkdownFile[];
   objectsLoading: boolean;
   activeObjectFilename: string;
+  // 双 agent 管线（REQ-20261011-142529 FR-010）
+  outlineKind: string;
+  outlinePipeline: PipelineStatus | null;
+  outlineFiles: OutlineFileEntry[];
+  activeOutlineRel: string;
 
   // actions
   setContentData: (data: ContentData) => void;
@@ -42,6 +47,8 @@ interface ContentState {
   setObjects: (v: ObjectMarkdownFile[]) => void;
   setActiveObjectFilename: (v: string) => void;
   setObjectsLoading: (v: boolean) => void;
+  setOutline: (v: { kind: string; pipeline: PipelineStatus; files: OutlineFileEntry[] }) => void;
+  setActiveOutlineRel: (v: string) => void;
 }
 
 export const useContentStore = create<ContentState>((set) => ({
@@ -59,6 +66,10 @@ export const useContentStore = create<ContentState>((set) => ({
   objects: [],
   objectsLoading: false,
   activeObjectFilename: "",
+  outlineKind: "pipeline",
+  outlinePipeline: null,
+  outlineFiles: [],
+  activeOutlineRel: "",
 
   setContentData: (data) =>
     set({
@@ -73,6 +84,10 @@ export const useContentStore = create<ContentState>((set) => ({
       activeCharacterFilename: data.activeCharacterFilename,
       objects: data.objects,
       activeObjectFilename: data.activeObjectFilename,
+      outlineKind: data.outlineKind,
+      outlinePipeline: data.outlinePipeline,
+      outlineFiles: data.outlineFiles,
+      activeOutlineRel: data.activeOutlineRel,
     }),
 
   clearContent: () =>
@@ -88,6 +103,10 @@ export const useContentStore = create<ContentState>((set) => ({
       activeCharacterFilename: "",
       objects: [],
       activeObjectFilename: "",
+      outlineKind: "pipeline",
+      outlinePipeline: null,
+      outlineFiles: [],
+      activeOutlineRel: "",
     }),
 
   setStorylineMarkdown: (v) => set({ storylineMarkdown: v }),
@@ -104,4 +123,14 @@ export const useContentStore = create<ContentState>((set) => ({
   setObjects: (v) => set({ objects: v }),
   setActiveObjectFilename: (v) => set({ activeObjectFilename: v }),
   setObjectsLoading: (v) => set({ objectsLoading: v }),
+  setOutline: (v) =>
+    set((s) => ({
+      outlineKind: v.kind,
+      outlinePipeline: v.pipeline,
+      outlineFiles: v.files,
+      activeOutlineRel: v.files.some((f) => f.rel === s.activeOutlineRel)
+        ? s.activeOutlineRel
+        : (v.files[0]?.rel ?? ""),
+    })),
+  setActiveOutlineRel: (v) => set({ activeOutlineRel: v }),
 }));

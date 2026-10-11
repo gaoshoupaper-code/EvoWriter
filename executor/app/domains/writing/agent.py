@@ -354,18 +354,21 @@ class MetaAgentService(BaseAgentService):
             return None
         return style.get("meta_style") or None
 
-    def _agent_for_workspace(self, workspace_path: Path, trace_id: str | None = None, workspace_id: str | None = None, *, model=None, checkpointer=None, owner_id: str | None = None, strict_evidence: bool = False, llm_override=None, binding: BindingRecord | None = None):
+    def _agent_for_workspace(self, workspace_path: Path, trace_id: str | None = None, workspace_id: str | None = None, *, model=None, checkpointer=None, owner_id: str | None = None, strict_evidence: bool = False, llm_override=None, binding: BindingRecord | None = None, agent_name: str | None = None):
         # 多用户隔离（T2.4/T2.5）：model 用用户解密 key 构建，
         # checkpointer 用用户的分库 saver。两者外部注入，缺省回退全局（管理员兜底）。
         # Phase 7 包化重构：装配逻辑从 evolution 拉 manifest 改为同进程 import Agent 包。
         # 包自带 assemble(ctx)，执行端只构建 RuntimeContext 传入（D1=B / D8=X）。
         # Phase A（FR-004）：llm_override/binding 由 generate_stream 的 Run 绑定链路
         # 传入——Run 级模型锁定 + 绑定摘要进 trace 快照。
+        # 双 agent 管线（REQ-20261011-142529 FR-002）：agent_name 按泳道装配
+        #（storydesign / storystructure）；None = 首个 main（legacy 兼容）。
         return self._assemble_via_package(
             workspace_path, trace_id, workspace_id,
             model=model, checkpointer=checkpointer, owner_id=owner_id,
             strict_evidence=strict_evidence,
             llm_override=llm_override, binding=binding,
+            agent_name=agent_name,
         )
 
     def _assemble_via_package(
@@ -380,6 +383,7 @@ class MetaAgentService(BaseAgentService):
         strict_evidence: bool = False,
         llm_override=None,
         binding: BindingRecord | None = None,
+        agent_name: str | None = None,
     ):
         """Phase 7：经 Agent 包装配（替代 _assemble_via_manifest）。
 
@@ -443,6 +447,9 @@ class MetaAgentService(BaseAgentService):
                 # FR-004：Run 绑定摘要并进快照（bound commit/degraded/manifest 级联可追溯）
                 if binding is not None:
                     run_snapshot["binding"] = binding.model_dump(mode="json")
+                # 双 agent 管线（FR-012）：泳道打标——进化端 trace 按 agent 归因
+                if agent_name:
+                    run_snapshot["pipeline_agent"] = agent_name
                 self.trace_recorder.set_run_snapshot(trace_id, run_snapshot)
             except Exception as exc:
                 self.trace_recorder._mark_capture_degraded(
@@ -505,7 +512,7 @@ class MetaAgentService(BaseAgentService):
             workspace_root=workspace_path,
             strict=strict_evidence,
         ) if trace_id else nullcontext():
-            return pkg.assemble(ctx)
+            return pkg.assemble(ctx, agent_name=agent_name)
 
     # get_thread_checkpoint 复用 BaseAgentService 基类实现（PR-10 已提取，
     # 含 _normalize_message 规范化）。本地重复的 override + _normalize_message
@@ -640,11 +647,17 @@ class MetaAgentService(BaseAgentService):
 
         trace = self.trace_recorder.create_run(thread, "screenplay.generate")
         try:
-            prompt = self._build_user_prompt(payload, thread)
+            from app.domains.writing.pipeline import route as pipeline_route
+
+            pipe = pipeline_route(
+                Path(thread.workspace_path), thread.thread_id,
+                user_text=payload.primary_text() or "",
+            )
+            prompt = self._build_user_prompt(payload, thread, directive=pipe.directive)
             model = self._resolve_model(owner_id)
             agent = self._agent_for_workspace(
                 Path(thread.workspace_path), trace.trace_id, thread.workspace_id,
-                model=model, owner_id=owner_id,
+                model=model, owner_id=owner_id, agent_name=pipe.agent_name,
             )
             # T13：记录主控 prompt 版本到 trace（供后期 badcase 回放对照）。
             if hasattr(self, "_current_prompt_version"):
@@ -654,7 +667,7 @@ class MetaAgentService(BaseAgentService):
             result = agent.invoke(
                 {"messages": [{"role": "user", "content": prompt}]},
                 config={
-                    "configurable": {"thread_id": thread.thread_id},
+                    "configurable": {"thread_id": pipe.thread_id},
                     "callbacks": [TraceCallbackHandler(self.trace_recorder, trace.trace_id)],
                     # 保险丝（REQ-20261002-125538 DEC-002）：正常停止由 QuotaConvergence
                     # 软着陆主导（预算 60 次模型调用 × 实测 ≈7.1 超步/次 ≈ 426），
@@ -701,7 +714,9 @@ class MetaAgentService(BaseAgentService):
         demand_md_in = getattr(payload, "demand_md", None)
         if demand_md_in and demand_md_in.strip():
             workspace_path = Path(thread.workspace_path)
-            if (workspace_path / "storyline.md").exists():
+            has_legacy = (workspace_path / "storyline.md").exists()
+            has_outline = (workspace_path / "outline").is_dir()
+            if has_legacy or has_outline:
                 yield _sse("status", {
                     "status": "demand_rejected",
                     "reason": "大纲已生成：修订请使用对话入口，表单仅用于首次生成。",
@@ -720,6 +735,35 @@ class MetaAgentService(BaseAgentService):
         trace_id_in = getattr(payload, "trace_id", None)
         llm_override = None
         binding = None
+
+        # 双 agent 管线路由（REQ-20261011-142529 FR-002/003，DEC-006/020）：
+        # 决定本轮由哪个泳道执行（storydesign/storystructure/legacy）、用哪个
+        # 会话 thread；resume 沿未决拍板的原会话续跑；fresh=丢弃重开。
+        from app.domains.writing.pipeline import (
+            pipeline_status,
+            pop_awaiting_trace,
+            route as pipeline_route,
+        )
+
+        workspace_path = Path(thread.workspace_path)
+        pipe_decision = pipeline_route(
+            workspace_path, thread.thread_id,
+            user_text=payload.primary_text() or "",
+            resume_trace=trace_id_in if resume_value is not None else None,
+            fresh=bool(getattr(payload, "fresh_session", False)),
+        )
+        agent_name = pipe_decision.agent_name
+        lg_thread_id = pipe_decision.thread_id
+        if getattr(payload, "fresh_session", False) and pipe_decision.new_session:
+            old_trace = pop_awaiting_trace(workspace_path, agent_name)
+            if old_trace:
+                try:
+                    self.trace_recorder.cancel_awaiting_run(
+                        thread, old_trace, reason="session_abandoned",
+                    )
+                except Exception:  # noqa: BLE001 — 账面清理尽力而为
+                    logger.warning("丢弃重开：作废旧 trace 失败 trace=%s", old_trace)
+
         if resume_value is not None and trace_id_in:
             # FR-005 resume 兼容门禁 + FR-004 绑定快照：两次网络往返并行发出
             # （同步 HTTP，各自 to_thread 放线程池，不阻塞事件循环）。
@@ -779,16 +823,29 @@ class MetaAgentService(BaseAgentService):
             model=model, checkpointer=checkpointer, owner_id=owner_id,
             strict_evidence=run_purpose != "user_generation",
             llm_override=llm_override, binding=binding,
+            agent_name=agent_name,
         )
+
+        # 管线状态落盘（会话与 active trace 登记）+ 桌面端阶段条事件（FR-010）
+        from app.domains.writing import pipeline as writing_pipeline
+
+        writing_pipeline.commit_route(workspace_path, pipe_decision, trace.trace_id)
+        try:
+            yield _sse("pipeline", {
+                **pipeline_status(workspace_path),
+                "agent": agent_name,
+            })
+        except Exception:  # noqa: BLE001 — 观测事件不得阻塞主流程
+            pass
 
         # resume 分支已在上方判定，据此构造 agent 输入
         if resume_value is not None:
             agent_input: object = Command(resume=resume_value)
         else:
-            prompt = self._build_user_prompt(payload, thread)
+            prompt = self._build_user_prompt(payload, thread, directive=pipe_decision.directive)
             agent_input = {"messages": [{"role": "user", "content": prompt}]}
         config = {
-            "configurable": {"thread_id": thread.thread_id},
+            "configurable": {"thread_id": lg_thread_id},
             "callbacks": [TraceCallbackHandler(self.trace_recorder, trace.trace_id)],
             # 保险丝（REQ-20261002-125538 DEC-002）：正常停止由 QuotaConvergence
             # 软着陆主导（预算 60 次模型调用 × 实测 ≈7.1 超步/次 ≈ 426），
@@ -834,6 +891,7 @@ class MetaAgentService(BaseAgentService):
                 # domain 层决定调用时机；recorder 写 run_awaiting + 更新 index +
                 # notify evolution（不清内存，等 Command(resume) 续接）。
                 self.trace_recorder.await_input_run(thread, trace.trace_id)
+                writing_pipeline.on_interrupt(workspace_path, agent_name, trace.trace_id)
                 interrupt_payload: dict[str, Any] = {
                     "thread_id": thread.thread_id,
                     "source": "interview",
@@ -858,6 +916,7 @@ class MetaAgentService(BaseAgentService):
             content = self._extract_text(result.full_result)
             response = self._response_from_workspace_artifacts(payload, content, thread)
             self.trace_recorder.complete_run(thread, trace.trace_id)
+            writing_pipeline.on_run_complete(workspace_path, agent_name)
             for trace_update in self._trace_updates(trace_queue):
                 yield trace_update
             snapshot = self.trace_recorder.read_run_snapshot(thread, trace.trace_id)
@@ -883,6 +942,7 @@ class MetaAgentService(BaseAgentService):
             # - 否则：running 期间连接断开 → cancelled（agent 被 finally 真中止不可恢复）
             if self.trace_recorder.is_user_stop_requested(trace.trace_id):
                 self.trace_recorder.cancel_run(thread, trace.trace_id, reason="user_stop")
+                writing_pipeline.on_run_abandoned(workspace_path, agent_name)
                 # 用户停止也要结算预扣（已消耗的 token 不退）
                 self._settle_credits_if_any(thread.thread_id, force_stopped=False)
             elif self.trace_recorder.is_awaiting_input(trace.trace_id):
@@ -934,7 +994,13 @@ class MetaAgentService(BaseAgentService):
         except Exception:
             pass  # 结算失败不影响创作主流程（已落盘的内容不丢失）
 
-    def _build_user_prompt(self, payload: ScreenplayGenerateRequest, thread: ThreadSummary) -> str:
+    def _build_user_prompt(
+        self,
+        payload: ScreenplayGenerateRequest,
+        thread: ThreadSummary,
+        *,
+        directive: str | None = None,
+    ) -> str:
         context_lines = [
             f"{key}: {value}"
             for key, value in payload.loose_context().items()
@@ -942,52 +1008,39 @@ class MetaAgentService(BaseAgentService):
         ]
         free_text = payload.primary_text()
         context = "\n".join(context_lines) or "用户没有提供结构化字段。"
-        request_text = free_text or "请根据已有工作目录内容继续优化大纲。"
+        request_text = free_text or "请根据工作区当前进度继续下一产出单元。"
 
-        # FR-003（REQ-20261009-224433）：首次构建（storyline.md 尚不存在）注入
-        # 澄清前置指令（工具无关——澄清/拍板的具体工具与流程以系统提示词为准，
-        # 生产 harness 为 confirm_with_user + 方向提案，种子 harness 为 ask_user）；
-        # 修订/增量轮不注入，保持迭代委托文本干净。
+        # 首轮构建（无任何大纲产物）注入管线起步说明；后续轮不注入。
         workspace_path = getattr(thread, "workspace_path", "") or ""
-        first_build = bool(workspace_path) and not (Path(workspace_path) / "storyline.md").exists()
-        clarify_section = (
-            "## 需求澄清（首次构建前置，硬性）\n\n"
-            "写任何产物文件之前，先按你的系统提示词流程就 demand.md 未覆盖的关键盲点"
-            "向用户澄清并请其拍板（方案/问题以选项形式端出）；"
-            "首轮方向方案包的「关键锚点」必含设计原则——这个故事独有叙事逻辑压成一句话"
-            "（所有事件都是这句话的展开），每套方案各配一条不同的设计原则，"
-            "用户选方案即选设计原则；用户明示「不用问了，直接写」即视为拍板，"
-            "以你的推荐方案（含其设计原则）构建，并在汇报中明示所选设计原则。"
-            "拍板前不得写入任何受保护产物。\n\n"
+        first_build = bool(workspace_path) and not (
+            (Path(workspace_path) / "storyline.md").exists()
+            or (Path(workspace_path) / "outline").is_dir()
+        )
+        first_section = (
+            "## 首次构建（硬性）\n\n"
+            "从第 0 步「赛道确认」开始，按系统提示词的单元流程逐步推进："
+            "起草 → confirm_with_user 拍板 → 批准后落盘 → 停下等用户下一条消息。"
+            "严禁自动连跑多个单元；拍板前不得写任何受保护产物。\n\n"
             if first_build
             else ""
         )
+        directive_section = f"{directive}\n\n" if directive else ""
 
         return (
             "请根据用户需求执行创作任务。\n"
             "当前工作目录：/\n"
             f"当前 session：{thread.thread_id}\n\n"
-            f"{clarify_section}"
-            "## 故事构建流程\n\n"
-            "当前系统为单故事专家架构：大纲阶段由 storybuilding 一个专家完成，"
-            "没有细纲/正文等后续阶段——不要创建 detail/、chapter/ 目录，"
-            "不要写章节正文，写作类内容留给后续独立任务。\n"
-            "对于需要完整故事构建的需求（长篇/中篇），采用迭代式构建：\n"
-            "1. 判断故事规模，确定需要的迭代轮数（通常 2-4 轮）。\n"
-            "2. 第 1 轮按 storybuilding-initial Skill 初构骨架（仅主线 1 条 + 核心人物 + 世界观）。\n"
-            "3. 第 2+ 轮按 storybuilding-expand Skill 增量填充，按系统提示词的分流规则"
-            "（人物/故事线比值 R）选择新增故事线或新增人物；有 [配比导航] 指令时以其为准。\n"
-            "4. 每轮返回后检查评估结果；如标记质量风险，在下一轮优先修复。\n"
-            "5. 配比达标或预算耗尽后收尾：核对产物完整性，调用 review 审查（全程仅 1 次）并按需修订一次。\n\n"
-
-            "## storybuilding 委托规范\n\n"
-            "每轮增量时明确本轮焦点：优先扩展哪些维度（人物/故事线/世界观）、"
-            "用户的扩展方向（如有）、前几轮评估中发现的问题（如有）。\n\n"
-
+            f"{directive_section}"
+            f"{first_section}"
+            "## 管线说明\n\n"
+            "当前系统为双 agent 工业七步法管线：设计端（storydesign，第 0-3 步："
+            "赛道/设计原则/冲突引擎/力量体系）→ 结构端（storystructure，第 4-7 步："
+            "总纲/卷纲/章纲滚动/卷末盘点 + 期待台账）。上游对下游只读，目录即进度。\n\n"
             "## 产物要求\n\n"
-            "- 故事线产物只写 storyline.md 单文件（故事核心 + 一线一区块 + 事件表），"
-            "不创建 storyline/ 目录，不手写 timeline.md（由程序自动派生）。\n"
-            "- 人物档案写入 character/ 目录，世界观写入 worldview.md。\n"
+            "- 产物写入 outline/ 目录结构（00-赛道 ~ 06-章纲/ + 期待台账.md）"
+            "与配套深度文件（character/core|support/、worldview/core|setting.md、object/）。\n"
+            "- 不写正文；不创建 timeline.md（程序派生物）。\n"
+            "- 每个产出单元：拍板后落盘，落盘即已确认内容。\n\n"
 
             "用户需求：\n"
             f"{request_text}\n\n"

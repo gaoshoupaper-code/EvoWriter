@@ -225,12 +225,17 @@ class AssemblyTest(unittest.TestCase):
         manifest = json.loads(
             (pkg_dir / "architecture.json").read_text(encoding="utf-8")
         )
-        story = next(a for a in manifest["agents"] if a["name"] == "storybuilding")
+        # 双管线（REQ-20261011-142529 DEC-009）：物品卡归结构端泳道
+        structure = next(a for a in manifest["agents"] if a["name"] == "storystructure")
 
         # 物品卡写白名单（REQ-20260804-221109：/object/*.md）
-        self.assertIn("/object/*.md", story["write_permissions"])
+        self.assertIn("/object/*.md", structure["write_permissions"])
         # 护栏挂载（有序 domain middleware 列表内）
-        self.assertIn("object_contract_guard", story["middleware"])
+        self.assertIn("object_contract_guard", structure["middleware"])
+        # 设计端不挂物品卡护栏、无物品卡白名单（归属切分）
+        design = next(a for a in manifest["agents"] if a["name"] == "storydesign")
+        self.assertNotIn("object_contract_guard", design["middleware"])
+        self.assertNotIn("/object/*.md", design["write_permissions"])
 
 
 if __name__ == "__main__":

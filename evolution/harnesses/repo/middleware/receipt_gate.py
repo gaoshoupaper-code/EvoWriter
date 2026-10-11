@@ -1,55 +1,22 @@
-"""ReceiptGateMiddleware — 每轮任务拍板硬闸（每运行禁写形态，事件驱动回应）。
+"""ReceiptGateMiddleware — 产出单元拍板硬闸（每运行禁写形态，事件驱动回应）。
 
-交互模式（默认）的每轮入口闸门（进化 #10 泛化：从「首运行提案轮」推广
-到「每次用户发起新任务」）：**每轮运行**在 confirm_with_user 一次有效
-回复（用户拍板）之前，拦截一切受保护产物写入（storyline.md /
-worldview.md / character/*.md / object/*.md）。每轮的「澄清 → 拍板」由
-系统提示词 §二三层流程承载：澄清层允许多轮纯文本互动，任务卡/方案包
-（首轮 = 方向提案 2-3 套五件套；增量轮 = 轻量任务卡或方案包）经
-confirm_with_user 交用户拍板。一次有效回复即拍板（选定 → 直接动笔；
-调整/自提 → 消化后直接动笔；用户明示跳过（「不用问了直接写」等变体）
-→ 以推荐方案直接动笔）。拍板后本轮放行到底（下一轮 before_agent 重置）。
+双 agent 管线（REQ-20261011-142529 FR-003，DEC-010）的单元闸门：**每轮运行**
+在 confirm_with_user 一次有效回复（用户拍板）之前，拦截本泳道受保护产物的
+写入——单元流程 = 起草 → confirm 拍板 → 批准后落盘，目录里只有已确认内容
+（目录即进度）。受保护面 = 本泳道 architecture.json 的 write_permissions
+（storydesign：00-03/character/core/worldview core；storystructure：
+04-06/台账/character/support/worldview setting/object）。
 
-设计（与 ReviewGateMiddleware 同族范式）：
-  - 确认信号不解析消息内容——[配比导航]（QuotaConvergence）与
-    [review 闸门]（ReviewGate）注入的消息本身是 HumanMessage，按内容判定
-    「用户已回复」会被系统注入伪造；confirm_with_user 的挂起与返回值由
-    执行端 HITL 通道驱动（resume 仅用户操作可触发），运行计数同样天然
-    免疫（执行端仅在用户输入时发起下一次运行）。
-  - 回执轮暂停走 interrupt 而非文本终局（2026-10-02 线上死锁修复）：
-    ArtifactValidationMiddleware 要求 storyline.md 已产出才放行终局，
-    回执轮恰好禁止写产物——文本停轮被拦回，模型在两个互锁闸门间反复
-    挣扎（连续重复模型调用、输入框全程锁死）。confirm 工具把暂停变为
-    真实图挂起，不经过 after_model 产物校验；挂起即正常收尾
-    awaiting_input，前端解锁选项区。
-  - wrap_tool_call 拦 write_file / edit_file 指向受保护路径 → 返回
-    ToolMessage（status="error" + business_intercept 标记，对齐
-    StorylineSingleLineLimit 的拦截消息规范：不触发写重试、不触发
-    PlatformArtifactCapture 回读）。
-  - 提案轮重复读一次性指路（#8）：第 2 次读取同一路径时在返回内容前加
-    一次性提醒「唯一待办是调 confirm_with_user」，第 3 次起按文件放行
-    ——治「零成本打转」（trace-be5d2ddd：模型重读 specs 8 遍，全程不调
-    confirm 不写产物，读文件是唯一无后果动作）。不拦截读取、内容照给，
-    正当核对不受阻。
-  - 零注入纪律（#8）：删除 before_model 周期性指令注入——每次模型调用
-    前注入同一条完整任务书，会把模型反复重置回「准备阶段」，恰是循环
-    的拍器（8 轮注入 = 8 轮循环，精确对齐）。模型对提案轮的全部认知
-    来自系统提示词常驻「方向提案协议」与技能步骤 0（触发判定 =
-    storyline.md 不存在，模型自主探查）；闸门只做事件驱动回应
-    （写入拦截 / 重复读指路），不做周期性催促。
-  - 计数周期 = 每轮运行（进化 #10）：before_agent 重置确认与计数状态
-    （用户的新消息 = 新任务 = 重新拍板）。原「首运行 + storyline.md
-    不存在」判定废弃——每轮任务的产物写入都必须发生在本轮拍板之后，
-    storyline.md 已存在与否不再影响闸门。
+设计要点（沿用进化 #8/#10 的教训）：
+  - 确认信号不解析消息内容——confirm_with_user 的挂起与返回值由执行端
+    HITL 通道驱动（resume 仅用户操作可触发），运行计数天然免疫。
+  - 拍板前重复读同一路径 → 一次性指路（治零成本打转），第 3 次起放行。
+  - 零周期注入：不做 before_model 催促，闸门只做事件驱动回应。
+  - before_agent 每轮重置（用户的新消息 = 新单元 = 重新拍板）。
   - demand.md 元信息 receipt_skip: true（评估集预置流）→ 闸门跳过。
-  - 拦截上限（默认 3 次）防死循环：模型连续无视拦截则放行（降级放行，
-    人工 review 兜底），首次留日志——护栏故障不得中断创作主流程
-    （对齐 review_gate / storyline_contract_guard 的降级哲学）。
+  - 拦截上限（默认 3 次）防死循环：连续无视则降级放行 + 首次日志。
 
-hook 签名（langchain 1.4.3，inspect_middleware_protocol 2026-10-09 核对）：
-  before_agent(state, runtime) / abefore_agent(state, runtime) /
-  wrap_tool_call(request, handler) / awrap_tool_call(request, handler)。
-  （进化 #10 新增 before_agent 周期重置；before_model 注入维持零。）
+hook 签名（langchain 1.4.3）：before_agent / wrap_tool_call / awrap_tool_call。
 """
 from __future__ import annotations
 
@@ -58,6 +25,7 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
+import wcmatch.glob as wcglob
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
@@ -65,9 +33,7 @@ from .path_guard import normalize_workspace_write_path
 
 logger = logging.getLogger(__name__)
 
-# 受保护产物路径（normalize 后的虚拟路径口径，与 SingleLineLimit 一致）
-_PROTECTED_FILES = ("/storyline.md", "/worldview.md")
-_PROTECTED_DIR_PREFIXES = ("/character/", "/object/")
+_WCMATCH_FLAGS = wcglob.BRACE | wcglob.GLOBSTAR
 
 # 用户确认工具名（confirm_with_user 正常返回 = 用户已回复，闸门释放）
 _CONFIRM_TOOL_NAME = "confirm_with_user"
@@ -97,19 +63,24 @@ class ReceiptGateMiddleware(AgentMiddleware):
     def __init__(
         self,
         workspace_root: Path,
+        protected_globs: list[str] | None = None,
         *,
         max_blocks: int = 3,
-        storyline_relpath: str = "storyline.md",
     ) -> None:
         """
         Args:
-            workspace_root:    工作区根目录（storyline.md 存在性判定用）
+            workspace_root:    工作区根目录
+            protected_globs:   受保护产物 glob（相对 workspace 根，wcmatch
+                               GLOBSTAR 语义；缺省沿用旧五件套口径，兼容
+                               旧包与测试）
             max_blocks:        拦截上限（防死循环：模型连续无视则降级放行）
-            storyline_relpath: 产物存在的判定文件（相对 workspace_root）
         """
         self.workspace_root = Path(workspace_root).resolve()
         self.max_blocks = max_blocks
-        self.storyline_path = self.workspace_root / storyline_relpath
+        # 受保护面 = 本泳道写入白名单（拍板前禁写；缺省回退旧五件套）
+        self.protected_globs = list(protected_globs) if protected_globs else [
+            "/storyline.md", "/worldview.md", "/character/*.md", "/object/*.md", "/hooks.md",
+        ]
         self._blocks = 0
         self._exhausted_logged = False
         # confirm_with_user 工具正常返回（interrupt 已被用户 resume）= 已拍板。
@@ -189,11 +160,11 @@ class ReceiptGateMiddleware(AgentMiddleware):
                 tool_call_id = str(result.tool_call_id or "")
                 return ToolMessage(
                     content=(
-                        "[提案闸门·重复读] 这是本轮第 2 次读取同一文件："
-                        "你已经掌握其内容，重读不会带来新信息，也不可能满足"
-                        "提案轮要求。当前唯一待办：消化 demand.md，端出 2-3 套"
-                        "真实不同的方向方案（每套五件套），调用 confirm_with_user"
-                        " 提交（不要用纯文本回复代替）。以下是所读文件内容：\n\n"
+                        "[拍板闸门·重复读] 这是本轮第 2 次读取同一文件："
+                        "你已经掌握其内容，重读不会带来新信息。当前唯一待办："
+                        "消化需求与现有产物，完整起草本单元产物，调用 "
+                        "confirm_with_user 提交拍板（不要用纯文本回复代替）。"
+                        "以下是所读文件内容：\n\n"
                         + original
                     ),
                     name=name,
@@ -312,12 +283,10 @@ class ReceiptGateMiddleware(AgentMiddleware):
             return None
 
     def _is_protected(self, normalized_path: str) -> bool:
-        """受保护路径判定（normalize 后的虚拟路径口径）。"""
-        if normalized_path in _PROTECTED_FILES:
-            return True
+        """受保护路径判定：白名单 glob 命中即受保护（normalize 后的虚拟路径口径）。"""
         return any(
-            normalized_path.startswith(prefix)
-            for prefix in _PROTECTED_DIR_PREFIXES
+            wcglob.globmatch(normalized_path, pattern, flags=_WCMATCH_FLAGS)
+            for pattern in self.protected_globs
         )
 
     def _block_message(self, tool_call: Any) -> ToolMessage:
@@ -325,15 +294,12 @@ class ReceiptGateMiddleware(AgentMiddleware):
         tool_call_id = _mapping_value(tool_call, "id")
         return ToolMessage(
             content=(
-                "[任务拍板闸门] 本轮任务的确认（拍板）尚未完成：受保护产物"
-                "（storyline.md / worldview.md / character/*.md / object/*.md）"
-                "禁止写入。请先按系统提示词 §二三层流程执行——澄清层消化需求与"
-                "现有产物（需求已明确时跳过互动，直接出任务卡/方案包），经 "
-                "confirm_with_user 提交（轻量任务 = 一句话任务卡 + 快捷确认；"
-                "重量任务 / 首轮 = 2-3 套真实不同的方案包，每套五件套），一次"
-                "有效回复即拍板，拍板后方可写产物（用户明示「不用问了直接写」"
-                "即跳过拍板，以推荐方案直接动笔）。"
-                "不要用纯文本回复代替工具调用——产物未写出时终局会被产物校验拦回。"
+                "[单元拍板闸门] 本轮产出单元尚未拍板：本泳道产物禁止写入。"
+                "按主文档单元流程执行——先在对话里完整起草本单元产物全文，"
+                "经 confirm_with_user 提交拍板（question 放草稿全文 + 检验"
+                "结果），一次有效回复即拍板，批准后再按批准稿落盘"
+                "（用户明示「不用问了直接写」即跳过拍板，以推荐稿落盘）。"
+                "不要用纯文本回复代替工具调用。"
             ),
             name=str(_mapping_value(tool_call, "name") or "write_file"),
             tool_call_id=str(tool_call_id or ""),
@@ -365,8 +331,11 @@ def _mapping_value(mapping: object, key: str) -> Any:
 
 
 def build(abc):
-    """架构清单挂载钩子（M2）：domain 闸门——方向提案硬闸（首运行禁写形态）。"""
-    return ReceiptGateMiddleware(abc.workspace_path)
+    """架构清单挂载钩子（M2）：domain 闸门——单元拍板硬闸（保护面=本泳道白名单）。"""
+    return ReceiptGateMiddleware(
+        abc.workspace_path,
+        protected_globs=list(getattr(abc.agent, "write_permissions", []) or []),
+    )
 
 
 __all__ = ["ReceiptGateMiddleware"]

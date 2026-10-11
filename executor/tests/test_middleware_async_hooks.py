@@ -17,15 +17,17 @@ from pathlib import Path
 from app.platform.agent.loader import load_package
 
 _HARNESS_DIR = Path(__file__).resolve().parents[2] / "evolution" / "harnesses" / "repo"
-load_package(_HARNESS_DIR)
-
-import harness_current.middleware as mw_pkg  # noqa: E402
-from langchain.agents.middleware.types import AgentMiddleware  # noqa: E402
 
 _ASYNC_HOOK_PREFIXES = ("abefore_", "aafter_", "awrap_")
 
 
 def _iter_middleware_classes():
+    # 全量套件中其他测试可能 reset_cache() 清掉 harness_current 模块缓存
+    # （sys.modules purge）——在测试体内加载（load_package 幂等且自愈），不放在模块导入期
+    load_package(_HARNESS_DIR)
+    import harness_current.middleware as mw_pkg
+    from langchain.agents.middleware.types import AgentMiddleware  # noqa: E402
+
     for mod_info in pkgutil.iter_modules(mw_pkg.__path__):
         mod = importlib.import_module(f"harness_current.middleware.{mod_info.name}")
         for attr_name, attr in vars(mod).items():

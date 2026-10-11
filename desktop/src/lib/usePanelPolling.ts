@@ -5,6 +5,7 @@ import type { WorkspacePanel } from "./types";
 import {
   fetchWorkspaceCharacters,
   fetchWorkspaceObjects,
+  fetchWorkspaceOutline,
   fetchWorkspaceStoryline,
   fetchWorkspaceWorldview,
 } from "./api";
@@ -44,6 +45,8 @@ export interface PanelPollingSetters {
 
   setWorldviewMarkdown: (s: string) => void;
   setWorldviewLoading: (b: boolean) => void;
+
+  setOutline: (v: { kind: string; pipeline: import("./types").PipelineStatus; files: import("./types").OutlineFileEntry[] }) => void;
 }
 
 export interface UsePanelPollingParams {
@@ -138,6 +141,12 @@ export function usePanelPolling({
       s.setWorldviewMarkdown(data.markdown);
       s.setWorldviewLoading(false);
       if (data.markdown?.trim()) gotAny = true;
+    }
+    if (panel === "outline" || panel === "all") {
+      // 双管线 outline 面板（REQ-20261011-142529 FR-010）：阶段条 + 产物全集。
+      const data = await fetchWorkspaceOutline(workspaceId);
+      s.setOutline(data);
+      if (data.files.length) gotAny = true;
     }
     return gotAny;
   };

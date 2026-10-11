@@ -170,6 +170,21 @@ class WorkspaceObjectContent(BaseModel):
     objects: list[ObjectMarkdownFile] = Field(default_factory=list)
 
 
+class OutlineFileEntry(BaseModel):
+    """outline 产物文件（REQ-20261011-142529 FR-001/010，DEC-004）。"""
+
+    rel: str = Field(description="相对 workspace 路径，如 outline/04-总纲.md")
+    markdown: str
+
+
+class WorkspaceOutlineContent(BaseModel):
+    """管线阶段条 + outline 产物全集（桌面端 outline 视图 / SSE watch 载荷）。"""
+
+    kind: str = Field(description="pipeline | legacy（旧五件套工作区，files 为空）")
+    pipeline: dict[str, Any] = Field(default_factory=dict, description="pipeline_status 输出")
+    files: list[OutlineFileEntry] = Field(default_factory=list)
+
+
 class ScreenplayGenerateRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
@@ -187,6 +202,9 @@ class ScreenplayGenerateRequest(BaseModel):
     demand_md: str | None = None
     # resume 回传：复用活跃 trace，把一次提问的多次 HITL 缝合成同一条 trace（点3）
     trace_id: str | None = None
+    # 丢弃重开（REQ-20261011-142529 DEC-020 第 4 条）：true = 作废未决拍板、
+    # 新会话新 thread（不强制回原会话——切新会话即表达对上次不满）。
+    fresh_session: bool = False
 
     def primary_text(self) -> str:
         return self.prompt or self.content or self.text or self.premise or ""
@@ -229,3 +247,4 @@ class WorkspaceBootstrapResponse(BaseModel):
     characters: WorkspaceCharacterContent | None = None
     worldview: WorkspaceWorldviewContent | None = None
     objects: WorkspaceObjectContent | None = None
+    outline: WorkspaceOutlineContent | None = None

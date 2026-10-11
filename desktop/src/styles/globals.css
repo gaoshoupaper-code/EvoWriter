@@ -6293,3 +6293,101 @@ html[data-theme="dark"] .provider-item {
   background: var(--teal);
   color: #fff;
 }
+
+/* ═══ 双 agent 管线（REQ-20261011-142529 FR-010，DEC-014 A 先行）═══ */
+
+/* 管线阶段条：七步 0-7 进度 + 当前停点 + 回炉/拍板徽标 */
+.pipeline-stage-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 14px;
+  border: 1px solid var(--border, #e5e5e5);
+  border-radius: 12px;
+  margin-bottom: 10px;
+  background: var(--surface, #fafafa);
+  font-size: var(--text-ui-sm, 12px);
+}
+.pipeline-stage-bar.compact {
+  padding: 6px 10px;
+  gap: 8px;
+}
+.pipeline-phase {
+  font-weight: 800;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--teal, #2f9e8f);
+  color: #fff;
+  white-space: nowrap;
+}
+.pipeline-phase.storydesign { background: var(--coral, #e2694f); }
+.pipeline-phase.storystructure { background: var(--teal, #2f9e8f); }
+.pipeline-phase.legacy { background: var(--muted, #999); }
+.pipeline-steps {
+  display: flex;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex-wrap: wrap;
+}
+.pipeline-step {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border, #e5e5e5);
+  color: var(--muted, #888);
+  white-space: nowrap;
+}
+.pipeline-step.done {
+  color: var(--teal, #2f9e8f);
+  border-color: currentColor;
+}
+.pipeline-step.active {
+  color: #fff;
+  background: var(--coral, #e2694f);
+  border-color: var(--coral, #e2694f);
+}
+.pipeline-rework,
+.pipeline-awaiting {
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 8px;
+  background: rgba(226, 105, 79, 0.12);
+  color: var(--coral, #e2694f);
+  white-space: nowrap;
+}
+.pipeline-awaiting { background: rgba(47, 158, 143, 0.12); color: var(--teal, #2f9e8f); }
+.pipeline-hint { color: var(--muted, #888); }
+
+/* outline 面板：产物文件切换标签 */
+.outline-file-tabs {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}
+.outline-file-tab {
+  border: 1px solid var(--border, #e5e5e5);
+  background: transparent;
+  color: var(--muted, #888);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: var(--text-ui-sm, 12px);
+  cursor: pointer;
+}
+.outline-file-tab.active {
+  color: #fff;
+  background: var(--teal, #2f9e8f);
+  border-color: var(--teal, #2f9e8f);
+}
+
+/* 需求表单赛道双列 */
+.demand-field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}

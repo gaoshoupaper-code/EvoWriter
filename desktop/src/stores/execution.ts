@@ -525,6 +525,15 @@ async function performSubmit(
   );
 
   const assistantIdx = get().messages.length + 1;
+  // 双管线泳道徽章（REQ-20261011-142529 DEC-020 第 7 条）：assistant 消息
+  // 创建时从 contentStore 盖章（outline 轮询维护的当前相位）
+  let pipelineAgent: string | undefined;
+  try {
+    const { useContentStore } = await import("./content");
+    pipelineAgent = useContentStore.getState().outlinePipeline?.phase || undefined;
+  } catch {
+    pipelineAgent = undefined;
+  }
   set((state) => ({
     messages: [
       ...state.messages,
@@ -535,6 +544,7 @@ async function performSubmit(
         contentFormat: "markdown",
         tools: [],
         traceId: resumeTraceId ?? undefined,
+        agent: pipelineAgent,
       },
     ],
     prompt: "",

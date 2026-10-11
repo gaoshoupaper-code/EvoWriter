@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CharacterGenerateRequest, CharacterGenerateResponse, CheckpointState, InitResponse, Style, ThreadSummary, TraceDetail, TraceRunSummary, WorkspaceBootstrapResponse, WorkspaceCharacterContent, WorkspaceObjectContent, WorkspaceStorylineContent, WorkspaceWorldviewContent, WorkspaceSummary } from "./types";
+import type { CharacterGenerateRequest, CharacterGenerateResponse, CheckpointState, InitResponse, Style, ThreadSummary, TraceDetail, TraceRunSummary, WorkspaceBootstrapResponse, WorkspaceCharacterContent, WorkspaceObjectContent, WorkspaceOutlineContent, WorkspaceStorylineContent, WorkspaceWorldviewContent, WorkspaceSummary } from "./types";
 
 /**
  * 桌面端所有请求走 Rust 中继（设计文档 S4/S5）：
@@ -517,6 +517,12 @@ export async function fetchWorkspaceCharacters(workspaceId: string) {
 export async function fetchWorkspaceObjects(workspaceId: string) {
   const response = await apiFetch(`${API_BASE_URL}/api/workspaces/${workspaceId}/objects`);
   return parseJsonResponse<WorkspaceObjectContent>(response);
+}
+
+/** outline 产物全集 + 管线阶段条（REQ-20261011-142529 FR-010；legacy 返回 kind=legacy） */
+export async function fetchWorkspaceOutline(workspaceId: string) {
+  const response = await apiFetch(`${API_BASE_URL}/api/workspaces/${workspaceId}/outline`);
+  return parseJsonResponse<WorkspaceOutlineContent>(response);
 }
 
 

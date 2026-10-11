@@ -161,4 +161,21 @@ def test_missing_main_agent(tmp_path):
     manifest.agents[0].role = "sub"
     manifest.agents[0].delegated_by = "storybuilding_review"
     result = validate_architecture_manifest(pkg, manifest)
-    assert any("恰好声明一个 role=main" in e for e in result.errors)
+    assert any("至少声明一个 role=main" in e for e in result.errors)
+
+
+def test_multiple_main_agents_allowed(tmp_path):
+    """多主泳道（REQ-20261011-142529 DEC-006）：双 main 清单合法，首个为缺省。"""
+    pkg = _make_pkg(tmp_path)
+    manifest = load_architecture_manifest(pkg)
+    from contracts.architecture_manifest import AgentSpec
+
+    manifest.agents.append(AgentSpec(
+        name="storystructure", role="main",
+        prompt="prompts/review.md", middleware=[],
+    ))
+    result = validate_architecture_manifest(pkg, manifest)
+    assert result.ok, result.errors
+    assert [a.name for a in manifest.main_agents] == [
+        "storybuilding", "storystructure",
+    ]

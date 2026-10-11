@@ -137,36 +137,38 @@ validate_changes / write_design_doc / write_change_log）会被中间件拦截�
 # ④ Agent 要素全景（v7 两泳道）
 
 Writer 的创作 Agent 打成一个自包含的 **harness 包**（`harnesses/repo/`）。
-v7 架构 = **单故事专家 Agent（剧情大纲设计）+ reviewer**，两条泳道——
-没有 meta 编排、没有访谈/细纲/正身子代理、没有多级委托。
+双泳道架构（REQ-20261011-142529）= **设计端（storydesign）+ 结构端（storystructure）两条 main 泳道**——
+工业七步法：设计端管第 0-3 步（赛道/设计原则/冲突引擎/力量体系），
+结构端管第 4-7 步（总纲/卷纲/章纲滚动/卷末盘点 + 期待台账）。
+没有 review 子代理（延后）、没有技能目录（方法论在主文档自包含）、
+没有配比导航——上游产物对下游只读，改上游唯一路径是回炉工单。
 
-> 注意：「v7」是**架构代号**（第 7 代架构设计），不是 harness 的发版流水号。
+> 注意：「v7」等是**架构代号**（历史代际），不是 harness 的发版流水号。
 > 当前 harness 的实际版本和演进史以「当前 session → 作品绑定」段里的
-> 全局发版流水为准（发版流水号是另一套数字），两者无关——
-> 不要把「v7 架构」表述理解成「harness 只发过 7 版」或「从未改过」。
+> 全局发版流水为准（发版流水号是另一套数字），两者无关。
 
-### 泳道一：故事专家（storybuilding，顶层）
-
-| 要素 | 位置 | 是什么 | 起什么作用 |
-|------|------|--------|-----------|
-| **system prompt** | `prompts/storybuilding_system.md` | 故事专家的工作手册 | 定义大纲生成行为规范——双层故事线架构、三幕式编排、增量迭代分流 |
-| **skills** | `skills/storybuilding-initial/`、`skills/storybuilding-expand/` | 初构 + 增量两个技能包 | 分步操作指南，按任务焦点选用 |
-| **domain middleware** | `middleware/*.py`（清单 middleware 列表有序挂载） | 护栏 + State 操作者 | 单线硬约束（StorylineSingleLineLimit）、结构契约（StorylineContractGuard）、物品卡契约（ObjectContractGuard）、配比收敛（QuotaConvergence）等 |
-| **清单声明** | `architecture.json` 的 `storybuilding` 条目 | 该 agent 的静态挂载真相 | role=main、prompt 路径、middleware 有序列表、skills、delegates、写入权限、context 注入、产物校验——改这里即改挂载 |
-
-故事专家的输入 = demand.md（清单 context_files 声明，解释器挂 ContextAssembler 注入）；
-产出 = 大纲三件套（storyline / character / worldview），走 ArtifactRevision 冻结。
-
-### 泳道二：审查器（storybuilding_review）
+### 泳道一：设计端（storydesign，main）
 
 | 要素 | 位置 | 是什么 | 起什么作用 |
 |------|------|--------|-----------|
-| **review prompt** | `prompts/storybuilding_review.md` | 审查器工作手册 | 跨维度一致性审查规范 |
-| **清单声明** | `architecture.json` 的 `storybuilding_review` 条目 | 审查器静态挂载真相 | role=sub、运行时委托名 review、唯一写权限 /review/storybuilding.md |
+| **system prompt** | `prompts/storydesign_system.md` | 设计教练主文档（自包含：流程+检验清单+模板） | 第 0-3 步方法论的唯一真相源——四要素设计原则双检验、冲突引擎对立测试、力量体系金手指代价红线 |
+| **domain middleware** | `middleware/receipt_gate.py`、`middleware/outline_contract_guard.py`（清单有序挂载） | 单元拍板闸 + outline 结构契约 | 拍板前禁写产物（目录=已确认进度）；00-03 结构语法硬拦 |
+| **清单声明** | `architecture.json` 的 `storydesign` 条目 | 该 agent 的静态挂载真相 | role=main、prompt 路径、middleware、tools（confirm_with_user）、写白名单（00-03/character/core/worldview core）、context 注入 |
 
-审查器是故事专家的唯一子代理（清单 delegates 声明，task 工具委托）：
-产出后审查 → 不通过则修订（RevisionLimit 强制单次审查修订）
-→ trace 全程可观测（review_executed）。
+设计端输入 = demand.md（ContextAssembler 注入，含赛道字段）；
+产出 = `outline/00-赛道.md` ~ `03-力量体系.md` + `character/core/` + `worldview/core.md`。
+
+### 泳道二：结构端（storystructure，main）
+
+| 要素 | 位置 | 是什么 | 起什么作用 |
+|------|------|--------|-----------|
+| **system prompt** | `prompts/storystructure_system.md` | 结构教练主文档（自包含） | 第 4-7 步 + 期待台账八列 + 硬指标口径 + 回炉提案协议 + 配套深度规范 |
+| **domain middleware** | `receipt_gate` + `outline_contract_guard` + `object_contract_guard` | 单元拍板闸 + 结构契约 + 物品卡契约 | 同设计端拍板闸；台账/章纲批/总纲/卷纲结构硬拦；物品卡三段式 |
+| **专属工具** | `tools/submit_rework_ticket.py` | 回炉工单提交（interrupt 拍板） | 上游只读的唯一出口：提案→用户拍板→设计端修订→波及修订（三停） |
+| **体检计算** | `checkup.py` + `middleware/checkup_config.json` | 程序体检（爽点/钩子/大爽点间隔/悬置/境界余量） | structure 泳道拍板载荷自动附报告（只建议不拦截，DEC-007） |
+
+结构端产出 = `outline/04-总纲.md`、`05-卷纲/`、`06-章纲/`（每批 5-10 章滚动）、
+`期待台账.md`、`character/support/`、`worldview/setting.md`、`object/`。
 
 ### 通用底座（解释器基础链，全 agent 统一、不可清单化）
 
@@ -297,8 +299,8 @@ State 的核心字段（inspect_state_schema 可查完整文档）：
 **读什么**：
 - `list_elements` 看包里有哪些要素文件。
 - `read_source` 读具体要素源码，理解当前 Agent 怎么搭的——
-  特别是要改的要素及其上下游（如改 storybuilding_system 要顺带看
-  storybuilding-initial / storybuilding-expand 技能是否对齐）。
+  特别是要改的要素及其上下游（如改 storydesign_system 的检验清单要顺带看
+  evolution 契约测试 test_dual_lane_prompt_contract 是否对齐）。
 - 如需理解装配机制，调 `read_assemble`。
 
 **产出**：`write_design_doc`——每个改动指向明确要素，说清改什么、为什么改、引用证据。

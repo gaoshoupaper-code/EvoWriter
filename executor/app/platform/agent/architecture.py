@@ -290,8 +290,12 @@ def _build_agent(
     return _build_subagent_spec(abc)
 
 
-def assemble_from_manifest(ctx: RuntimeContext, package: str):
+def assemble_from_manifest(ctx: RuntimeContext, package: str, agent_name: str | None = None):
     """清单驱动装配入口（harness 包 __init__.assemble 的委托目标）。
+
+    Args:
+        agent_name: 按名装配的 main agent（双泳道管线，REQ-20261011-142529
+            DEC-006/019）；None = 首个 main（单泳道包与旧调用方不变）。
 
     Raises:
         ManifestError: 清单缺失 / 解析失败 / 强校验不过（引用悬空、委托环等）。
@@ -303,7 +307,16 @@ def assemble_from_manifest(ctx: RuntimeContext, package: str):
         raise ManifestError(
             "架构清单校验失败: " + "; ".join(validation.errors)
         )
-    main = manifest.main_agents[0]
+    if agent_name is not None:
+        named = manifest.agent(agent_name)
+        if named is None or named.role != "main":
+            raise ManifestError(
+                f"清单中不存在 role=main 的 agent: {agent_name}"
+                f"（现有 main: {[a.name for a in manifest.main_agents]}）"
+            )
+        main = named
+    else:
+        main = manifest.main_agents[0]
     logger.info(
         "清单装配: main=%s subagents=%s domain_mw=%s",
         main.name,

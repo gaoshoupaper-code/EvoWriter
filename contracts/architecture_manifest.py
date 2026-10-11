@@ -242,10 +242,13 @@ def validate_architecture_manifest(
     names = {a.name for a in manifest.agents}
 
     # ── agent 级检查 ──────────────────────────────────────────
-    if len(manifest.main_agents) != 1:
+    # 多主泳道（REQ-20261011-142529 DEC-006/019）：至少一个 role=main；
+    # 多 main = 管线多泳道（storydesign/storystructure），executor 按名装配，
+    # 首个 main 为缺省（单泳道包与旧调用方不受影响）。
+    if len(manifest.main_agents) < 1:
         result.errors.append(
-            f"清单必须恰好声明一个 role=main 的顶层 agent（实际 {len(manifest.main_agents)} 个，"
-            f"executor 装配产物是单一顶层图）"
+            "清单必须至少声明一个 role=main 的顶层 agent（实际 0 个，"
+            "executor 装配产物是顶层图）"
         )
     for agent in manifest.agents:
         if not _SAFE_NAME.match(agent.name):

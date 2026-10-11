@@ -157,12 +157,13 @@ describe("v9 表单直入（FR-002）", () => {
     const call = streamRequest.mock.calls[0];
     const body = call[1].body as Record<string, string>;
     expect(body.prompt).toContain("demand.md");
-    // FR-003（REQ-20261009-224433）：kickoff 改为先澄清拍板，不再是一口气生成
-    expect(body.prompt).toContain("澄清");
-    expect(body.prompt).toContain("不用问了，直接写");
+    // 双管线 kickoff（REQ-20261011-142529 FR-003）：第 0 步单元拍板起步，严禁自动连跑
+    expect(body.prompt).toContain("赛道确认");
+    expect(body.prompt).toContain("严禁自动连跑");
     expect(body.demand_md).toContain("玄幻·热血升级流");
     expect(body.demand_md).toContain("status: confirmed");
-    expect(body.demand_md).toContain("expected_subagents");
+    expect(body.demand_md).toContain("storydesign");
+    expect(body.demand_md).toContain("平台：番茄");
   });
 });
 

@@ -23,6 +23,7 @@ from app.domains.writing.expert_agent.services.storyline_graph import (
 )
 from app.routers.context import _log, get_agent_service, get_character_service, get_thread_store
 from app.schemas.screenplay import (
+    OutlineFileEntry,
     PanoramaEvent,
     HookProgress,
     RhythmDataModel,
@@ -32,12 +33,48 @@ from app.schemas.screenplay import (
     WorkspaceCharacterContent,
     WorkspaceCreateRequest,
     WorkspaceObjectContent,
+    WorkspaceOutlineContent,
     WorkspaceStorylineContent,
     WorkspaceSummary,
     WorkspaceWorldviewContent,
 )
 
 router = APIRouter()
+
+# outline 产物目录内文件上限（防异常 workspace 撑爆载荷；正常 < 100）
+_MAX_OUTLINE_FILES = 200
+
+
+def _read_outline_content(workspace_path: Path) -> WorkspaceOutlineContent:
+    """outline 产物全集 + 管线阶段条数据（REQ-20261011-142529 FR-010，DEC-004/015）。
+
+    旧五件套工作区（legacy）：kind=legacy、files 为空——桌面端沿用旧面板。
+    """
+    from app.domains.writing.pipeline import classify_workspace, pipeline_status
+
+    kind = classify_workspace(workspace_path)
+    if kind != "pipeline":
+        return WorkspaceOutlineContent(kind="legacy", pipeline={"kind": "legacy"})
+    files: list[OutlineFileEntry] = []
+    roots = [
+        workspace_path / "outline",
+        workspace_path / "worldview",
+    ]
+    allowed_extra = {"core.md", "setting.md"}
+    for root in roots:
+        if not root.is_dir():
+            continue
+        for f in sorted(root.rglob("*.md"), key=lambda p: p.as_posix()):
+            rel = f.relative_to(workspace_path).as_posix()
+            if root.name == "worldview" and f.name not in allowed_extra:
+                continue  # legacy worldview.md 走旧面板
+            if len(files) >= _MAX_OUTLINE_FILES:
+                break
+            try:
+                files.append(OutlineFileEntry(rel=rel, markdown=f.read_text(encoding="utf-8")))
+            except OSError:
+                continue
+    return WorkspaceOutlineContent(kind="pipeline", pipeline=pipeline_status(workspace_path), files=files)
 
 
 def _attach_panorama(
@@ -114,10 +151,14 @@ def _classify_changes(changes, workspace_path: Path) -> set[str]:
         if not parts:
             continue
         top = parts[0]
-        if top in ("storyline.md", "timeline.md", "hooks.md") or (len(parts) > 1 and parts[0] == "storyline"):
+        if top == "outline":
+            categories.add("outline")  # 双管线产物（含 _pipeline.json 变更不触发，watch 只看 .md）
+        elif top in ("storyline.md", "timeline.md", "hooks.md") or (len(parts) > 1 and parts[0] == "storyline"):
             categories.add("storyline")
         elif top == "worldview.md":
             categories.add("worldview")
+        elif top == "worldview" and rel.name in ("core.md", "setting.md"):
+            categories.add("outline")
         elif len(parts) > 1 and parts[0] == "character":
             categories.add("characters")
         elif len(parts) > 1 and parts[0] == "object":
@@ -138,6 +179,8 @@ async def _workspace_watch_generator(owner_id: str, workspace_id: str, workspace
             categories = _classify_changes(changes, workspace_path)
             if not categories:
                 continue
+            if "outline" in categories:
+                yield _sse_event("outline", _read_outline_content(workspace_path).model_dump())
             if "storyline" in categories:
                 content = thread_store.artifacts.read_workspace_storyline(owner_id, workspace_id)
                 if content is not None:
@@ -175,6 +218,7 @@ def bootstrap_workspace(workspace_id: str, user: CurrentUser = Depends(current_u
     workspace = thread_store.get_workspace(user.user_id, workspace_id)
     if workspace is not None:
         data["storyline"] = _attach_panorama(data.get("storyline"), Path(workspace.workspace_path))
+        data["outline"] = _read_outline_content(Path(workspace.workspace_path))
     return WorkspaceBootstrapResponse(**data)
 
 
@@ -226,6 +270,16 @@ def get_workspace_objects(workspace_id: str, user: CurrentUser = Depends(current
     if content is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return content
+
+
+@router.get("/workspaces/{workspace_id}/outline", response_model=WorkspaceOutlineContent)
+def get_workspace_outline(workspace_id: str, user: CurrentUser = Depends(current_user)) -> WorkspaceOutlineContent:
+    """outline 产物全集 + 管线阶段条（REQ-20261011-142529 FR-010；legacy 返回 kind=legacy）。"""
+    thread_store = get_thread_store()
+    workspace = thread_store.get_workspace(user.user_id, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return _read_outline_content(Path(workspace.workspace_path))
 
 
 @router.get("/workspaces/{workspace_id}/watch")

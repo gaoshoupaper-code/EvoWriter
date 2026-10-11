@@ -12,6 +12,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { usePanelPolling, type PanelPollingSetters } from "@/lib/usePanelPolling";
 import {
   fetchWorkspaceCharacters,
+  fetchWorkspaceOutline,
   fetchWorkspaceStoryline,
   fetchWorkspaceWorldview,
 } from "@/lib/api";
@@ -23,12 +24,14 @@ vi.mock("@/lib/api", () => ({
   fetchWorkspaceCharacters: vi.fn(),
   fetchWorkspaceObjects: vi.fn(),
   fetchWorkspaceWorldview: vi.fn(),
+  fetchWorkspaceOutline: vi.fn(),
 }));
 
 const mockedStoryline = vi.mocked(fetchWorkspaceStoryline);
 const mockedCharacters = vi.mocked(fetchWorkspaceCharacters);
 const mockedWorldview = vi.mocked(fetchWorkspaceWorldview);
 const mockedObjects = vi.mocked(fetchWorkspaceObjects);
+const mockedOutline = vi.mocked(fetchWorkspaceOutline);
 
 function makeSetters(): PanelPollingSetters {
   return {
@@ -46,6 +49,7 @@ function makeSetters(): PanelPollingSetters {
     setObjectsLoading: vi.fn(),
     setWorldviewMarkdown: vi.fn(),
     setWorldviewLoading: vi.fn(),
+    setOutline: vi.fn(),
   };
 }
 
@@ -67,6 +71,7 @@ describe("usePanelPolling 停前全量补拉", () => {
     mockedCharacters.mockResolvedValue({ characters: CHARACTERS } as any);
     mockedObjects.mockResolvedValue({ objects: [] } as any);
     mockedWorldview.mockResolvedValue({ markdown: "# 世界观" } as any);
+    mockedOutline.mockResolvedValue({ kind: "pipeline", pipeline: {}, files: [] } as any);
   });
 
   it("任务结束（loading true→false）时停在 chat 面板也全量拉三件套", async () => {
@@ -155,6 +160,7 @@ describe("usePanelPolling 停前全量补拉", () => {
       mockedCharacters.mockResolvedValue({ characters: CHARACTERS } as any);
       mockedObjects.mockResolvedValue({ objects: [] } as any);
       mockedWorldview.mockResolvedValue({ markdown: "# 世界观" } as any);
+    mockedOutline.mockResolvedValue({ kind: "pipeline", pipeline: {}, files: [] } as any);
 
       // 2.5s 后兜底重拉，写入真数据
       await vi.advanceTimersByTimeAsync(2500);

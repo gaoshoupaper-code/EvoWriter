@@ -5,8 +5,8 @@ FakeListChatModel 真实装配。子进程原因：harness assemble 链 import e
 app.platform.*，与 evolution 自身 app 包撞名，不能同进程混跑（同 probe_worker.py
 docstring 的决策谱系）；主进程仅断言退出码与结果 JSON，不污染本套件其他测试。
 
-覆盖：working 包（evolution/harnesses/repo，随 commit 切换 v13/v14 形态）在
-full 配比 / minimal 留白两种 demand 下 assemble 产出非空图；线数预算解析正确。
+覆盖：working 包（evolution/harnesses/repo，双泳道形态 REQ-20261011-142529）在
+full / minimal 两种 demand 下 assemble（缺省 + 按名 storystructure）产出非空图。
 """
 
 from __future__ import annotations
@@ -75,22 +75,10 @@ ctx = RuntimeContext(
 )
 graph = mod.assemble(ctx)
 
-# 线数预算断言也在子进程做：M2 清单架构下预算函数随模块走
-# （middleware/storyline_single_line_limit.resolve_line_budget），主进程
-# spec 单文件加载不了相对导入链，留在子进程验证（拓扑形态相关）
-from contracts.storybuilding_quota import parse_demand_quota
-
-single_limit = importlib.import_module(
-    f"{mod.__name__}.middleware.storyline_single_line_limit")
-demand_md = (workspace / "demand.md").read_text(encoding="utf-8")
-target = parse_demand_quota(demand_md)
-budget_full = single_limit.resolve_line_budget(target)
-budget_none = single_limit.resolve_line_budget(None)
+# 双泳道（REQ-20261011-142529）：缺省 + 按名装配都产出非空图
+named = mod.assemble(ctx, agent_name="storystructure")
 print(json.dumps({
-    "ok": graph is not None,
-    "budget_full": (budget_full if isinstance(budget_full, int) else None),
-    "budget_none": (budget_none if isinstance(budget_none, int) else None),
-    "quota_parsed": target is not None,
+    "ok": graph is not None and named is not None,
 }))
 """
 
@@ -128,22 +116,13 @@ class AssembleSmokeTest(unittest.TestCase):
         result = _run_assemble_child(_DEMAND_MINIMAL)
         self.assertTrue(result["ok"], msg=str(result.get("error")))
 
-    def test_line_budget_resolution(self) -> None:
-        """线数预算 = 目标总数 + 余量；无配比走 minimal 宽松上限（FR-002①）。
+    def test_named_lane_assemble(self) -> None:
+        """按名装配 storystructure 泳道也产出非空图（DEC-006 双主泳道）。
 
-        与装配同子进程执行：v13 形态的 storybuilding.py 含相对导入，
-        主进程单文件加载不可行（形态随 promote 拓扑切换）。
+        取代旧线数预算测试（配比导航随 DEC-011 退役）。
         """
         result = _run_assemble_child(_DEMAND_FULL)
         self.assertTrue(result["ok"], msg=str(result.get("error")))
-        self.assertTrue(result["quota_parsed"])
-        self.assertEqual(result["budget_full"], 7 + 2)
-        self.assertEqual(result["budget_none"], 8)
-
-        result_minimal = _run_assemble_child(_DEMAND_MINIMAL)
-        self.assertTrue(result_minimal["ok"], msg=str(result_minimal.get("error")))
-        self.assertFalse(result_minimal["quota_parsed"])
-        self.assertEqual(result_minimal["budget_none"], 8)
 
 
 if __name__ == "__main__":

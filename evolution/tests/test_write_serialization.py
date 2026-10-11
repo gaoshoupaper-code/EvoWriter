@@ -91,8 +91,8 @@ def test_concurrent_same_file_edits_stay_valid_utf8(pkg_copy):
     复刻线上事故形态——同一提示词文件 4 处互不重叠的替换并发执行。
     """
     tools, ctx = _make_writers(pkg_copy)
-    target = "prompts/storybuilding_review.md"
-    before = (pkg_copy / "prompts" / "storybuilding_review.md").read_text(encoding="utf-8")
+    target = "prompts/storystructure_system.md"
+    before = (pkg_copy / "prompts" / "storystructure_system.md").read_text(encoding="utf-8")
 
     edits = [
         {"file_path": target, "old_string": before[:20], "new_string": before[:20] + "甲"},
@@ -106,7 +106,7 @@ def test_concurrent_same_file_edits_stay_valid_utf8(pkg_copy):
     assert all("已编辑" in r for r in results), results
 
     # 修复点 1：文件仍是合法 UTF-8（修复前交叉写会产生孤立续字节）
-    after = (pkg_copy / "prompts" / "storybuilding_review.md").read_text(encoding="utf-8")
+    after = (pkg_copy / "prompts" / "storystructure_system.md").read_text(encoding="utf-8")
     # 修复点 2：4 处编辑全部落盘（修复前部分线程的整文件重写会覆盖兄弟线程；
     # 测试用的 new_string 内嵌 old_string，只断言新文案在位）
     for e in edits:

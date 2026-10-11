@@ -6,6 +6,8 @@ import { CharactersPanel } from "@/components/workspace/CharactersPanel";
 import { ObjectsPanel } from "@/components/workspace/ObjectsPanel";
 import { ChatPanel } from "@/components/workspace/ChatPanel";
 import { ConfirmDialog } from "@/components/workspace/ConfirmDialog";
+import { OutlinePanel } from "@/components/workspace/OutlinePanel";
+import { PipelineStageBar } from "@/components/workspace/PipelineStageBar";
 import { ScriptPanel } from "@/components/workspace/ScriptPanel";
 import { Sidebar } from "@/components/workspace/Sidebar";
 import { TopBar } from "@/components/workspace/TopBar";
@@ -89,11 +91,19 @@ export default function Home() {
   const storylineRhythm = useContentStore((s) => s.storylineRhythm);
   const storylineFormat = useContentStore((s) => s.storylineFormat);
   const activeStorylineFilename = useContentStore((s) => s.activeStorylineFilename);
+  const outlineKind = useContentStore((s) => s.outlineKind);
+  const outlinePipeline = useContentStore((s) => s.outlinePipeline);
+  const outlineFiles = useContentStore((s) => s.outlineFiles);
+  const activeOutlineRel = useContentStore((s) => s.activeOutlineRel);
 
   const aiDisabled = !hasApiKey;
-  // v9 表单直入/修订门控（FR-002/FR-004）：写作域以三件套内容判定大纲是否产出
+  // v9 表单直入/修订门控（FR-002/FR-004）：写作域以产物内容判定大纲是否产出
+  // （双管线工作区看 outline 产物，旧五件套看 storyline/人物/世界观）
   const outlineReady = Boolean(
-    storylineMarkdown?.trim() || characters.length > 0 || worldviewMarkdown?.trim(),
+    outlineFiles.length > 0 ||
+      storylineMarkdown?.trim() ||
+      characters.length > 0 ||
+      worldviewMarkdown?.trim(),
   );
   const writingDomain = activeWorkspace?.domain !== "image";
   const workspacePath = activeWorkspace?.workspace_path ?? activeThread?.workspace_path;
@@ -255,6 +265,7 @@ export default function Home() {
       setStorylinePanorama: (v) => useContentStore.getState().setStorylinePanorama(v),
       setStorylineRhythm: (v) => useContentStore.getState().setStorylineRhythm(v),
       setStorylineFormat: (v) => useContentStore.getState().setStorylineFormat(v),
+      setOutline: (v) => useContentStore.getState().setOutline(v),
     },
   });
 
@@ -381,6 +392,14 @@ export default function Home() {
         }
         sidebar={<Sidebar activePanel={activePanel} onPanelChange={setActivePanel} />}
       >
+        {activePanel === "chat" && writingDomain ? (
+          <PipelineStageBar
+            pipeline={outlinePipeline}
+            fileRels={outlineFiles.map((f) => f.rel)}
+            compact
+          />
+        ) : null}
+
         {activePanel === "chat" ? (
           <ChatPanel
             messages={messages}
@@ -446,6 +465,16 @@ export default function Home() {
             activeFilename={activeObjectFilename}
             loading={objectsLoading}
             onSelectObject={(f) => useContentStore.getState().setActiveObjectFilename(f)}
+          />
+        ) : null}
+
+        {activePanel === "outline" ? (
+          <OutlinePanel
+            kind={outlineKind}
+            pipeline={outlinePipeline}
+            files={outlineFiles}
+            activeRel={activeOutlineRel}
+            onSelect={(rel) => useContentStore.getState().setActiveOutlineRel(rel)}
           />
         ) : null}
 

@@ -47,6 +47,11 @@ export interface ContentData {
   activeCharacterFilename: string;
   objects: { filename: string; name: string; markdown: string }[];
   activeObjectFilename: string;
+  // 双 agent 管线（REQ-20261011-142529 FR-010）
+  outlineKind: string;
+  outlinePipeline: import("../lib/types").PipelineStatus | null;
+  outlineFiles: import("../lib/types").OutlineFileEntry[];
+  activeOutlineRel: string;
 }
 
 type ThemeMode = "light" | "dark";
@@ -400,6 +405,10 @@ async function loadWorkspaceData(
       activeCharacterFilename: data.characters?.characters[0]?.filename || "",
       objects: data.objects?.objects || [],
       activeObjectFilename: data.objects?.objects[0]?.filename || "",
+      outlineKind: data.outline?.kind || "pipeline",
+      outlinePipeline: data.outline?.pipeline ?? null,
+      outlineFiles: data.outline?.files || [],
+      activeOutlineRel: data.outline?.files?.[0]?.rel || "",
     };
     return content;
   } catch (err) {

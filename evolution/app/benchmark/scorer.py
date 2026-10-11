@@ -34,7 +34,8 @@ from app.trace_payloads import hydrate_event
 
 logger = logging.getLogger("evolution.benchmark.scorer")
 
-# 三件套分组规则（与 eval_extractor 的 storybuilding 分类同口径）
+# 三组产物分组规则（REQ-20261011-142529 FR-013：outline 产物并入骨架组；
+# 展示名保持旧口径——评分/报告/前端共用键，语义 = 骨架/人物/世界观三组）
 _GROUP_STORYLINE = ("主线 storyline", "storyline")
 _GROUP_CHARACTER = ("人物 character", "character")
 _GROUP_WORLDVIEW = ("世界观 worldview", "worldview")
@@ -51,13 +52,18 @@ _DIM_ATTEMPTS = 2
 
 
 def _classify_logical_key(key: str) -> tuple[str, str] | None:
-    """logical_key → (展示名, 组名)；非三件套文件返回 None。"""
+    """logical_key → (展示名, 组名)；非三组产物文件返回 None。
+
+    双管线（REQ-20261011-142529）：outline/ 全部产物（00-06+台账）并入骨架组，
+    character/ 含 core/support，worldview/ 含 core/setting——组内多文件由
+    load_outline_deliveries 按路径排序拼接。旧五件套路径保留（历史 trace 回放）。
+    """
     k = key.strip().lstrip("/").lower()
-    if k == "storyline.md" or k.startswith("storyline/"):
+    if k == "storyline.md" or k.startswith("storyline/") or k.startswith("outline/"):
         return _GROUP_STORYLINE
     if k.startswith("character/"):
         return _GROUP_CHARACTER
-    if k == "worldview.md":
+    if k == "worldview.md" or k.startswith("worldview/"):
         return _GROUP_WORLDVIEW
     return None
 

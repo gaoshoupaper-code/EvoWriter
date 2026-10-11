@@ -26,15 +26,14 @@ _FORBIDDEN_BLUEPRINT_TERMS = [
     "meta 层 5 个",
     "subagents 列表（GP",
 ]
-# 蓝图中必须出现的 v7 表述
+# 蓝图中必须出现的双泳道表述（REQ-20261011-142529 FR-013 同步）
 _REQUIRED_BLUEPRINT_TERMS = [
-    "单故事专家",
-    "两泳道",
-    "故事专家（storybuilding",
-    "审查器",
+    "双泳道架构",
+    "storydesign",
+    "storystructure",
+    "回炉工单",
     "已冻结休眠",        # 记忆退役标注（DEC-003）
     "demand.md",          # 表单直入（DEC-009）
-    "RevisionLimit",     # 修订上限护栏叙事
 ]
 
 

@@ -255,7 +255,7 @@ class ReceiptGateMiddleware(AgentMiddleware):
 
             try:
                 normalized = normalize_workspace_write_path(
-                    raw_path, self.workspace_root
+                    raw_path, self.workspace_root, validate=False
                 )
             except ValueError:
                 # 非法路径不归本闸门管，放行交 PathGuard 处理

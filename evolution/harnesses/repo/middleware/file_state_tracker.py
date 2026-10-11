@@ -115,7 +115,9 @@ class FileStateTrackerMiddleware(AgentMiddleware):
         if not isinstance(raw_path, str) or not raw_path:
             return None
         try:
-            virtual = normalize_workspace_write_path(raw_path, self.workspace_path)
+            virtual = normalize_workspace_write_path(
+                raw_path, self.workspace_path, validate=False
+            )
         except ValueError:
             return None  # 非法路径交 PathGuard 拦
         return self.workspace_path / virtual.lstrip("/")

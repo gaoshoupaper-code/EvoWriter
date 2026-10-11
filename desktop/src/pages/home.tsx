@@ -7,7 +7,6 @@ import { ObjectsPanel } from "@/components/workspace/ObjectsPanel";
 import { ChatPanel } from "@/components/workspace/ChatPanel";
 import { ConfirmDialog } from "@/components/workspace/ConfirmDialog";
 import { OutlinePanel } from "@/components/workspace/OutlinePanel";
-import { PipelineStageBar } from "@/components/workspace/PipelineStageBar";
 import { ScriptPanel } from "@/components/workspace/ScriptPanel";
 import { Sidebar } from "@/components/workspace/Sidebar";
 import { TopBar } from "@/components/workspace/TopBar";
@@ -392,14 +391,6 @@ export default function Home() {
         }
         sidebar={<Sidebar activePanel={activePanel} onPanelChange={setActivePanel} />}
       >
-        {activePanel === "chat" && writingDomain ? (
-          <PipelineStageBar
-            pipeline={outlinePipeline}
-            fileRels={outlineFiles.map((f) => f.rel)}
-            compact
-          />
-        ) : null}
-
         {activePanel === "chat" ? (
           <ChatPanel
             messages={messages}
@@ -411,6 +402,8 @@ export default function Home() {
             sessionMenuOpen={sessionMenuOpen}
             creatingThread={creatingThread}
             deleting={deleting}
+            pipeline={writingDomain ? outlinePipeline : null}
+            pipelineFileRels={outlineFiles.map((f) => f.rel)}
             onPromptChange={(p) => useExecutionStore.getState().setPrompt(p)}
             onSubmit={handleSubmit}
             onResumeSubmit={async (resumeText) => {

@@ -6296,7 +6296,12 @@ html[data-theme="dark"] .provider-item {
 
 /* ═══ 双 agent 管线（REQ-20261011-142529 FR-010，DEC-014 A 先行）═══ */
 
-/* 管线阶段条：七步 0-7 进度 + 当前停点 + 回炉/拍板徽标 */
+/* 管线阶段条：七步 0-7 进度 + 当前停点 + 回炉/拍板徽标。
+   compact（对话面板标题带第二行）：无卡面、单行横滚——对话面板高度锁定
+   100vh-77px，独立卡片会把 composer 顶出视口（线上反馈）。 */
+.conversation-panel .panel-heading {
+  flex-wrap: wrap;
+}
 .pipeline-stage-bar {
   display: flex;
   align-items: center;
@@ -6310,8 +6315,29 @@ html[data-theme="dark"] .provider-item {
   font-size: var(--text-ui-sm, 12px);
 }
 .pipeline-stage-bar.compact {
-  padding: 6px 10px;
-  gap: 8px;
+  flex: 1 0 100%;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  margin: 10px 0 2px;
+  gap: 10px;
+  background: transparent;
+}
+.pipeline-stage-bar.compact::-webkit-scrollbar {
+  display: none;
+}
+/* 横滚模式下所有子项不收缩：窄窗整行横滚，提示文字不得被挤成竖排 */
+.pipeline-stage-bar.compact > * {
+  flex-shrink: 0;
+}
+.pipeline-stage-bar.compact .pipeline-steps {
+  flex-wrap: nowrap;
+}
+.pipeline-stage-bar.compact .pipeline-hint {
+  white-space: nowrap;
 }
 .pipeline-phase {
   font-weight: 800;
@@ -6350,6 +6376,21 @@ html[data-theme="dark"] .provider-item {
   color: #fff;
   background: var(--coral, #e2694f);
   border-color: var(--coral, #e2694f);
+}
+/* compact 步骤胶囊：去掉待办态描边（降噪），完成态浅底填充 */
+.pipeline-stage-bar.compact .pipeline-step {
+  border-color: transparent;
+  padding: 1px 7px;
+}
+.pipeline-stage-bar.compact .pipeline-step.done {
+  background: rgba(47, 158, 143, 0.12);
+  color: var(--teal, #2f9e8f);
+  border-color: transparent;
+}
+.pipeline-step-n {
+  font-size: 10px;
+  font-weight: 700;
+  opacity: 0.72;
 }
 .pipeline-rework,
 .pipeline-awaiting {

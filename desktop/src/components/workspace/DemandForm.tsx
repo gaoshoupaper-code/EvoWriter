@@ -97,7 +97,7 @@ export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) 
         </div>
         <p className="demand-form-desc">
           填写三项必填即可开始——设计教练从赛道确认起步，一步一步拍板推进
-          七步管线（赛道 → 设计原则 → 冲突引擎 → 力量体系 → 总纲 → 卷纲 → 章纲）。
+          七步法：赛道 → 设计原则 → 冲突引擎 → 力量体系 → 总纲 → 卷纲 → 章纲。
         </p>
       </div>
 

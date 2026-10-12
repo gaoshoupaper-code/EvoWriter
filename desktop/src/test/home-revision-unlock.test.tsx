@@ -85,7 +85,6 @@ vi.mock("@/components/workspace/TopBar", () => ({ TopBar: () => null }));
 vi.mock("@/components/workspace/Sidebar", () => ({ Sidebar: () => null }));
 vi.mock("@/components/workspace/ConfirmDialog", () => ({ ConfirmDialog: () => null }));
 vi.mock("@/components/workspace/TracePanel", () => ({ TracePanel: () => null }));
-vi.mock("@/components/workspace/ScriptPanel", () => ({ ScriptPanel: () => null }));
 vi.mock("@/components/workspace/CharactersPanel", () => ({ CharactersPanel: () => null }));
 vi.mock("@/components/workspace/WorldviewPanel", () => ({ WorldviewPanel: () => null }));
 vi.mock("@/components/workspace/StorylinePanel", () => ({ StorylinePanel: () => null }));

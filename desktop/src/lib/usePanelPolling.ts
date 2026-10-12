@@ -1,7 +1,6 @@
 
 import { useEffect, useRef } from "react";
 import type { CharacterMarkdownFile, ObjectMarkdownFile, PanoramaEvent, RhythmData, StorylineEntry } from "./types";
-import type { WorkspacePanel } from "./types";
 import {
   fetchWorkspaceCharacters,
   fetchWorkspaceObjects,
@@ -9,15 +8,14 @@ import {
   fetchWorkspaceStoryline,
   fetchWorkspaceWorldview,
 } from "./api";
+import { useContentStore } from "../stores/content";
+import { useWorkrailStore } from "../stores/workrail";
 
 const POLL_INTERVAL_MS = 2000;
 
 // 停前补拉兜底重拉延迟：final SSE 事件可能先于大纲文件落盘/索引就绪，
 // 首拉全空时等文件系统追上再拉一次（仅一次，任务确实无产物时不无限轮询）。
 const FINAL_RETRY_DELAY_MS = 2500;
-
-// 不参与轮询的面板：chat 走独立 /generate/stream（聊天区不动）。
-const NON_POLL_PANELS: ReadonlySet<WorkspacePanel> = new Set(["chat"]);
 
 /**
  * 内容面板的 setter 集合。签名刻意与 page.tsx 里 useState 返回的 setter 对齐，
@@ -33,7 +31,6 @@ export interface PanelPollingSetters {
   setStorylineRhythm: (v: RhythmData | null) => void;
   setStorylineFormat: (v: string) => void;
   setActiveStorylineFilename: (fn: (cur: string) => string) => void;
-
 
   setCharacters: (c: CharacterMarkdownFile[]) => void;
   setActiveCharacterFilename: (fn: (cur: string) => string) => void;
@@ -51,7 +48,6 @@ export interface PanelPollingSetters {
 
 export interface UsePanelPollingParams {
   activeWorkspaceId: string;
-  activePanel: WorkspacePanel;
   loading: boolean;
   bootstrapping: boolean;
   setters: PanelPollingSetters;
@@ -65,20 +61,127 @@ function keepActiveFilename(current: string, filenames: string[]): string {
   return filenames.some((f) => f === current) ? current : (filenames[0] ?? "");
 }
 
+/** 从 contentStore 构造 setter 集（独立刷新入口用，不经过 home 传参）。 */
+function contentStoreSetters(): PanelPollingSetters {
+  const st = useContentStore.getState();
+  return {
+    setStorylineMarkdown: st.setStorylineMarkdown,
+    setStorylineEntries: st.setStorylineEntries,
+    setStorylinePanorama: st.setStorylinePanorama,
+    setStorylineRhythm: st.setStorylineRhythm,
+    setStorylineFormat: st.setStorylineFormat,
+    setActiveStorylineFilename: (fn) => useContentStore.setState((s) => ({ activeStorylineFilename: fn(s.activeStorylineFilename) })),
+    setCharacters: st.setCharacters,
+    setActiveCharacterFilename: (fn) => useContentStore.setState((s) => ({ activeCharacterFilename: fn(s.activeCharacterFilename) })),
+    setCharactersLoading: st.setCharactersLoading,
+    setObjects: st.setObjects,
+    setActiveObjectFilename: (fn) => useContentStore.setState((s) => ({ activeObjectFilename: fn(s.activeObjectFilename) })),
+    setObjectsLoading: st.setObjectsLoading,
+    setWorldviewMarkdown: st.setWorldviewMarkdown,
+    setWorldviewLoading: st.setWorldviewLoading,
+    setOutline: st.setOutline,
+  };
+}
+
 /**
- * 内容面板轮询 Hook。
+ * 全量拉取与写 state：大纲/人物/物品/世界观（+ storyline 供 legacy 判定）。
+ * 返回本次拉取是否得到任何内容（停前补拉用：全空 → 延迟重拉兜底）。
+ * 成功/失败都会写 workrailStore.pollError（作品栏「状态获取失败·重试」依据）。
+ */
+async function _pollAll(
+  workspaceId: string,
+  s: PanelPollingSetters,
+): Promise<boolean> {
+  let gotAny = false;
+  const data = await fetchWorkspaceStoryline(workspaceId);
+  s.setStorylineMarkdown(data.index_markdown);
+  s.setStorylineEntries(data.entries);
+  s.setStorylinePanorama(data.panorama);
+  s.setStorylineRhythm(data.rhythm ?? null);
+  s.setStorylineFormat(data.format);
+  s.setActiveStorylineFilename((cur) => keepActiveFilename(cur, data.entries.map((e) => e.title)));
+  if (data.index_markdown?.trim() || data.entries.length) gotAny = true;
+
+  const charData = await fetchWorkspaceCharacters(workspaceId);
+  s.setCharacters(charData.characters);
+  s.setActiveCharacterFilename((cur) => keepActiveFilename(cur, charData.characters.map((c) => c.filename)));
+  s.setCharactersLoading(false);
+  if (charData.characters.length) gotAny = true;
+
+  const objData = await fetchWorkspaceObjects(workspaceId);
+  s.setObjects(objData.objects);
+  s.setActiveObjectFilename((cur) => keepActiveFilename(cur, objData.objects.map((o) => o.filename)));
+  s.setObjectsLoading(false);
+  if (objData.objects.length) gotAny = true;
+
+  const worldData = await fetchWorkspaceWorldview(workspaceId);
+  s.setWorldviewMarkdown(worldData.markdown);
+  s.setWorldviewLoading(false);
+  if (worldData.markdown?.trim()) gotAny = true;
+
+  const outlineData = await fetchWorkspaceOutline(workspaceId);
+  s.setOutline(outlineData);
+  if (outlineData.files.length) gotAny = true;
+
+  return gotAny;
+}
+
+async function pollAll(workspaceId: string, s: PanelPollingSetters): Promise<boolean> {
+  try {
+    const gotAny = await _pollAll(workspaceId, s);
+    useWorkrailStore.getState().markPollOk(true);
+    return gotAny;
+  } catch {
+    useWorkrailStore.getState().markPollOk(false);
+    // 静默：与单次轮询一致，避免打断完成态 UI。按全空处理走延迟重拉。
+    return false;
+  }
+}
+
+// 单飞串行（review P1 修复）：同一时刻至多一个全量轮询在途——
+// 慢请求（底层 300s 超时）下 interval 不堆积；停前补拉/重试排队等在途
+// 周期结束再跑，旧的在途数据永远不可能覆盖停前补拉写入的最终结果。
+let pollChain: Promise<void> = Promise.resolve();
+let pollInFlight = false;
+
+function enqueuePoll(workspaceId: string, s: PanelPollingSetters): Promise<boolean> {
+  const task = pollChain.then(() => {
+    pollInFlight = true;
+    return pollAll(workspaceId, s);
+  });
+  pollChain = task.then(
+    () => undefined,
+    () => undefined,
+  );
+  task.finally(() => {
+    pollInFlight = false;
+  });
+  return task;
+}
+
+/**
+ * 独立全量刷新（作品栏「重试」按钮用）：直接写 contentStore。
+ * 在途周期未结束时跳过（单飞），避免连点堆积并发请求。
+ */
+export async function refreshWorkspaceContent(workspaceId: string): Promise<boolean> {
+  if (pollInFlight) return false;
+  return enqueuePoll(workspaceId, contentStoreSetters());
+}
+
+/**
+ * 内容轮询 Hook（REQ-20261012-202540 FR-005）。
  *
- * 行为规约（对应需求/设计的冻结决策）：
- * - 仅 loading=true（生成中）时轮询；否则不发起任何请求。
- * - 仅轮询当前打开的面板；chat 不参与。
- * - bootstrapping=true 时跳过当前周期（bootstrap 为权威源，避免切换工作区状态闪烁），
- *   但不取消定时器，等 bootstrap 结束后自然恢复。
- * - activePanel / activeWorkspaceId 变化时立即拉一次（切换即拉），再起 2s 周期。
+ * 行为规约：
+ * - 仅 loading=true（生成中）时轮询，2s 周期，全量拉取——右侧作品栏常驻
+ *   跟进进度与产物，刷新不依赖任何产物面板处于打开状态（含 chat）。
+ * - bootstrapping=true 时跳过当前周期（bootstrap 为权威源，避免切换工作区
+ *   状态闪烁），但不取消定时器，等 bootstrap 结束后自然恢复。
+ * - activeWorkspaceId 变化时立即拉一次（切换即拉），再起 2s 周期。
  * - loading 从 true→false 过渡时补拉最后一次（保证显示 Agent 最终结果），之后停止。
+ * - 空闲期不轮询（数据不会变化）。
  */
 export function usePanelPolling({
   activeWorkspaceId,
-  activePanel,
   loading,
   bootstrapping,
   setters,
@@ -92,98 +195,34 @@ export function usePanelPolling({
   // 跟踪上一次 loading 值，用于检测 true→false 过渡，触发“停前补拉”。
   const prevLoadingRef = useRef(loading);
 
-  // 一次轮询：根据当前面板拉对应接口并写 state。bootstrap 期间跳过（不写）。
-  const pollOnce = async (panel: WorkspacePanel, workspaceId: string) => {
-    if (bootstrappingRef.current || panel === "chat") return;
-    const s = settersRef.current;
-    try {
-      await _pollPanel(panel, workspaceId, s);
-    } catch {
-      // 单次轮询失败静默处理——下一周期会重试，无需把 loading 置回 true（避免面板闪烁）。
-    }
-  };
-
-  // 单面板拉取与写 state（pollOnce 与 pollAllPanels 共用）。
-  // 返回本次拉取是否得到任何内容（停前补拉用：全空 → 延迟重拉兜底）。
-  const _pollPanel = async (
-    panel: Exclude<WorkspacePanel, "chat"> | "all",
-    workspaceId: string,
-    s: PanelPollingSetters,
-  ): Promise<boolean> => {
-    let gotAny = false;
-    if (panel === "script" || panel === "all") {
-      // script 面板展示 storyline（含全景表 panorama 与节奏数据 rhythm，FR-003/FR-006）。
-      const data = await fetchWorkspaceStoryline(workspaceId);
-      s.setStorylineMarkdown(data.index_markdown);
-      s.setStorylineEntries(data.entries);
-      s.setStorylinePanorama(data.panorama);
-      s.setStorylineRhythm(data.rhythm ?? null);
-      s.setStorylineFormat(data.format);
-      s.setActiveStorylineFilename((cur) => keepActiveFilename(cur, data.entries.map((e) => e.title)));
-      if (data.index_markdown?.trim() || data.entries.length) gotAny = true;
-    }
-    if (panel === "characters" || panel === "all") {
-      const data = await fetchWorkspaceCharacters(workspaceId);
-      s.setCharacters(data.characters);
-      s.setActiveCharacterFilename((cur) => keepActiveFilename(cur, data.characters.map((c) => c.filename)));
-      s.setCharactersLoading(false);
-      if (data.characters.length) gotAny = true;
-    }
-    if (panel === "objects" || panel === "all") {
-      const data = await fetchWorkspaceObjects(workspaceId);
-      s.setObjects(data.objects);
-      s.setActiveObjectFilename((cur) => keepActiveFilename(cur, data.objects.map((o) => o.filename)));
-      s.setObjectsLoading(false);
-      if (data.objects.length) gotAny = true;
-    }
-    if (panel === "worldview" || panel === "all") {
-      const data = await fetchWorkspaceWorldview(workspaceId);
-      s.setWorldviewMarkdown(data.markdown);
-      s.setWorldviewLoading(false);
-      if (data.markdown?.trim()) gotAny = true;
-    }
-    if (panel === "outline" || panel === "all") {
-      // 双管线 outline 面板（REQ-20261011-142529 FR-010）：阶段条 + 产物全集。
-      const data = await fetchWorkspaceOutline(workspaceId);
-      s.setOutline(data);
-      if (data.files.length) gotAny = true;
-    }
-    return gotAny;
-  };
-
-  // 全量拉取：三个内容面板并行（任务结束时用，见停前补拉 effect）。
-  // 返回是否拉到内容；bootstrapping 期间跳过（bootstrap 是权威源，不触发重拉）。
-  const pollAllPanels = async (workspaceId: string): Promise<boolean> => {
-    if (bootstrappingRef.current) return true;
-    try {
-      return await _pollPanel("all", workspaceId, settersRef.current);
-    } catch {
-      // 静默：与单次轮询一致，避免打断完成态 UI。按全空处理走延迟重拉。
-      return false;
-    }
+  const pollOnce = async (workspaceId: string) => {
+    // bootstrap 是权威源（切换工作区时跳过，避免状态闪烁）；
+    // 在途周期未结束也跳过本拍（单飞，防止慢请求下并发堆积）。
+    if (bootstrappingRef.current || pollInFlight) return;
+    await enqueuePoll(workspaceId, settersRef.current);
   };
 
   useEffect(() => {
-    // 无工作区、或面板不参与轮询、或未在生成中：什么都不做。
+    // 无工作区或未在生成中：什么都不做。
     // 注意：这里不能写 prevLoadingRef——过渡检测归下方停前补拉 effect 独占，
     // 本 effect 声明在前、会抢先写入新值，让停前补拉永远读不到 true→false 过渡
     // （线上 bug：创作完成后产物面板不刷新，重启才可见）。
-    if (!activeWorkspaceId || NON_POLL_PANELS.has(activePanel) || !loading) {
+    if (!activeWorkspaceId || !loading) {
       return;
     }
 
-    // 生成中：立即拉一次（切换即拉 / 首次进入），再起 2s 定时器。
-    void pollOnce(activePanel, activeWorkspaceId);
+    // 生成中：立即全量拉一次（切换即拉 / 首次进入），再起 2s 定时器。
+    void pollOnce(activeWorkspaceId);
 
     const timer = setInterval(() => {
-      void pollOnce(activePanel, activeWorkspaceId);
+      void pollOnce(activeWorkspaceId);
     }, POLL_INTERVAL_MS);
 
     return () => clearInterval(timer);
-    // 依赖 activePanel/activeWorkspaceId/loading：三者任一变化都重新挂载（切换即拉 / 起停）。
+    // 依赖 activeWorkspaceId/loading：任一变化都重新挂载（切换即拉 / 起停）。
     // bootstrapping/setters 故意不进依赖（经 ref 读取，避免 bootstrap 期间频繁重挂）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePanel, activeWorkspaceId, loading]);
+  }, [activeWorkspaceId, loading]);
 
   // 独立的 effect：检测 loading true→false 过渡，做"停前补拉"。
   // 不能并入上面的 effect——上面 effect 在 loading=false 时会直接 return 不轮询，
@@ -191,16 +230,17 @@ export function usePanelPolling({
   useEffect(() => {
     const wasLoading = prevLoadingRef.current;
     prevLoadingRef.current = loading;
-    // 结束时全量拉三件套（不限当前面板）：生成中用户多停在 chat（不参与轮询），
-    // 只补拉当前面板会让 script/characters/worldview 保持旧空数据，
-    // 直到下次 bootstrap（重启/切换工作区）才可见。
-    if (wasLoading && !loading && activeWorkspaceId) {
+    // bootstrap 期间跳过停前补拉（与旧 pollAllPanels 行为一致）：bootstrap 是
+    // 权威源，此刻写入可能与切换中的工作区数据互相覆盖。
+    if (wasLoading && !loading && activeWorkspaceId && !bootstrappingRef.current) {
       void (async () => {
-        const gotAny = await pollAllPanels(activeWorkspaceId);
+        // 停前补拉必须执行（最终结果）：排队等在途周期结束，串行写入。
+        const gotAny = await enqueuePoll(activeWorkspaceId, settersRef.current);
         // 兜底：final 事件可能先于产物文件落盘/索引就绪，首拉全空时延迟重拉一次。
         if (!gotAny) {
           await new Promise((resolve) => setTimeout(resolve, FINAL_RETRY_DELAY_MS));
-          await pollAllPanels(activeWorkspaceId);
+          if (bootstrappingRef.current) return;
+          await enqueuePoll(activeWorkspaceId, settersRef.current);
         }
       })();
     }

@@ -7,8 +7,8 @@ import { ObjectsPanel } from "@/components/workspace/ObjectsPanel";
 import { ChatPanel } from "@/components/workspace/ChatPanel";
 import { ConfirmDialog } from "@/components/workspace/ConfirmDialog";
 import { OutlinePanel } from "@/components/workspace/OutlinePanel";
-import { ScriptPanel } from "@/components/workspace/ScriptPanel";
 import { Sidebar } from "@/components/workspace/Sidebar";
+import { WorkRail } from "@/components/workspace/WorkRail";
 import { TopBar } from "@/components/workspace/TopBar";
 import { WorldviewPanel } from "@/components/workspace/WorldviewPanel";
 import { API_BASE_URL, apiFetch, trackCopy } from "@/lib/api";
@@ -20,12 +20,27 @@ import { useExecutionStore, setExecutionDeps, installExecutionPersist } from "@/
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useTraceStore } from "@/stores/trace";
 import { useContentStore } from "@/stores/content";
+import { useWorkrailStore } from "@/stores/workrail";
 import { applyUiFontSize, loadUiFontSize } from "@/components/ui/UiFontSizeControl";
 
 const initialAssistantMessage = {
   role: "assistant" as const,
   content: "先选择一个工作目录，再开启或恢复创作会话。",
 };
+
+const WORKSPACE_PANELS = ["chat", "outline", "characters", "objects", "worldview"] as const;
+
+/** 作品栏瞬态重置（review 修复）：跨工作区不携带失败标记/高亮/基线 */
+function resetWorkrailTransient() {
+  const rail = useWorkrailStore.getState();
+  if (rail._highlightTimer) clearTimeout(rail._highlightTimer);
+  useWorkrailStore.setState({
+    pollError: false,
+    highlightKeys: new Set(),
+    baselineKeys: null,
+    _highlightTimer: null,
+  });
+}
 
 export default function Home() {
   const navigate = useNavigate();
@@ -39,6 +54,9 @@ export default function Home() {
   const themeReady = useWorkspaceStore((s) => s.themeReady);
   const activePanel = useWorkspaceStore((s) => s.activePanel);
   const setActivePanel = (panel: WorkspacePanel) => useWorkspaceStore.setState({ activePanel: panel });
+  // 旧值兜底（FR-006）：activePanel 只在内存流转，历史版本可能残留已删除的
+  // 面板值（如 script）——渲染/轮询前回落到 chat，避免整区空白。
+  const safePanel: WorkspacePanel = WORKSPACE_PANELS.includes(activePanel) ? activePanel : "chat";
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const threads = useWorkspaceStore((s) => s.threads);
@@ -85,11 +103,6 @@ export default function Home() {
   const worldviewMarkdown = useContentStore((s) => s.worldviewMarkdown);
   const worldviewLoading = useContentStore((s) => s.worldviewLoading);
   const storylineMarkdown = useContentStore((s) => s.storylineMarkdown);
-  const storylineEntries = useContentStore((s) => s.storylineEntries);
-  const storylinePanorama = useContentStore((s) => s.storylinePanorama);
-  const storylineRhythm = useContentStore((s) => s.storylineRhythm);
-  const storylineFormat = useContentStore((s) => s.storylineFormat);
-  const activeStorylineFilename = useContentStore((s) => s.activeStorylineFilename);
   const outlineKind = useContentStore((s) => s.outlineKind);
   const outlinePipeline = useContentStore((s) => s.outlinePipeline);
   const outlineFiles = useContentStore((s) => s.outlineFiles);
@@ -152,6 +165,15 @@ export default function Home() {
     if (themeReady) window.localStorage.setItem("writer-theme", theme);
   }, [theme, themeReady]);
 
+  // ── 作品栏交付高亮基线（FR-004/AC-006）：任务开始时快照条目集，交付时 diff 出「本次新增」 ──
+  const prevLoadingForBaseline = useRef(false);
+  useEffect(() => {
+    if (loading && !prevLoadingForBaseline.current) {
+      useWorkrailStore.getState().captureBaseline();
+    }
+    prevLoadingForBaseline.current = loading;
+  }, [loading]);
+
   // ── 路由守卫 ──
   useEffect(() => {
     let ignore = false;
@@ -171,6 +193,7 @@ export default function Home() {
   useEffect(() => {
     let ignore = false;
     (async () => {
+      resetWorkrailTransient();
       const content = await useWorkspaceStore.getState().bootstrap();
       if (ignore || !content) return;
       useContentStore.getState().setContentData(content);
@@ -185,6 +208,8 @@ export default function Home() {
     if (skipNextBootstrap.current) { skipNextBootstrap.current = false; return; }
     let ignore = false;
     (async () => {
+      // 瞬态随工作区重置：上一个工作区的失败标记/高亮/基线不得泄漏到新工作区
+      resetWorkrailTransient();
       useContentStore.setState({
       });
       const content = await useWorkspaceStore.getState().switchWorkspace(activeWorkspaceId);
@@ -246,7 +271,6 @@ export default function Home() {
   // ── 面板轮询 ──
   usePanelPolling({
     activeWorkspaceId,
-    activePanel,
     loading,
     bootstrapping,
     setters: {
@@ -389,9 +413,10 @@ export default function Home() {
             onLogout={handleLogout}
           />
         }
-        sidebar={<Sidebar activePanel={activePanel} onPanelChange={setActivePanel} />}
+        sidebar={<Sidebar activePanel={safePanel} onPanelChange={setActivePanel} />}
+        rail={writingDomain && activeWorkspaceId ? <WorkRail /> : null}
       >
-        {activePanel === "chat" ? (
+        {safePanel === "chat" ? (
           <ChatPanel
             messages={messages}
             prompt={prompt}
@@ -402,8 +427,6 @@ export default function Home() {
             sessionMenuOpen={sessionMenuOpen}
             creatingThread={creatingThread}
             deleting={deleting}
-            pipeline={writingDomain ? outlinePipeline : null}
-            pipelineFileRels={outlineFiles.map((f) => f.rel)}
             onPromptChange={(p) => useExecutionStore.getState().setPrompt(p)}
             onSubmit={handleSubmit}
             onResumeSubmit={async (resumeText) => {
@@ -431,19 +454,7 @@ export default function Home() {
           />
         ) : null}
 
-        {activePanel === "script" ? (
-          <ScriptPanel
-            storylineMarkdown={storylineMarkdown}
-            storylineEntries={storylineEntries}
-            storylinePanorama={storylinePanorama}
-            storylineRhythm={storylineRhythm}
-            storylineFormat={storylineFormat}
-            activeStorylineFilename={activeStorylineFilename}
-            onSelectStoryline={(f) => useContentStore.getState().setActiveStorylineFilename(f)}
-          />
-        ) : null}
-
-        {activePanel === "characters" ? (
+        {safePanel === "characters" ? (
           <CharactersPanel
             characters={characters}
             activeFilename={activeCharacterFilename}
@@ -452,7 +463,7 @@ export default function Home() {
           />
         ) : null}
 
-        {activePanel === "objects" ? (
+        {safePanel === "objects" ? (
           <ObjectsPanel
             objects={objects}
             activeFilename={activeObjectFilename}
@@ -461,7 +472,7 @@ export default function Home() {
           />
         ) : null}
 
-        {activePanel === "outline" ? (
+        {safePanel === "outline" ? (
           <OutlinePanel
             kind={outlineKind}
             pipeline={outlinePipeline}
@@ -471,7 +482,7 @@ export default function Home() {
           />
         ) : null}
 
-        {activePanel === "worldview" ? (
+        {safePanel === "worldview" ? (
           <WorldviewPanel workspacePath={workspacePath} markdown={worldviewMarkdown} loading={worldviewLoading} />
         ) : null}
 

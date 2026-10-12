@@ -1,4 +1,4 @@
-export type WorkspacePanel = "chat" | "characters" | "objects" | "script" | "worldview" | "outline";
+export type WorkspacePanel = "chat" | "characters" | "objects" | "worldview" | "outline";
 
 // ── 双 agent 管线（REQ-20261011-142529 FR-010，DEC-006/020）──
 

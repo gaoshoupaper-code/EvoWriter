@@ -106,7 +106,6 @@ vi.mock("@/components/workspace/StyleModal", () => ({ StyleModal: () => null }))
 vi.mock("@/components/workspace/ConfirmDialog", () => ({ ConfirmDialog: () => null }));
 vi.mock("@/components/workspace/TracePanel", () => ({ TracePanel: () => null }));
 vi.mock("@/components/workspace/NovelPanel", () => ({ NovelPanel: () => null }));
-vi.mock("@/components/workspace/ScriptPanel", () => ({ ScriptPanel: () => null }));
 vi.mock("@/components/workspace/DetailOutlinePanel", () => ({ DetailOutlinePanel: () => null }));
 vi.mock("@/components/workspace/CharactersPanel", () => ({ CharactersPanel: () => null }));
 vi.mock("@/components/workspace/WorldviewPanel", () => ({ WorldviewPanel: () => null }));
@@ -176,5 +175,16 @@ describe("T0a: 发消息 → SSE → completed 全流程", () => {
         }),
       );
     }, { timeout: 10000 });
+  });
+
+  it("activePanel 残留已删除的 script 值时兜底回 chat（FR-006/AC-008 边界）", async () => {
+    const { useWorkspaceStore } = await import("@/stores/workspace");
+    // 构造历史版本残留值（类型已收窄，运行时仍可能出现）
+    useWorkspaceStore.setState({ activePanel: "script" as never });
+    renderHome();
+
+    // 兜底回 chat：输入框可见（其余面板均无 textbox），无空白主区
+    const input = await screen.findByRole("textbox", {}, { timeout: 10000 });
+    expect(input).toBeInTheDocument();
   });
 });

@@ -22,11 +22,11 @@ export function CharactersPanel({ characters, activeFilename, loading, onSelectC
   }, [activeCharacter?.filename]);
 
   return (
-    <section className="panel-surface content-panel" aria-label="人物角色">
+    <section className="panel-surface content-panel" aria-label="人物">
       <div className="panel-heading">
         <div>
           <span className="section-kicker">Characters</span>
-          <h2>人物角色</h2>
+          <h2>人物</h2>
         </div>
         {loading ? <span className="outline-state">加载中</span> : null}
       </div>

@@ -22,11 +22,11 @@ export function ObjectsPanel({ objects, activeFilename, loading, onSelectObject 
   }, [activeObject?.filename]);
 
   return (
-    <section className="panel-surface content-panel" aria-label="物品状态卡">
+    <section className="panel-surface content-panel" aria-label="物品">
       <div className="panel-heading">
         <div>
           <span className="section-kicker">Objects</span>
-          <h2>物品状态卡</h2>
+          <h2>物品</h2>
         </div>
         {loading ? <span className="outline-state">加载中</span> : null}
       </div>

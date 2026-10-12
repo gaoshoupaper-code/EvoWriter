@@ -120,7 +120,6 @@ vi.mock("@/components/workspace/StyleModal", () => ({ StyleModal: () => null }))
 vi.mock("@/components/workspace/ConfirmDialog", () => ({ ConfirmDialog: () => null }));
 vi.mock("@/components/workspace/TracePanel", () => ({ TracePanel: () => null }));
 vi.mock("@/components/workspace/NovelPanel", () => ({ NovelPanel: () => null }));
-vi.mock("@/components/workspace/ScriptPanel", () => ({ ScriptPanel: () => null }));
 vi.mock("@/components/workspace/DetailOutlinePanel", () => ({ DetailOutlinePanel: () => null }));
 vi.mock("@/components/workspace/CharactersPanel", () => ({ CharactersPanel: () => null }));
 vi.mock("@/components/workspace/WorldviewPanel", () => ({ WorldviewPanel: () => null }));

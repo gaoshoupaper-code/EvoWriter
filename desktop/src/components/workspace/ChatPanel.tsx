@@ -3,9 +3,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { markdownTableComponents } from "../../lib/markdown-components";
-import type { ChatMessage, PipelineStatus, ThreadSummary } from "../../lib/types";
+import type { ChatMessage, ThreadSummary } from "../../lib/types";
 import type { StageFlow } from "../../lib/stage";
-import { PipelineStageBar } from "./PipelineStageBar";
 import { InterviewOptions } from "./InterviewOptions";
 import { ImageReviewCard } from "./ImageReviewCard";
 import { SessionMenu } from "./SessionMenu";
@@ -38,9 +37,6 @@ type ChatPanelProps = {
   /** v9 表单直入：写作域 + 大纲未产出时，composer 区渲染需求表单（FR-002） */
   writingDomain?: boolean;
   outlineReady?: boolean;
-  /** 双 agent 管线阶段条（FR-010）：嵌入标题带第二行，null/legacy 之外的空值不渲染 */
-  pipeline?: PipelineStatus | null;
-  pipelineFileRels?: string[];
   onDemandSubmit?: (fields: DemandFields) => Promise<void>;
   stageFlows?: (StageFlow | null)[];
   onRetry?: () => void;
@@ -68,8 +64,6 @@ export function ChatPanel({
   onDeleteThread,
   writingDomain = false,
   outlineReady = false,
-  pipeline = null,
-  pipelineFileRels = [],
   onDemandSubmit,
   stageFlows,
   onRetry,
@@ -156,9 +150,7 @@ export function ChatPanel({
             onDeleteThread={onDeleteThread}
           />
         </div>
-        {/* 双 agent 管线阶段条（FR-010）：嵌进标题带第二行——独立卡片会把
-            固定高的对话面板顶出视口，composer 被挤出屏幕（线上反馈）。 */}
-        <PipelineStageBar pipeline={pipeline} fileRels={pipelineFileRels} compact />
+        {/* 阶段进度已迁入右侧作品栏（REQ-20261012-202540 FR-002）——标题带只留标题与会话切换 */}
       </div>
 
       {/* v9 表单直入（FR-002）：写作域首次生成走需求表单；大纲产出前对话入口不可用（FR-004）。

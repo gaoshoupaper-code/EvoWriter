@@ -26,11 +26,11 @@ export function OutlinePanel({ kind, pipeline, files, activeRel, onSelect }: Out
   const active = files.find((f) => f.rel === activeRel) ?? files[0] ?? null;
 
   return (
-    <section className="panel-surface content-panel" aria-label="七步大纲">
+    <section className="panel-surface content-panel" aria-label="大纲">
       <div className="panel-heading">
         <div>
-          <span className="section-kicker">Pipeline</span>
-          <h2>七步大纲</h2>
+          <span className="section-kicker">Outline</span>
+          <h2>大纲</h2>
         </div>
       </div>
 
@@ -38,12 +38,12 @@ export function OutlinePanel({ kind, pipeline, files, activeRel, onSelect }: Out
         <PipelineStageBar pipeline={pipeline} fileRels={files.map((f) => f.rel)} />
 
         {kind === "legacy" ? (
-          <p className="outline-state">旧版五件套工作区：七步产物为空，请切「大纲（旧）」面板查看。</p>
+          <p className="outline-state">旧版五件套工作区：没有七步法文件。</p>
         ) : files.length === 0 ? (
-          <p className="outline-state">管线尚未产出：从对话发起第一步「赛道确认」后，产物会出现在这里。</p>
+          <p className="outline-state">还没开始：从对话发起第一步后，大纲会出现在这里。</p>
         ) : (
           <>
-            <div className="outline-file-tabs" role="tablist" aria-label="outline 产物">
+            <div className="outline-file-tabs" role="tablist" aria-label="大纲文件">
               {files.map((f) => (
                 <button
                   key={f.rel}

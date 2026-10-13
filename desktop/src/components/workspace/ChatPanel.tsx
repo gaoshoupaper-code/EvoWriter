@@ -101,12 +101,23 @@ export function ChatPanel({
     setCanExpand(input.scrollHeight > collapsedHeight + 1);
   }, [expanded, prompt]);
 
-  // 切换会话时把对话区滚到最底部，直接看到最新消息
+  // 挂载/切换会话时把对话区滚到最底部，直接看到最新消息
   useEffect(() => {
     const list = listRef.current;
     if (!list) return;
     list.scrollTop = list.scrollHeight;
   }, [activeThreadId]);
+
+  // 挂载时会话消息还在异步加载（列表为空），到达后补一次滚底；
+  // 只处理 0→N——流式追加不强制跟随，不打断用户回看历史
+  const prevMessageCountRef = useRef(messages.length);
+  useEffect(() => {
+    const wasEmpty = prevMessageCountRef.current === 0;
+    prevMessageCountRef.current = messages.length;
+    if (!wasEmpty) return;
+    const list = listRef.current;
+    if (list) list.scrollTop = list.scrollHeight;
+  }, [messages.length]);
 
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;

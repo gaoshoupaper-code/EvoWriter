@@ -670,6 +670,9 @@ a {
 
 .message-list {
   display: grid;
+  /* 列宽锁死为容器宽：隐式 auto 列会按内容最大宽度（如宽表格）撑开整列，
+     超出可视区后右对齐的用户消息被顶出裁剪线外（对话气泡"看不到自己发的消息"） */
+  grid-template-columns: minmax(0, 1fr);
   align-content: start;
   gap: 12px;
   padding: 18px 20px;

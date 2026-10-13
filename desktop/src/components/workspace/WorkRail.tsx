@@ -1,10 +1,16 @@
 /**
- * WorkRail —— 右侧常驻作品栏（REQ-20261012-202540 FR-001/FR-003，DEC-001/004/008）。
+ * WorkRail —— 右上角作品浮窗（REQ-20261013-181350 FR-001，DEC-002/005/006/009/010/011）。
  *
- * 对话区右侧固定窄栏：顶部「进度」（七步法 0-7 + 修订/拍板徽标 + 接下来写），
- * 下方「索引」四组（大纲/人物/物品/世界观）。点条目跳全屏面板深读并定位。
- * 数据全部来自 contentStore（bootstrap 全量喂入 + 生成中全量轮询，FR-005），
- * 这里只做视图；收起态不持久化，刷新回默认展开（避免「找不到」）。
+ * 三态浮窗（不占 dashboard 栅格，悬浮于对话区右上角，完全固定不可拖）：
+ * closed   只剩右上角唤回小按钮（彻底关闭后的恒定入口，DEC-006）；
+ * mini     概要小卡：阶段 + 第几步 + 接下来写/等你拍板 + 最新 1 条产物（DEC-005），
+ *          生成中带旋转标记；点卡面展开；
+ * expanded 完整浮窗：进度（八步 + 修订/拍板徽标 + 接下来写）+ 索引四组
+ *          （大纲/人物/物品/世界观），点条目跳全屏面板深读并定位。
+ * 窄窗口（<1280px）锁定 mini 且禁止展开（DEC-011）；浮窗态不持久化，
+ * 刷新回默认 mini（避免「找不到」）。
+ * 数据全部来自 contentStore（bootstrap 全量喂入 + 生成中全量轮询），
+ * 这里只做视图。
  */
 import { useEffect, useState } from "react";
 import { useContentStore } from "@/stores/content";
@@ -33,8 +39,8 @@ type RailEntry = {
 };
 
 export function WorkRail() {
-  const collapsed = useWorkrailStore((s) => s.collapsed);
-  const toggleCollapsed = useWorkrailStore((s) => s.toggleCollapsed);
+  const floatMode = useWorkrailStore((s) => s.floatMode);
+  const setFloatMode = useWorkrailStore((s) => s.setFloatMode);
   const highlightKeys = useWorkrailStore((s) => s.highlightKeys);
   const pollError = useWorkrailStore((s) => s.pollError);
 
@@ -46,12 +52,24 @@ export function WorkRail() {
   const loading = useExecutionStore((s) => s.loading);
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
 
-  // 窄窗口自动收起（可手动展开回来；仅 resize 边沿触发，不覆盖用户操作）
+  // 索引组展开态（仅 expanded 态消费；mini/expanded 分支切换不重挂，展开态保留）
+  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
+    outline: true,
+    characters: false,
+    objects: false,
+    worldview: false,
+  });
+
+  // 窄窗口锁定 mini（仅 resize 边沿触发，不覆盖用户操作；拉宽后可重新展开）
+  const [narrow, setNarrow] = useState(() =>
+    typeof window.matchMedia === "function" ? window.matchMedia(NARROW_QUERY).matches : false,
+  );
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
     const mq = window.matchMedia(NARROW_QUERY);
     const sync = () => {
-      if (mq.matches) useWorkrailStore.getState().toggleCollapsed(true);
+      setNarrow(mq.matches);
+      if (mq.matches) useWorkrailStore.getState().setFloatMode("mini");
     };
     sync();
     mq.addEventListener("change", sync);
@@ -62,18 +80,107 @@ export function WorkRail() {
   const isPipeline = pipeline?.kind === "pipeline";
   const activeIdx = isPipeline ? activeStepIndex(pipeline, fileRels) : -1;
   const awaitingCount = isPipeline ? Object.keys(pipeline.awaiting ?? {}).length : 0;
-
-  // 大纲组：已有文件（✓）+ 活跃步尚未落盘时的「生成中」占位行
-  const outlineEntries: RailEntry[] = outlineFiles.map((f) => ({
-    key: `outline:${f.rel}`,
-    label: outlineEntryLabel(f.rel),
-  }));
   const activeStep = activeIdx >= 0 ? PIPELINE_STEPS[activeIdx] : null;
+
+  const hasAnyContent =
+    outlineFiles.length > 0 || characters.length > 0 || objects.length > 0 || !!worldviewMarkdown.trim();
+
+  // 最新 1 条关键产物：数据模型无产物时间戳，按列表序取最新——
+  // 大纲文件按步序落盘，末项即最近完成；无大纲时回退人物/物品/世界观（DEC-005）
+  const latestArtifact =
+    outlineFiles.length > 0
+      ? outlineEntryLabel(outlineFiles[outlineFiles.length - 1].rel)
+      : characters.length > 0
+        ? characters[characters.length - 1].name || characters[characters.length - 1].filename
+        : objects.length > 0
+          ? objects[objects.length - 1].name || objects[objects.length - 1].filename
+          : worldviewMarkdown.trim()
+            ? "世界观设定"
+            : null;
+
+  // ── closed：只剩唤回小按钮（DEC-006）──
+  if (floatMode === "closed") {
+    return (
+      <button
+        type="button"
+        className="work-rail-fab"
+        onClick={() => setFloatMode("mini")}
+        aria-label="展开作品浮窗"
+        title="展开作品浮窗"
+      >
+        ✦
+      </button>
+    );
+  }
+
+  // ── mini：概要小卡（DEC-005：进度概要 + 最新 1 条产物）──
+  if (floatMode === "mini") {
+    return (
+      <aside className="work-rail mini" aria-label="作品">
+        <button
+          type="button"
+          className="work-rail-mini-card"
+          onClick={() => setFloatMode("expanded")}
+          disabled={narrow}
+          aria-label="展开作品详情"
+          title={narrow ? "窗口太窄，拉宽后可展开" : "展开作品浮窗详情"}
+        >
+          {!pipeline ? (
+            <p className="work-rail-placeholder">
+              {hasAnyContent ? "暂无七步进度。" : "开始对话后，作品会在这里出现。"}
+            </p>
+          ) : pipeline.kind === "legacy" ? (
+            <>
+              <div className="work-rail-mini-head">
+                <span className="work-rail-phase legacy">旧版工作区</span>
+              </div>
+              <p className="work-rail-mini-next">五件套修订模式</p>
+            </>
+          ) : (
+            <>
+              <div className="work-rail-mini-head">
+                <span className={`work-rail-phase ${pipeline.phase}`}>{phaseDisplayName(pipeline.phase)}</span>
+                {loading ? (
+                  <span className="work-rail-mini-spinner" aria-label="生成中">
+                    ⟳
+                  </span>
+                ) : null}
+              </div>
+              {activeStep ? (
+                <p className="work-rail-mini-step">
+                  第 {activeIdx + 1} 步 · {activeStep.label}
+                </p>
+              ) : null}
+              <p className="work-rail-mini-next">
+                {awaitingCount > 0 ? "⏸ 等你拍板" : `接下来写：${pipeline.next_unit}`}
+              </p>
+              {latestArtifact ? <p className="work-rail-mini-artifact">刚写完：{latestArtifact}</p> : null}
+            </>
+          )}
+        </button>
+        <button
+          type="button"
+          className="work-rail-close-toggle"
+          onClick={() => setFloatMode("closed")}
+          aria-label="关闭作品浮窗"
+          title="关闭作品浮窗"
+        >
+          ×
+        </button>
+      </aside>
+    );
+  }
+
+  // ── expanded：完整浮窗（进度 + 索引四组，点条目跳全屏面板并定位）──
   const generatingRow =
     loading && activeStep && activeStep.n <= 6 && !isStepDone(activeStep.n, fileRels)
       ? { label: `生成中：${activeStep.label}` }
       : null;
 
+  const outlineEntries: RailEntry[] = outlineFiles.map((f) => ({
+    key: `outline:${f.rel}`,
+    label: outlineEntryLabel(f.rel),
+  }));
   const characterEntries: RailEntry[] = characters.map((c) => ({
     key: `character:${c.filename}`,
     label: c.name || c.filename,
@@ -93,16 +200,6 @@ export function WorkRail() {
     { id: "worldview", title: "世界观", count: worldviewEntries.length, entries: worldviewEntries },
   ];
 
-  const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({
-    outline: true,
-    characters: false,
-    objects: false,
-    worldview: false,
-  });
-
-  const hasAnyContent =
-    outlineFiles.length > 0 || characters.length > 0 || objects.length > 0 || !!worldviewMarkdown.trim();
-
   function handleEntryClick(key: ArtifactKey) {
     const content = useContentStore.getState();
     if (key.startsWith("outline:")) {
@@ -119,45 +216,30 @@ export function WorkRail() {
     }
   }
 
-  // ── 收起态：细条（进度点 + 展开按钮）──
-  if (collapsed) {
-    return (
-      <aside className="work-rail collapsed" aria-label="作品">
-        <button
-          type="button"
-          className="work-rail-collapse-toggle"
-          onClick={() => toggleCollapsed(false)}
-          aria-label="展开作品栏"
-          title="展开作品栏"
-        >
-          «
-        </button>
-        <ol className="work-rail-mini-dots" aria-hidden="true">
-          {PIPELINE_STEPS.map((s) => (
-            <li
-              key={s.n}
-              className={isPipeline && s.n === activeIdx ? "active" : isPipeline && isStepDone(s.n, fileRels) ? "done" : ""}
-            />
-          ))}
-        </ol>
-      </aside>
-    );
-  }
-
-  // ── 展开态 ──
   return (
     <aside className="work-rail" aria-label="作品">
       <div className="work-rail-head">
         <span className="work-rail-title">作品</span>
-        <button
-          type="button"
-          className="work-rail-collapse-toggle"
-          onClick={() => toggleCollapsed(true)}
-          aria-label="收起作品栏"
-          title="收起作品栏"
-        >
-          »
-        </button>
+        <div className="work-rail-head-actions">
+          <button
+            type="button"
+            className="work-rail-collapse-toggle"
+            onClick={() => setFloatMode("mini")}
+            aria-label="收起作品浮窗"
+            title="收起作品浮窗"
+          >
+            »
+          </button>
+          <button
+            type="button"
+            className="work-rail-close-toggle"
+            onClick={() => setFloatMode("closed")}
+            aria-label="关闭作品浮窗"
+            title="关闭作品浮窗"
+          >
+            ×
+          </button>
+        </div>
       </div>
 
       <div className="work-rail-body">
@@ -175,7 +257,7 @@ export function WorkRail() {
           </div>
         ) : null}
 
-        {/* 进度区：七步 + 徽标 + 接下来写（FR-002：对话标题带阶段条迁入此处） */}
+        {/* 进度区：八步 + 徽标 + 接下来写 */}
         <div className="work-rail-progress" aria-label="创作进度">
           {!pipeline ? (
             <p className="work-rail-placeholder">
@@ -218,7 +300,7 @@ export function WorkRail() {
           )}
         </div>
 
-        {/* 索引区：四组，点条目跳全屏面板并定位（FR-003） */}
+        {/* 索引区：四组，点条目跳全屏面板并定位 */}
         <div className="work-rail-groups">
           {groups.map((g) => (
             <div className="work-rail-group" key={g.id}>

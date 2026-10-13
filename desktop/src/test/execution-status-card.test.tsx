@@ -27,7 +27,7 @@ beforeEach(() => {
   vi.restoreAllMocks();
   useExecutionStore.setState({ activeStreamKind: "writing" });
   useWorkrailStore.setState({
-    collapsed: true,
+    floatMode: "mini",
     pollError: false,
     highlightKeys: new Set(),
     baselineKeys: null,
@@ -92,7 +92,7 @@ describe("交付卡产物入口（AC-006）", () => {
     await userEvent.click(screen.getByRole("button", { name: "查看新作品" }));
 
     const rail = useWorkrailStore.getState();
-    expect(rail.collapsed).toBe(false);
+    expect(rail.floatMode).toBe("expanded");
     expect([...rail.highlightKeys]).toContain("outline:outline/04-总纲.md");
     expect([...rail.highlightKeys]).not.toContain("outline:outline/00-赛道.md");
   });

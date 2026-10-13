@@ -130,12 +130,9 @@ export function ChatPanel({
       className={`conversation-panel panel-surface${demandStage ? " demand-stage-mode" : ""}`}
       aria-label="创作对话"
     >
-      <div className="panel-heading">
-        <div>
-          <span className="section-kicker">Dialogue</span>
-          <h2>创作对话</h2>
-        </div>
-        {/* FR-009：StyleModal 移除——风格偏好由需求表单承载（DEC-013） */}
+      {/* 标题带简化（REQ-20261013-181350 DEC-008）：去「Dialogue/创作对话」大标题、
+          压扁高度对齐 ZCode；「新建会话」「会话菜单」保留在这一行 */}
+      <div className="panel-heading conversation-heading">
         <div className="session-actions">
           <button
             className="session-create-button"
@@ -161,7 +158,6 @@ export function ChatPanel({
             onDeleteThread={onDeleteThread}
           />
         </div>
-        {/* 阶段进度已迁入右侧作品栏（REQ-20261012-202540 FR-002）——标题带只留标题与会话切换 */}
       </div>
 
       {/* v9 表单直入（FR-002）：写作域首次生成走需求表单；大纲产出前对话入口不可用（FR-004）。

@@ -1,7 +1,8 @@
 /**
- * WorkRail 作品栏验收（REQ-20261012-202540 FR-001/FR-003，AC-001/002/004/011）。
- * jsdom 无真实布局：横滚/宽度由 design_lint + 浏览器 harness 验证，
- * 本文件覆盖结构契约（八步+副标+四组）、收起/展开、跳转定位、空态/失败态。
+ * WorkRail 作品浮窗验收（REQ-20261013-181350 FR-001，AC-001/002）。
+ * jsdom 无真实布局：悬浮位置/宽度由 layout-contract.test 断言样式表，
+ * 本文件覆盖三态结构契约（closed/mini/expanded）、小态概要内容、
+ * 窄屏锁定、跳转定位、空态/失败态。
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, within } from "@testing-library/react";
@@ -38,14 +39,19 @@ const FILES = [
   { rel: "outline/04-总纲.md", markdown: "" },
 ];
 
-beforeEach(() => {
-  vi.clearAllMocks();
+/** 默认宽屏 matchMedia stub（<1280px 视为窄屏，见 NARROW_QUERY） */
+function stubWideMedia() {
   vi.stubGlobal(
     "matchMedia",
     vi.fn(() => ({ matches: false, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
   );
+}
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  stubWideMedia();
   useWorkrailStore.setState({
-    collapsed: false,
+    floatMode: "mini",
     pollError: false,
     highlightKeys: new Set(),
     baselineKeys: null,
@@ -65,9 +71,59 @@ beforeEach(() => {
   });
 });
 
-describe("作品栏默认视图（AC-001）", () => {
-  it("八步进度（名字+副标+状态）与四组索引齐备，无横向滚动容器", () => {
+describe("小态浮窗概要（AC-001）", () => {
+  it("默认 mini：阶段+第几步+接下来写+最新 1 条产物，完整进度区不可见", () => {
     render(<WorkRail />);
+    const mini = screen.getByLabelText("作品");
+    expect(within(mini).getByText("结构阶段")).toBeInTheDocument();
+    expect(within(mini).getByText("第 6 步 · 卷纲")).toBeInTheDocument();
+    expect(within(mini).getByText("接下来写：卷纲·第1卷")).toBeInTheDocument();
+    expect(within(mini).getByText("刚写完：04-总纲")).toBeInTheDocument();
+    // 小态只有概要：完整进度区与索引组不渲染
+    expect(screen.queryByLabelText("创作进度")).not.toBeInTheDocument();
+    expect(screen.queryByText("大纲")).not.toBeInTheDocument();
+  });
+
+  it("生成中：小态显示旋转标记（AC-001 边界）", () => {
+    useExecutionStore.setState({ loading: true });
+    render(<WorkRail />);
+    expect(screen.getByLabelText("生成中")).toBeInTheDocument();
+  });
+
+  it("等你拍板：awaiting 非空时小态显示暂停提示（AC-001 边界）", () => {
+    useContentStore.setState({
+      outlinePipeline: pipeline({ awaiting: { t1: "awaiting_approval" } }),
+    });
+    render(<WorkRail />);
+    expect(screen.getByText("⏸ 等你拍板")).toBeInTheDocument();
+  });
+
+  it("legacy 工作区：小态显示旧版徽标与模式说明（AC-001 边界）", () => {
+    useContentStore.setState({
+      outlinePipeline: { ...pipeline(), kind: "legacy", phase: "legacy" },
+    });
+    render(<WorkRail />);
+    expect(screen.getByText("旧版工作区")).toBeInTheDocument();
+    expect(screen.getByText("五件套修订模式")).toBeInTheDocument();
+  });
+
+  it("全新工作区无产物 → 小态引导文案，不报错", () => {
+    useContentStore.setState({
+      outlinePipeline: null,
+      outlineFiles: [],
+      characters: [],
+      objects: [],
+      worldviewMarkdown: "",
+    });
+    render(<WorkRail />);
+    expect(screen.getByText("开始对话后，作品会在这里出现。")).toBeInTheDocument();
+  });
+});
+
+describe("三态切换与唤回（AC-002）", () => {
+  it("mini 点击卡面 → expanded：八步（名字+副标）与四组索引齐备", async () => {
+    render(<WorkRail />);
+    await userEvent.click(screen.getByRole("button", { name: "展开作品详情" }));
     const progress = screen.getByLabelText("创作进度");
     for (const name of ["赛道", "设计原则", "冲突引擎", "力量体系", "总纲", "卷纲", "章纲", "卷末盘点"]) {
       expect(within(progress).getByText(name)).toBeInTheDocument();
@@ -79,50 +135,51 @@ describe("作品栏默认视图（AC-001）", () => {
     for (const g of ["大纲", "人物", "物品", "世界观"]) {
       expect(within(rail).getByText(g)).toBeInTheDocument();
     }
-    // 大纲组默认展开：文件到条目级
-    expect(within(rail).getByText("00-赛道")).toBeInTheDocument();
-    // 步骤纵向网格（work-rail-steps 为 ol；横滚与否属布局行为，由浏览器目检）
     expect(document.querySelectorAll(".work-rail-steps li").length).toBe(8);
   });
 
-  it("legacy 工作区：显示旧版提示（边界）", () => {
-    useContentStore.setState({
-      outlinePipeline: { ...pipeline(), kind: "legacy", phase: "legacy" },
-    });
+  it("expanded 收起（»）→ mini；再点击卡面可回到 expanded", async () => {
+    useWorkrailStore.setState({ floatMode: "expanded" });
     render(<WorkRail />);
-    expect(screen.getByText("旧版工作区")).toBeInTheDocument();
-    expect(screen.getByText("五件套修订模式")).toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("收起作品浮窗"));
+    expect(screen.queryByLabelText("创作进度")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: "展开作品详情" }));
+    expect(screen.getByLabelText("创作进度")).toBeInTheDocument();
   });
 
-  it("生成中：活跃步无文件时显示「生成中：xx」占位行", () => {
+  it("彻底关闭（×）→ 只剩唤回小按钮；点唤回回 mini（DEC-006）", async () => {
+    render(<WorkRail />);
+    await userEvent.click(screen.getByLabelText("关闭作品浮窗"));
+    expect(screen.queryByLabelText("作品")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("展开作品浮窗")).toBeInTheDocument();
+
+    await userEvent.click(screen.getByLabelText("展开作品浮窗"));
+    expect(screen.getByLabelText("作品")).toBeInTheDocument();
+    expect(screen.queryByLabelText("创作进度")).not.toBeInTheDocument(); // 回到 mini 而非 expanded
+  });
+
+  it("生成中：expanded 态活跃步无文件时显示「生成中：xx」占位行", async () => {
     useExecutionStore.setState({ loading: true });
+    useWorkrailStore.setState({ floatMode: "expanded" });
     render(<WorkRail />);
     expect(screen.getByText("生成中：卷纲")).toBeInTheDocument();
   });
 });
 
-describe("收起与展开（AC-002 结构部分）", () => {
-  it("收起变细条（进度点+展开按钮），再点恢复", async () => {
-    render(<WorkRail />);
-    await userEvent.click(screen.getByLabelText("收起作品栏"));
-    expect(document.querySelector(".work-rail.collapsed")).not.toBeNull();
-    expect(screen.queryByLabelText("创作进度")).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByLabelText("展开作品栏"));
-    expect(document.querySelector(".work-rail.collapsed")).toBeNull();
-    expect(screen.getByLabelText("创作进度")).toBeInTheDocument();
-  });
-
-  it("窄窗口（<1280px）挂载即自动收起（AC-002）", () => {
+describe("窄窗口（<1280px）锁定小态（AC-006 结构部分，DEC-011）", () => {
+  it("挂载即窄屏：expanded 被压回 mini", () => {
+    useWorkrailStore.setState({ floatMode: "expanded" });
     vi.stubGlobal(
       "matchMedia",
       vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })),
     );
     render(<WorkRail />);
-    expect(document.querySelector(".work-rail.collapsed")).not.toBeNull();
+    expect(screen.queryByLabelText("创作进度")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "展开作品详情" })).toBeDisabled();
   });
 
-  it("窗口缩过阈值触发 change → 自动收起，可手动展开（AC-002）", () => {
+  it("窗口缩过阈值触发 change → 压回 mini 且卡面点击置灰", () => {
     const listeners: Array<() => void> = [];
     let matches = false;
     const mq = {
@@ -133,20 +190,22 @@ describe("收起与展开（AC-002 结构部分）", () => {
       removeEventListener: vi.fn(),
     };
     vi.stubGlobal("matchMedia", vi.fn(() => mq));
+    useWorkrailStore.setState({ floatMode: "expanded" });
     render(<WorkRail />);
-    expect(document.querySelector(".work-rail.collapsed")).toBeNull();
+    expect(screen.getByLabelText("创作进度")).toBeInTheDocument();
 
     act(() => {
       matches = true;
       for (const cb of listeners) cb();
     });
-    expect(useWorkrailStore.getState().collapsed).toBe(true);
-    expect(document.querySelector(".work-rail.collapsed")).not.toBeNull();
+    expect(useWorkrailStore.getState().floatMode).toBe("mini");
+    expect(screen.getByRole("button", { name: "展开作品详情" })).toBeDisabled();
   });
 });
 
-describe("索引跳转定位（AC-004）", () => {
+describe("索引跳转定位（expanded 态）", () => {
   it("点大纲文件 → 面板切 outline 且选中该文件", async () => {
+    useWorkrailStore.setState({ floatMode: "expanded" });
     render(<WorkRail />);
     await userEvent.click(screen.getByText("04-总纲"));
     expect(useWorkspaceStore.getState().activePanel).toBe("outline");
@@ -154,6 +213,7 @@ describe("索引跳转定位（AC-004）", () => {
   });
 
   it("点人物条目 → 面板切 characters 且选中该文件", async () => {
+    useWorkrailStore.setState({ floatMode: "expanded" });
     render(<WorkRail />);
     await userEvent.click(screen.getByText("人物")); // 展开人物组
     await userEvent.click(screen.getByText("林寒"));
@@ -161,10 +221,11 @@ describe("索引跳转定位（AC-004）", () => {
     expect(useContentStore.getState().activeCharacterFilename).toBe("lin.md");
   });
 
-  it("点物品条目 → 面板切 objects 且选中该文件（AC-004 边界补齐）", async () => {
+  it("点物品条目 → 面板切 objects 且选中该文件", async () => {
     useContentStore.setState({
       objects: [{ filename: "sword.md", name: "青冥剑", markdown: "" }],
     });
+    useWorkrailStore.setState({ floatMode: "expanded" });
     render(<WorkRail />);
     await userEvent.click(screen.getByText("物品"));
     await userEvent.click(screen.getByText("青冥剑"));
@@ -173,6 +234,7 @@ describe("索引跳转定位（AC-004）", () => {
   });
 
   it("点世界观条目 → 面板切 worldview", async () => {
+    useWorkrailStore.setState({ floatMode: "expanded" });
     render(<WorkRail />);
     await userEvent.click(screen.getByText("世界观"));
     await userEvent.click(screen.getByText("世界观设定"));
@@ -180,29 +242,19 @@ describe("索引跳转定位（AC-004）", () => {
   });
 });
 
-describe("空态与失败态（AC-011）", () => {
-  it("全新工作区无产物 → 引导文案，不报错", () => {
-    useContentStore.setState({
-      outlinePipeline: null,
-      outlineFiles: [],
-      characters: [],
-      objects: [],
-      worldviewMarkdown: "",
-    });
-    render(<WorkRail />);
-    expect(screen.getByText("开始对话后，作品会在这里出现。")).toBeInTheDocument();
-  });
-
-  it("交付高亮渲染到条目级（fresh），4 秒后自动熄灭（AC-006 渲染端）", async () => {
+describe("交付高亮与失败态", () => {
+  it("revealDelivery → 展开浮窗并高亮新增条目，4 秒后熄灭", async () => {
     vi.useFakeTimers();
     try {
+      useWorkrailStore.setState({ floatMode: "closed" });
       render(<WorkRail />);
       await act(async () => {
         useWorkrailStore.getState().revealDelivery();
       });
-      // 无基线快照时高亮全部现有条目（恢复会话分支）
+      // 无基线快照时高亮全部现有条目（恢复会话分支）；交付必须展开浮窗
+      expect(useWorkrailStore.getState().floatMode).toBe("expanded");
       const freshItems = document.querySelectorAll(".work-rail-entries li.fresh");
-      expect(freshItems.length).toBeGreaterThanOrEqual(2); // 大纲组 3 个文件均在展开组内
+      expect(freshItems.length).toBeGreaterThanOrEqual(2);
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(4000);
@@ -220,7 +272,7 @@ describe("空态与失败态（AC-011）", () => {
     vi.mocked(api.fetchWorkspaceObjects).mockResolvedValue({ objects: [] } as any);
     vi.mocked(api.fetchWorkspaceWorldview).mockResolvedValue({ markdown: "" } as any);
     vi.mocked(fetchWorkspaceOutline).mockResolvedValue({ kind: "pipeline", pipeline: pipeline(), files: FILES } as any);
-    useWorkrailStore.setState({ pollError: true });
+    useWorkrailStore.setState({ pollError: true, floatMode: "expanded" });
     render(<WorkRail />);
     expect(screen.getByText("状态获取失败")).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "重试" }));

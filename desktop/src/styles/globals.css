@@ -185,8 +185,10 @@ a {
 .dashboard-body {
   min-height: 0;
   display: grid;
-  /* 第三列给右侧作品栏（auto = 由 rail 自身宽度决定：300px/收起 44px/不渲染 0） */
-  grid-template-columns: 252px minmax(0, 1fr) auto;
+  /* 两栏：侧栏 + 主区。作品浮窗（work-rail）absolute 悬浮右上角，不占栅格
+     （REQ-20261013-181350 FR-001）；relative 为浮窗提供定位上下文 */
+  grid-template-columns: 252px minmax(0, 1fr);
+  position: relative;
   gap: 0;
   border: 1px solid var(--line-strong);
   border-radius: 0;
@@ -517,6 +519,13 @@ a {
   min-width: min(360px, 52%);
 }
 
+/* 对话区标题带简化（REQ-20261013-181350 DEC-008）：大标题已去，压扁高度，
+   会话操作靠右——只作用于对话区，其他全屏面板标题带不受影响 */
+.conversation-panel .panel-heading {
+  justify-content: flex-end;
+  padding: 10px 16px;
+}
+
 .session-menu {
   position: relative;
   width: 168px;
@@ -673,6 +682,11 @@ a {
   /* 列宽锁死为容器宽：隐式 auto 列会按内容最大宽度（如宽表格）撑开整列，
      超出可视区后右对齐的用户消息被顶出裁剪线外（对话气泡"看不到自己发的消息"） */
   grid-template-columns: minmax(0, 1fr);
+  /* 对齐 ZCode：消息列定宽 760px 在对话区水平居中（REQ-20261013-181350 DEC-004）。
+     width:100% 必须显式声明——grid 项在 auto 边距下不 stretch，会按内容收缩 */
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
   align-content: start;
   gap: 12px;
   padding: 18px 20px;
@@ -680,28 +694,31 @@ a {
 }
 
 .message {
-  max-width: min(760px, 92%);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  padding: 14px 16px;
-  background: rgba(245, 238, 218, 0.85);
-  box-shadow: none;
+  max-width: none;
 }
 
 .message.assistant {
-  justify-self: start;
-  border-color: rgba(115, 89, 168, 0.16);
-  background:
-    linear-gradient(135deg, rgba(248, 242, 224, 0.94), rgba(240, 232, 210, 0.88));
+  /* 无气泡（REQ-20261013-181350 FR-002）：无边框无底色，纯文本占满消息列 */
+  justify-self: stretch;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: none;
+  box-shadow: none;
 }
 
 .message.user {
   justify-self: flex-end;
+  width: fit-content;
+  max-width: 100%;
   color: #fff;
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  padding: 14px 16px;
   background:
     linear-gradient(135deg, rgba(255, 255, 255, 0.14), transparent 42%),
     linear-gradient(135deg, var(--teal), var(--blue));
-  border-color: transparent;
+  box-shadow: none;
 }
 
 /* tool-status* CSS 已删除（T23 清理死代码：旧逐工具气泡 UI，被 ExecutionView 取代） */
@@ -2855,9 +2872,12 @@ a {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 104px;
   gap: 10px;
-  padding: 14px 16px;
-  border-top: 1px solid var(--line);
-  background: linear-gradient(180deg, rgba(240, 232, 210, 0.7), rgba(248, 240, 220, 0.82));
+  /* 对齐 ZCode（REQ-20261013-181350 DEC-007）：与消息列同宽（760+左右 padding）、
+     居中；去全宽色带与上边线，输入框直接浮在对话区上 */
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
+  padding: 14px 20px 18px;
 }
 
 .chat-input-wrap {
@@ -3529,7 +3549,7 @@ html[data-theme="dark"] :is(
   .session-menu-popover,
   .workspace-menu-trigger,
   .workspace-menu-popover,
-  .message,
+  .message.user,
   .trace-delete-button,
   .trace-stop-button,
   .trace-item-stop-button,
@@ -3566,7 +3586,6 @@ html[data-theme="dark"] :is(
 }
 
 html[data-theme="dark"] :is(
-  .message.assistant,
   .trace-run-item.active,
   .trace-run-item:hover,
   .trace-node-item.active,
@@ -3579,8 +3598,7 @@ html[data-theme="dark"] :is(
   .tool-status,
   .trace-context-segment.phase-input,
   .trace-context-segment.phase-output,
-  .trace-context-segment.phase-error,
-  .chat-composer
+  .trace-context-segment.phase-error
 ) {
   background: rgba(24, 20, 14, 0.78);
 }
@@ -3774,8 +3792,9 @@ html[data-theme="dark"] .panel-heading {
     grid-template-columns: 1fr;
   }
 
-  /* 极窄窗口：作品栏整条隐藏（<1280px 已自动收起；此处单列布局不再堆叠） */
-  .work-rail {
+  /* 极窄窗口：作品浮窗与唤回按钮整条隐藏（<1280px 已锁 mini；单列布局不再悬浮） */
+  .work-rail,
+  .work-rail-fab {
     display: none;
   }
 
@@ -6484,20 +6503,34 @@ html[data-theme="dark"] .provider-item {
 
 /* ── 右侧作品栏（REQ-20261012-202540 FR-001）：对话区右侧常驻窄栏 ── */
 .work-rail {
-  align-self: stretch;
+  /* 浮窗（REQ-20261013-181350 FR-001/DEC-009）：absolute 悬浮于对话区右上角，
+     脱离 dashboard 栅格；完全固定不可拖 */
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 20;
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   width: 300px;
-  border-left: 1px solid var(--line);
-  background: transparent;
+  max-height: calc(100% - 28px);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--panel-solid);
+  box-shadow: 0 18px 44px rgba(31, 24, 12, 0.18);
   overflow: hidden;
 }
 .work-rail-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 14px 10px;
+  padding: 12px 12px 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.work-rail-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .work-rail-title {
   font-size: var(--text-ui-lg);
@@ -6520,6 +6553,23 @@ html[data-theme="dark"] .provider-item {
 .work-rail-collapse-toggle:hover {
   border-color: var(--teal);
   color: var(--ink);
+}
+.work-rail-close-toggle {
+  width: 26px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--card);
+  color: var(--muted);
+  cursor: pointer;
+  transition: border-color var(--motion-duration) ease, color var(--motion-duration) ease;
+}
+.work-rail-close-toggle:hover {
+  border-color: var(--danger);
+  color: var(--danger);
 }
 .work-rail-body {
   min-height: 0;
@@ -6728,35 +6778,87 @@ html[data-theme="dark"] .provider-item {
   font-size: var(--text-ui-xs);
   color: var(--muted);
 }
-/* 收起态：右侧细条（进度点 + 展开按钮） */
-.work-rail.collapsed {
-  width: 44px;
-  grid-template-rows: auto minmax(0, 1fr);
-  padding: 14px 0;
+/* ── mini 概要小卡（DEC-005：进度概要 + 最新 1 条产物）── */
+.work-rail.mini {
+  display: block;
+  width: 260px;
 }
-.work-rail.collapsed .work-rail-collapse-toggle {
-  margin: 0 auto;
+.work-rail-mini-card {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 0;
+  padding: 12px 30px 12px 14px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
 }
-.work-rail-mini-dots {
-  list-style: none;
-  margin: 12px 0 0;
-  padding: 0;
+.work-rail-mini-card:hover:not(:disabled) {
+  background: rgba(25, 169, 154, 0.06);
+}
+.work-rail-mini-card:disabled {
+  cursor: not-allowed;
+  opacity: 0.66;
+}
+.work-rail-mini-head {
   display: flex;
-  flex-direction: column;
-  gap: 8px;
   align-items: center;
+  gap: 8px;
 }
-.work-rail-mini-dots li {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--line-strong);
+.work-rail-mini-spinner {
+  display: inline-block;
+  color: var(--teal-dark);
+  font-size: var(--text-ui-base);
+  animation: work-rail-spin 1s linear infinite;
 }
-.work-rail-mini-dots li.done {
-  background: var(--teal);
+@keyframes work-rail-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
-.work-rail-mini-dots li.active {
-  background: var(--coral);
+.work-rail-mini-step {
+  margin: 8px 0 0;
+  font-size: var(--text-ui-base);
+  font-weight: 850;
+}
+.work-rail-mini-next,
+.work-rail-mini-artifact {
+  margin: 6px 0 0;
+  font-size: var(--text-ui-sm);
+}
+.work-rail-mini-artifact {
+  color: var(--muted);
+}
+/* mini 态关闭按钮挂在卡角（expanded 态在标题行 head-actions 内） */
+.work-rail.mini .work-rail-close-toggle {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+
+/* ── 唤回小按钮（DEC-006：彻底关闭后的恒定入口）── */
+.work-rail-fab {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  z-index: 20;
+  width: 36px;
+  height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--panel-solid);
+  color: var(--ink);
+  font-size: 16px;
+  cursor: pointer;
+  box-shadow: 0 8px 20px rgba(31, 24, 12, 0.14);
+}
+.work-rail-fab:hover {
+  border-color: var(--teal);
+  color: var(--teal-dark);
 }
 
 /* outline 面板：产物文件切换标签 */

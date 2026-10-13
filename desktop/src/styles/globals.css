@@ -185,7 +185,8 @@ a {
 .dashboard-body {
   min-height: 0;
   display: grid;
-  grid-template-columns: 252px minmax(0, 1fr);
+  /* 第三列给右侧作品栏（auto = 由 rail 自身宽度决定：300px/收起 44px/不渲染 0） */
+  grid-template-columns: 252px minmax(0, 1fr) auto;
   gap: 0;
   border: 1px solid var(--line-strong);
   border-radius: 0;

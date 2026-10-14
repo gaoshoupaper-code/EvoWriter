@@ -2886,12 +2886,25 @@ a {
   padding: 14px 20px 18px;
 }
 
-/* 浮窗展开（dock）时对话整体让位（ZCode 模式）：消息列与输入框解除 760 上限、
-   占满被让出的剩余空间；收起（mini/closed）回 760px 居中定宽。
+/* 浮窗展开（dock）时对话让位（ZCode 模式，对齐 conversationLayout）：
+   文字区域不铺满剩余空间，改定宽随显示器伸缩、居中后整体左移靠左——
+   对话容器 <1280px：min(100%−6rem, 56rem) 不位移；
+   ≥1280px：min(100%−24rem, 72rem) + translateX(−168px)（ZCode -translate-x-42）。
+   容器宽 = 窗口−侧栏 252−dock 列 324，故断点取窗口 1896px（列宽在此连续无跳变）。
+   收起（mini/closed）回 760px 居中定宽。
    :has 需 WebView2/Chromium 105+（Tauri 桌面端满足） */
 .dashboard-body:has(> .work-rail:not(.mini)) .message-list,
 .dashboard-body:has(> .work-rail:not(.mini)) .chat-composer {
-  max-width: none;
+  max-width: min(calc(100% - 6rem), 56rem);
+}
+
+@media (min-width: 1896px) {
+  .dashboard-body:has(> .work-rail:not(.mini)) .message-list,
+  .dashboard-body:has(> .work-rail:not(.mini)) .chat-composer {
+    max-width: min(calc(100% - 24rem), 72rem);
+    /* 左移量恒小于居中留白的一半（≥192px），左缘不裁切、不出横向滚动 */
+    transform: translateX(-168px);
+  }
 }
 
 .chat-input-wrap {

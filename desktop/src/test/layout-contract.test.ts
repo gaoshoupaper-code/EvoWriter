@@ -62,13 +62,21 @@ describe("dashboard 布局契约（作品面板 dock + 浮窗双形态）", () =
     expect(fab).toContain("z-index");
   });
 
-  it("dock 展开时消息列与输入框解除 760 上限（对话让位占满），收起回居中定宽", () => {
+  it("dock 展开时对话列定宽左靠（ZCode 模式）：窄容器 min(100%−6rem, 56rem)，宽容器 min(100%−24rem, 72rem)+左移 168px，收起回居中定宽", () => {
     const anchor = ":has(> .work-rail:not(.mini)) .message-list";
     const idx = cssTopLevel.indexOf(anchor);
     expect(idx).toBeGreaterThan(-1);
     const ruleText = cssTopLevel.slice(idx, cssTopLevel.indexOf("}", idx));
     expect(ruleText).toContain(".chat-composer");
-    expect(ruleText).toContain("max-width: none");
+    expect(ruleText).toContain("max-width: min(calc(100% - 6rem), 56rem)");
+    expect(ruleText).not.toContain("max-width: none");
+    // 宽分支（对话容器 ≥1280px ⇔ 窗口 ≥1896px）：定宽 + 整体左移靠左（ZCode -translate-x-42）
+    const wide = css.match(/@media\s*\(min-width:\s*1896px\)\s*\{([\s\S]*?)\n\}/);
+    expect(wide).not.toBeNull();
+    expect(wide![1]).toContain(":has(> .work-rail:not(.mini)) .message-list");
+    expect(wide![1]).toContain(".chat-composer");
+    expect(wide![1]).toContain("max-width: min(calc(100% - 24rem), 72rem)");
+    expect(wide![1]).toContain("transform: translateX(-168px)");
   });
 });
 

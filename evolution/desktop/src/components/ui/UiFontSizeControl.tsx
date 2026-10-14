@@ -3,7 +3,7 @@ import { useState } from "react";
 /**
  * 界面字号控制(规范见 DESIGN-UI.md):
  * 只改 --ui-font-size 单一变量,全界面文字联动;图标/间距/圆角等几何不随字号缩放。
- * 选择持久化到 localStorage;存储不可用时回落默认 14px。
+ * 选择持久化到 localStorage;存储不可用时回落默认 13px（对齐 ZCode 基准）。
  * 注意:本文件与 evolution/desktop 同名文件保持同构(两端同步义务)。
  */
 
@@ -24,9 +24,9 @@ export function applyUiFontSize(size: UiFontSize): void {
 export function loadUiFontSize(): UiFontSize {
   try {
     const v = window.localStorage.getItem(STORAGE_KEY);
-    return v === "13" || v === "16" ? v : "14";
+    return v === "14" || v === "16" ? v : "13";
   } catch {
-    return "14";
+    return "13";
   }
 }
 

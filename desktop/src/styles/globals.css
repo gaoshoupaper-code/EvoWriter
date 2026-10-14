@@ -34,7 +34,9 @@
 
 :root {
   /* ── design tokens(两端同步修改,scripts/design_lint.py 校验一致;规范见 DESIGN-UI.md)── */
-  --ui-font-size: var(--text-ui-base);
+  /* 基准给字面量：写成 var(--text-ui-base) 会与下方定义成环，变量整体失效回落 16px；
+     默认 13px 对齐 ZCode 工作台基准（applyUiFontSize 内联可覆盖） */
+  --ui-font-size: 13px; /* design-lint:allow 唯一基准源头，DESIGN-UI.md */
   --text-ui-display: calc(var(--ui-font-size) + 8px);
   --text-ui-xl: calc(var(--ui-font-size) + 4px);
   --text-ui-lg: calc(var(--ui-font-size) + 2px);
@@ -107,6 +109,9 @@ body {
 
 body {
   color: var(--ink);
+  /* 正文兜底基准：未显式设 token 的文字（聊天正文、Markdown 段落等）继承 13px，
+     不再回落浏览器默认 16px（此前"字体偏大"的来源之一） */
+  font-size: var(--text-ui-base);
   background:
     radial-gradient(ellipse at 25% 40%, rgba(220, 200, 150, 0.25), transparent 65%),
     radial-gradient(ellipse at 75% 60%, rgba(210, 190, 140, 0.2), transparent 65%),
@@ -156,9 +161,9 @@ a {
 }
 
 .dashboard-shell {
-  width: min(100vw, 1680px);
+  /* 对齐 ZCode：工作台铺满整个窗口宽，去掉旧的居中封顶（超宽窗口两侧留白） */
+  width: 100%;
   min-height: 100vh;
-  margin: 0 auto;
   display: grid;
   grid-template-rows: auto 1fr;
   gap: 0;

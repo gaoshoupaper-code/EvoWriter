@@ -97,6 +97,22 @@ describe("对话区对齐 ZCode 契约（FR-002/FR-003）", () => {
   });
 });
 
+describe("工作台铺满窗口 + 字号基准（对齐 ZCode）", () => {
+  it("dashboard-shell 全幅：无 1680px 居中封顶（超宽窗口两侧留白）", () => {
+    const shell = block(".dashboard-shell");
+    expect(shell).toContain("width: 100%");
+    expect(shell).not.toContain("1680");
+    expect(shell).not.toContain("margin: 0 auto");
+  });
+
+  it("字号唯一基准为字面量 13px（var 写法会与 --text-ui-base 成环失效回落 16px）", () => {
+    expect(css).toMatch(/--ui-font-size:\s*13px/);
+    expect(css).not.toMatch(/--ui-font-size:\s*var\(/);
+    // 未显式设 token 的文字（聊天正文/Markdown 段落）经 body 兜底继承基准，不回落 16px
+    expect(css).toMatch(/body\s*\{[^}]*font-size:\s*var\(--text-ui-base\)/s);
+  });
+});
+
 describe("极窄断点（≤920px）", () => {
   it("隐藏作品浮窗与唤回按钮的同时网格退回单列", () => {
     const narrow = css.match(/@media\s*\(max-width:\s*920px\)\s*{([\s\S]*?)\n}/);

@@ -9,7 +9,7 @@ import {
 
 /**
  * AC-005:界面字号设置联动且持久。
- * FR-007:切换只改 --ui-font-size;非法/缺失存储回落默认 14。
+ * FR-007:切换只改 --ui-font-size;非法/缺失存储回落默认 13(对齐 ZCode 基准)。
  */
 describe("UiFontSizeControl", () => {
   beforeEach(() => {
@@ -17,13 +17,13 @@ describe("UiFontSizeControl", () => {
     document.documentElement.style.removeProperty("--ui-font-size");
   });
 
-  it("无存储时默认 14", () => {
-    expect(loadUiFontSize()).toBe("14");
+  it("无存储时默认 13", () => {
+    expect(loadUiFontSize()).toBe("13");
   });
 
-  it("非法存储值回落 14(失败语义)", () => {
+  it("非法存储值回落 13(失败语义)", () => {
     window.localStorage.setItem("writer-ui-font-size", "99");
-    expect(loadUiFontSize()).toBe("14");
+    expect(loadUiFontSize()).toBe("13");
   });
 
   it("applyUiFontSize 写入根变量", () => {

@@ -28,6 +28,41 @@ import {
 
 const NARROW_QUERY = "(max-width: 1279px)";
 
+/* ── 图标（lucide 风格描边 SVG，对齐 ZCode 的浮窗/面板图标语言）── */
+
+/** 唤回按钮：右侧面板图标（作品面板的入口隐喻） */
+function PanelRightIcon({ size = 18 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <rect width="16" height="18" x="2" y="3" rx="2" />
+      <path d="M15 3v18" />
+    </svg>
+  );
+}
+
+/** 收起按钮：双箭头朝右（面板收向右侧，ZCode 同款语义） */
+function ChevronsRightIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="m6 17 5-5-5-5" />
+      <path d="m13 17 5-5-5-5" />
+    </svg>
+  );
+}
+
+/** 关闭按钮：× */
+function XIcon({ size = 15 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M18 6 6 18" />
+      <path d="m6 6 12 12" />
+    </svg>
+  );
+}
+
 function outlineEntryLabel(rel: string): string {
   return rel.replace(/^outline\//, "").replace(/\.md$/, "");
 }
@@ -108,7 +143,7 @@ export function WorkRail() {
         aria-label="展开作品浮窗"
         title="展开作品浮窗"
       >
-        ✦
+        <PanelRightIcon />
       </button>
     );
   }
@@ -165,7 +200,7 @@ export function WorkRail() {
           aria-label="关闭作品浮窗"
           title="关闭作品浮窗"
         >
-          ×
+          <XIcon />
         </button>
       </aside>
     );
@@ -228,7 +263,7 @@ export function WorkRail() {
             aria-label="收起作品浮窗"
             title="收起作品浮窗"
           >
-            »
+            <ChevronsRightIcon />
           </button>
           <button
             type="button"
@@ -237,7 +272,7 @@ export function WorkRail() {
             aria-label="关闭作品浮窗"
             title="关闭作品浮窗"
           >
-            ×
+            <XIcon />
           </button>
         </div>
       </div>

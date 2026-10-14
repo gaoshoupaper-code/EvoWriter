@@ -33,28 +33,39 @@ function block(selector: string): string {
   return cssTopLevel.slice(start, end + 1);
 }
 
-describe("dashboard 布局契约（作品浮窗必须有位置）", () => {
-  it("dashboard-body 两栏（侧栏+主区）且为浮窗提供定位上下文", () => {
+describe("dashboard 布局契约（作品面板 dock + 浮窗双形态）", () => {
+  it("dashboard-body 三列（侧栏/主区/作品面板），relative 供 mini 浮窗定位", () => {
     const body = block(".dashboard-body");
     expect(body).toContain("grid-template-columns");
-    expect(body).toMatch(/grid-template-columns:\s*252px\s+minmax\(0,\s*1fr\)/);
+    expect(body).toMatch(/grid-template-columns:\s*252px\s+minmax\(0,\s*1fr\)\s+auto/);
     expect(body).toContain("position: relative");
   });
 
-  it("work-rail 绝对定位悬浮右上角，脱离栅格（FR-001）", () => {
+  it("work-rail 展开态 dock 停靠：占第三列通栏全高（ZCode 模式）", () => {
     const rail = block(".work-rail");
-    expect(rail).toContain("position: absolute");
-    expect(rail).toContain("z-index");
     expect(rail).toContain("width: 300px");
-    expect(rail).toContain("max-height");
+    expect(rail).toContain("border-left");
+    expect(rail).not.toContain("position: absolute");
   });
 
-  it("mini 小卡与唤回按钮有自己的宽度与定位（DEC-005/006）", () => {
+  it("mini 小卡与唤回按钮为浮窗，下移到标题带之下避开会话控件（DEC-005/006 追补）", () => {
     const mini = block(".work-rail.mini");
+    expect(mini).toContain("position: absolute");
+    expect(mini).toContain("top: 74px");
     expect(mini).toContain("width: 260px");
     const fab = block(".work-rail-fab");
     expect(fab).toContain("position: absolute");
+    expect(fab).toContain("top: 74px");
     expect(fab).toContain("z-index");
+  });
+
+  it("dock 展开时消息列与输入框解除 760 上限（对话让位占满），收起回居中定宽", () => {
+    const anchor = ":has(> .work-rail:not(.mini)) .message-list";
+    const idx = cssTopLevel.indexOf(anchor);
+    expect(idx).toBeGreaterThan(-1);
+    const ruleText = cssTopLevel.slice(idx, cssTopLevel.indexOf("}", idx));
+    expect(ruleText).toContain(".chat-composer");
+    expect(ruleText).toContain("max-width: none");
   });
 });
 

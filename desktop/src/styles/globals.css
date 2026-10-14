@@ -185,9 +185,10 @@ a {
 .dashboard-body {
   min-height: 0;
   display: grid;
-  /* 两栏：侧栏 + 主区。作品浮窗（work-rail）absolute 悬浮右上角，不占栅格
-     （REQ-20261013-181350 FR-001）；relative 为浮窗提供定位上下文 */
-  grid-template-columns: 252px minmax(0, 1fr);
+  /* 第三列给作品面板（ZCode 模式）：浮窗展开（dock）时 rail 占 300px、对话区让位；
+     mini/closed 态 rail 转 absolute 脱离 grid，auto 第三列自动收 0——
+     relative 同时是 mini 浮窗/唤回按钮的定位上下文（REQ-20261013-181350 追补） */
+  grid-template-columns: 252px minmax(0, 1fr) auto;
   position: relative;
   gap: 0;
   border: 1px solid var(--line-strong);
@@ -2878,6 +2879,14 @@ a {
   max-width: 760px;
   margin-inline: auto;
   padding: 14px 20px 18px;
+}
+
+/* 浮窗展开（dock）时对话整体让位（ZCode 模式）：消息列与输入框解除 760 上限、
+   占满被让出的剩余空间；收起（mini/closed）回 760px 居中定宽。
+   :has 需 WebView2/Chromium 105+（Tauri 桌面端满足） */
+.dashboard-body:has(> .work-rail:not(.mini)) .message-list,
+.dashboard-body:has(> .work-rail:not(.mini)) .chat-composer {
+  max-width: none;
 }
 
 .chat-input-wrap {
@@ -6503,21 +6512,15 @@ html[data-theme="dark"] .provider-item {
 
 /* ── 右侧作品栏（REQ-20261012-202540 FR-001）：对话区右侧常驻窄栏 ── */
 .work-rail {
-  /* 浮窗（REQ-20261013-181350 FR-001/DEC-009）：absolute 悬浮于对话区右上角，
-     脱离 dashboard 栅格；完全固定不可拖 */
-  position: absolute;
-  top: 14px;
-  right: 14px;
-  z-index: 20;
+  /* dock 停靠态（ZCode 模式）：浮窗展开时占 dashboard 第三列、通栏全高，
+     对话区被挤宽让位；mini/closed 态由 .work-rail.mini / .work-rail-fab
+     转 absolute 浮窗（脱离 grid，第三列收 0） */
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   width: 300px;
-  max-height: calc(100% - 28px);
-  border: 1px solid var(--line-strong);
-  border-radius: var(--radius-lg);
-  background: var(--panel-solid);
-  box-shadow: 0 18px 44px rgba(31, 24, 12, 0.18);
+  border-left: 1px solid var(--line);
+  background: transparent;
   overflow: hidden;
 }
 .work-rail-head {
@@ -6778,10 +6781,21 @@ html[data-theme="dark"] .provider-item {
   font-size: var(--text-ui-xs);
   color: var(--muted);
 }
-/* ── mini 概要小卡（DEC-005：进度概要 + 最新 1 条产物）── */
+/* ── mini 概要小卡（DEC-005：进度概要 + 最新 1 条产物）──
+   浮窗形态：top 压到标题带（约 59px）之下，避开「新建会话/会话菜单」 */
 .work-rail.mini {
+  position: absolute;
+  top: 74px;
+  right: 14px;
+  z-index: 20;
   display: block;
   width: 260px;
+  max-height: calc(100% - 88px);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--panel-solid);
+  box-shadow: 0 18px 44px rgba(31, 24, 12, 0.18);
+  overflow: hidden;
 }
 .work-rail-mini-card {
   display: block;
@@ -6837,10 +6851,11 @@ html[data-theme="dark"] .provider-item {
   right: 8px;
 }
 
-/* ── 唤回小按钮（DEC-006：彻底关闭后的恒定入口）── */
+/* ── 唤回小按钮（DEC-006：彻底关闭后的恒定入口）──
+   与 mini 浮窗同位下移，避开标题带会话控件 */
 .work-rail-fab {
   position: absolute;
-  top: 14px;
+  top: 74px;
   right: 14px;
   z-index: 20;
   width: 36px;
@@ -6852,7 +6867,6 @@ html[data-theme="dark"] .provider-item {
   border-radius: var(--radius-md);
   background: var(--panel-solid);
   color: var(--ink);
-  font-size: 16px;
   cursor: pointer;
   box-shadow: 0 8px 20px rgba(31, 24, 12, 0.14);
 }

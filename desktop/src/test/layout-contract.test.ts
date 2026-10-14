@@ -41,11 +41,14 @@ describe("dashboard 布局契约（作品面板 dock + 浮窗双形态）", () =
     expect(body).toContain("position: relative");
   });
 
-  it("work-rail 展开态 dock 停靠：占第三列通栏全高（ZCode 模式）", () => {
+  it("work-rail 展开态浮窗化停靠：占第三列让对话让位，但呈悬浮卡片（非贴边侧栏）", () => {
     const rail = block(".work-rail");
     expect(rail).toContain("width: 300px");
-    expect(rail).toContain("border-left");
+    expect(rail).toContain("margin: 12px");
+    expect(rail).toContain("border-radius");
+    expect(rail).toContain("box-shadow");
     expect(rail).not.toContain("position: absolute");
+    expect(rail).not.toContain("border-left");
   });
 
   it("mini 小卡与唤回按钮为浮窗，下移到标题带之下避开会话控件（DEC-005/006 追补）", () => {

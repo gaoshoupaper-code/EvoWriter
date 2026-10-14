@@ -6512,15 +6512,18 @@ html[data-theme="dark"] .provider-item {
 
 /* ── 右侧作品栏（REQ-20261012-202540 FR-001）：对话区右侧常驻窄栏 ── */
 .work-rail {
-  /* dock 停靠态（ZCode 模式）：浮窗展开时占 dashboard 第三列、通栏全高，
-     对话区被挤宽让位；mini/closed 态由 .work-rail.mini / .work-rail-fab
-     转 absolute 浮窗（脱离 grid，第三列收 0） */
+  /* 展开态 = 浮窗化停靠（ZCode 模式）：布局上占第三列、对话让位；
+     视觉上是四周留隙的悬浮卡片（圆角/阴影/自带背景），不是通栏贴边侧栏。
+     mini/closed 态由 .work-rail.mini / .work-rail-fab 转 absolute 浮窗 */
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   width: 300px;
-  border-left: 1px solid var(--line);
-  background: transparent;
+  margin: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--panel-solid);
+  box-shadow: 0 18px 44px rgba(31, 24, 12, 0.18);
   overflow: hidden;
 }
 .work-rail-head {

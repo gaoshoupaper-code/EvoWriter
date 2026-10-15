@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 type AppShellProps = {
   topBar: ReactNode;
   sidebar: ReactNode;
-  /** 右侧常驻作品栏（写作域渲染，其他域传 null——第三列自动收为 0 宽） */
+  /** 作品浮窗（写作域渲染，其他域传 null）：三态均 absolute 悬浮，不占栅格列 */
   rail?: ReactNode;
   children: ReactNode;
 };

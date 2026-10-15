@@ -26,12 +26,13 @@ _FORBIDDEN_BLUEPRINT_TERMS = [
     "meta 层 5 个",
     "subagents 列表（GP",
 ]
-# 蓝图中必须出现的双泳道表述（REQ-20261011-142529 FR-013 同步）
+# 蓝图中必须出现的三步制表述（REQ-20261015-161200 FR-013 同步）
 _REQUIRED_BLUEPRINT_TERMS = [
-    "双泳道架构",
-    "storydesign",
-    "storystructure",
-    "回炉工单",
+    "三步制架构",
+    "writer",
+    "worldview",
+    "chapters",
+    "谁产出谁能改",
     "已冻结休眠",        # 记忆退役标注（DEC-003）
     "demand.md",          # 表单直入（DEC-009）
 ]

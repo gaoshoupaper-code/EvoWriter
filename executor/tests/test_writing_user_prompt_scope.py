@@ -56,10 +56,11 @@ def test_user_prompt_has_no_pipeline_remnants() -> None:
 
 def test_user_prompt_states_single_expert_scope() -> None:
     prompt = _build_prompt()
-    # 双 agent 管线（REQ-20261011-142529 FR-002）：两泳道 + 七步 + 不写正文
-    assert "双 agent 工业七步法管线" in prompt
-    assert "storydesign" in prompt
-    assert "storystructure" in prompt
+    # 三步管线（REQ-20261015-161200 FR-002）：单主控三子代理 + 三步 + 不写正文
+    assert "单主控三步大纲管线" in prompt
+    assert "定世界观" in prompt
+    assert "定总纲和卷纲" in prompt
+    assert "定章纲" in prompt
     assert "不写正文" in prompt
 
 
@@ -80,14 +81,14 @@ def _service() -> MetaAgentService:
 
 
 def test_first_build_injects_clarify_gate(tmp_path: Path) -> None:
-    """FR-003（REQ-20261011-142529）：无任何大纲产物时，委托文本注入首次构建
-    指令——从第 0 步赛道确认开始、单元拍板后落盘、严禁自动连跑。
+    """FR-003（REQ-20261015-161200）：无任何大纲产物时，委托文本注入首次构建
+    指令——从第①步定世界观开始、单元拍板后落盘、严禁自动连跑。
     """
     payload = ScreenplayGenerateRequest(prompt="写一部玄幻长篇", thread_id="t-test")
     prompt = _service()._build_user_prompt(payload, _thread_with_workspace(tmp_path))  # type: ignore[arg-type]
 
     for fragment in (
-        "首次构建", "赛道确认", "拍板", "严禁自动连跑",
+        "首次构建", "定世界观", "拍板", "严禁自动连跑",
     ):
         assert fragment in prompt, f"首发委托文本缺管线起步指令: {fragment}"
     assert "ask_user" not in prompt, "委托文本不得引用种子线工具"

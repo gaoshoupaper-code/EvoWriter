@@ -46,14 +46,16 @@ _MAX_OUTLINE_FILES = 200
 
 
 def _read_outline_content(workspace_path: Path) -> WorkspaceOutlineContent:
-    """outline 产物全集 + 管线阶段条数据（REQ-20261011-142529 FR-010，DEC-004/015）。
+    """outline 产物全集 + 管线阶段条数据（REQ-20261015-161200 FR-008，DEC-011）。
 
-    旧五件套工作区（legacy）：kind=legacy、files 为空——桌面端沿用旧面板。
+    三步管线工作区：kind=pipeline，扫描 outline/ 产物。
+    旧七步工作区：kind=legacy + files 照常返回（桌面端只读查看，无修订入口）。
+    旧五件套工作区：kind=legacy、files 为空（内容走旧面板）。
     """
     from app.domains.writing.pipeline import classify_workspace, pipeline_status
 
     kind = classify_workspace(workspace_path)
-    if kind != "pipeline":
+    if kind != "pipeline" and not (workspace_path / "outline").is_dir():
         return WorkspaceOutlineContent(kind="legacy", pipeline={"kind": "legacy"})
     files: list[OutlineFileEntry] = []
     roots = [
@@ -74,7 +76,7 @@ def _read_outline_content(workspace_path: Path) -> WorkspaceOutlineContent:
                 files.append(OutlineFileEntry(rel=rel, markdown=f.read_text(encoding="utf-8")))
             except OSError:
                 continue
-    return WorkspaceOutlineContent(kind="pipeline", pipeline=pipeline_status(workspace_path), files=files)
+    return WorkspaceOutlineContent(kind=kind, pipeline=pipeline_status(workspace_path), files=files)
 
 
 def _attach_panorama(

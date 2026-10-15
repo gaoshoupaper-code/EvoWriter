@@ -64,34 +64,36 @@ class MiddlewareProjectionTest(unittest.TestCase):
                 {"orchestrator", "worldview", "character", "storyline", "storybuilding_review"},
             )
         else:
-            # 双泳道（REQ-20261011-142529 DEC-006）：两条 main 泳道
-            self.assertEqual(set(self.stacks), {"storydesign", "storystructure"})
+            # 三步制（REQ-20261015-161200 DEC-005）：单主控 + 三子代理
+            self.assertEqual(set(self.stacks), {"writer", "worldview", "outline", "chapters"})
 
     def test_projects_real_class_names_and_hooks(self) -> None:
-        """双泳道：类名 + hooks 投影（v14 形态下无该泳道，跳过）。"""
-        if "storydesign" not in self.stacks or "storystructure" not in self.stacks:
-            self.skipTest("working 包非双泳道形态，断言不适用")
-        design = {item["class_name"]: item for item in self.stacks["storydesign"]}
+        """三步制：类名 + hooks 投影（v14 形态下无该泳道，跳过）。"""
+        if "writer" not in self.stacks:
+            self.skipTest("working 包非三步制形态，断言不适用")
+        chapters = {item["class_name"]: item for item in self.stacks["chapters"]}
         # 拍板闸 hooks 投影（单元拍板硬闸）
         self.assertEqual(
-            design["ReceiptGateMiddleware"]["hooks"],
+            chapters["ReceiptGateMiddleware"]["hooks"],
             ["before_agent", "wrap_tool_call"],
         )
-        # 清单 context_files=["demand.md"]（两泳道同参）→ ContextAssembler 实挂
-        self.assertIn("ContextAssemblerMiddleware", design)
-        # 双泳道无委托/无 artifact_paths → 投影不含审查闭环件（RevisionLimit/
-        # ArtifactValidation 是有委托+产物校验的审查形态，DEC-016 review 延后）
-        self.assertNotIn("RevisionLimitMiddleware", design)
-        self.assertNotIn("ArtifactValidationMiddleware", design)
+        # 主控清单 context_files=["demand.md"] → ContextAssembler 实挂；
+        # 主控有委托 → RevisionLimit 审查闭环件实挂；子代理无 context_files 不挂
+        writer = {item["class_name"] for item in self.stacks["writer"]}
+        self.assertIn("ContextAssemblerMiddleware", writer)
+        self.assertIn("RevisionLimitMiddleware", writer)
+        self.assertNotIn("ContextAssemblerMiddleware", chapters)
+        # 无 artifact_paths → ArtifactValidation 不挂
+        self.assertNotIn("ArtifactValidationMiddleware", writer)
         self.assertTrue(
             all(item["hooks"] for stack in self.stacks.values() for item in stack)
         )
 
     def test_story_expert_stack_has_guards_and_limits(self) -> None:
-        """双泳道栈含基础护栏 + 修订上限 + 产物校验 + 单元拍板闸。"""
-        if "storydesign" not in self.stacks or "storystructure" not in self.stacks:
-            self.skipTest("working 包非双泳道形态，断言不适用")
-        design = {item["class_name"] for item in self.stacks["storydesign"]}
+        """三步制子代理栈含基础护栏 + 结构契约 + 单元拍板闸。"""
+        if "worldview" not in self.stacks:
+            self.skipTest("working 包非三步制形态，断言不适用")
+        worldview = {item["class_name"] for item in self.stacks["worldview"]}
         for required in (
             "ErrorRecoveryMiddleware",
             "FilesystemPathGuardMiddleware",
@@ -99,11 +101,11 @@ class MiddlewareProjectionTest(unittest.TestCase):
             "ReceiptGateMiddleware",
             "OutlineContractGuardMiddleware",
         ):
-            self.assertIn(required, design)
+            self.assertIn(required, worldview)
         # 已清理的旧模式中间件不得回归（DEC-011）
-        self.assertNotIn("MetaReadOnlyMiddleware", design)
-        self.assertNotIn("GoalMiddleware", design)
-        self.assertNotIn("StorylineSingleLineLimitMiddleware", design)
+        self.assertNotIn("MetaReadOnlyMiddleware", worldview)
+        self.assertNotIn("GoalMiddleware", worldview)
+        self.assertNotIn("StorylineSingleLineLimitMiddleware", worldview)
 
 
 class V14ProjectionSyntheticTest(unittest.TestCase):

@@ -361,8 +361,8 @@ class MetaAgentService(BaseAgentService):
         # 包自带 assemble(ctx)，执行端只构建 RuntimeContext 传入（D1=B / D8=X）。
         # Phase A（FR-004）：llm_override/binding 由 generate_stream 的 Run 绑定链路
         # 传入——Run 级模型锁定 + 绑定摘要进 trace 快照。
-        # 双 agent 管线（REQ-20261011-142529 FR-002）：agent_name 按泳道装配
-        #（storydesign / storystructure）；None = 首个 main（legacy 兼容）。
+        # 单主控三步管线（REQ-20261015-161200 FR-002）：agent_name 按名装配
+        #（writer）；None = 首个 main（legacy 只读模式兼容）。
         return self._assemble_via_package(
             workspace_path, trace_id, workspace_id,
             model=model, checkpointer=checkpointer, owner_id=owner_id,
@@ -447,7 +447,7 @@ class MetaAgentService(BaseAgentService):
                 # FR-004：Run 绑定摘要并进快照（bound commit/degraded/manifest 级联可追溯）
                 if binding is not None:
                     run_snapshot["binding"] = binding.model_dump(mode="json")
-                # 双 agent 管线（FR-012）：泳道打标——进化端 trace 按 agent 归因
+                # 三步管线（FR-002 泳道打标→主控打标）：进化端 trace 按 agent 归因
                 if agent_name:
                     run_snapshot["pipeline_agent"] = agent_name
                 self.trace_recorder.set_run_snapshot(trace_id, run_snapshot)
@@ -736,9 +736,9 @@ class MetaAgentService(BaseAgentService):
         llm_override = None
         binding = None
 
-        # 双 agent 管线路由（REQ-20261011-142529 FR-002/003，DEC-006/020）：
-        # 决定本轮由哪个泳道执行（storydesign/storystructure/legacy）、用哪个
-        # 会话 thread；resume 沿未决拍板的原会话续跑；fresh=丢弃重开。
+        # 单主控三步管线路由（REQ-20261015-161200 FR-002/003，DEC-005）：
+        # 决定下一单元任务书与用哪个会话 thread；resume 沿未决拍板的
+        # 原会话续跑；fresh=丢弃重开。
         from app.domains.writing.pipeline import (
             pipeline_status,
             pop_awaiting_trace,
@@ -1018,9 +1018,9 @@ class MetaAgentService(BaseAgentService):
         )
         first_section = (
             "## 首次构建（硬性）\n\n"
-            "从第 0 步「赛道确认」开始，按系统提示词的单元流程逐步推进："
-            "起草 → confirm_with_user 拍板 → 批准后落盘 → 停下等用户下一条消息。"
-            "严禁自动连跑多个单元；拍板前不得写任何受保护产物。\n\n"
+            "从第①步「定世界观」开始，按主控系统提示词的单元流程推进："
+            "委托子代理起草 → confirm_with_user 拍板 → 批准后委托落盘 → 停下等用户下一条消息。"
+            "严禁自动连跑多个单元；拍板前子代理不得写任何产物。\n\n"
             if first_build
             else ""
         )
@@ -1033,14 +1033,16 @@ class MetaAgentService(BaseAgentService):
             f"{directive_section}"
             f"{first_section}"
             "## 管线说明\n\n"
-            "当前系统为双 agent 工业七步法管线：设计端（storydesign，第 0-3 步："
-            "赛道/设计原则/冲突引擎/力量体系）→ 结构端（storystructure，第 4-7 步："
-            "总纲/卷纲/章纲滚动/卷末盘点 + 期待台账）。上游对下游只读，目录即进度。\n\n"
+            "当前系统为单主控三步大纲管线（REQ-20261015-161200）：①定世界观 →"
+            " ②定总纲和卷纲（含主角/BOSS 档案）→ ③定章纲批滚动（含期待台账，"
+            "埋钩子回收钩子）。主控 writer 调度 worldview / outline / chapters 三个子代理，"
+            "目录即进度，不写正文。\n\n"
             "## 产物要求\n\n"
-            "- 产物写入 outline/ 目录结构（00-赛道 ~ 06-章纲/ + 期待台账.md）"
-            "与配套深度文件（character/core|support/、worldview/core|setting.md、object/）。\n"
-            "- 不写正文；不创建 timeline.md（程序派生物）。\n"
-            "- 每个产出单元：拍板后落盘，落盘即已确认内容。\n\n"
+            "- 产物写入 outline/ 目录（世界观.md、总纲.md、卷纲-第N卷.md、"
+            "章纲-卷N批M.md、期待台账.md）与 character/core|support/。\n"
+            "- 输出风格 5 条铁律：禁破折号（——）补充解释；禁解释性引导语；"
+            "每条设定一句话、列表化；卷纲/章纲/台账用表格；不写设计理由。\n"
+            "- 不写正文。\n\n"
 
             "用户需求：\n"
             f"{request_text}\n\n"
@@ -1114,22 +1116,21 @@ class MetaAgentService(BaseAgentService):
 
         v8 时代还强制要求 outline.md / evaluation.md——v9+ 单故事专家不产出
         这两个文件，旧检查曾使全新工作目录的任务收尾必炸（DEC-008/009）。
-        双泳道管线（REQ-20261011-142529）同理：管线工作区锚定 outline/
-        产物（任一 .md），legacy 工作区维持 storyline.md 锚定——锚点跟
-        产物走，否则管线工作区每轮收尾必炸（trace 误标 failed）。
+        三步管线（REQ-20261015-161200）同理：管线工作区锚定 outline/
+        产物（任一 .md）。legacy 工作区分两种：旧五件套锚 storyline.md；
+        旧七步（outline/00-06）无 storyline.md，同样锚 outline/ 任一 .md
+        ——锚点跟产物走，否则这两类工作区收尾必炸（trace 误标 failed）。
         """
         from app.domains.writing.pipeline import classify_workspace
 
         title = payload.fallback_title()
         workspace_path = Path(thread.workspace_path)
-        if classify_workspace(workspace_path) == "legacy":
-            storyline_path = workspace_path / "storyline.md"
-            if not storyline_path.exists():
-                raise FileNotFoundError(f"未产出故事线（storyline.md 缺失）: {storyline_path}")
+        storyline_path = workspace_path / "storyline.md"
+        outline_dir = workspace_path / "outline"
+        if classify_workspace(workspace_path) == "legacy" and storyline_path.exists():
             if not storyline_path.read_text(encoding="utf-8").strip():
                 raise ValueError(f"未产出故事线（storyline.md 为空）: {storyline_path}")
         else:
-            outline_dir = workspace_path / "outline"
             # _pipeline.json 是状态文件不是产物，rglob("*.md") 天然排除
             if not (outline_dir.is_dir() and any(outline_dir.rglob("*.md"))):
                 raise FileNotFoundError(f"未产出大纲（outline/ 目录无产物）: {outline_dir}")

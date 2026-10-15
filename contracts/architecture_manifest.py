@@ -242,9 +242,9 @@ def validate_architecture_manifest(
     names = {a.name for a in manifest.agents}
 
     # ── agent 级检查 ──────────────────────────────────────────
-    # 多主泳道（REQ-20261011-142529 DEC-006/019）：至少一个 role=main；
-    # 多 main = 管线多泳道（storydesign/storystructure），executor 按名装配，
-    # 首个 main 为缺省（单泳道包与旧调用方不受影响）。
+    # 主控约束（三步制 REQ-20261015-161200 DEC-005）：至少一个 role=main；
+    # 现行为单 main + 多 sub（writer 主控委托三子代理）。多 main 形态
+    # （历史双泳道）仍被 schema 接受，executor 按名装配，首个 main 为缺省。
     if len(manifest.main_agents) < 1:
         result.errors.append(
             "清单必须至少声明一个 role=main 的顶层 agent（实际 0 个，"

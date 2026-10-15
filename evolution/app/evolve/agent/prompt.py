@@ -134,41 +134,38 @@ validate_changes / write_design_doc / write_change_log）会被中间件拦截�
 **框架自带工具（read_file/write_file/edit_file/ls/glob/grep/execute）已被禁用。**
 所有文件操作走你的专用工具。
 
-# ④ Agent 要素全景（v7 两泳道）
+# ④ Agent 要素全景（三步制）
 
 Writer 的创作 Agent 打成一个自包含的 **harness 包**（`harnesses/repo/`）。
-双泳道架构（REQ-20261011-142529）= **设计端（storydesign）+ 结构端（storystructure）两条 main 泳道**——
-工业七步法：设计端管第 0-3 步（赛道/设计原则/冲突引擎/力量体系），
-结构端管第 4-7 步（总纲/卷纲/章纲滚动/卷末盘点 + 期待台账）。
-没有 review 子代理（延后）、没有技能目录（方法论在主文档自包含）、
-没有配比导航——上游产物对下游只读，改上游唯一路径是回炉工单。
+三步制架构（REQ-20261015-161200）= **主控（writer）一条 main + 三个子代理
+（worldview / outline / chapters）**——三步大纲：①定世界观（核心冲突/力量
+体系/金手指/大法则单文件），②定总纲和卷纲（含主角与 BOSS 档案），
+③定章纲批滚动 + 期待台账（埋钩子回收钩子）。
+没有 review 子代理、没有技能目录（方法论在主文档自包含）、没有体检报告
+与回炉工单——上游修订走对话转委托（谁产出谁能改 + 用户点头）。
 
 > 注意：「v7」等是**架构代号**（历史代际），不是 harness 的发版流水号。
 > 当前 harness 的实际版本和演进史以「当前 session → 作品绑定」段里的
 > 全局发版流水为准（发版流水号是另一套数字），两者无关。
 
-### 泳道一：设计端（storydesign，main）
+### 主控（writer，main）
 
 | 要素 | 位置 | 是什么 | 起什么作用 |
 |------|------|--------|-----------|
-| **system prompt** | `prompts/storydesign_system.md` | 设计教练主文档（自包含：流程+检验清单+模板） | 第 0-3 步方法论的唯一真相源——四要素设计原则双检验、冲突引擎对立测试、力量体系金手指代价红线 |
-| **domain middleware** | `middleware/receipt_gate.py`、`middleware/outline_contract_guard.py`（清单有序挂载） | 单元拍板闸 + outline 结构契约 | 拍板前禁写产物（目录=已确认进度）；00-03 结构语法硬拦 |
-| **清单声明** | `architecture.json` 的 `storydesign` 条目 | 该 agent 的静态挂载真相 | role=main、prompt 路径、middleware、tools（confirm_with_user）、写白名单（00-03/character/core/worldview core）、context 注入 |
+| **system prompt** | `prompts/writer_system.md` | 主控主文档（调度/拍板/上游修订/收束） | 三步流程的唯一真相源——单元流程、5 条输出风格铁律、旧版只读口径 |
+| **domain middleware** | `middleware/receipt_gate.py`（owner 模式） | 单元拍板闸（共享确认位记账方） | 拍板前子代理写产物全被拦；confirm_with_user 只挂主控 |
+| **清单声明** | `architecture.json` 的 `writer` 条目 | 该 agent 的静态挂载真相 | role=main、delegates 三子代理、tools（confirm_with_user）、无写权限、context 注入 demand.md |
 
-设计端输入 = demand.md（ContextAssembler 注入，含赛道字段）；
-产出 = `outline/00-赛道.md` ~ `03-力量体系.md` + `character/core/` + `worldview/core.md`。
+### 子代理 × 3（worldview / outline / chapters，sub）
 
-### 泳道二：结构端（storystructure，main）
+| 子代理 | 产物 | domain middleware | 写白名单 |
+|--------|------|-------------------|----------|
+| **worldview** | `outline/世界观.md` 单文件 | receipt_gate（follower）+ outline_contract_guard | 世界观一个文件 |
+| **outline** | `outline/总纲.md`、`卷纲-第N卷.md`、`character/core/` | 同上 | 总纲/卷纲/主角与 BOSS 档案 |
+| **chapters** | `outline/章纲-卷N批M.md`、`期待台账.md`、`character/support/` | 同上 | 章纲批/台账（六列）/配角档案 |
 
-| 要素 | 位置 | 是什么 | 起什么作用 |
-|------|------|--------|-----------|
-| **system prompt** | `prompts/storystructure_system.md` | 结构教练主文档（自包含） | 第 4-7 步 + 期待台账八列 + 硬指标口径 + 回炉提案协议 + 配套深度规范 |
-| **domain middleware** | `receipt_gate` + `outline_contract_guard` + `object_contract_guard` | 单元拍板闸 + 结构契约 + 物品卡契约 | 同设计端拍板闸；台账/章纲批/总纲/卷纲结构硬拦；物品卡三段式 |
-| **专属工具** | `tools/submit_rework_ticket.py` | 回炉工单提交（interrupt 拍板） | 上游只读的唯一出口：提案→用户拍板→设计端修订→波及修订（三停） |
-| **体检计算** | `checkup.py` + `middleware/checkup_config.json` | 程序体检（爽点/钩子/大爽点间隔/悬置/境界余量） | structure 泳道拍板载荷自动附报告（只建议不拦截，DEC-007） |
-
-结构端产出 = `outline/04-总纲.md`、`05-卷纲/`、`06-章纲/`（每批 5-10 章滚动）、
-`期待台账.md`、`character/support/`、`worldview/setting.md`、`object/`。
+子代理只做两件事：收到起草任务返回草稿全文，收到写盘任务写指定文件。
+拍板由主控统一组织；跨步骤文件只读，矛盾报告主控。
 
 ### 通用底座（解释器基础链，全 agent 统一、不可清单化）
 
@@ -299,8 +296,8 @@ State 的核心字段（inspect_state_schema 可查完整文档）：
 **读什么**：
 - `list_elements` 看包里有哪些要素文件。
 - `read_source` 读具体要素源码，理解当前 Agent 怎么搭的——
-  特别是要改的要素及其上下游（如改 storydesign_system 的检验清单要顺带看
-  evolution 契约测试 test_dual_lane_prompt_contract 是否对齐）。
+  特别是要改的要素及其上下游（如改 writer_system 的单元流程要顺带看
+  evolution 契约测试 test_three_step_prompt_contract 是否对齐）。
 - 如需理解装配机制，调 `read_assemble`。
 
 **产出**：`write_design_doc`——每个改动指向明确要素，说清改什么、为什么改、引用证据。

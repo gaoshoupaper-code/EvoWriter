@@ -1,63 +1,70 @@
-"""outline 产物结构契约（REQ-20261011-142529 FR-001/005/006，DEC-004/007/017）。
+"""三步产物结构契约（REQ-20261015-161200 FR-001/004/005，DEC-001/008/010）。
 
-七步管线新产物的「结构语法」判定器唯一实现（REQ-20261010-000638 DEC-010 原则：
-结构语法硬拦在 contracts，语义口径归 harness 观测）。覆盖三类：
+三步管线产物的「结构语法」判定器唯一实现（结构硬拦在 contracts，语义
+口径归 Prompt 与人工抽查）。覆盖：
 
-  - 设计端产物（00-03，storydesign 泳道）：必备章节标题存在性
-  - 结构端产物（04-06，storystructure 泳道）：总纲/卷纲/章纲批的必备章节
-  - 期待台账：八列结构 + 层级/状态词表 + 已放弃必填备注（DEC-017）
+  - 第一步产物 outline/世界观.md：必备小节（核心冲突/力量体系/金手指/
+    大法则）+ 金手指代价限制红线
+  - 第二步产物 outline/总纲.md、outline/卷纲-第N卷.md：必备小节
+  - 第三步产物 outline/章纲-卷N批M.md：前情接点 + 四列表 + 章号连续；
+    outline/期待台账.md：六列结构 + 词表 + 已放弃必带原因
 
-纯静态 markdown 解析，不做语义判断——爽点密度/间隔/悬置时长等指标属
-体检报告（观测不拦截，DEC-007）；章纲跨批连续性由体检计算，此处只管批内语法。
+纯静态 markdown 解析，不做语义判断。旧七步产物文件（00-06 前缀）不属
+三步结构，返回空（legacy workspace 只读）。
 """
 from __future__ import annotations
 
 import re
 from pathlib import Path
 
-# ── 期待台账词表（DEC-017：outline 台账为基 + PPP 语义）──────────────
-LEDGER_COLUMNS = ["ID", "层级", "期待内容", "埋设章", "最近推进章", "计划兑现章", "状态", "备注"]
+# ── 期待台账词表（DEC-010：六列）────────────────────────────────────
+LEDGER_COLUMNS = ["编号", "层级", "钩子", "埋设章", "兑现章", "状态"]
 LEDGER_LEVELS = {"主线", "卷"}
-LEDGER_STATUSES = {"活跃", "悬置🔴", "已兑现", "已放弃"}
+LEDGER_STATUSES = {"活跃", "已兑现"}
 LEDGER_ID_PATTERN = re.compile(r"^[MV]-\d{2,}$")
+# 「已放弃」必须在状态列带原因（DEC-010：放弃原因并入状态列）
+LEDGER_ABANDONED_PATTERN = re.compile(r"^已放弃[：:]\s*\S")
 
-# ── 章纲批表列（FR-001 第 6 步产物）────────────────────────────────
-BATCH_COLUMNS = ["章", "主要事件", "爽点", "章末钩子", "期待推进"]
+# ── 章纲批表列（FR-005 章纲批产物）──────────────────────────────────
+BATCH_COLUMNS = ["章", "剧情走向", "章末钩子", "期待动作"]
 
-# ── 设计端/结构端产物必备章节（模板见两份主文档）──────────────────
+# ── 三步产物文件名形态（executor 路由与桌面进度推导共用）────────────
+WORLDVIEW_FILENAME = "世界观.md"
+MASTER_FILENAME = "总纲.md"
+LEDGER_FILENAME = "期待台账.md"
+VOLUME_FILE_PATTERN = re.compile(r"^卷纲-第(\d+)卷\.md$")
+BATCH_FILE_PATTERN = re.compile(r"^章纲-卷(\d+)批(\d+)\.md$")
+
+# ── 第一步/第二步产物必备小节（模板见 harness 主文档）────────────────
 _REQUIRED_HEADINGS: dict[str, list[str]] = {
-    "00-赛道": ["平台", "品类"],
-    "01-设计原则": ["定稿一句话", "四要素对照", "场景推演", "爽点预感"],
-    "02-冲突引擎": ["主角卡", "全书大 BOSS 卡", "主线大期待", "反派递进总链条"],
-    "03-力量体系": ["境界划分", "金手指规则", "升级-分卷对应表"],
-    "04-总纲": ["结局锚点", "分卷表"],
-    "05-卷纲": ["本卷定位", "本卷反派", "本卷期待", "大爽点布局表"],
+    "世界观": ["核心冲突", "力量体系", "金手指", "大法则"],
+    "总纲": ["结局锚点", "分卷表"],
+    "卷纲": ["本卷定位", "本卷反派", "本卷期待", "大爽点布局表"],
 }
 
-# 文件名前缀 → 泳道（写入白名单之外的第二道结构归属判定）
-def classify_outline_file(rel_path: str | Path) -> str | None:
-    """相对 workspace 路径 → 'design' | 'structure' | None（非 outline 产物）。
 
-    outline/00-03 与 character/core、worldview/core.md 归 design；
-    outline/04-06、期待台账、rework 工单、character/support、
-    worldview/setting.md、object/ 归 structure。
+def classify_outline_file(rel_path: str | Path) -> str | None:
+    """相对 workspace 路径 → 'worldview' | 'outline' | 'chapters' | None。
+
+    三步归属（写入白名单之外的第二道结构判定）：
+    世界观.md 归 worldview；总纲/卷纲/character/core 归 outline；
+    章纲批/期待台账/character/support 归 chapters；其余（含旧七步
+    00-06 文件）返回 None。
     """
     p = Path(rel_path).as_posix().lstrip("/")
     if p.startswith("outline/"):
         name = p[len("outline/"):]
-        if name.startswith(("00-", "01-", "02-", "03-")):
-            return "design"
-        if name.startswith(("04-", "05-", "06-")) or name == "期待台账.md":
-            return "structure"
-        if name.startswith("rework/"):
-            return "structure"  # 工单文件由 submit_rework_ticket 工具落盘
+        if name == WORLDVIEW_FILENAME:
+            return "worldview"
+        if name == MASTER_FILENAME or VOLUME_FILE_PATTERN.match(name):
+            return "outline"
+        if BATCH_FILE_PATTERN.match(name) or name == LEDGER_FILENAME:
+            return "chapters"
         return None
     if p.startswith("character/core/"):
-        return "design"
-    if p.startswith(("character/support/", "object/", "worldview/setting.md")):
-        return "structure"
-    if p == "worldview/core.md":
-        return "design"
+        return "outline"
+    if p.startswith("character/support/"):
+        return "chapters"
     return None
 
 
@@ -85,15 +92,22 @@ def _find_table(text: str, required_cols: list[str]) -> tuple[bool, list[list[st
     return False, []
 
 
+def validate_worldview(text: str) -> list[str]:
+    """outline/世界观.md：必备小节 + 金手指代价限制红线。"""
+    errors: list[str] = []
+    have = _headings(text)
+    joined = "\n".join(have)
+    for h in _REQUIRED_HEADINGS["世界观"]:
+        if h not in joined:
+            errors.append(f"[世界观] 缺必备小节「{h}」")
+    m = re.search(r"代价与限制[：:]\s*(\S.*)", text)
+    if not m or m.group(1).strip() in {"无", "待定", "暂无", "—", "-"}:
+        errors.append("[世界观] 金手指「代价与限制」必须非空且不得为「无/待定」")
+    return errors
+
+
 def validate_design_artifact(stem: str, text: str) -> list[str]:
-    """00-03 设计端产物的必备章节校验。stem 为去扩展名文件名（如 '01-设计原则'）。"""
-    if stem == "00-赛道":
-        # 00 的平台/品类是列表项（- 平台：番茄），不走标题匹配
-        errors = []
-        for field in ("平台", "品类"):
-            if not re.search(rf"{field}[：:]\s*\S", text):
-                errors.append(f"[00-赛道] 缺必填字段「{field}：」")
-        return errors
+    """总纲/卷纲必备小节校验。stem ∈ {'总纲', '卷纲'}。"""
     required = _REQUIRED_HEADINGS.get(stem)
     if required is None:
         return []
@@ -102,46 +116,42 @@ def validate_design_artifact(stem: str, text: str) -> list[str]:
     joined = "\n".join(have)
     for h in required:
         if h not in joined:
-            errors.append(f"[{stem}] 缺必备章节「{h}」")
-    # 03 专属：金手指代价与限制非空（无限制 = 张力清零，属结构语法级红线）
-    if stem == "03-力量体系":
-        m = re.search(r"代价与限制[：:]\s*(\S.*)", text)
-        if not m or m.group(1).strip() in {"无", "待定", "暂无", "—", "-"}:
-            errors.append("[03-力量体系] 金手指「代价与限制」必须非空且不得为「无/待定」")
+            errors.append(f"[{stem}] 缺必备小节「{h}」")
     return errors
 
 
 def validate_ledger(text: str) -> list[str]:
-    """期待台账八列结构 + 词表 + 已放弃备注校验（DEC-017 / FR-006）。"""
+    """期待台账六列结构 + 词表 + 已放弃必带原因（DEC-010 / FR-005）。"""
     errors: list[str] = []
     ok, rows = _find_table(text, LEDGER_COLUMNS)
     if not ok:
-        return ["[期待台账] 缺八列表（ID/层级/期待内容/埋设章/最近推进章/计划兑现章/状态/备注）"]
+        return ["[期待台账] 缺六列表（编号/层级/钩子/埋设章/兑现章/状态）"]
     for r in rows:
         if not r:
             continue
         rid = r[0] if r else ""
         if not LEDGER_ID_PATTERN.match(rid):
-            errors.append(f"[期待台账] ID 不合法: {rid!r}（须 M-01/V-01 形式）")
+            errors.append(f"[期待台账] 编号不合法: {rid!r}（须 M-01/V-01 形式）")
         if len(r) > 1 and r[1] not in LEDGER_LEVELS:
             errors.append(f"[期待台账] 层级词不合法: {r[1]!r}（须 主线/卷）")
-        if len(r) > 6 and r[6] not in LEDGER_STATUSES:
-            errors.append(f"[期待台账] 状态词不合法: {r[6]!r}（须 活跃/悬置🔴/已兑现/已放弃）")
-        if len(r) > 6 and r[6] == "已放弃":
-            note = r[7].strip() if len(r) > 7 else ""
-            if not note:
-                errors.append(f"[期待台账] {rid} 已放弃但备注为空（放弃须交代位置，DEC-017）")
+        if len(r) > 5:
+            status = r[5].strip()
+            if status.startswith("已放弃"):
+                if not LEDGER_ABANDONED_PATTERN.match(status):
+                    errors.append(f"[期待台账] {rid} 已放弃但状态列未写原因（格式：已放弃：原因）")
+            elif status not in LEDGER_STATUSES:
+                errors.append(f"[期待台账] 状态词不合法: {status!r}（须 活跃/已兑现/已放弃：原因）")
     return errors
 
 
 def validate_chapter_batch(text: str) -> list[str]:
-    """章纲批结构：前情接点 + 五列表 + 批内章号连续。"""
+    """章纲批结构：前情接点 + 四列表 + 批内章号连续。"""
     errors: list[str] = []
     if not re.search(r"前情接点[：:]", text):
         errors.append("[章纲批] 缺「前情接点：」行")
     ok, rows = _find_table(text, BATCH_COLUMNS)
     if not ok:
-        errors.append("[章纲批] 缺五列表（章/主要事件/爽点/章末钩子/期待推进）")
+        errors.append("[章纲批] 缺四列表（章/剧情走向/章末钩子/期待动作）")
         return errors
     nums: list[int] = []
     for r in rows:
@@ -159,23 +169,26 @@ def validate_chapter_batch(text: str) -> list[str]:
 
 
 def validate_outline_file(rel_path: str | Path, text: str) -> list[str]:
-    """按路径分派到对应校验器（guard 统一入口）。非 outline 产物返回空。"""
+    """按路径分派到对应校验器（guard 统一入口）。非三步产物返回空。"""
     p = Path(rel_path).as_posix().lstrip("/")
     name = Path(p).name
-    stem = Path(p).stem
-    if p == "outline/期待台账.md":
+    if p == f"outline/{WORLDVIEW_FILENAME}":
+        return validate_worldview(text)
+    if p == f"outline/{LEDGER_FILENAME}":
         return validate_ledger(text)
-    if p.startswith("outline/06-章纲/") and name.endswith(".md"):
+    if p.startswith("outline/") and BATCH_FILE_PATTERN.match(name):
         return validate_chapter_batch(text)
-    if p.startswith("outline/") and stem in _REQUIRED_HEADINGS:
-        return validate_design_artifact(stem, text)
+    if p.startswith("outline/") and name == MASTER_FILENAME:
+        return validate_design_artifact("总纲", text)
+    if p.startswith("outline/") and VOLUME_FILE_PATTERN.match(name):
+        return validate_design_artifact("卷纲", text)
     return []
 
 
 def parse_chapter_rows(text: str) -> list[dict[str, str]]:
-    """解析章纲批五列表为字典行（体检计算共用；表缺失返回空）。"""
+    """解析章纲批四列表为字典行（评估端共用；表缺失返回空）。"""
     _, rows = _find_table(text, BATCH_COLUMNS)
-    keys = ["章", "主要事件", "爽点", "章末钩子", "期待推进"]
+    keys = BATCH_COLUMNS
     return [
         {k: (r[i] if i < len(r) else "") for i, k in enumerate(keys)}
         for r in rows
@@ -184,9 +197,9 @@ def parse_chapter_rows(text: str) -> list[dict[str, str]]:
 
 
 def parse_ledger_rows(text: str) -> list[dict[str, str]]:
-    """解析期待台账八列表为字典行（体检计算共用；表缺失返回空）。"""
+    """解析期待台账六列表为字典行（评估端共用；表缺失返回空）。"""
     _, rows = _find_table(text, LEDGER_COLUMNS)
-    keys = ["ID", "层级", "期待内容", "埋设章", "最近推进章", "计划兑现章", "状态", "备注"]
+    keys = LEDGER_COLUMNS
     return [
         {k: (r[i] if i < len(r) else "") for i, k in enumerate(keys)}
         for r in rows
@@ -196,10 +209,16 @@ def parse_ledger_rows(text: str) -> list[dict[str, str]]:
 
 __all__ = [
     "BATCH_COLUMNS",
+    "BATCH_FILE_PATTERN",
+    "LEDGER_ABANDONED_PATTERN",
     "LEDGER_COLUMNS",
+    "LEDGER_FILENAME",
     "LEDGER_ID_PATTERN",
     "LEDGER_LEVELS",
     "LEDGER_STATUSES",
+    "MASTER_FILENAME",
+    "VOLUME_FILE_PATTERN",
+    "WORLDVIEW_FILENAME",
     "classify_outline_file",
     "parse_chapter_rows",
     "parse_ledger_rows",
@@ -207,4 +226,5 @@ __all__ = [
     "validate_design_artifact",
     "validate_ledger",
     "validate_outline_file",
+    "validate_worldview",
 ]

@@ -91,8 +91,8 @@ def test_concurrent_same_file_edits_stay_valid_utf8(pkg_copy):
     复刻线上事故形态——同一提示词文件 4 处互不重叠的替换并发执行。
     """
     tools, ctx = _make_writers(pkg_copy)
-    target = "prompts/storystructure_system.md"
-    before = (pkg_copy / "prompts" / "storystructure_system.md").read_text(encoding="utf-8")
+    target = "prompts/outline_system.md"
+    before = (pkg_copy / "prompts" / "outline_system.md").read_text(encoding="utf-8")
 
     edits = [
         {"file_path": target, "old_string": before[:20], "new_string": before[:20] + "甲"},
@@ -106,7 +106,7 @@ def test_concurrent_same_file_edits_stay_valid_utf8(pkg_copy):
     assert all("已编辑" in r for r in results), results
 
     # 修复点 1：文件仍是合法 UTF-8（修复前交叉写会产生孤立续字节）
-    after = (pkg_copy / "prompts" / "storystructure_system.md").read_text(encoding="utf-8")
+    after = (pkg_copy / "prompts" / "outline_system.md").read_text(encoding="utf-8")
     # 修复点 2：4 处编辑全部落盘（修复前部分线程的整文件重写会覆盖兄弟线程；
     # 测试用的 new_string 内嵌 old_string，只断言新文案在位）
     for e in edits:
@@ -129,13 +129,17 @@ def test_concurrent_different_file_writes_all_land(pkg_copy):
 
 def test_validate_changes_catches_corrupt_utf8(pkg_copy, monkeypatch):
     """validate_changes 检出坏字节 .md：编码损坏在落地阶段报错，而非发布 probe。"""
-    from app.core.settings import settings
+    # 补丁必须打在 flow 模块实际持有的 settings 引用上：benchmark 套件会
+    # importlib.reload(app.core.settings)，reload 后本文件 import 到的是新
+    # 实例，而 flow.validate_changes 闭包仍持旧实例——打错实例时校验会落到
+    # 真实 harnesses/repo 上假通过（全量套件顺序脆弱，基线隔离复现）。
+    import app.evolve.agent.tools.flow as flow_mod
     from app.evolve.agent.tools.flow import make_flow_tools
 
     bad = pkg_copy / "prompts" / "corrupt_probe.md"
     bad.write_bytes("合法前缀。".encode("utf-8") + b"\xbc\x89\n")
 
-    monkeypatch.setattr(settings, "harness_work_dir", str(pkg_copy))
+    monkeypatch.setattr(flow_mod.settings, "harness_work_dir", str(pkg_copy))
     validate = next(t for t in make_flow_tools() if t.name == "validate_changes")
     result = _invoke(validate, _FakeCtx())
 

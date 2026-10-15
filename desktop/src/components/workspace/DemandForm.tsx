@@ -17,21 +17,18 @@ type DemandFormProps = {
 const EMPTY_FIELDS: DemandFields = {
   platform: "番茄",
   category: "玄幻",
-  genre: "",
   premise: "",
-  protagonist: "",
-  focus: "",
-  stylePrefs: "",
+  goldenFinger: "",
 };
 
 /**
- * 需求表单——首次生成的唯一入口（FR-002 / DEC-013）。
+ * 需求表单——首次生成的唯一入口（REQ-20261015-161200 FR-007，DEC-007）。
  *
- * 必填三项 + 选填两项；提交后模板化渲染 demand.md 交给故事专家，
- * 专家先就关键盲点澄清再构建（REQ-20261009-224433，取代旧「一口气生成」）。
- * 大纲产出后本表单退场，修订走 ChatPanel 对话入口（FR-004）。
+ * 4 项：平台/品类（默认值可直接用）+ 两项必填；填完直接进三步流程
+ * （定世界观 → 定总纲和卷纲 → 定章纲），每步停下拍板。
+ * 大纲产出后本表单退场，修订走 ChatPanel 对话入口。
  *
- * FR-001（REQ-20261009-224433）：挂载时预填上次提交的记忆（按账号隔离）；
+ * FR-001（REQ-20260909-224433 沿革）：挂载时预填上次提交的记忆（按账号隔离）；
  * 用户已动手填写则不打扰；「清空」一键回到空白表单。
  */
 export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) {
@@ -96,14 +93,14 @@ export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) 
           </button>
         </div>
         <p className="demand-form-desc">
-          填写三项必填即可开始——设计教练从赛道确认起步，一步一步拍板推进
-          七步法：赛道 → 设计原则 → 冲突引擎 → 力量体系 → 总纲 → 卷纲 → 章纲。
+          填两项必填即可开始——每步停下等你拍板：
+          定世界观 → 定总纲和卷纲 → 定章纲（埋钩子回收钩子）。
         </p>
       </div>
 
       <div className="demand-field-row">
         <label className="demand-field">
-          <span className="demand-field-label">平台（赛道）</span>
+          <span className="demand-field-label">平台</span>
           <input
             className="thread-input"
             value={fields.platform}
@@ -113,7 +110,7 @@ export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) 
           />
         </label>
         <label className="demand-field">
-          <span className="demand-field-label">品类（赛道）</span>
+          <span className="demand-field-label">品类</span>
           <input
             className="thread-input"
             value={fields.category}
@@ -125,20 +122,7 @@ export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) 
       </div>
 
       <label className="demand-field demand-field-required">
-        <span className="demand-field-label">题材 / 类型</span>
-        <input
-          className={`thread-input${fieldError("genre") ? " demand-field-error" : ""}`}
-          value={fields.genre}
-          onChange={(e) => updateField("genre", e.target.value)}
-          onBlur={() => setTouched((t) => ({ ...t, genre: true }))}
-          placeholder="例：玄幻 · 热血升级流"
-          disabled={busy}
-          autoFocus
-        />
-      </label>
-
-      <label className="demand-field demand-field-required">
-        <span className="demand-field-label">核心创意 / 一句话卖点</span>
+        <span className="demand-field-label">一句话点子</span>
         <textarea
           className={`thread-input demand-textarea${fieldError("premise") ? " demand-field-error" : ""}`}
           value={fields.premise}
@@ -147,40 +131,19 @@ export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) 
           placeholder="主角是谁 + 核心困境 + 独特抓手（爽点钩子）"
           rows={3}
           disabled={busy}
+          autoFocus
         />
       </label>
 
       <label className="demand-field demand-field-required">
-        <span className="demand-field-label">主角与核心设定要点</span>
+        <span className="demand-field-label">金手指</span>
         <textarea
-          className={`thread-input demand-textarea${fieldError("protagonist") ? " demand-field-error" : ""}`}
-          value={fields.protagonist}
-          onChange={(e) => updateField("protagonist", e.target.value)}
-          onBlur={() => setTouched((t) => ({ ...t, protagonist: true }))}
-          placeholder="身份起点 / 核心欲望 / 弱点软肋 / 金手指边界（能做什么、不能做什么）"
+          className={`thread-input demand-textarea${fieldError("goldenFinger") ? " demand-field-error" : ""}`}
+          value={fields.goldenFinger}
+          onChange={(e) => updateField("goldenFinger", e.target.value)}
+          onBlur={() => setTouched((t) => ({ ...t, goldenFinger: true }))}
+          placeholder="能力与边界（能做什么、不能做什么、代价或限制）"
           rows={3}
-          disabled={busy}
-        />
-      </label>
-
-      <label className="demand-field">
-        <span className="demand-field-label">大纲侧重（选填）</span>
-        <input
-          className="thread-input"
-          value={fields.focus}
-          onChange={(e) => updateField("focus", e.target.value)}
-          placeholder="例：重人物弧光与关系张力；世界观点到为止"
-          disabled={busy}
-        />
-      </label>
-
-      <label className="demand-field">
-        <span className="demand-field-label">风格偏好（选填）</span>
-        <input
-          className="thread-input"
-          value={fields.stylePrefs}
-          onChange={(e) => updateField("stylePrefs", e.target.value)}
-          placeholder="例：热血燃向、快节奏、避免慢热开头"
           disabled={busy}
         />
       </label>
@@ -190,7 +153,7 @@ export function DemandForm({ onSubmit, disabled, submitting }: DemandFormProps) 
           className="send-button min-h-[46px] rounded-[14px] px-5 text-sm font-black bg-gradient-to-br from-[var(--coral)] to-[var(--gold)] shadow-lg hover:shadow-xl hover:-translate-y-px transition-all"
           type="submit"
           disabled={!valid || busy}
-          title={valid ? undefined : "请先填写三项必填字段"}
+          title={valid ? undefined : "请先填写两项必填字段"}
         >
           {submitting ? "提交中" : "生成大纲"}
         </Button>

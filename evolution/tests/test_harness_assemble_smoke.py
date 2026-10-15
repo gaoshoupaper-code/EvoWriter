@@ -5,8 +5,8 @@ FakeListChatModel 真实装配。子进程原因：harness assemble 链 import e
 app.platform.*，与 evolution 自身 app 包撞名，不能同进程混跑（同 probe_worker.py
 docstring 的决策谱系）；主进程仅断言退出码与结果 JSON，不污染本套件其他测试。
 
-覆盖：working 包（evolution/harnesses/repo，双泳道形态 REQ-20261011-142529）在
-full / minimal 两种 demand 下 assemble（缺省 + 按名 storystructure）产出非空图。
+覆盖：working 包（evolution/harnesses/repo，三步制形态 REQ-20261015-161200）在
+full / minimal 两种 demand 下 assemble（缺省 + 按名 writer）产出非空图。
 """
 
 from __future__ import annotations
@@ -24,16 +24,15 @@ _WORKING_PKG = _REPO_ROOT / "evolution" / "harnesses" / "repo"
 
 _DEMAND_FULL = """# 创作需求文档
 
-## 核心层
-
-- **篇幅档位**：21-50章
-- **目标配比**（主线 / 支线 / 角色线 / 暗线）：主线5 / 支线1 / 角色线1 / 暗线0
+- 平台（默认番茄）：番茄
+- 品类（默认玄幻）：玄幻
+- 一句话点子（主角是谁 + 核心困境 + 独特抓手）：杂役少年觉醒黑碑逆袭
+- 金手指（能力与边界，含代价或限制）：黑碑吞噬功法，每次反噬三日
 """
 
 _DEMAND_MINIMAL = """# 创作需求文档
 
-- **题材**：玄幻 · 轻松治愈
-- **篇幅档位**：21-50章
+- 一句话点子：废柴少年觉醒图录逆袭
 """
 
 # 子进程装配脚本：装配指定 demand，输出一行 JSON {"ok": bool, "error": str?}
@@ -75,8 +74,8 @@ ctx = RuntimeContext(
 )
 graph = mod.assemble(ctx)
 
-# 双泳道（REQ-20261011-142529）：缺省 + 按名装配都产出非空图
-named = mod.assemble(ctx, agent_name="storystructure")
+# 三步制（REQ-20261015-161200）：缺省 + 按名装配都产出非空图
+named = mod.assemble(ctx, agent_name="writer")
 print(json.dumps({
     "ok": graph is not None and named is not None,
 }))
@@ -107,20 +106,17 @@ def _run_assemble_child(demand_md: str) -> dict:
 
 class AssembleSmokeTest(unittest.TestCase):
     def test_assemble_full_quota_demand(self) -> None:
-        """full 配比 demand：子进程真实 assemble 产出非空图（FR-001/FR-002）。"""
+        """四字段 demand：子进程真实 assemble 产出非空图（FR-001/FR-002）。"""
         result = _run_assemble_child(_DEMAND_FULL)
         self.assertTrue(result["ok"], msg=str(result.get("error")))
 
     def test_assemble_minimal_demand(self) -> None:
-        """minimal 留白 demand（软终止，DEC-013）：assemble 产出非空图。"""
+        """minimal 留白 demand：assemble 产出非空图。"""
         result = _run_assemble_child(_DEMAND_MINIMAL)
         self.assertTrue(result["ok"], msg=str(result.get("error")))
 
     def test_named_lane_assemble(self) -> None:
-        """按名装配 storystructure 泳道也产出非空图（DEC-006 双主泳道）。
-
-        取代旧线数预算测试（配比导航随 DEC-011 退役）。
-        """
+        """按名装配 writer 主控也产出非空图（DEC-005 单主控三子代理）。"""
         result = _run_assemble_child(_DEMAND_FULL)
         self.assertTrue(result["ok"], msg=str(result.get("error")))
 

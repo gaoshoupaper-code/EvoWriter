@@ -25,18 +25,15 @@ vi.mock("@/lib/api", () => ({
 
 const pipeline = (over: Partial<PipelineStatus> = {}): PipelineStatus => ({
   kind: "pipeline",
-  phase: "storystructure",
-  next_unit: "卷纲·第1卷",
-  design_done: false,
-  rework: null,
+  phase: "outline",
+  next_unit: "总纲卷纲",
   awaiting: {},
   ...over,
 });
 
 const FILES = [
-  { rel: "outline/00-赛道.md", markdown: "" },
-  { rel: "outline/01-设计原则.md", markdown: "" },
-  { rel: "outline/04-总纲.md", markdown: "" },
+  { rel: "outline/世界观.md", markdown: "" },
+  { rel: "outline/总纲.md", markdown: "" },
 ];
 
 /** 默认宽屏 matchMedia stub（窄屏=对话区容器 <1280px ⇔ 窗口 <1532px，见 NARROW_QUERY/DEC-016） */
@@ -63,7 +60,7 @@ beforeEach(() => {
     outlineKind: "pipeline",
     outlinePipeline: pipeline(),
     outlineFiles: FILES,
-    activeOutlineRel: "outline/00-赛道.md",
+    activeOutlineRel: "outline/世界观.md",
     characters: [{ filename: "lin.md", name: "林寒", markdown: "" }],
     activeCharacterFilename: "",
     objects: [],
@@ -75,10 +72,10 @@ describe("小态浮窗概要（AC-001）", () => {
   it("默认 mini：阶段+第几步+接下来写+最新 1 条产物，完整进度区不可见", () => {
     render(<WorkRail />);
     const mini = screen.getByLabelText("作品");
-    expect(within(mini).getByText("结构阶段")).toBeInTheDocument();
-    expect(within(mini).getByText("第 6 步 · 卷纲")).toBeInTheDocument();
-    expect(within(mini).getByText("接下来写：卷纲·第1卷")).toBeInTheDocument();
-    expect(within(mini).getByText("刚写完：04-总纲")).toBeInTheDocument();
+    expect(within(mini).getByText("定总纲卷纲")).toBeInTheDocument();
+    expect(within(mini).getByText("第 2 步 · 总纲卷纲")).toBeInTheDocument();
+    expect(within(mini).getByText("接下来写：总纲卷纲")).toBeInTheDocument();
+    expect(within(mini).getByText("刚写完：总纲")).toBeInTheDocument();
     // 小态只有概要：完整进度区与索引组不渲染
     expect(screen.queryByLabelText("创作进度")).not.toBeInTheDocument();
     expect(screen.queryByText("大纲")).not.toBeInTheDocument();
@@ -104,7 +101,7 @@ describe("小态浮窗概要（AC-001）", () => {
     });
     render(<WorkRail />);
     expect(screen.getByText("旧版工作区")).toBeInTheDocument();
-    expect(screen.getByText("五件套修订模式")).toBeInTheDocument();
+    expect(screen.getByText("旧版结构，只读查看")).toBeInTheDocument();
   });
 
   it("全新工作区无产物 → 小态引导文案，不报错", () => {
@@ -125,17 +122,17 @@ describe("三态切换与唤回（AC-002）", () => {
     render(<WorkRail />);
     await userEvent.click(screen.getByRole("button", { name: "展开作品详情" }));
     const progress = screen.getByLabelText("创作进度");
-    for (const name of ["赛道", "设计原则", "冲突引擎", "力量体系", "总纲", "卷纲", "章纲", "卷末盘点"]) {
+    for (const name of ["世界观", "总纲卷纲", "章纲"]) {
       expect(within(progress).getByText(name)).toBeInTheDocument();
     }
-    expect(within(progress).getByText(/定类型：写什么题材、给谁看/)).toBeInTheDocument();
-    expect(within(progress).getByText(/接下来写：卷纲·第1卷/)).toBeInTheDocument();
+    expect(within(progress).getByText(/核心冲突、力量体系、金手指、大法则/)).toBeInTheDocument();
+    expect(within(progress).getByText(/接下来写：总纲卷纲/)).toBeInTheDocument();
 
     const rail = screen.getByLabelText("作品");
     for (const g of ["大纲", "人物", "物品", "世界观"]) {
-      expect(within(rail).getByText(g)).toBeInTheDocument();
+      expect(within(rail).getAllByText(g).length).toBeGreaterThan(0);
     }
-    expect(document.querySelectorAll(".work-rail-steps li").length).toBe(8);
+    expect(document.querySelectorAll(".work-rail-steps li").length).toBe(3);
   });
 
   it("expanded 收起（»）→ mini；再点击卡面可回到 expanded", async () => {
@@ -163,7 +160,7 @@ describe("三态切换与唤回（AC-002）", () => {
     useExecutionStore.setState({ loading: true });
     useWorkrailStore.setState({ floatMode: "expanded" });
     render(<WorkRail />);
-    expect(screen.getByText("生成中：卷纲")).toBeInTheDocument();
+    expect(screen.getByText("生成中：总纲卷纲")).toBeInTheDocument();
   });
 });
 
@@ -207,9 +204,9 @@ describe("索引跳转定位（expanded 态）", () => {
   it("点大纲文件 → 面板切 outline 且选中该文件", async () => {
     useWorkrailStore.setState({ floatMode: "expanded" });
     render(<WorkRail />);
-    await userEvent.click(screen.getByText("04-总纲"));
+    await userEvent.click(screen.getByText("总纲"));
     expect(useWorkspaceStore.getState().activePanel).toBe("outline");
-    expect(useContentStore.getState().activeOutlineRel).toBe("outline/04-总纲.md");
+    expect(useContentStore.getState().activeOutlineRel).toBe("outline/总纲.md");
   });
 
   it("点人物条目 → 面板切 characters 且选中该文件", async () => {
@@ -236,7 +233,11 @@ describe("索引跳转定位（expanded 态）", () => {
   it("点世界观条目 → 面板切 worldview", async () => {
     useWorkrailStore.setState({ floatMode: "expanded" });
     render(<WorkRail />);
-    await userEvent.click(screen.getByText("世界观"));
+    // 「世界观」同时是步骤名与索引组名——按按钮角色定位组头
+    const groupHead = screen
+      .getAllByRole("button")
+      .find((b) => b.textContent?.trim().startsWith("世界观"))!;
+    await userEvent.click(groupHead);
     await userEvent.click(screen.getByText("世界观设定"));
     expect(useWorkspaceStore.getState().activePanel).toBe("worldview");
   });

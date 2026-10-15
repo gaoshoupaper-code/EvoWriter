@@ -108,6 +108,11 @@ class RuntimeContext:
     # 定义在领域层（app.domains.writing.retry），平台层 TraceMiddleware 只调用、不 import，
     # 保持 platform 不依赖 domains 的分层铁律。
     writer_retry_runner_factory: object | None = None
+    # 三步制拍板闸共享状态（REQ-20261015-161200 FR-003，DEC-005）：主控挂
+    # confirm_with_user 工具负责记账与每轮重置；三个子代理的 ReceiptGate 只读。
+    # 一次 assemble 内共享（请求级，执行端每次生成新建 ctx）；None = 不共享
+    # （子代理闸门各自为政，仅旧调用方兼容）。
+    confirm_gate_state: object | None = None
 
 
 __all__ = ["RuntimeContext"]

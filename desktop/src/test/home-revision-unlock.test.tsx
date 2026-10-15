@@ -112,10 +112,9 @@ describe("回执阶段输入框卡死（修订门控死局）", () => {
     renderHome();
 
     // 大纲未产出 → 首发渲染需求表单
-    const genreInput = await screen.findByPlaceholderText("例：玄幻 · 热血升级流", {}, { timeout: 10000 });
-    await user.type(genreInput, "玄幻·热血升级流");
-    await user.type(screen.getByPlaceholderText(/主角是谁 \+ 核心困境/), "废物少年觉醒万器图录复刻天下兵器");
-    await user.type(screen.getByPlaceholderText(/身份起点 \/ 核心欲望/), "铁匠之子，被家族除名，靠金手指打回去");
+    const premiseInput = await screen.findByPlaceholderText(/主角是谁 \+ 核心困境/, {}, { timeout: 10000 });
+    await user.type(premiseInput, "废物少年觉醒万器图录复刻天下兵器");
+    await user.type(screen.getByPlaceholderText(/能力与边界/), "万器图录：复刻见过的兵器，复刻要耗家底");
     await user.click(screen.getByRole("button", { name: "生成大纲" }));
 
     // 等流结束：final 事件 → assistant 消息 completed（交付/回执态）→ loading=false

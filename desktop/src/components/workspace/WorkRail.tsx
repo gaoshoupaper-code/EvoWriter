@@ -20,7 +20,6 @@ import { useWorkrailStore, type ArtifactKey } from "@/stores/workrail";
 import { refreshWorkspaceContent } from "@/lib/usePanelPolling";
 import {
   PIPELINE_STEPS,
-  REWORK_STAGE_LABEL,
   activeStepIndex,
   isStepDone,
   phaseDisplayName,
@@ -165,14 +164,14 @@ export function WorkRail() {
         >
           {!pipeline ? (
             <p className="work-rail-placeholder">
-              {hasAnyContent ? "暂无七步进度。" : "开始对话后，作品会在这里出现。"}
+              {hasAnyContent ? "暂无三步进度。" : "开始对话后，作品会在这里出现。"}
             </p>
           ) : pipeline.kind === "legacy" ? (
             <>
               <div className="work-rail-mini-head">
                 <span className="work-rail-phase legacy">旧版工作区</span>
               </div>
-              <p className="work-rail-mini-next">五件套修订模式</p>
+              <p className="work-rail-mini-next">旧版结构，只读查看</p>
             </>
           ) : (
             <>
@@ -211,7 +210,7 @@ export function WorkRail() {
 
   // ── expanded：完整浮窗（进度 + 索引四组，点条目跳全屏面板并定位）──
   const generatingRow =
-    loading && activeStep && activeStep.n <= 6 && !isStepDone(activeStep.n, fileRels)
+    loading && activeStep && activeStep.n <= 2 && !isStepDone(activeStep.n, fileRels)
       ? { label: `生成中：${activeStep.label}` }
       : null;
 
@@ -295,28 +294,23 @@ export function WorkRail() {
           </div>
         ) : null}
 
-        {/* 进度区：八步 + 徽标 + 接下来写 */}
+        {/* 进度区：三步 + 接下来写 */}
         <div className="work-rail-progress" aria-label="创作进度">
           {!pipeline ? (
             <p className="work-rail-placeholder">
-              {hasAnyContent ? "暂无七步进度。" : "开始对话后，作品会在这里出现。"}
+              {hasAnyContent ? "暂无三步进度。" : "开始对话后，作品会在这里出现。"}
             </p>
           ) : pipeline.kind === "legacy" ? (
             <>
               <div className="work-rail-progress-head">
                 <span className="work-rail-phase legacy">旧版工作区</span>
               </div>
-              <p className="work-rail-next">五件套修订模式</p>
+              <p className="work-rail-next">旧版结构，只读查看</p>
             </>
           ) : (
             <>
               <div className="work-rail-progress-head">
                 <span className={`work-rail-phase ${pipeline.phase}`}>{phaseDisplayName(pipeline.phase)}</span>
-                {pipeline.rework ? (
-                  <span className="work-rail-rework" title={`工单 ${pipeline.rework.ticket}`}>
-                    ⟲ {REWORK_STAGE_LABEL[pipeline.rework.stage] ?? pipeline.rework.stage}
-                  </span>
-                ) : null}
               </div>
               <ol className="work-rail-steps">
                 {PIPELINE_STEPS.map((s) => {

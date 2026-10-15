@@ -6494,6 +6494,9 @@ html[data-theme="dark"] .provider-item {
   color: #fff;
   white-space: nowrap;
 }
+.pipeline-phase.worldview { background: var(--coral, #e2694f); }
+.pipeline-phase.outline { background: var(--teal, #2f9e8f); }
+.pipeline-phase.chapters { background: var(--gold, #c98a2d); }
 .pipeline-phase.storydesign { background: var(--coral, #e2694f); }
 .pipeline-phase.storystructure { background: var(--teal, #2f9e8f); }
 .pipeline-phase.legacy { background: var(--muted, #999); }
@@ -6678,6 +6681,9 @@ html[data-theme="dark"] .provider-item {
   color: #fff;
   white-space: nowrap;
 }
+.work-rail-phase.worldview { background: var(--coral); }
+.work-rail-phase.outline { background: var(--teal); }
+.work-rail-phase.chapters { background: var(--gold); }
 .work-rail-phase.storydesign { background: var(--coral); }
 .work-rail-phase.storystructure { background: var(--teal); }
 .work-rail-phase.legacy { background: var(--muted); }

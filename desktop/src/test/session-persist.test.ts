@@ -203,7 +203,7 @@ describe("上次位置（FR-001）", () => {
 
 describe("需求表单记忆（FR-001，REQ-20261009-224433）", () => {
   it("save 后可 read 回来；账号间隔离", async () => {
-    const fields = { platform: "番茄", category: "玄幻", genre: "玄幻·热血升级流", premise: "废物少年逆袭", protagonist: "铁匠之子", focus: "", stylePrefs: "" };
+    const fields = { platform: "番茄", category: "玄幻", premise: "废物少年逆袭", goldenFinger: "万器图录复刻兵器" };
     await saveLastDemandFields(fields);
     expect(await readLastDemandFields()).toEqual(fields);
     initSessionPersist({ getUsername: () => "bob" });
@@ -211,9 +211,9 @@ describe("需求表单记忆（FR-001，REQ-20261009-224433）", () => {
   });
 
   it("覆盖语义：第二次提交覆盖第一次", async () => {
-    await saveLastDemandFields({ platform: "番茄", category: "玄幻", genre: "A", premise: "p", protagonist: "m", focus: "", stylePrefs: "" });
-    await saveLastDemandFields({ platform: "番茄", category: "玄幻", genre: "B", premise: "p", protagonist: "m", focus: "", stylePrefs: "" });
-    expect((await readLastDemandFields())!.genre).toBe("B");
+    await saveLastDemandFields({ platform: "番茄", category: "玄幻", premise: "A", goldenFinger: "g" });
+    await saveLastDemandFields({ platform: "番茄", category: "玄幻", premise: "B", goldenFinger: "g" });
+    expect((await readLastDemandFields())!.premise).toBe("B");
   });
 
   it("损坏数据（非对象 fields）返回 null，不抛异常", async () => {

@@ -1,86 +1,144 @@
-"""双 agent 管线编排层（REQ-20261011-142529 FR-002/003/004，DEC-006/008/020）。
+"""单主控三步管线编排层（REQ-20261015-161200 FR-002/003，DEC-005）。
 
-编排归 executor 代码（DEC-020）：管「现在轮到哪个 agent、第几步、在等谁」。
-产物目录即进度真相源（FR-001）：outline/ 目录扫描定相位；`outline/_pipeline.json`
-是可重建的加速层（contracts.outline_pipeline 共享契约，harness 工具同读写）。
+编排归 executor 代码：管「下一步做什么单元、用哪个会话 thread」。
+产物目录即进度真相源（FR-001）：outline/ 目录扫描定进度；`outline/_pipeline.json`
+是可重建的加速层（contracts.outline_pipeline 共享契约）。
 
-职责：
-  - 路由：legacy（旧五件套修订模式）/ storydesign / storystructure；
-    回炉三段（design_revising / impact_revising）覆盖常规路由。
-  - 会话：每 agent 按会话切 thread（DEC-020 第 4 条）——新会话序号递增，
-    thread_id = f"{base}:{agent}:{seq}"；resume 沿用 active_threads；
-    丢弃重开 = 作废旧 trace + 新会话（不强制回原 thread）。
-  - 状态转移：interrupt 时记 active trace；run 完成时推进回炉段、重扫相位。
+三步制（DEC-001）：①定世界观 → ②定总纲和卷纲 → ③定章纲批滚动。
+流程推进由主控 agent（writer）按目录自主调度；本层只提供下一单元提示与
+会话/resume 定位，不再有泳道路由与回炉状态机。
+
+legacy（DEC-011）：旧五件套（storyline.md）与旧七步（outline/00-06 文件）
+工作区均只读——agent_name=None 装配首个 main，directive 声明只读模式。
 
 纯同步模块（唯一副作用是状态文件读写），可独立单测。
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from contracts.outline_ledger_contract import (
+    BATCH_FILE_PATTERN,
+    MASTER_FILENAME,
+    VOLUME_FILE_PATTERN,
+    WORLDVIEW_FILENAME,
+)
 from contracts.outline_pipeline import (
-    PHASE_DESIGN,
-    PHASE_STRUCTURE,
-    REWORK_DESIGN,
-    REWORK_IMPACT,
+    PHASE_CHAPTERS,
+    PHASE_LEGACY,
+    PHASE_OUTLINE,
+    PHASE_WORLDVIEW,
     PipelineState,
     load_pipeline_state,
     save_pipeline_state,
 )
 
-# 设计端四步产物（缺任一 = 设计端未完成）
-DESIGN_FILES = ("00-赛道.md", "01-设计原则.md", "02-冲突引擎.md", "03-力量体系.md")
-DESIGN_STEP_LABELS = {
-    "00-赛道.md": "第 0 步·赛道确认",
-    "01-设计原则.md": "第 1 步·设计原则",
-    "02-冲突引擎.md": "第 2 步·冲突引擎",
-    "03-力量体系.md": "第 3 步·力量体系",
-}
+# 单主控 agent 名（architecture.json 唯一 main）
+MAIN_AGENT = "writer"
 
-# 用户消息命中设计端关键词 → 路由设计端打磨（结构期改上游创意的唯一常规入口；
-# 需要改文件内容的仍走回炉工单——白名单拦得住）
-_DESIGN_KEYWORDS = (
-    "设计原则", "冲突引擎", "力量体系", "赛道", "境界划分", "金手指",
-    "主角卡", "大 BOSS", "大BOSS", "反派递进", "世界观核心",
-)
+# 旧七步产物签名前缀（00-赛道 ~ 06-章纲；命中即 legacy 只读）
+_SEVEN_STEP_PREFIXES = ("00-", "01-", "02-", "03-", "04-", "05-", "06-")
+
+# legacy 会话键（与管线主控会话键区分，互不串台）
+_LEGACY_AGENT_KEY = "legacy"
+
+# 阶段条三步标签（desktop pipeline-steps 同名对齐；next_unit 取值即此三者）
+LABEL_WORLDVIEW = "世界观"
+LABEL_OUTLINE = "总纲卷纲"
+LABEL_CHAPTERS = "章纲"
 
 
 @dataclass
 class RouteDecision:
-    agent_name: str | None          # None = manifest 首个 main（legacy 兼容）
+    agent_name: str | None          # None = manifest 首个 main（legacy 只读模式）
     thread_id: str                  # langgraph thread（会话派生）
     directive: str                  # 任务书（拼进 user prompt 头部）
-    phase: str                      # storydesign / storystructure / legacy
+    phase: str                      # worldview / outline / chapters / legacy
     new_session: bool = False       # 本轮是否新会话（fresh 丢弃重开标记）
 
 
+@dataclass
+class OutlineProgress:
+    """outline/ 目录扫描结果（目录即进度）。"""
+
+    worldview_done: bool = False
+    master_done: bool = False
+    volumes: list[int] = field(default_factory=list)       # 已有卷纲的卷号升序
+    batches: dict[int, int] = field(default_factory=dict)  # 卷号 → 最大批号
+
+
 def classify_workspace(workspace: Path) -> str:
-    """"legacy"（旧五件套）| "pipeline"（新 outline 结构 / 全新）。"""
+    """"legacy"（旧五件套或旧七步，只读）| "pipeline"（三步制 / 全新）。"""
     workspace = Path(workspace)
-    if (workspace / "storyline.md").exists() and not (workspace / "outline").is_dir():
+    if (workspace / "storyline.md").exists():
         return "legacy"
+    outline = workspace / "outline"
+    if outline.is_dir():
+        for f in outline.iterdir():
+            if f.name.startswith(_SEVEN_STEP_PREFIXES):
+                return "legacy"
     return "pipeline"
 
 
-def next_design_step(workspace: Path) -> tuple[str, str]:
-    """返回 (缺失文件名, 步骤标签)；四步齐备返回 ("", "设计端完成")。"""
-    for fname in DESIGN_FILES:
-        if not (Path(workspace) / "outline" / fname).is_file():
-            return fname, DESIGN_STEP_LABELS[fname]
-    return "", "设计端完成"
+def scan_progress(workspace: Path) -> OutlineProgress:
+    """扫描 outline/ 目录推导进度（快照函数，不落盘）。"""
+    workspace = Path(workspace)
+    prog = OutlineProgress(
+        worldview_done=(workspace / "outline" / WORLDVIEW_FILENAME).is_file(),
+        master_done=(workspace / "outline" / MASTER_FILENAME).is_file(),
+    )
+    if not (workspace / "outline").is_dir():
+        return prog
+    for f in (workspace / "outline").iterdir():
+        m = VOLUME_FILE_PATTERN.match(f.name)
+        if m:
+            prog.volumes.append(int(m.group(1)))
+            continue
+        m = BATCH_FILE_PATTERN.match(f.name)
+        if m:
+            vol, batch = int(m.group(1)), int(m.group(2))
+            prog.batches[vol] = max(prog.batches.get(vol, 0), batch)
+    prog.volumes.sort()
+    return prog
 
 
 def scan_phase(workspace: Path) -> str:
-    """按目录定相位：00-03 缺任一 → design；齐备 → structure。"""
-    fname, _ = next_design_step(workspace)
-    return PHASE_DESIGN if fname else PHASE_STRUCTURE
+    """按目录定下一步的段位：世界观 → 总纲卷纲 → 章纲（章纲批滚动归章纲段）。"""
+    prog = scan_progress(workspace)
+    if not prog.worldview_done:
+        return PHASE_WORLDVIEW
+    if not prog.master_done or not prog.volumes:
+        return PHASE_OUTLINE
+    return PHASE_CHAPTERS
 
 
-def _progress_desc(workspace: Path) -> str:
-    done = [f for f in DESIGN_FILES if (Path(workspace) / "outline" / f).is_file()]
-    parts = [DESIGN_STEP_LABELS[f].split("·", 1)[1] for f in done]
-    return "、".join(parts) if parts else "尚未开始"
+def next_unit_label(workspace: Path) -> str:
+    """下一单元标签（阶段条高亮与任务书共用；取值为三步标签之一）。"""
+    phase = scan_phase(workspace)
+    return {
+        PHASE_WORLDVIEW: LABEL_WORLDVIEW,
+        PHASE_OUTLINE: LABEL_OUTLINE,
+        PHASE_CHAPTERS: LABEL_CHAPTERS,
+    }[phase]
+
+
+def _unit_detail(workspace: Path) -> str:
+    """下一单元的具体说明（任务书正文用）。"""
+    prog = scan_progress(workspace)
+    if not prog.worldview_done:
+        return "本单元：①定世界观（outline/世界观.md）"
+    if not prog.master_done:
+        return "本单元：②定总纲（outline/总纲.md + character/core/ 主角与 BOSS 档案）"
+    if not prog.volumes:
+        return "本单元：②定第 1 卷卷纲（outline/卷纲-第1卷.md，含黄金三章设计）"
+    cur = prog.volumes[-1]
+    nxt = prog.batches.get(cur, 0) + 1
+    return (
+        f"本单元：③第 {cur} 卷第 {nxt} 批章纲（outline/章纲-卷{cur}批{nxt}.md，"
+        "每批 5-8 章，同步更新期待台账）。若当前卷的期待已清账、卷末大兑现已安排，"
+        f"改做第 {cur + 1} 卷卷纲"
+    )
 
 
 def _session_thread(state: PipelineState, base_thread_id: str, agent: str, *, new: bool) -> str:
@@ -109,94 +167,55 @@ def route(
     workspace = Path(workspace)
     state = load_pipeline_state(workspace)
 
-    # ── legacy：旧五件套 → 设计端（首个 main）自由修订模式 ──
+    # ── legacy：旧五件套 / 旧七步 → 只读模式（DEC-011）──
     if classify_workspace(workspace) == "legacy":
-        thread_id = _session_thread(state, base_thread_id, "legacy-design", new=True)
+        thread_id = _session_thread(state, base_thread_id, _LEGACY_AGENT_KEY, new=True)
         return RouteDecision(
             agent_name=None,
             thread_id=thread_id,
-            phase="legacy",
+            phase=PHASE_LEGACY,
             directive=(
-                "【旧版工作区修订模式】本 workspace 是旧版五件套结构（storyline.md / "
-                "worldview.md / character/ / object/ / hooks.md），不走七步管线。"
-                "按用户要求协助查看与修订既有文件；改前先读、拍板后落盘。"
+                "【旧版工作区·只读】本 workspace 是旧版结构（五件套或旧七步 outline），"
+                "不支持在新流程续写修订。可以查看、总结、答疑；"
+                "不修改任何文件。用户要开新书时新建工作目录。"
             ),
             new_session=True,
         )
 
-    agent = PHASE_STRUCTURE
-    rework = state.rework
+    agent = MAIN_AGENT
+    directive = (
+        f"【管线任务】当前下一单元：{next_unit_label(workspace)}。{_unit_detail(workspace)}。"
+        "按主文档单元流程：委托子代理起草 → confirm_with_user 拍板 → 批准后委托落盘 → 停下。"
+        "用户要求修改既有产物时，按「谁产出谁能改」委托原产出子代理修订，修订稿同样过拍板。"
+    )
 
-    # ── 回炉三段覆盖路由（DEC-008/020）──
-    if rework and rework.stage == REWORK_DESIGN:
-        agent = PHASE_DESIGN
-        directive = (
-            f"【回炉修订·第二停】读 outline/rework/{rework.ticket}-提案.md，"
-            "按主文档回炉协议执行上游修订：起草修订方案 → confirm 拍板 → "
-            "按批准修订上游文件（不超提案范围）→ 汇报收束。"
-        )
-    elif rework and rework.stage == REWORK_IMPACT:
-        directive = (
-            f"【波及修订·第三停】读 outline/rework/{rework.ticket}-提案.md 与"
-            "修订后的上游文件，先对照提案核对设计端改了什么，再逐项修订波及"
-            "清单内的下游内容（章纲批/台账/卷纲），confirm 拍板后落盘。"
-        )
-    else:
-        phase = scan_phase(workspace)
-        wants_design = any(k in (user_text or "") for k in _DESIGN_KEYWORDS)
-        if phase == PHASE_DESIGN:
-            agent = PHASE_DESIGN
-            fname, label = next_design_step(workspace)
-            directive = (
-                f"【管线任务·设计端】当前进度：{_progress_desc(workspace)}。"
-                f"本单元做「{label}」（产物 outline/{fname} 与配套深度文件），"
-                "按主文档单元流程：起草 → confirm 拍板 → 批准后落盘 → 停下。"
-            )
-        elif wants_design:
-            agent = PHASE_DESIGN
-            directive = (
-                "【管线任务·设计端·打磨】用户消息指向设计端产物（00-03 / "
-                "character/core / worldview/core.md）。按主文档单元流程打磨对应"
-                "文件：起草修订 → confirm 拍板 → 落盘 → 停下。"
-            )
-        else:
-            agent = PHASE_STRUCTURE
-            directive = (
-                "【管线任务·结构端】扫描 outline/ 目录定位当前进度（目录即进度），"
-                "做下一单元：04-总纲 或 05-卷纲 或 06-章纲批（每批 5-10 章）或 "
-                "卷末盘点，缺什么做什么。按主文档单元流程：起草 → confirm 拍板"
-                "（自动附体检报告）→ 批准后落盘并同步台账 → 停下。"
-            )
-
-    # ── 会话与 resume 定位（DEC-020 第 4 条）──
-    # resume 必须回到原 trace 所在 agent 的当前会话 thread——Command(resume)
-    # 打到无挂起 interrupt 的新 thread 会直接报错。找不到匹配（状态被重建
-    # /旧 trace）时按新会话开（回执内容已在产物里，最多重起草一轮）。
+    # ── 会话与 resume 定位（沿用：resume 回到原会话 thread）──
+    # Command(resume) 打到无挂起 interrupt 的新 thread 会直接报错。找不到匹配
+    # （状态被重建/旧 trace）时按新会话开（回执内容已在产物里，最多重起草一轮）。
     new_session = True
     if resume_trace:
         for name in state.active_threads:
             if state.active_traces.get(name) == resume_trace:
-                agent = name
+                agent = name if name != _LEGACY_AGENT_KEY else MAIN_AGENT
                 thread_id = state.active_threads[name]
                 new_session = False
                 break
     if new_session:
         thread_id = _session_thread(state, base_thread_id, agent, new=True)
-    state.phase = agent
+    state.phase = scan_phase(workspace)
     return RouteDecision(
         agent_name=agent, thread_id=thread_id, directive=directive,
-        phase=agent, new_session=new_session,
+        phase=scan_phase(workspace), new_session=new_session,
     )
 
 
 def commit_route(workspace: Path, decision: RouteDecision, trace_id: str) -> None:
     """generate_stream 拿到 trace 后落状态（会话与 active trace 登记）。"""
     state = load_pipeline_state(workspace)
-    # active_threads 已在 _session_thread 更新（load 的同一文件需重读合并）；
-    # 此处重放派生逻辑保持幂等：按 decision.thread_id 直接登记。
-    agent = decision.agent_name or "legacy-design"
+    agent = decision.agent_name or _LEGACY_AGENT_KEY
     state.active_threads[agent] = decision.thread_id
-    state.phase = decision.phase if decision.phase != "legacy" else state.phase
+    if decision.phase != PHASE_LEGACY:
+        state.phase = decision.phase
     state.active_traces[agent] = trace_id
     seq = decision.thread_id.rsplit(":", 1)[-1]
     if seq.isdigit():
@@ -206,30 +225,25 @@ def commit_route(workspace: Path, decision: RouteDecision, trace_id: str) -> Non
 
 def on_interrupt(workspace: Path, agent_name: str | None, trace_id: str) -> None:
     """interrupt 命中（awaiting_input）：登记 active trace 供 resume 定位与作废。"""
-    agent = agent_name or "legacy-design"
+    agent = agent_name or _LEGACY_AGENT_KEY
     state = load_pipeline_state(workspace)
     state.active_traces[agent] = trace_id
     save_pipeline_state(workspace, state)
 
 
 def on_run_complete(workspace: Path, agent_name: str | None) -> None:
-    """run 正常完成：清 active trace + 回炉段推进 + 相位重扫。"""
-    agent = agent_name or "legacy-design"
+    """run 正常完成：清 active trace + 相位重扫。"""
+    agent = agent_name or _LEGACY_AGENT_KEY
     state = load_pipeline_state(workspace)
     state.active_traces.pop(agent, None)
-    if state.rework:
-        if state.rework.stage == REWORK_DESIGN and agent == PHASE_DESIGN:
-            state.rework.stage = REWORK_IMPACT
-        elif state.rework.stage == REWORK_IMPACT and agent == PHASE_STRUCTURE:
-            state.rework = None
     if classify_workspace(workspace) == "pipeline":
         state.phase = scan_phase(workspace)
     save_pipeline_state(workspace, state)
 
 
 def on_run_abandoned(workspace: Path, agent_name: str | None) -> None:
-    """run 被作废（丢弃重开 / 用户停止）：只清 active trace，不动回炉段。"""
-    agent = agent_name or "legacy-design"
+    """run 被作废（丢弃重开 / 用户停止）：只清 active trace。"""
+    agent = agent_name or _LEGACY_AGENT_KEY
     state = load_pipeline_state(workspace)
     state.active_traces.pop(agent, None)
     save_pipeline_state(workspace, state)
@@ -237,7 +251,7 @@ def on_run_abandoned(workspace: Path, agent_name: str | None) -> None:
 
 def pop_awaiting_trace(workspace: Path, agent_name: str | None) -> str | None:
     """丢弃重开：取出并清除该 agent 的未决拍板 trace_id（供执行端作废账面）。"""
-    agent = agent_name or "legacy-design"
+    agent = agent_name or _LEGACY_AGENT_KEY
     state = load_pipeline_state(workspace)
     trace = state.active_traces.pop(agent, None)
     save_pipeline_state(workspace, state)
@@ -245,31 +259,28 @@ def pop_awaiting_trace(workspace: Path, agent_name: str | None) -> str | None:
 
 
 def pipeline_status(workspace: Path) -> dict:
-    """桌面端阶段条数据（FR-010）：相位 / 步骤 / 回炉 / 未决拍板。"""
+    """桌面端阶段条数据（FR-008）：kind / 相位 / 下一单元标签 / 未决拍板。"""
     workspace = Path(workspace)
     state = load_pipeline_state(workspace)
     kind = classify_workspace(workspace)
-    fname, label = next_design_step(workspace)
-    awaiting = {
-        agent: trace for agent, trace in state.active_traces.items() if trace
-    }
     return {
         "kind": kind,
         "phase": state.phase,
-        "next_unit": label if kind == "pipeline" else "旧版修订模式",
-        "design_done": not fname,
-        "rework": state.rework.model_dump(mode="json") if state.rework else None,
-        "awaiting": awaiting,
+        "next_unit": next_unit_label(workspace) if kind == "pipeline" else "旧版工作区（只读）",
+        "awaiting": {
+            agent: trace for agent, trace in state.active_traces.items() if trace
+        },
         "updated_at": state.updated_at,
     }
 
 
 __all__ = [
-    "DESIGN_FILES",
+    "MAIN_AGENT",
+    "OutlineProgress",
     "RouteDecision",
     "classify_workspace",
     "commit_route",
-    "next_design_step",
+    "next_unit_label",
     "on_interrupt",
     "on_run_abandoned",
     "on_run_complete",
@@ -277,4 +288,5 @@ __all__ = [
     "pop_awaiting_trace",
     "route",
     "scan_phase",
+    "scan_progress",
 ]

@@ -1,34 +1,25 @@
 /**
- * 七步法阶段共享模块（REQ-20261012-202540 FR-002/FR-007，DEC-008 命名清单）——
- * 作品栏进度区与大纲面板阶段条共用：步骤定义、完成度推导、徽标文案。
+ * 三步制阶段共享模块（REQ-20261015-161200 FR-008）——
+ * 作品栏进度区与大纲面板阶段条共用：步骤定义、完成度推导、相位文案。
  *
- * 完成度由产物文件推导（目录即进度）：0-4 看单文件存在；5/6 看目录批数；
- * 7 卷末盘点永远可循环，不显示终态。
+ * 完成度由产物文件推导（目录即进度）：第 0 步看世界观单文件；第 1 步看
+ * 总纲 + 至少一份卷纲；第 2 步看至少一份章纲批。
  */
 import type { PipelineStatus } from "./types";
 
 export const PIPELINE_STEPS = [
-  { n: 0, label: "赛道", hint: "定类型：写什么题材、给谁看" },
-  { n: 1, label: "设计原则", hint: "定基调：全书底层规则与风格" },
-  { n: 2, label: "冲突引擎", hint: "定矛盾：核心对抗与张力来源" },
-  { n: 3, label: "力量体系", hint: "定规则：等级、能力与成长" },
-  { n: 4, label: "总纲", hint: "全书故事框架" },
-  { n: 5, label: "卷纲", hint: "每卷的展开安排" },
-  { n: 6, label: "章纲", hint: "逐章细纲" },
-  { n: 7, label: "卷末盘点", hint: "一卷收尾：查漏与校准" },
+  { n: 0, label: "世界观", hint: "核心冲突、力量体系、金手指、大法则" },
+  { n: 1, label: "总纲卷纲", hint: "分卷地图、主角与 BOSS、每卷期待与爽点" },
+  { n: 2, label: "章纲", hint: "逐批剧情走向、埋钩子回收钩子" },
 ] as const;
 
 /** 步骤完成判定：目录即进度 */
 export function isStepDone(n: number, fileRels: Iterable<string>): boolean {
   const rels = new Set(fileRels);
   switch (n) {
-    case 0: return rels.has("outline/00-赛道.md");
-    case 1: return rels.has("outline/01-设计原则.md");
-    case 2: return rels.has("outline/02-冲突引擎.md");
-    case 3: return rels.has("outline/03-力量体系.md");
-    case 4: return rels.has("outline/04-总纲.md");
-    case 5: return [...rels].some((r) => r.startsWith("outline/05-卷纲/"));
-    case 6: return [...rels].some((r) => r.startsWith("outline/06-章纲/"));
+    case 0: return rels.has("outline/世界观.md");
+    case 1: return rels.has("outline/总纲.md") && [...rels].some((r) => /^outline\/卷纲-第\d+卷\.md$/.test(r));
+    case 2: return [...rels].some((r) => /^outline\/章纲-卷\d+批\d+\.md$/.test(r));
     default: return false;
   }
 }
@@ -41,11 +32,8 @@ export function activeStepIndex(pipeline: PipelineStatus, fileRels: string[]): n
 }
 
 export function phaseDisplayName(phase: string): string {
-  return phase === "storydesign" ? "设计阶段" : phase === "storystructure" ? "结构阶段" : phase;
+  if (phase === "worldview") return "定世界观";
+  if (phase === "outline") return "定总纲卷纲";
+  if (phase === "chapters") return "定章纲";
+  return phase;
 }
-
-export const REWORK_STAGE_LABEL: Record<string, string> = {
-  awaiting_approval: "修订提案·等你选",
-  design_revising: "修订中·设计部分",
-  impact_revising: "修订中·牵连前文",
-};

@@ -1,14 +1,12 @@
 export type WorkspacePanel = "chat" | "characters" | "objects" | "worldview" | "outline";
 
-// ── 双 agent 管线（REQ-20261011-142529 FR-010，DEC-006/020）──
+// ── 单主控三步管线（REQ-20261015-161200 FR-008，DEC-005）──
 
 /** 管线阶段条状态（executor pipeline_status 输出） */
 export type PipelineStatus = {
   kind: string; // pipeline | legacy
-  phase: string; // storydesign | storystructure | legacy
+  phase: string; // worldview | outline | chapters | legacy
   next_unit: string;
-  design_done: boolean;
-  rework: { ticket: string; title: string; stage: string } | null;
   awaiting: Record<string, string>;
   updated_at?: string;
   agent?: string | null;
@@ -351,8 +349,9 @@ export type ChatMessage = {
   // 思考流分段（DEC-005：思考段与工具行穿插的时间线；恢复/回看共用）
   thoughts?: ThoughtSegment[];
   contentFormat?: "text" | "markdown";
-  // 双管线泳道徽章（REQ-20261011-142529 DEC-020 第 7 条）：assistant 消息
-  // 创建时从 contentStore.pipelinePhase 盖章（storydesign/storystructure）
+  // 三步管线阶段徽章（REQ-20261015-161200）：assistant 消息
+  // 创建时从 contentStore.outlinePipeline.phase 盖章（worldview/outline/chapters；
+  // 历史消息可能是 storydesign/storystructure）
   agent?: string;
   // D2: 关联本次提交的 trace run（一次提交 = 一条 assistant message = 一个 trace）
   traceId?: string;

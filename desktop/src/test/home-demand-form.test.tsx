@@ -1,10 +1,10 @@
 /**
- * v9 表单直入验收测试（FR-002 / AC-107 本地证据，REQ-20260920-150149）。
+ * 表单直入验收测试（REQ-20261015-161200 FR-007，AC-001）。
  *
  * 覆盖：
  *   1. 大纲未产出时，ChatPanel 的 composer 区渲染需求表单（非聊天输入框）
- *   2. 三项必填缺一不可提交；填齐后提交
- *   3. streamRequest 请求体带 demand_md（模板化渲染）+ kickoff prompt
+ *   2. 两项必填缺一不可提交；填齐后提交
+ *   3. streamRequest 请求体带 demand_md（模板化渲染）+ 三步 kickoff prompt
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
@@ -45,7 +45,7 @@ streamRequest.mockImplementation(() => {
   });
 });
 
-// FR-001（REQ-20261009-224433）：表单记忆经 tauri plugin-store 落盘，内存 mock 之
+// FR-001（REQ-20260909-224433 沿革）：表单记忆经 tauri plugin-store 落盘，内存 mock 之
 const stores = new Map<string, Map<string, unknown>>();
 vi.mock("@tauri-apps/plugin-store", () => ({
   load: async (path: string) => {
@@ -92,7 +92,7 @@ vi.mock("@/lib/api", () => ({
     };
   }),
   updateThread: vi.fn().mockResolvedValue({
-    thread_id: "thread-1", workspace_id: "ws-1", session_name: "玄幻·热血升级流", workspace_path: "/test",
+    thread_id: "thread-1", workspace_id: "ws-1", session_name: "废物少年觉醒图录", workspace_path: "/test",
     created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
   }),
 }));
@@ -119,7 +119,7 @@ function renderHome() {
   return render(<MemoryRouter initialEntries={["/"]}><Home /></MemoryRouter>);
 }
 
-describe("v9 表单直入（FR-002）", () => {
+describe("表单直入（FR-007）", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     threadSeq = 1;
@@ -128,12 +128,12 @@ describe("v9 表单直入（FR-002）", () => {
     await resetStores();
   });
 
-  it("大纲未产出时渲染需求表单，提交后请求体带 demand_md 与 kickoff", async () => {
+  it("大纲未产出时渲染需求表单，提交后请求体带 demand_md 与三步 kickoff", async () => {
     const user = userEvent.setup();
     renderHome();
 
-    // 表单出现（大纲未产出）——FR-002（REQ-20261009-224433）：居中态主区
-    const genreInput = await screen.findByPlaceholderText("例：玄幻 · 热血升级流", {}, { timeout: 10000 });
+    // 表单出现（大纲未产出）——居中态主区
+    const premiseInput = await screen.findByPlaceholderText(/主角是谁 \+ 核心困境/, {}, { timeout: 10000 });
     expect(document.querySelector(".demand-stage")).toBeTruthy();
     expect(document.querySelector(".demand-stage-welcome")?.textContent).toContain("我们开始新的故事吧");
 
@@ -141,10 +141,9 @@ describe("v9 表单直入（FR-002）", () => {
     const submitBtn = screen.getByRole("button", { name: "生成大纲" });
     expect(submitBtn).toBeDisabled();
 
-    // 填三项必填
-    await user.type(genreInput, "玄幻·热血升级流");
-    await user.type(screen.getByPlaceholderText(/主角是谁 \+ 核心困境/), "废物少年觉醒万器图录复刻天下兵器");
-    await user.type(screen.getByPlaceholderText(/身份起点 \/ 核心欲望/), "铁匠之子，被家族除名，靠金手指打回去");
+    // 填两项必填
+    await user.type(premiseInput, "废物少年觉醒万器图录复刻天下兵器");
+    await user.type(screen.getByPlaceholderText(/能力与边界/), "万器图录：能复刻见过的兵器，复刻要耗家底");
     await waitFor(() => expect(submitBtn).toBeEnabled());
 
     await user.click(submitBtn);
@@ -156,17 +155,17 @@ describe("v9 表单直入（FR-002）", () => {
     const call = streamRequest.mock.calls[0];
     const body = call[1].body as Record<string, string>;
     expect(body.prompt).toContain("demand.md");
-    // 双管线 kickoff（REQ-20261011-142529 FR-003）：第 0 步单元拍板起步，严禁自动连跑
-    expect(body.prompt).toContain("赛道确认");
+    // 三步 kickoff（REQ-20261015-161200 FR-003）：第①步定世界观起步，严禁自动连跑
+    expect(body.prompt).toContain("定世界观");
     expect(body.prompt).toContain("严禁自动连跑");
-    expect(body.demand_md).toContain("玄幻·热血升级流");
+    expect(body.demand_md).toContain("废物少年觉醒万器图录复刻天下兵器");
     expect(body.demand_md).toContain("status: confirmed");
-    expect(body.demand_md).toContain("storydesign");
     expect(body.demand_md).toContain("平台：番茄");
+    expect(body.demand_md).toContain("金手指：万器图录");
   });
 });
 
-describe("表单记忆（FR-001，REQ-20261009-224433）", () => {
+describe("表单记忆（FR-001，REQ-20260909-224433 沿革）", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     threadSeq = 1;
@@ -179,10 +178,9 @@ describe("表单记忆（FR-001，REQ-20261009-224433）", () => {
   });
 
   async function fillAndSubmit(user: ReturnType<typeof userEvent.setup>) {
-    const genreInput = await screen.findByPlaceholderText("例：玄幻 · 热血升级流", {}, { timeout: 10000 });
-    await user.type(genreInput, "玄幻·热血升级流");
-    await user.type(screen.getByPlaceholderText(/主角是谁 \+ 核心困境/), "废物少年觉醒万器图录");
-    await user.type(screen.getByPlaceholderText(/身份起点 \/ 核心欲望/), "铁匠之子");
+    const premiseInput = await screen.findByPlaceholderText(/主角是谁 \+ 核心困境/, {}, { timeout: 10000 });
+    await user.type(premiseInput, "废物少年觉醒万器图录");
+    await user.type(screen.getByPlaceholderText(/能力与边界/), "复刻兵器耗家底");
     await user.click(screen.getByRole("button", { name: "生成大纲" }));
     // final 事件后表单退场、composer 回归
     await waitFor(() => expect(screen.getByRole("button", { name: "发送" })).toBeTruthy(), { timeout: 10000 });
@@ -193,22 +191,19 @@ describe("表单记忆（FR-001，REQ-20261009-224433）", () => {
     renderHome();
     await fillAndSubmit(user);
 
-    // 新建会话 → 表单重现且预填上次提交的题材
+    // 新建会话 → 表单重现且预填上次提交的点子与金手指
     await user.click(screen.getByRole("button", { name: "新建会话" }));
-    const genreInput = await screen.findByDisplayValue("玄幻·热血升级流", {}, { timeout: 10000 });
-    // premise / protagonist 同样预填
-    expect(screen.getByDisplayValue("废物少年觉醒万器图录")).toBeTruthy();
-    expect(screen.getByDisplayValue("铁匠之子")).toBeTruthy();
+    const premiseInput = await screen.findByDisplayValue("废物少年觉醒万器图录", {}, { timeout: 10000 });
+    expect(screen.getByDisplayValue("复刻兵器耗家底")).toBeTruthy();
 
     // 改字段但不提交 → 再新建 → 记忆仍是上次提交的值（AC-001：未提交不更新记忆）
-    await user.type(genreInput, "（临时改动）");
+    await user.type(premiseInput, "（临时改动）");
     await user.click(screen.getByRole("button", { name: "新建会话" }));
-    await screen.findByDisplayValue("玄幻·热血升级流", {}, { timeout: 10000 });
-    expect(screen.queryByDisplayValue("玄幻·热血升级流（临时改动）")).toBeNull();
+    await screen.findByDisplayValue("废物少年觉醒万器图录", {}, { timeout: 10000 });
+    expect(screen.queryByDisplayValue("废物少年觉醒万器图录（临时改动）")).toBeNull();
 
     // 一键清空：全部字段回空白
     await user.click(screen.getByRole("button", { name: "清空" }));
-    expect(screen.queryByDisplayValue("玄幻·热血升级流")).toBeNull();
     expect(screen.queryByDisplayValue("废物少年觉醒万器图录")).toBeNull();
   });
 });

@@ -1,15 +1,11 @@
-"""泳道写入白名单贯通测试（REQ-20261011-142529 修复：path_guard 接入清单权限）。
-
-根因：path_guard build 钩子未消费清单 write_permissions，恒回退旧五件套
-正则（/character/*.md、/storyline.md、/worldview.md、/object/*.md、/review/*.md），
-双泳道设计端写 outline/00-赛道.md 被硬拦；receipt_gate / file_state_tracker
-的路径规范化同样被旧默认表卡死，拍板闸门对 outline 产物失效。
+"""三步子代理写入白名单贯通测试（REQ-20261015-161200 FR-002/006）。
 
 覆盖：
-  - normalize：清单 glob 白名单（设计端 00-03/core、结构端 04-06/**、
-    上游只读互斥、validate=False 纯规范化、穿越恒拒、旧默认表回退）
+  - normalize：清单 glob 白名单（worldview/outline/chapters 三子代理、
+    跨步骤只读互斥、validate=False 纯规范化、穿越恒拒、旧默认表回退）
   - build 钩子：装配出的 PathGuard 白名单 = 清单 write_permissions
-  - receipt_gate：拍板前 outline 产物受保护（拦截）、拍板后放行
+  - receipt_gate：拍板前 outline 产物受保护（拦截）、拍板后放行；
+    主控与子代理经共享确认位联动（TD-001）
 """
 
 from __future__ import annotations
@@ -28,7 +24,7 @@ _HARNESS_DIR = Path(__file__).resolve().parents[2] / "evolution" / "harnesses" /
 
 
 def _load_real_harness() -> None:
-    """无条件清前缀后从真实 harness 目录重载（防存量串扰，同 object_contract 口径）。"""
+    """无条件清前缀后从真实 harness 目录重载（防存量串扰）。"""
     for k in [k for k in sys.modules if k == "harness_current" or k.startswith("harness_current.")]:
         sys.modules.pop(k, None)
     load_package(_HARNESS_DIR)
@@ -36,28 +32,24 @@ def _load_real_harness() -> None:
 
 _load_real_harness()
 from harness_current.middleware.path_guard import (  # noqa: E402
-    FilesystemPathGuardMiddleware,
     normalize_workspace_write_path,
 )
-from harness_current.middleware.receipt_gate import ReceiptGateMiddleware  # noqa: E402
-
-# 清单真实白名单（双泳道，architecture.json 为准）
-_DESIGN_PERMS = (
-    "/outline/00-赛道.md",
-    "/outline/01-设计原则.md",
-    "/outline/02-冲突引擎.md",
-    "/outline/03-力量体系.md",
-    "/character/core/*.md",
-    "/worldview/core.md",
+from harness_current.middleware.receipt_gate import (  # noqa: E402
+    ReceiptGateMiddleware,
+    SharedConfirmState,
 )
-_STRUCTURE_PERMS = (
-    "/outline/04-总纲.md",
-    "/outline/05-卷纲/*.md",
-    "/outline/06-章纲/**/*.md",
+
+# 清单真实白名单（三步子代理，architecture.json 为准）
+_WORLDVIEW_PERMS = ("/outline/世界观.md",)
+_OUTLINE_PERMS = (
+    "/outline/总纲.md",
+    "/outline/卷纲-*.md",
+    "/character/core/*.md",
+)
+_CHAPTERS_PERMS = (
+    "/outline/章纲-*.md",
     "/outline/期待台账.md",
     "/character/support/*.md",
-    "/worldview/setting.md",
-    "/object/*.md",
 )
 
 
@@ -69,55 +61,66 @@ class TestNormalizeWithManifestGlobs(unittest.TestCase):
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
 
-    def test_design_lane_allows_outline_and_core(self):
+    def test_outline_lane_allows_master_volume_core(self):
         for path in (
-            "/outline/00-赛道.md",
-            "/outline/03-力量体系.md",
+            "/outline/总纲.md",
+            "/outline/卷纲-第1卷.md",
+            "/outline/卷纲-第12卷.md",
             "/character/core/主角.md",
-            "/worldview/core.md",
         ):
             self.assertEqual(
-                normalize_workspace_write_path(path, self.root, allowed_globs=_DESIGN_PERMS),
+                normalize_workspace_write_path(path, self.root, allowed_globs=_OUTLINE_PERMS),
                 path,
             )
 
-    def test_design_lane_denies_legacy_and_structure_paths(self):
-        for path in ("/storyline.md", "/review/x.md", "/outline/04-总纲.md", "/object/剑.md"):
-            with self.assertRaises(ValueError, msg=path):
-                normalize_workspace_write_path(path, self.root, allowed_globs=_DESIGN_PERMS)
-
-    def test_structure_lane_globstar_crosses_segments(self):
-        # ** 跨段：06-章纲/卷一/第001章.md；* 不跨段：05-卷纲 直接子文件
+    def test_outline_lane_denies_other_steps(self):
         for path in (
-            "/outline/06-章纲/卷一/第001章.md",
-            "/outline/06-章纲/卷一/子目录/第002章.md",
-            "/outline/05-卷纲/卷一.md",
+            "/outline/世界观.md",
+            "/outline/章纲-卷1批1.md",
             "/outline/期待台账.md",
-            "/character/support/师父.md",
-            "/object/青云剑.md",
-        ):
-            self.assertEqual(
-                normalize_workspace_write_path(path, self.root, allowed_globs=_STRUCTURE_PERMS),
-                path,
-            )
-
-    def test_structure_lane_upstream_readonly(self):
-        # 上游只读（FR-002）：结构端写 00-03 / character/core / worldview core 一律拒
-        for path in (
-            "/outline/00-赛道.md",
-            "/outline/01-设计原则.md",
-            "/character/core/主角.md",
-            "/worldview/core.md",
+            "/character/support/小翠.md",
             "/storyline.md",
         ):
             with self.assertRaises(ValueError, msg=path):
-                normalize_workspace_write_path(path, self.root, allowed_globs=_STRUCTURE_PERMS)
+                normalize_workspace_write_path(path, self.root, allowed_globs=_OUTLINE_PERMS)
+
+    def test_chapters_lane_allows_batch_ledger_support(self):
+        for path in (
+            "/outline/章纲-卷1批1.md",
+            "/outline/章纲-卷10批23.md",
+            "/outline/期待台账.md",
+            "/character/support/王执事.md",
+        ):
+            self.assertEqual(
+                normalize_workspace_write_path(path, self.root, allowed_globs=_CHAPTERS_PERMS),
+                path,
+            )
+
+    def test_chapters_lane_upstream_readonly(self):
+        # 上游只读（FR-006）：章纲子代理写世界观/总纲/卷纲/core 一律拒
+        for path in (
+            "/outline/世界观.md",
+            "/outline/总纲.md",
+            "/outline/卷纲-第2卷.md",
+            "/character/core/主角.md",
+        ):
+            with self.assertRaises(ValueError, msg=path):
+                normalize_workspace_write_path(path, self.root, allowed_globs=_CHAPTERS_PERMS)
+
+    def test_worldview_lane_single_file(self):
+        self.assertEqual(
+            normalize_workspace_write_path("/outline/世界观.md", self.root, allowed_globs=_WORLDVIEW_PERMS),
+            "/outline/世界观.md",
+        )
+        for path in ("/outline/总纲.md", "/outline/章纲-卷1批1.md"):
+            with self.assertRaises(ValueError, msg=path):
+                normalize_workspace_write_path(path, self.root, allowed_globs=_WORLDVIEW_PERMS)
 
     def test_validate_false_normalizes_without_whitelist(self):
         # 纯规范化：白名单外路径也返回虚拟路径（保护面判定归调用方）
         self.assertEqual(
-            normalize_workspace_write_path("outline/00-赛道.md", self.root, validate=False),
-            "/outline/00-赛道.md",
+            normalize_workspace_write_path("outline/世界观.md", self.root, validate=False),
+            "/outline/世界观.md",
         )
         self.assertEqual(
             normalize_workspace_write_path("/任意/未列入.md", self.root, validate=False),
@@ -135,7 +138,7 @@ class TestNormalizeWithManifestGlobs(unittest.TestCase):
                 path,
             )
         with self.assertRaises(ValueError):
-            normalize_workspace_write_path("/outline/00-赛道.md", self.root)
+            normalize_workspace_write_path("/outline/世界观.md", self.root)
 
 
 class _FakeToolRequest:
@@ -157,10 +160,11 @@ class TestBuildHookConsumesManifest(unittest.TestCase):
         from contracts.architecture_manifest import AgentSpec
 
         agent = AgentSpec(
-            name="storydesign",
-            role="main",
+            name="outline",
+            role="sub",
+            delegated_by="writer",
             description="测试",
-            prompt="prompts/storydesign_system.md",
+            prompt="prompts/outline_system.md",
             write_permissions=list(write_permissions),
         )
         abc = SimpleNamespace(
@@ -172,14 +176,13 @@ class TestBuildHookConsumesManifest(unittest.TestCase):
         return pg.build(abc)
 
     def test_build_passes_manifest_globs(self):
-        guard = self._build(_DESIGN_PERMS)
-        self.assertEqual(guard.allowed_globs, _DESIGN_PERMS)
+        guard = self._build(_OUTLINE_PERMS)
+        self.assertEqual(guard.allowed_globs, _OUTLINE_PERMS)
         # 白名单内放行（回写规范化路径而非拦截）、白名单外拒绝
-        # （含旧表路径——清单是唯一真相源）
-        req_ok = _FakeToolRequest("write_file", "/outline/00-赛道.md")
+        req_ok = _FakeToolRequest("write_file", "/outline/总纲.md")
         self.assertNotIsInstance(guard._guard_request(req_ok), ToolMessage)
-        self.assertEqual(req_ok.overridden["args"]["file_path"], "/outline/00-赛道.md")
-        req_bad = _FakeToolRequest("write_file", "/storyline.md")
+        self.assertEqual(req_ok.overridden["args"]["file_path"], "/outline/总纲.md")
+        req_bad = _FakeToolRequest("write_file", "/outline/世界观.md")
         self.assertIsInstance(guard._guard_request(req_bad), ToolMessage)
 
     def test_build_falls_back_without_permissions(self):
@@ -190,8 +193,8 @@ class TestBuildHookConsumesManifest(unittest.TestCase):
         self.assertNotIsInstance(guard._guard_request(req), ToolMessage)
 
 
-class TestReceiptGateProtectsOutline(unittest.TestCase):
-    """拍板闸门：outline 产物在拍板前被拦（规范化不再被旧默认表卡死）。"""
+class TestReceiptGateSharedConfirm(unittest.TestCase):
+    """拍板闸门：共享确认位（主控记账、子代理只读，TD-001）。"""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -201,23 +204,62 @@ class TestReceiptGateProtectsOutline(unittest.TestCase):
     def _write_request(self, path):
         return SimpleNamespace(tool_call={
             "name": "write_file", "id": "t1",
-            "args": {"file_path": path, "content": "# 赛道"},
+            "args": {"file_path": path, "content": "# 世界观"},
         })
 
-    def test_outline_blocked_before_confirmation(self):
-        gate = ReceiptGateMiddleware(self.root, protected_globs=list(_DESIGN_PERMS))
-        blocked = gate._maybe_block(self._write_request("/outline/00-赛道.md"))
-        self.assertIsNotNone(blocked, "拍板前写 outline/00-赛道.md 应被闸门拦截")
+    def _confirm_request(self, answer="同意"):
+        return SimpleNamespace(tool_call={
+            "name": "confirm_with_user", "id": "t2",
+            "args": {"question": "草稿全文", "options": []},
+        })
 
-    def test_outline_allowed_after_confirmation(self):
-        gate = ReceiptGateMiddleware(self.root, protected_globs=list(_DESIGN_PERMS))
-        gate._confirmed = True
+    def test_subagent_blocked_before_owner_confirm(self):
+        shared = SharedConfirmState()
+        owner = ReceiptGateMiddleware(self.root, protected_globs=[], shared=shared, owner=True)
+        follower = ReceiptGateMiddleware(self.root, protected_globs=list(_WORLDVIEW_PERMS), shared=shared)
+        blocked = follower._maybe_block(self._write_request("/outline/世界观.md"))
+        self.assertIsNotNone(blocked, "主控拍板前，子代理写世界观应被拦截")
+
+    def test_owner_confirm_releases_follower_writes(self):
+        shared = SharedConfirmState()
+        owner = ReceiptGateMiddleware(self.root, protected_globs=[], shared=shared, owner=True)
+        follower = ReceiptGateMiddleware(self.root, protected_globs=list(_WORLDVIEW_PERMS), shared=shared)
+
+        def _handler(request):
+            return "同意，按此落盘"
+
+        owner.wrap_tool_call(self._confirm_request(), _handler)
+        self.assertTrue(shared.confirmed, "owner 记账后共享确认位应置位")
         self.assertIsNone(
-            gate._maybe_block(self._write_request("/outline/00-赛道.md")),
-            "拍板后写 outline/00-赛道.md 应放行",
+            follower._maybe_block(self._write_request("/outline/世界观.md")),
+            "主控拍板后，子代理写世界观应放行",
         )
 
-    def test_legacy_paths_still_protected(self):
+    def test_follower_does_not_record_confirm(self):
+        shared = SharedConfirmState()
+        follower = ReceiptGateMiddleware(self.root, protected_globs=list(_WORLDVIEW_PERMS), shared=shared)
+
+        def _handler(request):
+            return "同意"
+
+        follower.wrap_tool_call(self._confirm_request(), _handler)
+        self.assertFalse(shared.confirmed, "follower 不持有 confirm 工具，记账无效")
+
+    def test_owner_before_agent_resets_shared_state(self):
+        shared = SharedConfirmState()
+        owner = ReceiptGateMiddleware(self.root, protected_globs=[], shared=shared, owner=True)
+        shared.confirmed = True
+        owner.before_agent(None, None)
+        self.assertFalse(shared.confirmed, "新一轮运行开始时 owner 重置共享确认位")
+
+    def test_follower_before_agent_keeps_shared_state(self):
+        shared = SharedConfirmState()
+        follower = ReceiptGateMiddleware(self.root, protected_globs=list(_WORLDVIEW_PERMS), shared=shared)
+        shared.confirmed = True
+        follower.before_agent(None, None)
+        self.assertTrue(shared.confirmed, "follower 的 before_agent 不得重置共享确认位（resume 后落盘依赖）")
+
+    def test_legacy_paths_still_protected_by_default(self):
         gate = ReceiptGateMiddleware(self.root)  # 缺省保护面 = 旧五件套
         self.assertIsNotNone(gate._maybe_block(self._write_request("/storyline.md")))
 

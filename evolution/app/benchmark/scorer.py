@@ -34,8 +34,8 @@ from app.trace_payloads import hydrate_event
 
 logger = logging.getLogger("evolution.benchmark.scorer")
 
-# 三组产物分组规则（REQ-20261011-142529 FR-013：outline 产物并入骨架组；
-# 展示名保持旧口径——评分/报告/前端共用键，语义 = 骨架/人物/世界观三组）
+# 产物分组规则（REQ-20261015-161200：世界观并入 outline/，必需 = 骨架+人物；
+# 展示名保持旧口径——评分/报告/前端共用键；worldview 组仅历史 trace 回放）
 _GROUP_STORYLINE = ("主线 storyline", "storyline")
 _GROUP_CHARACTER = ("人物 character", "character")
 _GROUP_WORLDVIEW = ("世界观 worldview", "worldview")
@@ -52,11 +52,12 @@ _DIM_ATTEMPTS = 2
 
 
 def _classify_logical_key(key: str) -> tuple[str, str] | None:
-    """logical_key → (展示名, 组名)；非三组产物文件返回 None。
+    """logical_key → (展示名, 组名)；非产物文件返回 None。
 
-    双管线（REQ-20261011-142529）：outline/ 全部产物（00-06+台账）并入骨架组，
-    character/ 含 core/support，worldview/ 含 core/setting——组内多文件由
-    load_outline_deliveries 按路径排序拼接。旧五件套路径保留（历史 trace 回放）。
+    三步制（REQ-20261015-161200）：outline/ 全部产物（世界观/总纲/卷纲/
+    章纲批/期待台账）并入骨架组，character/ 含 core/support——组内多文件
+    由 load_outline_deliveries 按路径排序拼接。worldview/ 组仅历史 trace
+    回放（七步制及更早），交付完整不再要求。
     """
     k = key.strip().lstrip("/").lower()
     if k == "storyline.md" or k.startswith("storyline/") or k.startswith("outline/"):
@@ -133,7 +134,7 @@ def load_outline_delivery_index(trace_id: str) -> list[dict[str, Any]]:
     修订选择与评分输入完全同源（_select_latest_outline_revisions，DEC-002）；
     可用性连接 artifact_revisions/payload_objects——正文已删除或过期（90 天，
     DEC-009）即 available=False，前端按「正文已过期」降级展示。
-    三组固定顺序返回（主线/人物/世界观），缺失组 files=[] 供前端标注「缺失」。
+    分组固定顺序返回（主线/人物/世界观），缺失组 files=[] 供前端标注「缺失」。
     """
     from datetime import UTC, datetime
 

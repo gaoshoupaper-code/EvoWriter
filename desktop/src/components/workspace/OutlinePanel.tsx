@@ -6,9 +6,9 @@ import type { OutlineFileEntry, PipelineStatus } from "../../lib/types";
 import { PipelineStageBar } from "./PipelineStageBar";
 
 /**
- * 七步大纲面板（REQ-20261011-142529 FR-010，DEC-014 A 先行）——
+ * 三步大纲面板（REQ-20261015-161200 FR-008）——
  * 管线阶段条 + outline 产物文件切换 + markdown 渲染（含台账/章纲表格）。
- * 管理视图（台账看板/批进度）为下一迭代（DEC-014 B 后补）。
+ * 旧版工作区（五件套/旧七步）：只读查看，无修订入口。
  */
 type OutlinePanelProps = {
   kind: string;
@@ -37,8 +37,8 @@ export function OutlinePanel({ kind, pipeline, files, activeRel, onSelect }: Out
       <div className="content-panel-body">
         <PipelineStageBar pipeline={pipeline} fileRels={files.map((f) => f.rel)} />
 
-        {kind === "legacy" ? (
-          <p className="outline-state">旧版五件套工作区：没有七步法文件。</p>
+        {kind === "legacy" && files.length === 0 ? (
+          <p className="outline-state">旧版工作区：内容走旧面板，此处只读。</p>
         ) : files.length === 0 ? (
           <p className="outline-state">还没开始：从对话发起第一步后，大纲会出现在这里。</p>
         ) : (

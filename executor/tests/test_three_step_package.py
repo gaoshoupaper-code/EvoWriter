@@ -1,18 +1,19 @@
-"""双泳道 harness 包验收测试（REQ-20261011-142529 FR-013/AC-010/AC-011）。
+"""三步制 harness 包验收测试（REQ-20261015-161200 FR-002/009，AC-008）。
 
-跑法（在 executor 目录）：python -m pytest tests/test_dual_lane_package.py -v
+跑法（在 executor 目录）：python -m pytest tests/test_three_step_package.py -v
 
-覆盖（取代 v7 单故事专家契约）：
-  - 包内容形态：storydesign/storystructure 双主泳道资产齐备；
-    旧单泳道 storybuilding 资产（prompts/skills/中间件）已清理（DEC-011）
-  - registry：本地镜像 sanity（production ≤ 已登记最大版本；v9 断言为
-    存量失败——HEAD 的 registry 镜像只登记 6-8，账本随 promote 同步）
-  - assemble：缺省装配 = 首个 main（storydesign）；按名装配 storystructure；
+覆盖（取代双泳道契约测试）：
+  - 包内容形态：writer 单主控 + worldview/outline/chapters 三子代理资产齐备；
+    双泳道资产（storydesign/storystructure/checkup/rework 工单/object 护栏）已清理
+  - registry：本地镜像 sanity（production ≤ 已登记最大版本）
+  - assemble：缺省装配 = 唯一 main（writer）；按名装配 writer；
     checkpointer 透传到顶层 create_deep_agent（会话持久化依赖）
+  - 主控 Prompt 含 5 条输出风格铁律与 confirm_with_user 唯一持有声明
 """
 from __future__ import annotations
 
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -54,39 +55,28 @@ class _StubRecorder:
         pass
 
 
-# 旧单泳道资产（DEC-011 清理）：存在即失败
+# 双泳道/七步制资产（本次清理）：存在即失败
 _FORBIDDEN_FILES = [
-    "prompts/storybuilding_system.md",
-    "prompts/storybuilding_review.md",
-    "skills/storybuilding-initial/SKILL.md",
-    "skills/storybuilding-specs/SKILL.md",
-    "skills/storybuilding-expand-storyline/SKILL.md",
-    "skills/storybuilding-expand-character/SKILL.md",
-    "middleware/skill_activation_guard.py",
-    "middleware/review_gate.py",
-    "middleware/quota_convergence.py",
-    "middleware/storyline_contract_guard.py",
-    "middleware/hooks_contract_guard.py",
-    "middleware/pacing_report.py",
-    "middleware/storyline_single_line_limit.py",
-    "middleware/storyline_integrity.py",
-    "tools/increment_batch.py",
-]
-# 双泳道资产：缺失即失败
-_REQUIRED_FILES = [
-    "architecture.json",
     "prompts/storydesign_system.md",
     "prompts/storystructure_system.md",
-    "prompts/demand_template.md",
-    "middleware/receipt_gate.py",
-    "middleware/outline_contract_guard.py",
     "middleware/object_contract_guard.py",
     "middleware/checkup_config.json",
-    "tools/confirm_with_user.py",
     "tools/submit_rework_ticket.py",
     "checkup.py",
 ]
-# DEC-003 冻结保留的记忆要素：删除即失败
+# 三步制资产：缺失即失败
+_REQUIRED_FILES = [
+    "architecture.json",
+    "prompts/writer_system.md",
+    "prompts/worldview_system.md",
+    "prompts/outline_system.md",
+    "prompts/chapters_system.md",
+    "prompts/demand_template.md",
+    "middleware/receipt_gate.py",
+    "middleware/outline_contract_guard.py",
+    "tools/confirm_with_user.py",
+]
+# 记忆要素冻结保留：删除即失败
 _KEPT_MEMORY_FILES = [
     "tools/narrative_schema.py",
     "tools/query_builder.py",
@@ -96,50 +86,75 @@ _KEPT_MEMORY_FILES = [
     "prompts/memory_extraction_guide.md",
 ]
 
+# 输出风格铁律的特征片段（全部 Prompt 必含；REQ FR-004）
+_STYLE_RULE_MARKERS = (
+    "禁破折号",
+    "禁解释性引导语",
+    "一句话",
+    "表格",
+    "不写设计理由",
+)
 
-class TestDualLanePackageContent(unittest.TestCase):
-    def test_old_single_lane_assets_deleted(self):
+
+class TestThreeStepPackageContent(unittest.TestCase):
+    def test_dual_lane_assets_deleted(self):
         for rel in _FORBIDDEN_FILES:
             self.assertFalse(
                 (_HARNESS_DIR / rel).exists(),
-                f"旧单泳道资产应已清理（DEC-011）: {rel}",
+                f"双泳道资产应已清理: {rel}",
             )
 
-    def test_dual_lane_assets_kept(self):
+    def test_three_step_assets_kept(self):
         for rel in _REQUIRED_FILES:
-            self.assertTrue((_HARNESS_DIR / rel).exists(), f"双泳道资产应存在: {rel}")
+            self.assertTrue((_HARNESS_DIR / rel).exists(), f"三步制资产应存在: {rel}")
 
     def test_memory_elements_kept_frozen(self):
         for rel in _KEPT_MEMORY_FILES:
-            self.assertTrue((_HARNESS_DIR / rel).exists(), f"记忆要素按 DEC-003 冻结保留: {rel}")
+            self.assertTrue((_HARNESS_DIR / rel).exists(), f"记忆要素冻结保留: {rel}")
 
-    def test_manifest_declares_dual_mains(self):
+    def test_manifest_declares_single_main_three_subs(self):
         from contracts.architecture_manifest import load_and_validate
 
         manifest, result = load_and_validate(_HARNESS_DIR)
         self.assertTrue(result.ok, result.errors)
         mains = [a.name for a in manifest.main_agents]
-        self.assertEqual(mains, ["storydesign", "storystructure"])
-        design = manifest.agent("storydesign")
-        structure = manifest.agent("storystructure")
-        # 上游只读（FR-002）：structure 白名单不含 00-03 / character/core / worldview core
-        for forbidden in ("/outline/00-赛道.md", "/character/core/*.md", "/worldview/core.md"):
-            self.assertNotIn(forbidden, structure.write_permissions)
-            self.assertIn(forbidden, design.write_permissions)
-        # 回炉工具只挂 structure（FR-004）
-        self.assertIn("submit_rework_ticket", structure.tools)
-        self.assertNotIn("submit_rework_ticket", design.tools)
+        self.assertEqual(mains, ["writer"])
+        subs = sorted(a.name for a in manifest.sub_agents)
+        self.assertEqual(subs, ["chapters", "outline", "worldview"])
+        main = manifest.agent("writer")
+        # confirm 工具只挂主控（TD-001：子代理无自定义工具）
+        self.assertIn("confirm_with_user", main.tools)
+        self.assertEqual(main.delegates, ["worldview", "outline", "chapters"])
+        # 主控不写文件；三子代理写权限按步骤划分
+        self.assertEqual(main.write_permissions, [])
+        self.assertEqual(
+            manifest.agent("worldview").write_permissions,
+            ["/outline/世界观.md"],
+        )
+        self.assertIn("/outline/总纲.md", manifest.agent("outline").write_permissions)
+        self.assertIn("/outline/期待台账.md", manifest.agent("chapters").write_permissions)
+        for name in ("worldview", "outline", "chapters"):
+            self.assertEqual(manifest.agent(name).tools, [], f"{name} 不得挂自定义工具")
+
+    def test_all_prompts_carry_style_rules(self):
+        for rel in (
+            "prompts/writer_system.md",
+            "prompts/worldview_system.md",
+            "prompts/outline_system.md",
+            "prompts/chapters_system.md",
+        ):
+            text = (_HARNESS_DIR / rel).read_text(encoding="utf-8")
+            for marker in _STYLE_RULE_MARKERS:
+                self.assertIn(marker, text, f"{rel} 缺风格铁律特征「{marker}」")
 
     def test_registry_mirror_sanity(self):
-        """本地 registry 镜像 sanity：production 指向已登记版本（账本随 promote 同步，
-        FR-013；旧 v9 断言为存量失败，已随本测试重写移除）。"""
         registry = json.loads((_HARNESS_DIR / "registry.json").read_text(encoding="utf-8"))
         versions = [v["version"] for v in registry["versions"]]
         self.assertTrue(versions, "registry 至少登记一个版本")
         self.assertLessEqual(registry["production"], max(versions))
 
 
-class TestDualLaneAssemble(unittest.TestCase):
+class TestThreeStepAssemble(unittest.TestCase):
     def _load_pkg(self):
         from app.platform.agent.loader import load_package
 
@@ -153,14 +168,12 @@ class TestDualLaneAssemble(unittest.TestCase):
             backend=object(),
             checkpointer=checkpointer,
             workspace_path=Path(tmpdir),
-            trace_id="trace-dual-lane-test",
+            trace_id="trace-three-step-test",
             trace_recorder=recorder,
             trace_middleware_cls=None,
         )
 
-    def test_assemble_default_and_named_lanes(self):
-        import tempfile
-
+    def test_assemble_default_and_named_main(self):
         pkg = self._load_pkg()
         recorder = _StubRecorder()
         with tempfile.TemporaryDirectory() as tmp:
@@ -171,20 +184,19 @@ class TestDualLaneAssemble(unittest.TestCase):
             ctx = self._make_ctx(tmp, recorder)
             default = pkg.assemble(ctx)
             self.assertTrue(callable(getattr(default, "ainvoke", None)), "缺省装配应返回可执行图")
-            named = pkg.assemble(ctx, agent_name="storystructure")
-            self.assertTrue(callable(getattr(named, "ainvoke", None)), "按名装配 storystructure 应返回可执行图")
+            named = pkg.assemble(ctx, agent_name="writer")
+            self.assertTrue(callable(getattr(named, "ainvoke", None)), "按名装配 writer 应返回可执行图")
             with self.assertRaises(Exception):
-                pkg.assemble(ctx, agent_name="storybuilding")  # 已退役泳道名 → ManifestError
+                pkg.assemble(ctx, agent_name="storydesign")  # 已退役主控名 → ManifestError
 
-        # 无技能泳道记中间件栈（trace V2 口径）
-        self.assertIn("storydesign-subagent", recorder.stacks)
-        self.assertIn("storystructure-subagent", recorder.stacks)
-        self.assertEqual(recorder.catalogs, [], "双泳道无技能目录（方法论在主文档）")
+        # 主控与三子代理都记中间件栈（trace V2 口径）
+        self.assertIn("writer-subagent", recorder.stacks)
+        for sub in ("worldview-subagent", "outline-subagent", "chapters-subagent"):
+            self.assertIn(sub, recorder.stacks)
+        self.assertEqual(recorder.catalogs, [], "三步制无技能目录（方法论在主文档）")
 
     def test_interpreter_passes_checkpointer_to_top_level(self):
         """顶层装配必须透传 checkpointer（会话/断点持久化依赖，FR-003）。"""
-        import tempfile
-
         from langgraph.checkpoint.memory import InMemorySaver
 
         pkg = self._load_pkg()

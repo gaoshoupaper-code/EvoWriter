@@ -68,25 +68,27 @@ def _invoke(tool, ctx, **kw):
 def test_delete_file_removes_middleware_and_cleans_manifest(pkg_copy):
     """删 domain middleware：文件删除 + 清单列表引用清理（AC-005 前置）。"""
     tools, ctx = _make_writers(pkg_copy)
-    result = _invoke(tools["delete_file"], ctx, file_path="middleware/object_contract_guard.py")
+    result = _invoke(tools["delete_file"], ctx, file_path="middleware/outline_contract_guard.py")
     assert "已删除" in result, result
-    assert not (pkg_copy / "middleware" / "object_contract_guard.py").exists()
+    assert not (pkg_copy / "middleware" / "outline_contract_guard.py").exists()
     manifest = json.loads((pkg_copy / "architecture.json").read_text(encoding="utf-8"))
-    # 双泳道（DEC-011）：object_contract_guard 挂在 storystructure
-    structure = next(a for a in manifest["agents"] if a["name"] == "storystructure")
-    assert "object_contract_guard" not in structure["middleware"]
+    # 三步制（DEC-003）：outline_contract_guard 挂在三个子代理
+    for name in ("worldview", "outline", "chapters"):
+        sub = next(a for a in manifest["agents"] if a["name"] == name)
+        assert "outline_contract_guard" not in sub["middleware"]
     assert ctx.code_mutations_since_validate == 1
 
 
 def test_delete_prompt_removes_agent_and_edges(pkg_copy):
-    """删 agent 的 prompt：整条 agent 移除（双泳道无委托边，等价为清 agents 条目）。"""
+    """删子代理 prompt：整条 agent 移除 + 主控 delegates 边清理。"""
     tools, ctx = _make_writers(pkg_copy)
-    result = _invoke(tools["delete_file"], ctx, file_path="prompts/storystructure_system.md")
+    result = _invoke(tools["delete_file"], ctx, file_path="prompts/worldview_system.md")
     assert "已删除" in result, result
     manifest = json.loads((pkg_copy / "architecture.json").read_text(encoding="utf-8"))
     names = [a["name"] for a in manifest["agents"]]
-    assert "storystructure" not in names
-    assert "storydesign" in names
+    assert "worldview" not in names
+    writer = next(a for a in manifest["agents"] if a["name"] == "writer")
+    assert "worldview" not in writer["delegates"]
 
 
 def test_delete_file_refuses_manifest_and_contracts(pkg_copy):

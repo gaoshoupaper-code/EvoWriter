@@ -178,15 +178,22 @@ export function ChatPanel({
       <>
       <div className="message-list" ref={listRef}>
         {messages.map((message, index) => {
-          // 双管线泳道徽章（REQ-20261011-142529 DEC-020 第 7 条）：
-          // 消息带 agent 身份（设计教练/结构教练），旧消息与 legacy 无徽章回退「小衍」
+          // 三步管线阶段徽章（REQ-20261015-161200）：消息带产出段位
+          // （世界观/总纲卷纲/章纲），历史双泳道消息保留旧徽章，
+          // legacy 与未知值回退「小衍」
           const label =
             message.role === "assistant"
-              ? message.agent === "storydesign"
-                ? "设计教练"
-                : message.agent === "storystructure"
-                  ? "结构教练"
-                  : "小衍"
+              ? message.agent === "worldview"
+                ? "世界观"
+                : message.agent === "outline"
+                  ? "总纲卷纲"
+                  : message.agent === "chapters"
+                    ? "章纲"
+                    : message.agent === "storydesign"
+                      ? "设计教练"
+                      : message.agent === "storystructure"
+                        ? "结构教练"
+                        : "小衍"
               : "你";
           const isLastAssistant = message.role === "assistant" && index === messages.length - 1;
           const flow = stageFlows?.[index] ?? null;

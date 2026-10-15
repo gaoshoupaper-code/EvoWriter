@@ -2,62 +2,90 @@
   "schema_version": "writer.architecture/1",
   "agents": [
     {
-      "name": "storydesign",
+      "name": "writer",
       "role": "main",
-      "display_name": "设计教练",
-      "description": "工业七步法设计端（第 0-3 步：赛道确认/设计原则/冲突引擎/力量体系）。产物：outline/00-赛道.md ~ 03-力量体系.md + character/core/（主角/BOSS 完整档案）+ worldview/core.md。单元流程：起草 → confirm_with_user 拍板 → 批准后落盘 → 停下（严禁自动连跑）。创意归用户（身份/欲望/金手指/BOSS 只提炼追问给选项），流程归它（步序+检验清单+拍板闸）。回炉工单批准后由此端执行上游修订。",
-      "prompt": "prompts/storydesign_system.md",
+      "display_name": "主控",
+      "description": "网文大纲三步管线主控（定世界观 → 定总纲和卷纲 → 定章纲）。统筹三个子代理：起草与落盘全部委托子代理，confirm_with_user 拍板只由主控调用（question 放产物全文）。上游修订走对话转委托：章纲发现世界观/总纲矛盾，说清矛盾与波及面，用户同意后委托原产出子代理修订。每轮一句话收束，严禁自动连跑。输出风格 5 条铁律（禁破折号解释、禁解释性引导语、条目化、表格化、不写设计理由）约束全部产出。",
+      "prompt": "prompts/writer_system.md",
       "middleware": [
-        "receipt_gate",
-        "outline_contract_guard"
+        "receipt_gate"
       ],
       "skills": [],
       "tools": [
         "confirm_with_user"
       ],
-      "delegates": [],
+      "delegates": [
+        "worldview",
+        "outline",
+        "chapters"
+      ],
       "context_files": [
         "demand.md"
       ],
+      "write_permissions": [],
+      "artifact_paths": [],
+      "max_revisions": 1
+    },
+    {
+      "name": "worldview",
+      "role": "sub",
+      "delegated_by": "writer",
+      "display_name": "世界观",
+      "description": "三步大纲第一步：定世界观。产物 outline/世界观.md 单文件，含核心冲突（主角欲望 vs 大 BOSS）、力量体系、金手指（代价限制必填）、大法则。收到起草任务返回草稿全文，收到写盘任务写 outline/世界观.md。输出遵守 5 条风格铁律。",
+      "prompt": "prompts/worldview_system.md",
+      "middleware": [
+        "receipt_gate",
+        "outline_contract_guard"
+      ],
+      "skills": [],
+      "tools": [],
+      "delegates": [],
       "write_permissions": [
-        "/outline/00-赛道.md",
-        "/outline/01-设计原则.md",
-        "/outline/02-冲突引擎.md",
-        "/outline/03-力量体系.md",
-        "/character/core/*.md",
-        "/worldview/core.md"
+        "/outline/世界观.md"
       ],
       "artifact_paths": [],
       "max_revisions": 1
     },
     {
-      "name": "storystructure",
-      "role": "main",
-      "display_name": "结构教练",
-      "description": "工业七步法结构端（第 4-7 步：总纲/卷纲/章纲滚动/卷末盘点循环）+ 期待台账管理者。上游（00-03/character/core/worldview core）只读——需要改上游唯一路径是 submit_rework_ticket 回炉工单。产物：outline/04-总纲.md、05-卷纲/、06-章纲/（每批 5-10 章滚动）、期待台账.md（八列）、character/support/（配角三条件）、worldview/setting.md、object/。拍板载荷自动附程序体检报告（爽点/钩子/大爽点间隔/悬置/境界余量，只建议不拦截）。",
-      "prompt": "prompts/storystructure_system.md",
+      "name": "outline",
+      "role": "sub",
+      "delegated_by": "writer",
+      "display_name": "总纲卷纲",
+      "description": "三步大纲第二步：定总纲和卷纲。产物 outline/总纲.md（结局锚点 + 分卷表）、outline/卷纲-第N卷.md（本卷定位/反派/期待/大爽点布局，第一卷含黄金三章）、character/core/（主角与 BOSS 档案）。世界观文件只读，矛盾报告主控。输出遵守 5 条风格铁律。",
+      "prompt": "prompts/outline_system.md",
       "middleware": [
         "receipt_gate",
-        "outline_contract_guard",
-        "object_contract_guard"
+        "outline_contract_guard"
       ],
       "skills": [],
-      "tools": [
-        "confirm_with_user",
-        "submit_rework_ticket"
-      ],
+      "tools": [],
       "delegates": [],
-      "context_files": [
-        "demand.md"
-      ],
       "write_permissions": [
-        "/outline/04-总纲.md",
-        "/outline/05-卷纲/*.md",
-        "/outline/06-章纲/**/*.md",
+        "/outline/总纲.md",
+        "/outline/卷纲-*.md",
+        "/character/core/*.md"
+      ],
+      "artifact_paths": [],
+      "max_revisions": 1
+    },
+    {
+      "name": "chapters",
+      "role": "sub",
+      "delegated_by": "writer",
+      "display_name": "章纲",
+      "description": "三步大纲第三步：定章纲（剧情走向 + 埋钩子回收钩子）。产物 outline/章纲-卷N批M.md（每批 5-8 章滚动，四列表：章/剧情走向/章末钩子/期待动作）、outline/期待台账.md（六列唯一台账，埋设必登记兑现即销账）、character/support/（配角按需）。世界观/总纲/卷纲只读，矛盾报告主控。输出遵守 5 条风格铁律。",
+      "prompt": "prompts/chapters_system.md",
+      "middleware": [
+        "receipt_gate",
+        "outline_contract_guard"
+      ],
+      "skills": [],
+      "tools": [],
+      "delegates": [],
+      "write_permissions": [
+        "/outline/章纲-*.md",
         "/outline/期待台账.md",
-        "/character/support/*.md",
-        "/worldview/setting.md",
-        "/object/*.md"
+        "/character/support/*.md"
       ],
       "artifact_paths": [],
       "max_revisions": 1

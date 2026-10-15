@@ -1,18 +1,24 @@
 """ReceiptGateMiddleware — 产出单元拍板硬闸（每运行禁写形态，事件驱动回应）。
 
-双 agent 管线（REQ-20261011-142529 FR-003，DEC-010）的单元闸门：**每轮运行**
-在 confirm_with_user 一次有效回复（用户拍板）之前，拦截本泳道受保护产物的
-写入——单元流程 = 起草 → confirm 拍板 → 批准后落盘，目录里只有已确认内容
-（目录即进度）。受保护面 = 本泳道 architecture.json 的 write_permissions
-（storydesign：00-03/character/core/worldview core；storystructure：
-04-06/台账/character/support/worldview setting/object）。
+三步管线（REQ-20261015-161200 FR-003，DEC-005）的单元闸门：**每轮运行**
+在 confirm_with_user 一次有效回复（用户拍板）之前，拦截受保护产物的写入
+——单元流程 = 子代理起草 → 主控 confirm 拍板 → 子代理按批准稿落盘，
+目录里只有已确认内容（目录即进度）。
+
+单主控多子代理下的确认传播（TD-001）：confirm_with_user 挂在主控，写盘
+发生在子代理，闸门实例彼此看不见。解法：确认状态放共享容器
+（ctx.confirm_gate_state，一次装配内共享——执行端每次生成新建 ctx）。
+挂 confirm 工具的 agent 是 owner：负责每轮重置与记账；其余 agent 是
+follower：只读共享确认位，自身不重置。resume 续跑不经 before_agent，
+确认位在 interrupt 期间自然保留。
+
+受保护面 = 本 agent 的 architecture.json write_permissions。
 
 设计要点（沿用进化 #8/#10 的教训）：
   - 确认信号不解析消息内容——confirm_with_user 的挂起与返回值由执行端
     HITL 通道驱动（resume 仅用户操作可触发），运行计数天然免疫。
   - 拍板前重复读同一路径 → 一次性指路（治零成本打转），第 3 次起放行。
   - 零周期注入：不做 before_model 催促，闸门只做事件驱动回应。
-  - before_agent 每轮重置（用户的新消息 = 新单元 = 重新拍板）。
   - demand.md 元信息 receipt_skip: true（评估集预置流）→ 闸门跳过。
   - 拦截上限（默认 3 次）防死循环：连续无视则降级放行 + 首次日志。
 
@@ -57,8 +63,27 @@ _SKIP_PHRASES = (
 )
 
 
+class SharedConfirmState:
+    """跨 agent 共享的拍板确认位（一次装配 = 一轮生成）。"""
+
+    def __init__(self) -> None:
+        self.confirmed = False
+        self.confirm_returns = 0
+
+
 class ReceiptGateMiddleware(AgentMiddleware):
-    """任务拍板硬闸：每轮运行未拍板时，拦截一切受保护产物写入。"""
+    """任务拍板硬闸：每轮运行未拍板时，拦截一切受保护产物写入。
+
+    Args:
+        workspace_root:    工作区根目录
+        protected_globs:   受保护产物 glob（相对 workspace 根，wcmatch
+                           GLOBSTAR 语义；None = 沿用旧五件套口径，空列表 =
+                           无保护面（纯记账 owner 用））
+        max_blocks:        拦截上限（防死循环：模型连续无视则降级放行）
+        shared:            共享确认状态；None = 自持（旧行为，单 agent 包兼容）
+        owner:             是否为 confirm 工具持有方（主控）。owner 负责每轮
+                           重置共享状态与记账；follower 只读。
+    """
 
     def __init__(
         self,
@@ -66,28 +91,19 @@ class ReceiptGateMiddleware(AgentMiddleware):
         protected_globs: list[str] | None = None,
         *,
         max_blocks: int = 3,
+        shared: SharedConfirmState | None = None,
+        owner: bool = False,
     ) -> None:
-        """
-        Args:
-            workspace_root:    工作区根目录
-            protected_globs:   受保护产物 glob（相对 workspace 根，wcmatch
-                               GLOBSTAR 语义；缺省沿用旧五件套口径，兼容
-                               旧包与测试）
-            max_blocks:        拦截上限（防死循环：模型连续无视则降级放行）
-        """
         self.workspace_root = Path(workspace_root).resolve()
         self.max_blocks = max_blocks
-        # 受保护面 = 本泳道写入白名单（拍板前禁写；缺省回退旧五件套）
-        self.protected_globs = list(protected_globs) if protected_globs else [
+        # 受保护面 = 本 agent 写入白名单（拍板前禁写；None 回退旧五件套）
+        self.protected_globs = list(protected_globs) if protected_globs is not None else [
             "/storyline.md", "/worldview.md", "/character/*.md", "/object/*.md", "/hooks.md",
         ]
+        self.shared = shared if shared is not None else SharedConfirmState()
+        self.owner = owner
         self._blocks = 0
         self._exhausted_logged = False
-        # confirm_with_user 工具正常返回（interrupt 已被用户 resume）= 已拍板。
-        # 计数制：一次有效回复（_REQUIRED_CONFIRMS=1，一段式），返回文本命中
-        # 跳过短语则立即置满（用户明示跳过提案，防交互过载）。
-        self._confirmed = False
-        self._confirm_returns = 0
         # demand.md 元信息 receipt_skip: true → 评估集预置流跳过回执轮
         self.skip = self._parse_receipt_skip()
         # 提案轮重复读计数（路径字符串 → 次数；每路径至多提醒一次）
@@ -96,29 +112,25 @@ class ReceiptGateMiddleware(AgentMiddleware):
         self._read_reminders_exhausted = False
 
     # ------------------------------------------------------------------
-    # 运行周期重置（每轮运行开始：新任务 = 新拍板周期，进化 #10）
+    # 运行周期重置（owner 每轮重置共享位；follower 只清本地计数）
     # ------------------------------------------------------------------
 
     def before_agent(self, state: Any, runtime: Any) -> None:
-        """每轮运行开始重置状态：用户的新消息 = 新任务 = 重新拍板。
+        """每轮运行开始重置：用户的新消息 = 新任务 = 重新拍板。
 
         resume 续跑不触发本钩子（恢复执行从工具节点进入，不经 agent 入口），
         拍板确认在 confirm 工具返回时记录，不受重置影响。
         """
-        self._confirmed = False
-        self._confirm_returns = 0
+        if self.owner:
+            self.shared.confirmed = False
+            self.shared.confirm_returns = 0
         self._blocks = 0
         self._exhausted_logged = False
         self._read_counts = {}
         self._read_reminders_exhausted = False
 
     async def abefore_agent(self, state: Any, runtime: Any) -> None:
-        self._confirmed = False
-        self._confirm_returns = 0
-        self._blocks = 0
-        self._exhausted_logged = False
-        self._read_counts = {}
-        self._read_reminders_exhausted = False
+        self.before_agent(state, runtime)
 
     # ------------------------------------------------------------------
     # 拍板前重复读一次性指路（#8：治零成本打转，不拦截读取）
@@ -131,7 +143,7 @@ class ReceiptGateMiddleware(AgentMiddleware):
         任何内部异常原样返回结果（指路故障不得中断创作主流程）。
         """
         try:
-            if not self._receipt_round_active() or self._confirmed:
+            if not self._receipt_round_active() or self.shared.confirmed:
                 return result
             if self._read_reminders_exhausted:
                 return result
@@ -162,8 +174,7 @@ class ReceiptGateMiddleware(AgentMiddleware):
                     content=(
                         "[拍板闸门·重复读] 这是本轮第 2 次读取同一文件："
                         "你已经掌握其内容，重读不会带来新信息。当前唯一待办："
-                        "消化需求与现有产物，完整起草本单元产物，调用 "
-                        "confirm_with_user 提交拍板（不要用纯文本回复代替）。"
+                        "消化需求与现有产物，完整起草本单元产物交主控提交拍板。"
                         "以下是所读文件内容：\n\n"
                         + original
                     ),
@@ -176,7 +187,7 @@ class ReceiptGateMiddleware(AgentMiddleware):
 
     def _receipt_round_active(self) -> bool:
         """拍板待决判定：未跳过 + 本轮未拍板（进化 #10：每轮口径）。"""
-        return not self.skip and not self._confirmed
+        return not self.skip and not self.shared.confirmed
 
     # ------------------------------------------------------------------
     # 产物写入拦截（同步 / 异步）
@@ -209,15 +220,17 @@ class ReceiptGateMiddleware(AgentMiddleware):
         return self._maybe_prefix_repeat_reminder(request, result)
 
     def _record_confirm_return(self, result: Any) -> None:
-        """记录一次有效拍板返回；达到阈值或命中跳过短语即置已拍板。"""
-        self._confirm_returns += 1
+        """记录一次有效拍板返回（仅 owner 记账）；达到阈值或命中跳过短语即置已拍板。"""
+        if not self.owner:
+            return
+        self.shared.confirm_returns += 1
         text = result if isinstance(result, str) else ""
         if any(p in text for p in _SKIP_PHRASES):
-            self._confirm_returns = _REQUIRED_CONFIRMS
-        self._confirmed = self._confirm_returns >= _REQUIRED_CONFIRMS
+            self.shared.confirm_returns = _REQUIRED_CONFIRMS
+        self.shared.confirmed = self.shared.confirm_returns >= _REQUIRED_CONFIRMS
 
     def _is_confirm_call(self, request: Any) -> bool:
-        """判定是否为 confirm_with_user 工具调用（与 review 计数同款判定式）。"""
+        """判定是否为 confirm_with_user 工具调用（owner 之外恒 False 由装配保证）。"""
         tool_call = getattr(request, "tool_call", {})
         return _mapping_value(tool_call, "name") == _CONFIRM_TOOL_NAME
 
@@ -234,7 +247,7 @@ class ReceiptGateMiddleware(AgentMiddleware):
         try:
             # 确认信号：confirm_with_user 工具正常返回（interrupt 已被
             # 用户 resume）= 本轮已拍板
-            if self._confirmed:
+            if self.shared.confirmed:
                 return None
             # 跳过开关（评估集预置流）
             if self.skip:
@@ -290,16 +303,15 @@ class ReceiptGateMiddleware(AgentMiddleware):
         )
 
     def _block_message(self, tool_call: Any) -> ToolMessage:
-        """构造拦截消息：引导走 confirm 工具（对齐业务拦截消息规范）。"""
+        """构造拦截消息：引导回主控拍板（对齐业务拦截消息规范）。"""
         tool_call_id = _mapping_value(tool_call, "id")
         return ToolMessage(
             content=(
-                "[单元拍板闸门] 本轮产出单元尚未拍板：本泳道产物禁止写入。"
-                "按主文档单元流程执行——先在对话里完整起草本单元产物全文，"
-                "经 confirm_with_user 提交拍板（question 放草稿全文 + 检验"
-                "结果），一次有效回复即拍板，批准后再按批准稿落盘"
-                "（用户明示「不用问了直接写」即跳过拍板，以推荐稿落盘）。"
-                "不要用纯文本回复代替工具调用。"
+                "[单元拍板闸门] 本轮产出单元尚未拍板：产物禁止写入。"
+                "当前单元流程 = 起草返回主控 → 主控 confirm_with_user 拍板 →"
+                " 按批准稿落盘。把完整草稿作为任务结果返回给主控，不要直接写盘"
+                "（用户明示「不用问了直接写」时主控会带确认标记重派落盘任务）。"
+                "不要用纯文本回复代替返回草稿。"
             ),
             name=str(_mapping_value(tool_call, "name") or "write_file"),
             tool_call_id=str(tool_call_id or ""),
@@ -331,11 +343,26 @@ def _mapping_value(mapping: object, key: str) -> Any:
 
 
 def build(abc):
-    """架构清单挂载钩子（M2）：domain 闸门——单元拍板硬闸（保护面=本泳道白名单）。"""
+    """架构清单挂载钩子（M2）：domain 闸门——单元拍板硬闸（保护面=本 agent 白名单）。
+
+    共享确认位取自 ctx.confirm_gate_state（一次装配内主控与子代理共享；
+    缺省就地创建）。owner = 挂 confirm_with_user 工具的 agent。
+    """
+    shared = getattr(abc.ctx, "confirm_gate_state", None)
+    if not isinstance(shared, SharedConfirmState):
+        shared = SharedConfirmState()
+        try:
+            abc.ctx.confirm_gate_state = shared
+        except Exception:  # noqa: BLE001 — ctx 不可写时各自为政（旧调用方兼容）
+            shared = SharedConfirmState()
+    tools = list(getattr(abc.agent, "tools", []) or [])
+    is_owner = "confirm_with_user" in tools
     return ReceiptGateMiddleware(
         abc.workspace_path,
         protected_globs=list(getattr(abc.agent, "write_permissions", []) or []),
+        shared=shared,
+        owner=is_owner,
     )
 
 
-__all__ = ["ReceiptGateMiddleware"]
+__all__ = ["ReceiptGateMiddleware", "SharedConfirmState"]

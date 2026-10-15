@@ -1,9 +1,9 @@
-"""OutlineContractGuardMiddleware — outline 产物结构契约运行时护栏（REQ-20261011-142529 FR-001/006）。
+"""OutlineContractGuardMiddleware — outline 产物结构契约运行时护栏（REQ-20261015-161200 FR-001/005）。
 
 contracts.outline_ledger_contract 判定器唯一消费方（两侧不得各自实现）：
-写 outline/ 设计端产物（00-03 必备章节/金手指代价）、结构端产物（04-06
-必备章节、期待台账八列、章纲批五列表/前情接点/批内章号连续）时校验
-结构语法（DEC-007：结构硬拦在 contracts；爽点密度等语义指标归体检观测）。
+写三步产物（outline/世界观.md 必备小节与金手指代价限制、总纲/卷纲必备
+小节、章纲批四列表与前情接点、期待台账六列）时校验结构语法。
+挂在三个子代理上（各自产物各自校验）；主控不写产物不挂。
 
 口径与既有护栏一致（hooks_contract_guard 同款）：
   - write_file：预估内容 = args.content。
@@ -161,5 +161,5 @@ __all__ = ["DEFAULT_MAX_REJECTS", "OutlineContractGuardMiddleware"]
 
 
 def build(abc):
-    """架构清单挂载钩子：domain 护栏——outline 结构契约校验（双泳道通用）。"""
+    """架构清单挂载钩子：domain 护栏——outline 结构契约校验（三步子代理通用）。"""
     return OutlineContractGuardMiddleware(abc.workspace_path)

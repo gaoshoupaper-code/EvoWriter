@@ -8,10 +8,9 @@
 基础中间件链与审查闭环模式是解释器固有的平台不变量（静态/动态边界见
 executor app.platform.agent.architecture 模块 docstring）。
 
-行为契约：assemble(ctx, agent_name=None) ——缺省装配首个 main（单泳道包与
-旧调用方不变）；双泳道包按名装配（executor 管线层传 storydesign /
-storystructure，REQ-20261011-142529 DEC-006/019）。返回编译图（含
-checkpointer）。
+行为契约：assemble(ctx, agent_name=None) ——缺省装配首个 main（单 main 包与
+旧调用方不变）；三步制包按名装配（executor 管线层传 writer 主控，
+REQ-20261015-161200 DEC-005）。返回编译图（含 checkpointer）。
 """
 from __future__ import annotations
 
@@ -30,7 +29,7 @@ def assemble(ctx: RuntimeContext, agent_name: str | None = None):
     """清单驱动装配：薄委托架构清单解释器（读 architecture.json 实例化）。
 
     Args:
-        agent_name: 按名装配的 main agent（双泳道）；None = 首个 main。
+        agent_name: 按名装配的 main agent；None = 首个 main。
     """
     from app.platform.agent.architecture import assemble_from_manifest
 

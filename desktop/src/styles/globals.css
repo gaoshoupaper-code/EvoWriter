@@ -54,13 +54,13 @@
   --motion-duration: 140ms;
   --motion-ease: ease-out;
 
-  --bg: #e9e1cc;
+  --bg: #e2d7bd;
   --ink: #2e2618;
-  --muted: #5a544a;
-  --panel: #e9e1cc;
-  --panel-solid: #f0e9d8;
-  --panel-soft: #ded2b5;
-  --chrome: #d9cfb4;
+  --muted: #524c42;
+  --panel: #e2d7bd;
+  --panel-solid: #e8dfca;
+  --panel-soft: #d2c097;
+  --chrome: #d4c49e;
   --line: rgba(62, 50, 28, 0.16);
   --line-strong: rgba(62, 50, 28, 0.24);
   --teal: #286b58;
@@ -72,7 +72,7 @@
   --shadow: 0 18px 44px rgba(54, 42, 28, 0.08);
   --shadow-soft: 0 8px 22px rgba(54, 42, 28, 0.05);
   --danger: #b94a40;
-  --hover: #d4cbbb;
+  --hover: #cbc2a6;
 }
 
 html[data-theme="dark"] {

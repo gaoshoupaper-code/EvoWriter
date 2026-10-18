@@ -38,7 +38,7 @@ function treeGroups(files: OutlineFileEntry[]): { id: string; label: string; rel
     else if (f.rel.startsWith("正文/")) groups.text.push(label(f.rel));
   }
   return [
-    { id: "theme", label: "题材", rels: groups.theme },
+    { id: "theme", label: "主题", rels: groups.theme },
     { id: "master", label: "总纲", rels: groups.master },
     { id: "style", label: "文风", rels: groups.style },
     { id: "volume", label: "卷纲", rels: groups.volume },

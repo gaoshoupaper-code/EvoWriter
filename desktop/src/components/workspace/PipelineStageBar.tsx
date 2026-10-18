@@ -2,6 +2,7 @@ import type { PipelineStatus } from "../../lib/types";
 import {
   PIPELINE_STEPS,
   activeStepIndex,
+  displayUnitLabel,
   isStepDone,
   phaseDisplayName,
 } from "../../lib/pipeline-steps";
@@ -54,7 +55,7 @@ export function PipelineStageBar({ pipeline, fileRels }: PipelineStageBarProps) 
       {awaitingCount > 0 ? (
         <span className="pipeline-awaiting">⏸ 等你拍板</span>
       ) : (
-        <span className="pipeline-hint">接下来写：{pipeline.next_unit}</span>
+        <span className="pipeline-hint">接下来写：{displayUnitLabel(pipeline.next_unit)}</span>
       )}
     </div>
   );

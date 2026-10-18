@@ -21,6 +21,7 @@ import { refreshWorkspaceContent } from "@/lib/usePanelPolling";
 import {
   PIPELINE_STEPS,
   activeStepIndex,
+  displayUnitLabel,
   isStepDone,
   phaseDisplayName,
 } from "@/lib/pipeline-steps";
@@ -153,7 +154,7 @@ export function WorkRail() {
                 </p>
               ) : null}
               <p className="work-rail-mini-next">
-                {awaitingCount > 0 ? "⏸ 等你拍板" : `接下来写：${pipeline.next_unit}`}
+                {awaitingCount > 0 ? "⏸ 等你拍板" : `接下来写：${displayUnitLabel(pipeline.next_unit)}`}
               </p>
               {latestArtifact ? <p className="work-rail-mini-artifact">刚写完：{latestArtifact}</p> : null}
             </>
@@ -244,8 +245,28 @@ export function WorkRail() {
                 })}
               </ol>
               <p className="work-rail-next">
-                {awaitingCount > 0 ? "⏸ 等你拍板" : `接下来写：${pipeline.next_unit}`}
+                {awaitingCount > 0 ? "⏸ 等你拍板" : `接下来写：${displayUnitLabel(pipeline.next_unit)}`}
               </p>
+              {/* FR-011 可跳转：展开态产物条目点击进产物面板查看（同源对齐第三条） */}
+              {outlineFiles.length > 0 ? (
+                <ul className="work-rail-artifacts" aria-label="最新产物">
+                  {outlineFiles.slice(-5).reverse().map((f) => (
+                    <li key={f.rel}>
+                      <button
+                        type="button"
+                        className="work-rail-artifact"
+                        title={f.rel}
+                        onClick={() => {
+                          useContentStore.getState().setActiveOutlineRel(f.rel);
+                          useWorkspaceStore.setState({ activePanel: "artifacts" });
+                        }}
+                      >
+                        {artifactLabel(f.rel)}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
               {latestArtifact ? <p className="work-rail-next">刚写完：{latestArtifact}</p> : null}
             </>
           )}

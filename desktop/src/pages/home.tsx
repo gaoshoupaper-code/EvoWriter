@@ -16,6 +16,7 @@ import { useExecutionStore, setExecutionDeps, installExecutionPersist } from "@/
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useTraceStore } from "@/stores/trace";
 import { useContentStore } from "@/stores/content";
+import { useStageSessionStore } from "@/stores/stage-session";
 import { useWorkrailStore } from "@/stores/workrail";
 import { applyUiFontSize, loadUiFontSize } from "@/components/ui/UiFontSizeControl";
 
@@ -50,27 +51,19 @@ export default function Home() {
   const safePanel: WorkspacePanel = WORKSPACE_PANELS.includes(activePanel) ? activePanel : "chat";
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
-  const threads = useWorkspaceStore((s) => s.threads);
   const activeThreadId = useWorkspaceStore((s) => s.activeThreadId);
   const activeWorkspace = useMemo(
     () => workspaces.find((w) => w.workspace_id === activeWorkspaceId) ?? null,
     [workspaces, activeWorkspaceId],
   );
-  const activeThread = useMemo(
-    () => threads.find((t) => t.thread_id === activeThreadId) ?? null,
-    [threads, activeThreadId],
-  );
   const bootstrapping = useWorkspaceStore((s) => s.bootstrapping);
   const creatingWorkspace = useWorkspaceStore((s) => s.creatingWorkspace);
   const deletingWorkspace = useWorkspaceStore((s) => s.deletingWorkspace);
-  const creatingThread = useWorkspaceStore((s) => s.creatingThread);
-  const deleting = useWorkspaceStore((s) => s.deleting);
   const workspaceCreateOpen = useWorkspaceStore((s) => s.workspaceCreateOpen);
   const newWorkspaceName = useWorkspaceStore((s) => s.newWorkspaceName);
   const newWorkspaceDomain = useWorkspaceStore((s) => s.newWorkspaceDomain);
   const workspaceDeleteOpen = useWorkspaceStore((s) => s.workspaceDeleteOpen);
   const pendingDeleteWorkspaceId = useWorkspaceStore((s) => s.pendingDeleteWorkspaceId);
-  const sessionMenuOpen = useWorkspaceStore((s) => s.sessionMenuOpen);
 
   // executionStore
   const messages = useExecutionStore((s) => s.messages);
@@ -283,6 +276,20 @@ export default function Home() {
     [messages, traceDetail, stageFlow, historyDetails],
   );
 
+  // ── 阶段制会话（REQ-20261018-175526）──
+  // 阶段检测（DEC-013 信号收敛点）：SSE pipeline 事件与 outline 轮询都写
+  // outlinePipeline，这里统一对比当前会话绑定阶段 → 挂起完成卡片（FR-004）。
+  // 重启/切书后由同不变量自动重建卡片（FR-012，无需独立持久化）。
+  useEffect(() => {
+    useStageSessionStore.getState().syncWithPipeline(outlinePipeline);
+  }, [outlinePipeline, loading, activeThreadId]);
+
+  // 阶段归属恢复：bootstrap/切书后读入该工作区全部会话的阶段绑定（FR-012）
+  useEffect(() => {
+    if (!activeWorkspaceId) return;
+    void useStageSessionStore.getState().hydrateForWorkspace(activeWorkspaceId);
+  }, [activeWorkspaceId]);
+
   // ── 事件处理（委托 store action）──
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -292,15 +299,57 @@ export default function Home() {
     }
     try {
       if (activeWorkspace?.domain === "image") {
+        // 图片域新书没有会话时先自动建一个（旧「新建会话」按钮已随 FR-001 移除）
+        if (!activeThreadId) {
+          const created = await ensureThreadForWorkspace();
+          if (!created) return;
+        }
         await useExecutionStore.getState().submitImage({ prompt });
         useExecutionStore.getState().setPrompt("");
         return;
+      }
+      // DEC-012 隐式切换：完成卡片挂起时直接发送 = 先切换（归档旧会话、开新
+      // 会话、同步换页）再提交；创建失败则消息不发送，输入保留在框里不丢。
+      const stageSession = useStageSessionStore.getState();
+      if (stageSession.pendingTransition) {
+        const ok = await stageSession.confirmTransition();
+        if (!ok) return;
       }
       await useExecutionStore.getState().submit(prompt);
       useExecutionStore.getState().setPrompt("");
     } catch {
       /* performSubmit 内部已处理 UI + toast */
     }
+  }
+
+  /** 确保当前工作区有会话（图片域新书首轮提交用）；失败返回 false。 */
+  async function ensureThreadForWorkspace(): Promise<boolean> {
+    const ws = useWorkspaceStore.getState();
+    if (!ws.activeWorkspaceId) return false;
+    try {
+      const { createThread } = await import("@/lib/api");
+      const thread = await createThread(ws.activeWorkspaceId, "图片对话");
+      ws.setThreads((current) => [thread, ...current.filter((t) => t.thread_id !== thread.thread_id)]);
+      ws.setActiveThreadId(thread.thread_id);
+      return true;
+    } catch (createError) {
+      toast.error(createError instanceof Error ? createError.message : "无法开启新对话。");
+      return false;
+    }
+  }
+
+  /** 拍板/访谈选项提交：与 handleSubmit 同构——挂起卡片存在时先隐式切换（FR-005）。 */
+  async function handleResumeSubmit(resumeText: string) {
+    if (aiDisabled) {
+      toast.error("请先在设置页填写你的 API Key，才能使用 AI 生成。");
+      return;
+    }
+    const stageSession = useStageSessionStore.getState();
+    if (stageSession.pendingTransition) {
+      const ok = await stageSession.confirmTransition();
+      if (!ok) return;
+    }
+    await useExecutionStore.getState().resume(resumeText);
   }
 
   function handleStopGeneration() {
@@ -329,23 +378,7 @@ export default function Home() {
       useExecutionStore.getState().resetMessages();
       useContentStore.getState().clearContent();
       useTraceStore.getState().clearTrace();
-      useWorkspaceStore.setState({ sessionMenuOpen: false });
     }
-  }
-
-  async function handleCreateThread() {
-    // 保存当前会话消息
-    if (activeThreadId) {
-      const exec = useExecutionStore.getState();
-      exec.threadMessages.set(activeThreadId, exec.messages);
-    }
-    await useWorkspaceStore.getState().handleCreateThread();
-    useExecutionStore.getState().resetMessages();
-    useExecutionStore.setState({ result: null });
-  }
-
-  function handleSelectThread(threadId: string) {
-    useWorkspaceStore.getState().handleSelectThread(threadId);
   }
 
   async function handleDeleteThread(threadId: string) {
@@ -405,30 +438,19 @@ export default function Home() {
             messages={messages}
             prompt={prompt}
             loading={loading}
-            threads={threads}
             activeThreadId={activeThreadId}
             hasActiveWorkspace={Boolean(activeWorkspaceId)}
-            sessionMenuOpen={sessionMenuOpen}
-            creatingThread={creatingThread}
-            deleting={deleting}
             onPromptChange={(p) => useExecutionStore.getState().setPrompt(p)}
             onSubmit={handleSubmit}
-            onResumeSubmit={async (resumeText) => {
-              if (aiDisabled) { toast.error("请先在设置页填写你的 API Key，才能使用 AI 生成。"); return; }
-              await useExecutionStore.getState().resume(resumeText);
-            }}
+            onResumeSubmit={handleResumeSubmit}
             onImageReviewSubmit={async (resume) => {
               if (aiDisabled) { toast.error("请先在设置页填写你的 API Key，才能使用 AI 生成。"); return; }
               await useExecutionStore.getState().submitImage({ resume });
             }}
             onStop={handleStopGeneration}
-            onToggleSessionMenu={() => useWorkspaceStore.setState((s) => ({ sessionMenuOpen: !s.sessionMenuOpen }))}
-            onCloseSessionMenu={() => useWorkspaceStore.setState({ sessionMenuOpen: false })}
-            onCreateThread={handleCreateThread}
-            onSelectThread={handleSelectThread}
-            onDeleteThread={handleDeleteThread}
             stageFlows={stageFlows}
             onRetry={handleRetry}
+            onDeleteThread={handleDeleteThread}
           />
         ) : null}
 

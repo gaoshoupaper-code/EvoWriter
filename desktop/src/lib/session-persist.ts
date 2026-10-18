@@ -7,6 +7,8 @@
  * 数据布局（FR-002：按登录账号隔离，Rust 侧零新增代码）：
  * - store 文件：sessions/<encodeURIComponent(username)>.store
  * - 会话 key：msg:<workspace_id>:<thread_id> → { messages, savedAt }
+ * - 阶段归属 key：stageMeta:<workspace_id>:<thread_id> → { stage, sourceStage?, boundAt }
+ *   （REQ-20261018-175526 FR-008/FR-012：会话阶段归属存客户端本地，重启不丢）
  * - 上次位置 key：__last__ → { workspaceId, threadId }（FR-001）
  *
  * 写入时序（风险条目：终版不被在途节流覆盖）：
@@ -64,6 +66,56 @@ function threadKey(workspaceId: string, threadId: string) {
 }
 
 const WORKSPACE_KEY_PREFIX = "msg:";
+const STAGE_KEY_PREFIX = "stageMeta:";
+
+// ── 阶段归属（REQ-20261018-175526：会话 ↔ 阶段绑定，客户端本地）──
+
+/** 会话的阶段归属元数据。stage 为管线阶段值（theme/outline/volume/chapter/text）。 */
+export interface StageThreadMeta {
+  stage: string;
+  /** 跳段申请来源（后退切换才记）：历史命名「总纲 · 10-18 15:02（正文申请）」 */
+  sourceStage?: string;
+  /** 绑定时间（ISO）——历史显示名的时间部分 */
+  boundAt: string;
+}
+
+function stageKey(workspaceId: string, threadId: string) {
+  return `${STAGE_KEY_PREFIX}${workspaceId}:${threadId}`;
+}
+
+/** 写入会话的阶段归属。失败静默（阶段列表退化为「早期」分组，不阻塞聊天）。 */
+export async function saveThreadStageMeta(workspaceId: string, threadId: string, meta: StageThreadMeta) {
+  try {
+    const store = await getStore();
+    if (!store) return;
+    await store.set(stageKey(workspaceId, threadId), meta);
+    await store.save();
+  } catch {
+    /* 同 FR-002 失败语义 */
+  }
+}
+
+/** 一次读入某工作区全部会话的阶段归属（启动/切书时恢复）。失败返回空表。 */
+export async function readStageMetas(workspaceId: string): Promise<Record<string, StageThreadMeta>> {
+  const result: Record<string, StageThreadMeta> = {};
+  try {
+    const store = await getStore();
+    if (!store) return result;
+    const prefix = `${STAGE_KEY_PREFIX}${workspaceId}:`;
+    const entries = await store.entries<[string, unknown]>();
+    for (const [key, value] of entries) {
+      if (!key.startsWith(prefix)) continue;
+      const threadId = key.slice(prefix.length);
+      const meta = value as Partial<StageThreadMeta> | null;
+      if (meta && typeof meta.stage === "string" && typeof meta.boundAt === "string") {
+        result[threadId] = { stage: meta.stage, sourceStage: meta.sourceStage, boundAt: meta.boundAt };
+      }
+    }
+  } catch {
+    /* 读失败按无记录对待 */
+  }
+  return result;
+}
 
 // ── 恢复管线（FR-004/FR-005，纯函数便于测试）──
 
@@ -186,27 +238,29 @@ export async function persistThreadMessages(workspaceId: string, threadId: strin
 
 // ── 删除联动（FR-003）──
 
-/** 删除单个会话的本地记录。 */
+/** 删除单个会话的本地记录（消息 + 阶段归属）。 */
 export async function deleteThreadRecord(workspaceId: string, threadId: string) {
   try {
     const store = await getStore();
     if (!store) return;
     await store.delete(threadKey(workspaceId, threadId));
+    await store.delete(stageKey(workspaceId, threadId));
     await store.save();
   } catch {
     /* FR-003 失败语义：本地删除失败不阻断，残留按名单不存在对待 */
   }
 }
 
-/** 删除整个工作区下全部会话的本地记录。 */
+/** 删除整个工作区下全部会话的本地记录（消息 + 阶段归属）。 */
 export async function deleteWorkspaceRecords(workspaceId: string) {
   try {
     const store = await getStore();
     if (!store) return;
-    const prefix = `${WORKSPACE_KEY_PREFIX}${workspaceId}:`;
+    const msgPrefix = `${WORKSPACE_KEY_PREFIX}${workspaceId}:`;
+    const stagePrefix = `${STAGE_KEY_PREFIX}${workspaceId}:`;
     const entries = await store.entries<[string, unknown]>();
     for (const [key] of entries) {
-      if (key.startsWith(prefix)) await store.delete(key);
+      if (key.startsWith(msgPrefix) || key.startsWith(stagePrefix)) await store.delete(key);
     }
     await store.save();
   } catch {

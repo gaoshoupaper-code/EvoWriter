@@ -147,8 +147,8 @@ export async function resetStores() {
     theme: "light", themeReady: false, activePanel: "chat",
     workspaces: [], activeWorkspaceId: "", activeWorkspaceDomain: "writing",
     bootstrapping: false, creatingWorkspace: false, deletingWorkspace: false,
-    threads: [], activeThreadId: "", creatingThread: false, deleting: false,
-    sessionMenuOpen: false, styles: [], styleModalOpen: false, creatingStyle: false,
+    threads: [], activeThreadId: "", deleting: false,
+    styles: [], styleModalOpen: false, creatingStyle: false,
     workspaceCreateOpen: false, newWorkspaceName: "失忆编剧大纲", newWorkspaceDomain: "writing",
     workspaceDeleteOpen: false, pendingDeleteWorkspaceId: "",
   });

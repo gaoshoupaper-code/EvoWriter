@@ -160,7 +160,7 @@ export type WorkspaceObjectContent = {
 };
 
 export type StreamEvent = {
-  type: "model_output" | "tool_call" | "tool_output" | "tool_error" | "model_stream" | "reasoning_stream" | "final" | "trace_event" | "trace_snapshot" | "interrupt" | "credit_exhausted";
+  type: "model_output" | "tool_call" | "tool_output" | "tool_error" | "model_stream" | "reasoning_stream" | "final" | "trace_event" | "trace_snapshot" | "interrupt" | "credit_exhausted" | "pipeline";
   data: Record<string, unknown>;
 };
 

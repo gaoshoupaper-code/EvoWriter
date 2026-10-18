@@ -22,21 +22,13 @@ function renderPanel(messages: ChatMessage[]) {
       messages={messages}
       prompt=""
       loading={false}
-      threads={[]}
       activeThreadId="t1"
       hasActiveWorkspace
-      sessionMenuOpen={false}
-      creatingThread={false}
-      deleting={false}
       onPromptChange={NOOP}
       onSubmit={NOOP}
       onResumeSubmit={NOOP}
       onImageReviewSubmit={NOOP}
       onStop={NOOP}
-      onToggleSessionMenu={NOOP}
-      onCloseSessionMenu={NOOP}
-      onCreateThread={NOOP}
-      onSelectThread={NOOP}
       onDeleteThread={NOOP}
     />,
   );

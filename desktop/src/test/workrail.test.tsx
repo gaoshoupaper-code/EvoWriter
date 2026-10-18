@@ -119,13 +119,25 @@ describe("三态切换与唤回", () => {
     render(<WorkRail />);
     await userEvent.click(screen.getByRole("button", { name: "展开作品详情" }));
     const progress = screen.getByLabelText("创作进度");
-    for (const name of ["题材", "总纲", "卷纲", "章纲", "正文"]) {
-      expect(within(progress).getByText(name)).toBeInTheDocument();
-    }
+    const steps = within(progress).getAllByText(/^(主题|总纲|卷纲|章纲|正文)$/);
+    expect(new Set(steps.map((s) => s.textContent))).toEqual(new Set(["主题", "总纲", "卷纲", "章纲", "正文"]));
     expect(within(progress).getByText(/接下来写：章纲/)).toBeInTheDocument();
     expect(document.querySelectorAll(".work-rail-steps li").length).toBe(5);
     // 档案索引组不在此浮窗（归作品侧栏，DEC-011/012 分工）
     expect(screen.queryByText("刚写完：卷纲/第01卷") ?? within(progress).getByText(/刚写完/)).toBeTruthy();
+  });
+
+  it("FR-011 可跳转：展开态列出最新产物，点击切到产物面板并选中", async () => {
+    useWorkrailStore.setState({ floatMode: "expanded" });
+    render(<WorkRail />);
+    const artifacts = screen.getByLabelText("最新产物");
+    // 最近 5 条倒序：文风/总纲/主题 顺序里最新是卷纲
+    const items = within(artifacts).getAllByRole("button");
+    expect(items[0]).toHaveTextContent("卷纲/第01卷");
+
+    await userEvent.click(within(artifacts).getByRole("button", { name: "总纲" }));
+    expect(useContentStore.getState().activeOutlineRel).toBe("总纲.md");
+    expect(useWorkspaceStore.getState().activePanel).toBe("artifacts");
   });
 
   it("expanded 收起（»）→ mini；再点击卡面可回到 expanded", async () => {

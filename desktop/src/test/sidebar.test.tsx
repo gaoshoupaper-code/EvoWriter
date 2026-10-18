@@ -64,8 +64,8 @@ describe("作品侧栏（FR-011）", () => {
     const props = baseProps();
     render(<Sidebar {...props} />);
     const tree = document.querySelector(".sidebar-tree") as HTMLElement;
-    // 组标签（题材/总纲/文风/卷纲/章纲/正文）——「总纲」同时是组名与条目名，用 getAllByText
-    for (const label of ["题材", "总纲", "文风", "卷纲", "章纲", "正文"]) {
+    // 组标签（主题/总纲/文风/卷纲/章纲/正文）——「总纲」同时是组名与条目名，用 getAllByText
+    for (const label of ["主题", "总纲", "文风", "卷纲", "章纲", "正文"]) {
       expect(within(tree).getAllByText(label).length).toBeGreaterThanOrEqual(1);
     }
     await userEvent.click(within(tree).getByText("第001章开局"));

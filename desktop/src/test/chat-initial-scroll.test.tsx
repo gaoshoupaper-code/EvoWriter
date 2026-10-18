@@ -24,21 +24,13 @@ function baseProps() {
   return {
     prompt: "",
     loading: false,
-    threads: [],
     activeThreadId: "thread-1",
     hasActiveWorkspace: true,
-    sessionMenuOpen: false,
-    creatingThread: false,
-    deleting: false,
     onPromptChange: vi.fn(),
     onSubmit: vi.fn(),
     onResumeSubmit: vi.fn(),
     onImageReviewSubmit: vi.fn(),
     onStop: vi.fn(),
-    onToggleSessionMenu: vi.fn(),
-    onCloseSessionMenu: vi.fn(),
-    onCreateThread: vi.fn(),
-    onSelectThread: vi.fn(),
     onDeleteThread: vi.fn(),
   };
 }

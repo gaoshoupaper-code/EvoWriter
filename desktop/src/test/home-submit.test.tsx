@@ -96,7 +96,7 @@ vi.mock("@/lib/api", () => ({
   workspaceNovelPdfUrl: vi.fn().mockReturnValue(""), workspaceNovelWordUrl: vi.fn().mockReturnValue(""),
 }));
 
-vi.mock("@/lib/usePanelPolling", () => ({ usePanelPolling: () => {} }));
+vi.mock("@/lib/usePanelPolling", () => ({ usePanelPolling: () => {}, watchPipelineAfterDisconnect: () => {}, stopDisconnectWatch: () => {} }));
 
 // ── 子组件 mock（passthrough）──
 vi.mock("@/components/workspace/AppShell", () => ({ AppShell: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
@@ -112,7 +112,6 @@ vi.mock("@/components/workspace/WorldviewPanel", () => ({ WorldviewPanel: () => 
 vi.mock("@/components/workspace/StorylinePanel", () => ({ StorylinePanel: () => null }));
 vi.mock("@/components/workspace/InterviewOptions", () => ({ InterviewOptions: () => null }));
 vi.mock("@/components/workspace/ImageReviewCard", () => ({ ImageReviewCard: () => null }));
-vi.mock("@/components/workspace/SessionMenu", () => ({ SessionMenu: () => null }));
 
 // ── Import（在所有 mock 之后）──
 const { MemoryRouter } = await import("react-router-dom");

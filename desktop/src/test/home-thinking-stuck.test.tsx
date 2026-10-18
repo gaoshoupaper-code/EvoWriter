@@ -36,7 +36,7 @@ vi.mock("@/lib/api", () => ({
   workspaceNovelPdfUrl: vi.fn().mockReturnValue(""), workspaceNovelWordUrl: vi.fn().mockReturnValue(""),
 }));
 
-vi.mock("@/lib/usePanelPolling", () => ({ usePanelPolling: () => {} }));
+vi.mock("@/lib/usePanelPolling", () => ({ usePanelPolling: () => {}, watchPipelineAfterDisconnect: () => {}, stopDisconnectWatch: () => {} }));
 
 // ── 子组件 mock（passthrough）──
 vi.mock("@/components/workspace/AppShell", () => ({ AppShell: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
@@ -52,7 +52,6 @@ vi.mock("@/components/workspace/WorldviewPanel", () => ({ WorldviewPanel: () => 
 vi.mock("@/components/workspace/StorylinePanel", () => ({ StorylinePanel: () => null }));
 vi.mock("@/components/workspace/InterviewOptions", () => ({ InterviewOptions: () => null }));
 vi.mock("@/components/workspace/ImageReviewCard", () => ({ ImageReviewCard: () => null }));
-vi.mock("@/components/workspace/SessionMenu", () => ({ SessionMenu: () => null }));
 
 // ── Import（在所有 mock 之后）──
 const { MemoryRouter } = await import("react-router-dom");
@@ -99,14 +98,17 @@ describe("AC-001/AC-002: 空会话欢迎消息不进执行态", () => {
     expect(screen.queryByText(/正在思考/)).not.toBeInTheDocument();
   });
 
-  it("AC-001: 新建会话入口同样显示新欢迎语，无思考态组件", async () => {
+  it("AC-001: 重新开始入口同样显示新欢迎语，无思考态组件（FR-007）", async () => {
     const user = userEvent.setup();
+    // 阶段制重开需要 five 管线相位（restartThread 以当前阶段开新会话）
+    const { useContentStore } = await import("@/stores/content");
+    useContentStore.setState({ outlinePipeline: { kind: "five", phase: "theme", next_unit: "题材", awaiting: {} } });
     renderHome();
 
     // 等 bootstrap 完成、按钮可用
-    const createButton = await screen.findByRole("button", { name: "新建会话" }, { timeout: 10000 });
-    await waitFor(() => expect(createButton).not.toBeDisabled(), { timeout: 10000 });
-    await user.click(createButton);
+    const restartButton = await screen.findByRole("button", { name: "重新开始" }, { timeout: 10000 });
+    await waitFor(() => expect(restartButton).not.toBeDisabled(), { timeout: 10000 });
+    await user.click(restartButton);
 
     expect(await screen.findByText(new RegExp(WELCOME_WITH_WORKSPACE), {}, { timeout: 10000 })).toBeInTheDocument();
     expect(noThinkingView()).toBe(true);

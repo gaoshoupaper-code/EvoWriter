@@ -168,6 +168,34 @@ export async function refreshWorkspaceContent(workspaceId: string): Promise<bool
   return enqueuePoll(workspaceId, contentStoreSetters());
 }
 
+// ── SSE 断连后的阶段兜底观察（REQ-20261018-175526 FR-004 失败语义）──
+// 心跳超时/断流后 loading 置 false、常规轮询停表，但服务端 run 可能仍在跑：
+// 低频拉 outline 直到管线相位相对断连时点变化（阶段条/挂起卡片由 sync effect
+// 响应）或达到上限（24 次 × 5s = 2 分钟）自行停止。
+let disconnectWatchTimer: ReturnType<typeof setInterval> | null = null;
+
+export function stopDisconnectWatch(): void {
+  if (disconnectWatchTimer) {
+    clearInterval(disconnectWatchTimer);
+    disconnectWatchTimer = null;
+  }
+}
+
+export function watchPipelineAfterDisconnect(workspaceId: string): void {
+  stopDisconnectWatch();
+  const startPhase = useContentStore.getState().outlinePipeline?.phase ?? "";
+  let ticks = 0;
+  disconnectWatchTimer = setInterval(() => {
+    ticks += 1;
+    const phase = useContentStore.getState().outlinePipeline?.phase ?? "";
+    if (phase !== startPhase || ticks >= 24) {
+      stopDisconnectWatch();
+      return;
+    }
+    void enqueuePoll(workspaceId, contentStoreSetters());
+  }, 5000);
+}
+
 /**
  * 内容轮询 Hook（REQ-20261012-202540 FR-005）。
  *

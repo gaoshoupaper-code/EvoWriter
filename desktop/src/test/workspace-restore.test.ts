@@ -135,9 +135,9 @@ describe("位置记忆（FR-001）", () => {
     expect(persistMock.saveLastPosition).toHaveBeenCalledWith("ws-1", "th-9");
   });
 
-  it("handleSelectThread 切换会话保存上次位置", () => {
+  it("setActiveThreadId 从旧会话切到新会话保存上次位置", () => {
     useWorkspaceStore.setState({ activeWorkspaceId: "ws-1", activeThreadId: "th-1", threads: [th1] });
-    useWorkspaceStore.getState().handleSelectThread("th-2");
+    useWorkspaceStore.getState().setActiveThreadId("th-2");
     expect(persistMock.saveLastPosition).toHaveBeenCalledWith("ws-1", "th-2");
   });
 });

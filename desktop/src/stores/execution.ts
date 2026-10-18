@@ -18,6 +18,7 @@ import { toast } from "sonner";
 import type { AskUserOption, ChatMessage, ScreenplayResponse, StreamEvent, ThoughtSegment, ToolStatus, TraceLogEvent, TraceRunSummary } from "@/lib/types";
 import { appendReasoning, closeStreamingThought, currentTaskLabel } from "@/lib/thoughts";
 import { streamRequest } from "@/lib/stream";
+import { watchPipelineAfterDisconnect } from "@/lib/usePanelPolling";
 import { appendLiveTraceEvent } from "@/lib/trace";
 import { derivePhaseFromMessage } from "@/lib/execution-phase";
 import {
@@ -362,8 +363,10 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
     // 空数组不写盘（subscribe 侧约定），本地无记录时回退欢迎语。
     set({ messages: [] });
     void restoreThreadMessages(d.getActiveWorkspaceId(), threadId).then((restored) => {
-      // 恢复期间用户可能又切走：只写回仍是当前会话的结果
-      if (d.getActiveThreadId() !== threadId) return;
+      // 恢复期间用户可能又切走：只写回仍是当前会话的结果；
+      // 恢复期间新 run 已开始（隐式切换先建会话再提交的窗口）则放弃覆盖，
+      // 防止异步恢复的旧列表盖掉在途提交的消息（review P1 竞态修复）
+      if (d.getActiveThreadId() !== threadId || get().loading) return;
       set({ messages: restored || [makeWelcomeMessage(!!d.getActiveWorkspaceId())] });
     });
   },
@@ -472,7 +475,9 @@ async function performSubmit(
     });
   }
 
-  const activeWorkspaceId = d.getActiveThreadId() ? d.getActiveWorkspaceId() : "";
+  // P0 修复（REQ-20261018-175526）：不以 activeThreadId 为前提——新书没有会话时
+  // 首轮提交走下方自动建线程分支（对话即入口），无工作区才拦截。
+  const activeWorkspaceId = d.getActiveWorkspaceId();
   if (!activeWorkspaceId) {
     toast.error("请先选择或创建一个工作目录。");
     return;
@@ -561,6 +566,19 @@ async function performSubmit(
       get().threadMessages.set(thread.thread_id, get().messages);
       d.setThreads((current: any[]) => [thread, ...current.filter((item: any) => item.thread_id !== thread.thread_id)]);
       d.setActiveThreadId(thread.thread_id);
+      // 阶段制（REQ-20261018-175526 FR-004）：首轮自动创建的会话绑定当前管线
+      // 阶段——后续阶段变化据此触发完成卡片。仅 five 管线绑定（legacy 不绑，
+      // 历史侧归「早期」）；绑定失败同样退化为「早期」分组，不阻塞首轮对话。
+      try {
+        const { useContentStore } = await import("./content");
+        const pipeline = useContentStore.getState().outlinePipeline;
+        if (pipeline?.kind === "five" && pipeline.phase) {
+          const { useStageSessionStore } = await import("./stage-session");
+          useStageSessionStore.getState().bindThreadStage(activeWorkspaceId, thread.thread_id, pipeline.phase);
+        }
+      } catch {
+        /* 阶段绑定是增强信息，失败不阻塞首轮对话 */
+      }
     }
 
     const nextSessionName = shouldNameThread ? getSessionTitle(displayText) : "";
@@ -705,6 +723,19 @@ async function performSubmit(
               })),
             }));
             break;
+          } else if (event.type === "pipeline") {
+            // DEC-013（REQ-20261018-175526）：阶段事件即时写入 contentStore，
+            // 阶段条/浮窗/切换检测共用同源 state；outline 轮询是产物文件与断连兜底通道。
+            // 畸形载荷（缺 kind/phase）直接丢弃——阶段条/浮窗/挂起卡片保持最后已知状态。
+            const p = event.data as Partial<import("@/lib/types").PipelineStatus> | null;
+            if (p && typeof p.kind === "string" && typeof p.phase === "string") {
+              try {
+                const { useContentStore } = await import("./content");
+                useContentStore.getState().setOutlinePipeline(p as import("@/lib/types").PipelineStatus);
+              } catch {
+                /* 观测事件不阻断流 */
+              }
+            }
           } else if (event.type === "interrupt") {
             const iv = event.data as {
               kind?: string; question?: string; options?: AskUserOption[] | null; multi_select?: boolean; source?: string;
@@ -775,6 +806,8 @@ async function performSubmit(
         d.setLiveTraceId("");
         closeThoughts("interrupted");
         toast.error(brokenMessage);
+        // FR-004 失败语义：未收到 final 的关流，服务端可能仍在跑——低频兜底观察
+        watchPipelineAfterDisconnect(activeWorkspaceId);
         set((state) => ({
           messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
             ...message,
@@ -818,6 +851,8 @@ async function performSubmit(
       d.setLiveTraceId("");
       closeThoughts("interrupted");
       toast.error(heartbeatMessage);
+      // FR-004 失败语义：断连后服务端可能仍在跑——低频轮询兜底观察阶段推进
+      watchPipelineAfterDisconnect(activeWorkspaceId);
       set((state) => ({
         messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
           ...message, status: "failed", thoughts: thoughtSegments,

@@ -48,6 +48,8 @@ interface ContentState {
   setActiveObjectFilename: (v: string) => void;
   setObjectsLoading: (v: boolean) => void;
   setOutline: (v: { kind: string; pipeline: PipelineStatus; files: OutlineFileEntry[] }) => void;
+  /** 只更新管线相位（SSE pipeline 事件即时通道，DEC-013）；产物文件仍由轮询维护 */
+  setOutlinePipeline: (v: PipelineStatus) => void;
   setActiveOutlineRel: (v: string) => void;
 }
 
@@ -132,5 +134,6 @@ export const useContentStore = create<ContentState>((set) => ({
         ? s.activeOutlineRel
         : (v.files[0]?.rel ?? ""),
     })),
+  setOutlinePipeline: (v) => set({ outlinePipeline: v }),
   setActiveOutlineRel: (v) => set({ activeOutlineRel: v }),
 }));

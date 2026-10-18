@@ -43,7 +43,7 @@ export function TopBar({
             <button className="user-menu-trigger" type="button" aria-label="用户菜单">
               <span className="user-menu-avatar">{(username || "?").slice(0, 1).toUpperCase()}</span>
               <span className="user-menu-name">{username || "用户"}</span>
-              <span className="session-menu-caret">▾</span>
+              <span className="user-menu-caret">▾</span>
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-[220px]">

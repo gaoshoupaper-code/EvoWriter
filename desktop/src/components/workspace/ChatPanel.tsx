@@ -3,66 +3,61 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { markdownTableComponents } from "../../lib/markdown-components";
-import type { ChatMessage, ThreadSummary } from "../../lib/types";
+import type { ChatMessage } from "../../lib/types";
 import type { StageFlow } from "../../lib/stage";
 import { InterviewOptions } from "./InterviewOptions";
 import { ImageReviewCard } from "./ImageReviewCard";
-import { SessionMenu } from "./SessionMenu";
 import { ExecutionView } from "./ExecutionView";
+import { StageBar } from "./StageBar";
+import { StageGuide } from "./StageGuide";
+import { StageTransitionCard } from "./StageTransitionCard";
+import { StageHistoryPanel } from "./StageHistoryPanel";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { useContentStore } from "@/stores/content";
+import { useStageSessionStore } from "@/stores/stage-session";
 
 type ChatPanelProps = {
   messages: ChatMessage[];
   prompt: string;
   loading: boolean;
-  threads: ThreadSummary[];
   activeThreadId: string;
   hasActiveWorkspace: boolean;
-  sessionMenuOpen: boolean;
-  creatingThread: boolean;
-  deleting: boolean;
   onPromptChange: (prompt: string) => void;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   onResumeSubmit: (resume: string) => Promise<void>;
   onImageReviewSubmit: (resume: import("../../lib/api").ImageReviewResume) => Promise<void>;
   onStop: () => void;
-  onToggleSessionMenu: () => void;
-  onCloseSessionMenu: () => void;
-  onCreateThread: () => void;
-  onSelectThread: (threadId: string) => void;
-  onDeleteThread: (threadId: string) => void;
   stageFlows?: (StageFlow | null)[];
   onRetry?: () => void;
+  onDeleteThread: (threadId: string) => void | Promise<void>;
 };
 
 export function ChatPanel({
   messages,
   prompt,
   loading,
-  threads,
   activeThreadId,
   hasActiveWorkspace,
-  sessionMenuOpen,
-  creatingThread,
-  deleting,
   onPromptChange,
   onSubmit,
   onResumeSubmit,
   onImageReviewSubmit,
   onStop,
-  onToggleSessionMenu,
-  onCloseSessionMenu,
-  onCreateThread,
-  onSelectThread,
-  onDeleteThread,
   stageFlows,
   onRetry,
+  onDeleteThread,
 }: ChatPanelProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
   const [canExpand, setCanExpand] = useState(false);
+
+  const historyView = useStageSessionStore((s) => s.historyView);
+  const pendingTransition = useStageSessionStore((s) => s.pendingTransition);
+  const openStageHistory = useStageSessionStore((s) => s.openStageHistory);
+  const restartThread = useStageSessionStore((s) => s.restartThread);
+  const pipeline = useContentStore((s) => s.outlinePipeline);
 
   // HITL 选项化（DEC-005 单输入面）：最后一条 assistant 处于 awaitingInput 且
   // 带选项时，禁用底部 composer（提交改走拍板卡；卡内补充框是唯一塞料通道）
@@ -106,44 +101,47 @@ export function ChatPanel({
     event.currentTarget.form?.requestSubmit();
   }
 
+  // ── 历史浏览态：整个对话区（消息+输入）换成只读历史面板（FR-008）──
+  if (historyView) {
+    return (
+      <section className="conversation-panel panel-surface" aria-label="创作对话">
+        <div className="panel-heading conversation-heading">
+          <StageBar
+            onOpenStageHistory={(stage) => openStageHistory(stage)}
+            onRestart={() => restartThread()}
+          />
+        </div>
+        <StageHistoryPanel onDeleteThread={onDeleteThread} />
+      </section>
+    );
+  }
+
+  // 引导语显示条件（FR-003）：还没有任何 user 消息（新会话空页面），非生成中
+  const showGuide = !loading && !messages.some((m) => m.role === "user");
+
   return (
     <section
       className="conversation-panel panel-surface"
       aria-label="创作对话"
     >
-      {/* 标题带简化（REQ-20261013-181350 DEC-008）：去「Dialogue/创作对话」大标题、
-          压扁高度对齐 ZCode；「新建会话」「会话菜单」保留在这一行 */}
+      {/* 标题带（REQ-20261018-175526 DEC-001/FR-001）：阶段条取代会话操作区——
+          用户可见范围内没有新建/切换会话入口，会话由阶段自动管理 */}
       <div className="panel-heading conversation-heading">
-        <div className="session-actions">
-          <button
-            className="session-create-button"
-            type="button"
-            onClick={() => {
-              onCreateThread();
-              onCloseSessionMenu();
-            }}
-            disabled={creatingThread || !hasActiveWorkspace}
-          >
-            {creatingThread ? "创建中" : "新建会话"}
-          </button>
-          <SessionMenu
-            threads={threads}
-            activeThreadId={activeThreadId}
-            disabled={!hasActiveWorkspace}
-            open={sessionMenuOpen}
-            deleting={deleting}
-            loading={loading}
-            onToggle={onToggleSessionMenu}
-            onClose={onCloseSessionMenu}
-            onSelectThread={onSelectThread}
-            onDeleteThread={onDeleteThread}
-          />
-        </div>
+        <StageBar
+          onOpenStageHistory={(stage) => openStageHistory(stage)}
+          onRestart={() => restartThread()}
+        />
       </div>
 
       {/* 五段制（REQ-20261018-115508 DEC-003）：砍表单纯对话开场——
           对话即入口，新书首轮由 agent 走题材第 0 步摸底。 */}
       <div className="message-list" ref={listRef}>
+        {showGuide && hasActiveWorkspace && pipeline?.kind === "five" ? (
+          <StageGuide
+            phase={pipeline.phase}
+            onPickSuggestion={(text) => onPromptChange(text)}
+          />
+        ) : null}
         {messages.map((message, index) => {
           // 三步管线阶段徽章（REQ-20261015-161200）：消息带产出段位
           // （世界观/总纲卷纲/章纲），历史双泳道消息保留旧徽章，
@@ -196,23 +194,23 @@ export function ChatPanel({
                   image_review → ImageReviewCard（文生图评审）
                   D3 防御：仅最后一条 assistant 渲染，历史 HITL 残留不渲染。*/}
               {message.role === "assistant" &&
-              index === messages.length - 1 &&
-              message.awaitingInput ? (
-                message.awaitingInput.kind === "image_review" ? (
-                  <ImageReviewCard
-                    payload={message.awaitingInput as unknown as import("../../lib/api").ImageReviewInterrupt}
-                    onSubmit={onImageReviewSubmit}
-                    disabled={loading}
-                  />
-                ) : message.awaitingInput.options?.length ? (
-                  <InterviewOptions
-                    options={message.awaitingInput.options}
-                    multiSelect={!!message.awaitingInput.multi_select}
-                    onSubmit={onResumeSubmit}
-                    disabled={loading}
-                  />
-                ) : null
-              ) : null}
+                index === messages.length - 1 &&
+                message.awaitingInput ? (
+                  message.awaitingInput.kind === "image_review" ? (
+                    <ImageReviewCard
+                      payload={message.awaitingInput as unknown as import("../../lib/api").ImageReviewInterrupt}
+                      onSubmit={onImageReviewSubmit}
+                      disabled={loading}
+                    />
+                  ) : message.awaitingInput.options?.length ? (
+                    <InterviewOptions
+                      options={message.awaitingInput.options}
+                      multiSelect={!!message.awaitingInput.multi_select}
+                      onSubmit={onResumeSubmit}
+                      disabled={loading}
+                    />
+                  ) : null
+                ) : null}
               {/* shimmer 兜底：最后一条 assistant + loading + 无 ExecutionView 内容时
                   （FR-002：思考行到达后 shimmer 退场，时间线本身即执行反馈） */}
               {isLastAssistant && loading && !message.content && !message.tools?.length && !message.thoughts?.length ? (
@@ -225,9 +223,14 @@ export function ChatPanel({
             </article>
           );
         })}
+        {/* 完成卡片（FR-004/DEC-003）：阶段已变的缓冲，挂在旧对话末尾 */}
+        {pendingTransition ? (
+          <StageTransitionCard onOpenStageHistory={(stage) => openStageHistory(stage)} />
+        ) : null}
       </div>
 
-      {/* composer：无卡时输入框是唯一输入（DEC-005 单输入面） */}
+      {/* composer：无卡时输入框是唯一输入（DEC-005 单输入面）；
+          完成卡片挂起时输入框保持可用——直接发送即隐式切换（DEC-012） */}
       <form className="chat-composer" onSubmit={onSubmit}>
         <div className={`chat-input-wrap${expanded ? " expanded" : ""}`}>
           <textarea

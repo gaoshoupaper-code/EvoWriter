@@ -111,7 +111,7 @@ vi.mock("@/lib/api", () => ({
   workspaceNovelPdfUrl: () => "", workspaceNovelWordUrl: () => "",
 }));
 
-vi.mock("@/lib/usePanelPolling", () => ({ usePanelPolling: () => {} }));
+vi.mock("@/lib/usePanelPolling", () => ({ usePanelPolling: () => {}, watchPipelineAfterDisconnect: () => {}, stopDisconnectWatch: () => {} }));
 
 vi.mock("@/components/workspace/AppShell", () => ({ AppShell: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
 vi.mock("@/components/workspace/TopBar", () => ({ TopBar: () => null }));
@@ -126,7 +126,6 @@ vi.mock("@/components/workspace/WorldviewPanel", () => ({ WorldviewPanel: () => 
 vi.mock("@/components/workspace/StorylinePanel", () => ({ StorylinePanel: () => null }));
 vi.mock("@/components/workspace/InterviewOptions", () => ({ InterviewOptions: () => null }));
 vi.mock("@/components/workspace/ImageReviewCard", () => ({ ImageReviewCard: () => null }));
-vi.mock("@/components/workspace/SessionMenu", () => ({ SessionMenu: () => null }));
 
 const { MemoryRouter } = await import("react-router-dom");
 const { render } = await import("@testing-library/react");

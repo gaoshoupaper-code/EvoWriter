@@ -10,7 +10,7 @@
  * home.tsx 用 threadMessagesRef（Map<threadId, ChatMessage[]>）在切换时存取。
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
@@ -75,7 +75,7 @@ vi.mock("@/lib/api", () => ({
   workspaceNovelPdfUrl: () => "", workspaceNovelWordUrl: () => "",
 }));
 
-vi.mock("@/lib/usePanelPolling", () => ({ usePanelPolling: () => {} }));
+vi.mock("@/lib/usePanelPolling", () => ({ usePanelPolling: () => {}, watchPipelineAfterDisconnect: () => {}, stopDisconnectWatch: () => {} }));
 
 vi.mock("@/components/workspace/AppShell", () => ({ AppShell: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
 vi.mock("@/components/workspace/TopBar", () => ({ TopBar: () => null }));
@@ -91,18 +91,9 @@ vi.mock("@/components/workspace/StorylinePanel", () => ({ StorylinePanel: () => 
 vi.mock("@/components/workspace/InterviewOptions", () => ({ InterviewOptions: () => null }));
 vi.mock("@/components/workspace/ImageReviewCard", () => ({ ImageReviewCard: () => null }));
 
-// SessionMenu mock：渲染线程切换按钮
-vi.mock("@/components/workspace/SessionMenu", () => ({
-  SessionMenu: ({ threads, onSelectThread }: { threads: { thread_id: string; session_name: string }[]; onSelectThread: (id: string) => void }) => (
-    <div data-testid="session-menu">
-      {threads.map((t) => (
-        <button key={t.thread_id} type="button" data-thread-id={t.thread_id} onClick={() => onSelectThread(t.thread_id)}>
-          {t.session_name}
-        </button>
-      ))}
-    </div>
-  ),
-}));
+// 阶段制（REQ-20261018-175526）：用户可见的会话切换 UI 已移除（FR-001），
+// 切会话由阶段自动驱动（confirmTransition/restartThread → setActiveThreadId）。
+// 本测试直接经 store 落位切换，等价验证 activeThreadId effect 的消息存取。
 
 const { MemoryRouter } = await import("react-router-dom");
 const { render } = await import("@testing-library/react");
@@ -117,6 +108,7 @@ describe("T0d: 切会话消息保留", () => {
 
   it("在会话A发消息后切到B再切回A，A的消息仍在", async () => {
     const user = userEvent.setup();
+    const { useWorkspaceStore } = await import("@/stores/workspace");
     render(<MemoryRouter initialEntries={["/"]}><Home /></MemoryRouter>);
 
     const input = await screen.findByRole("textbox", {}, { timeout: 10000 });
@@ -130,8 +122,8 @@ describe("T0d: 切会话消息保留", () => {
       expect(screen.getByText("会话A的正文")).toBeInTheDocument();
     }, { timeout: 10000 });
 
-    // 切到 thread-2（会话B）
-    await user.click(screen.getByText("会话B"));
+    // 切到 thread-2（会话B）——等价于阶段自动切换的落位路径
+    act(() => useWorkspaceStore.getState().setActiveThreadId("thread-2"));
 
     // 会话B 应显示初始消息（不含会话A的内容）
     await waitFor(() => {
@@ -139,7 +131,7 @@ describe("T0d: 切会话消息保留", () => {
     }, { timeout: 5000 });
 
     // 切回 thread-1（会话A）
-    await user.click(screen.getByText("会话A"));
+    act(() => useWorkspaceStore.getState().setActiveThreadId("thread-1"));
 
     // 会话A 的消息应恢复
     await waitFor(() => {

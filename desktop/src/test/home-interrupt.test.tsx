@@ -95,7 +95,7 @@ vi.mock("@/lib/api", () => ({
   workspaceNovelPdfUrl: () => "", workspaceNovelWordUrl: () => "",
 }));
 
-vi.mock("@/lib/usePanelPolling", () => ({ usePanelPolling: () => {} }));
+vi.mock("@/lib/usePanelPolling", () => ({ usePanelPolling: () => {}, watchPipelineAfterDisconnect: () => {}, stopDisconnectWatch: () => {} }));
 
 vi.mock("@/components/workspace/AppShell", () => ({ AppShell: ({ children }: { children: ReactNode }) => <div>{children}</div> }));
 vi.mock("@/components/workspace/TopBar", () => ({ TopBar: () => null }));
@@ -119,7 +119,6 @@ vi.mock("@/components/workspace/InterviewOptions", () => ({
   ),
 }));
 vi.mock("@/components/workspace/ImageReviewCard", () => ({ ImageReviewCard: () => null }));
-vi.mock("@/components/workspace/SessionMenu", () => ({ SessionMenu: () => null }));
 
 const { MemoryRouter } = await import("react-router-dom");
 const { render } = await import("@testing-library/react");
@@ -480,21 +479,13 @@ function panelRender(props: Partial<Parameters<typeof ChatPanel>[0]> = {}) {
     messages: [{ role: "user", content: "【创作需求】玄幻 —— 测试" }, awaitingMessage],
     prompt: "",
     loading: false,
-    threads: [],
     activeThreadId: "thread-1",
     hasActiveWorkspace: true,
-    sessionMenuOpen: false,
-    creatingThread: false,
-    deleting: false,
     onPromptChange: () => {},
     onSubmit: (() => {}) as unknown as React.FormEventHandler<HTMLFormElement>,
     onResumeSubmit: vi.fn(async () => {}),
     onImageReviewSubmit: vi.fn(async () => {}),
     onStop: () => {},
-    onToggleSessionMenu: () => {},
-    onCloseSessionMenu: () => {},
-    onCreateThread: () => {},
-    onSelectThread: () => {},
     onDeleteThread: () => {},
     ...props,
   };

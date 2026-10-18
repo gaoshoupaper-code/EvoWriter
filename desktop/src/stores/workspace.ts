@@ -12,7 +12,6 @@ import type { RhythmData, Style, ThreadSummary, WorkspacePanel, WorkspaceSummary
 import {
   activateStyle as activateStyleRequest,
   createStyle as createStyleRequest,
-  createThread as createThreadRequest,
   createWorkspace as createWorkspaceRequest,
   deleteStyle as deleteStyleRequest,
   deleteThread as deleteThreadRequest,
@@ -78,12 +77,11 @@ interface WorkspaceState {
   creatingWorkspace: boolean;
   deletingWorkspace: boolean;
 
-  // 会话
+  // 会话（阶段制 REQ-20261018-175526：创建/切换由 stage-session 自动驱动，
+  // 用户无手动会话操作；threads 名单仅供历史面板与删除）
   threads: ThreadSummary[];
   activeThreadId: string;
-  creatingThread: boolean;
   deleting: boolean;
-  sessionMenuOpen: boolean;
 
   // 风格
   styles: Style[];
@@ -106,8 +104,6 @@ interface WorkspaceState {
   switchWorkspace: (workspaceId: string) => Promise<ContentData | null>;
   handleCreateWorkspace: () => Promise<void>;
   handleDeleteWorkspace: () => Promise<void>;
-  handleCreateThread: () => Promise<ThreadSummary | undefined>;
-  handleSelectThread: (threadId: string) => void;
   handleDeleteThread: (threadId: string) => Promise<void>;
 
   // 风格 actions
@@ -139,9 +135,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   deletingWorkspace: false,
   threads: [],
   activeThreadId: "",
-  creatingThread: false,
   deleting: false,
-  sessionMenuOpen: false,
   styles: [],
   styleModalOpen: false,
   creatingStyle: false,
@@ -252,31 +246,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
   },
 
-  handleCreateThread: async () => {
-    const workspaceId = get().activeWorkspaceId;
-    if (!workspaceId || get().creatingThread) return;
-    set({ creatingThread: true });
-    try {
-      const thread = await createThreadRequest(workspaceId);
-      set((state) => ({
-        threads: [thread, ...state.threads.filter((item) => item.thread_id !== thread.thread_id)],
-        activeThreadId: thread.thread_id,
-      }));
-      return thread;
-    } catch (createError) {
-      toast.error(createError instanceof Error ? createError.message : "无法创建新会话。");
-    } finally {
-      set({ creatingThread: false });
-    }
-  },
-
-  handleSelectThread: (threadId) => {
-    if (threadId === get().activeThreadId) return;
-    set({ activeThreadId: threadId });
-    // FR-001：手动切换会话即记忆为上次位置
-    if (get().activeWorkspaceId) void saveLastPosition(get().activeWorkspaceId, threadId);
-  },
-
   handleDeleteThread: async (threadId) => {
     if (!threadId || get().deleting) return;
     set({ deleting: true });
@@ -287,8 +256,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       set((state) => {
         const next = state.threads.filter((thread) => thread.thread_id !== threadId);
         const patch: Partial<WorkspaceState> = { threads: next };
+        // 阶段制（REQ-20261018-175526）：删除当前会话时「当前」清空（下轮提交
+        // 自动重建），不得跳到 next[0]——那会让任意归档会话瞬间变成「当前对话」
         if (state.activeThreadId === threadId) {
-          patch.activeThreadId = next[0]?.thread_id || "";
+          patch.activeThreadId = "";
         }
         return patch as WorkspaceState;
       });

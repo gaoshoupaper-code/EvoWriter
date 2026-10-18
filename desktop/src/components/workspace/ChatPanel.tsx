@@ -12,7 +12,7 @@ import { StageBar } from "./StageBar";
 import { StageGuide } from "./StageGuide";
 import { StageTransitionCard } from "./StageTransitionCard";
 import { StageHistoryPanel } from "./StageHistoryPanel";
-import { Button } from "@/components/ui/button";
+import { ArrowUp, Square, Maximize2, Minimize2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useContentStore } from "@/stores/content";
 import { useStageSessionStore } from "@/stores/stage-session";
@@ -98,7 +98,7 @@ export function ChatPanel({
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
-    event.currentTarget.form?.requestSubmit();
+    if (!loading && !awaitingWithOptions) event.currentTarget.form?.requestSubmit();
   }
 
   // ── 历史浏览态：整个对话区（消息+输入）换成只读历史面板（FR-008）──
@@ -251,28 +251,20 @@ export function ChatPanel({
               aria-label={expanded ? "缩小输入框" : "扩大输入框"}
               title={expanded ? "缩小输入框" : "扩大输入框"}
             >
-              {expanded ? "↙" : "↗"}
+              {expanded ? <Minimize2 size={14} aria-hidden="true" /> : <Maximize2 size={14} aria-hidden="true" />}
             </button>
           ) : null}
-        </div>
-        <div className="composer-actions">
-          {loading ? (
-            <Button
-              variant="outline"
-              className="stop-button min-h-[46px] rounded-[14px] px-4 text-sm font-black text-red-700 border-red-200 hover:bg-red-50"
-              type="button"
-              onClick={onStop}
-            >
-              停止
-            </Button>
-          ) : null}
-          <Button
-            className="send-button min-h-[46px] rounded-[14px] px-4 text-sm font-black bg-gradient-to-br from-[var(--coral)] to-[var(--gold)] shadow-lg hover:shadow-xl hover:-translate-y-px transition-all"
-            type="submit"
-            disabled={loading || awaitingWithOptions}
-          >
-            {loading ? "生成中" : "发送"}
-          </Button>
+          <div className="composer-actions">
+            {loading ? (
+              <button className="stop-button" type="button" onClick={onStop} aria-label="停止" title="停止">
+                <Square size={14} fill="currentColor" aria-hidden="true" />
+              </button>
+            ) : (
+              <button className="send-button" type="submit" disabled={awaitingWithOptions} aria-label="发送" title="发送">
+                <ArrowUp size={16} aria-hidden="true" />
+              </button>
+            )}
+          </div>
         </div>
       </form>
     </section>

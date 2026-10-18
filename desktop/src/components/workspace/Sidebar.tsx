@@ -6,6 +6,7 @@
  * 点条目切到产物面板查看；正文条目进入人修编辑（FR-009）。
  * 旧「作品资料」分组（大纲/人物/物品/世界观）随旧机制退役。
  */
+import type { ReactNode } from "react";
 import type { OutlineFileEntry, WorkspacePanel, WorkspaceSummary } from "../../lib/types";
 
 type SidebarProps = {
@@ -21,6 +22,7 @@ type SidebarProps = {
   files: OutlineFileEntry[];
   activeRel: string;
   onSelectArtifact: (rel: string) => void;
+  footer?: ReactNode;
 };
 
 /** rel → 树分组（顺序即五段流程序；空组不显示） */
@@ -69,6 +71,7 @@ export function Sidebar({
   files,
   activeRel,
   onSelectArtifact,
+  footer,
 }: SidebarProps) {
   const groups = treeGroups(files);
 
@@ -167,6 +170,7 @@ export function Sidebar({
           )}
         </div>
       </nav>
+      {footer}
     </aside>
   );
 }

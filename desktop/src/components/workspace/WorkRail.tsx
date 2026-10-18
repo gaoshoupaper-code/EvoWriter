@@ -26,9 +26,8 @@ import {
   phaseDisplayName,
 } from "@/lib/pipeline-steps";
 
-/* 窄屏锁定阈值：量对话区容器宽 <1280px 才允许展开（容器查询同口径）。
- * 对话区 = 窗口 − 侧栏 252px，故窗口 <1532px（≤1531）锁 mini */
-const NARROW_QUERY = "(max-width: 1531px)";
+/* 对话区 = 窗口 − 侧栏 264px；容器不足 1280px 时锁定小卡，与 CSS 断点一致。 */
+const NARROW_QUERY = "(max-width: 1543px)";
 
 /* ── 图标（lucide 风格描边 SVG）── */
 

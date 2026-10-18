@@ -60,7 +60,7 @@ function containerBlock(condition: string): string {
 describe("dashboard 布局契约（作品浮窗悬浮 + 两态同宽）", () => {
   it("dashboard-body 两列（侧栏/主区）：浮窗三态均绝对定位，不再占第三列（DEC-015）", () => {
     const body = block(".dashboard-body");
-    expect(body).toMatch(/grid-template-columns:\s*252px\s+minmax\(0,\s*1fr\)\s*;?/);
+    expect(body).toMatch(/grid-template-columns:\s*264px\s+minmax\(0,\s*1fr\)\s*;?/);
     expect(body).not.toMatch(/grid-template-columns:[^}]*auto/);
     expect(body).toContain("position: relative");
   });
@@ -117,9 +117,9 @@ describe("dashboard 布局契约（作品浮窗悬浮 + 两态同宽）", () => 
     expect(wide).toContain("transform: translateX(-168px)");
   });
 
-  it("切换过渡 150ms ease-out：基底含 width/max-width/transform，≥1280 只过渡 transform（照抄 ZCode）", () => {
+  it("切换过渡遵守动效变量，≥1280 只过渡 transform", () => {
     const list = block(".message-list");
-    expect(list).toMatch(/transition:[^;]*width[^;]*max-width[^;]*transform[^;]*150ms ease-out/);
+    expect(list).toMatch(/transition:[^;]*width[^;]*max-width[^;]*transform[^;]*var\(--motion-duration\)/);
     const wide = containerBlock("1280px");
     expect(wide).toMatch(/transition-property:\s*transform/);
   });
@@ -149,6 +149,31 @@ describe("对话区对齐 ZCode 契约（FR-002/FR-003）", () => {
     expect(composer).toContain("width: 100%");
     expect(composer).toContain("margin-inline: auto");
     expect(composer).not.toContain("760px");
+  });
+});
+
+describe("视觉升级（REQ-20261018-202005）", () => {
+  it("顶栏固定48px，主体使用剩余高度，列表独立滚动", () => {
+    expect(block(".dashboard-shell")).toContain("grid-template-rows: 48px minmax(0, 1fr)");
+    expect(block(".dashboard-shell")).toContain("height: 100dvh");
+    expect(block(".dashboard-sidebar")).toContain("flex-direction: column");
+    expect(block(".sidebar-nav")).toContain("overflow-y: auto");
+    expect(block(".sidebar-footer")).toContain("flex-shrink: 0");
+    expect(block(".conversation-panel")).not.toContain("77px");
+  });
+
+  it("侧栏三标题默认15px，条目默认13px", () => {
+    expect(block(".sidebar-group-label")).toContain("font-size: var(--text-ui-lg)");
+    expect(block(".sidebar-group-label")).toContain("font-weight: 600");
+    expect(block(".sidebar-book-title")).toContain("font-size: var(--text-ui-base)");
+    expect(block(".sidebar-tree-item")).toContain("font-size: var(--text-ui-base)");
+  });
+
+  it("输入气泡包裹操作，文本框无独立边框", () => {
+    expect(block(".chat-input-wrap")).toContain("border-radius: var(--radius-xl)");
+    expect(block(".chat-input")).toContain("border: 0");
+    expect(block(".chat-composer")).not.toContain("104px");
+    expect(block(".composer-actions")).toContain("justify-content: flex-end");
   });
 });
 

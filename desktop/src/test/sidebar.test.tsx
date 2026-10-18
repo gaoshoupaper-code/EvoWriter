@@ -41,6 +41,49 @@ function baseProps(over: Partial<Parameters<typeof Sidebar>[0]> = {}) {
 }
 
 describe("作品侧栏（FR-011）", () => {
+  it("底栏位于滚动导航之外，空列表仍保留入口（AC-001/003）", () => {
+    render(<Sidebar {...baseProps({ workspaces: [], files: [], footer: <button>底栏入口</button> })} />);
+    const sidebar = screen.getByRole("complementary", { name: "作品侧栏" });
+    const nav = within(sidebar).getByRole("navigation");
+    const footer = within(sidebar).getByRole("button", { name: "底栏入口" });
+    expect(nav).not.toContainElement(footer);
+    expect(sidebar.lastElementChild).toContainElement(footer);
+    expect(screen.getByText("还没有作品，点「新书」开一本。")).toBeInTheDocument();
+  });
+
+  it("50 本作品和 100 条产物保留全名与末项回调（AC-001/002/006）", async () => {
+    const longTitle = "长书名测试".repeat(8);
+    const books = Array.from({ length: 50 }, (_, index) => ({
+      ...BOOKS[0], workspace_id: `book-${index}`, title: index === 49 ? longTitle : `作品 ${index}`,
+    }));
+    const files = Array.from({ length: 100 }, (_, index) => ({
+      rel: `正文/第${index + 1}章${longTitle}.md`, markdown: "",
+    }));
+    const props = baseProps({ workspaces: books, activeWorkspaceId: "book-0", files });
+    render(<Sidebar {...props} />);
+    const sidebar = screen.getByRole("complementary", { name: "作品侧栏" });
+    expect(sidebar.querySelectorAll(".sidebar-book")).toHaveLength(50);
+    expect(sidebar.querySelectorAll(".sidebar-tree-item")).toHaveLength(100);
+    const book = within(sidebar).getByTitle(longTitle);
+    const artifact = within(sidebar).getByTitle(`第100章${longTitle}`);
+    await userEvent.click(book);
+    await userEvent.click(artifact);
+    expect(props.onSelectWorkspace).toHaveBeenCalledWith("book-49");
+    expect(props.onSelectArtifact).toHaveBeenCalledWith(files[99].rel);
+    expect(books[49].title).toBe(longTitle);
+    expect(Array.from(sidebar.querySelectorAll(".sidebar-group-label"), (label) => label.textContent))
+      .toEqual(["创作", "作品", "产物"]);
+  });
+
+  it("创建或删除进行中仍禁止重复操作（AC-006）", () => {
+    const props = baseProps({ creatingWorkspace: true });
+    const { rerender } = render(<Sidebar {...props} />);
+    expect(screen.getByRole("button", { name: "新建作品" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "删除 行走的经验包" })).toBeDisabled();
+    rerender(<Sidebar {...baseProps({ deletingWorkspace: true })} />);
+    expect(screen.getByRole("button", { name: "删除 行走的经验包" })).toBeDisabled();
+  });
+
   it("书列表渲染并可切换；当前书高亮", async () => {
     const props = baseProps();
     render(<Sidebar {...props} />);

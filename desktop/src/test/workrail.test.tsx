@@ -38,7 +38,7 @@ const FILES = [
   { rel: "卷纲/第01卷.md", markdown: "" },
 ];
 
-/** 默认宽屏 matchMedia stub（窄屏=对话区容器 <1280px ⇔ 窗口 <1532px） */
+/** 默认宽屏 matchMedia stub（窄屏=对话区容器 <1280px ⇔ 窗口 <1544px） */
 function stubWideMedia() {
   vi.stubGlobal(
     "matchMedia",
@@ -162,7 +162,7 @@ describe("三态切换与唤回", () => {
   });
 });
 
-describe("窄窗口（对话区容器 <1280px ⇔ 窗口 <1532px）锁定小态", () => {
+describe("窄窗口（对话区容器 <1280px ⇔ 窗口 <1544px）锁定小态", () => {
   it("挂载即窄屏：expanded 被压回 mini", () => {
     useWorkrailStore.setState({ floatMode: "expanded" });
     vi.stubGlobal(

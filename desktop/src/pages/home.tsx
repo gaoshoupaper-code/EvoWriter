@@ -6,6 +6,7 @@ import { ArtifactPanel } from "@/components/workspace/ArtifactPanel";
 import { ChatPanel } from "@/components/workspace/ChatPanel";
 import { ConfirmDialog } from "@/components/workspace/ConfirmDialog";
 import { Sidebar } from "@/components/workspace/Sidebar";
+import { SidebarFooter } from "@/components/workspace/SidebarFooter";
 import { WorkRail } from "@/components/workspace/WorkRail";
 import { TopBar } from "@/components/workspace/TopBar";
 import { usePanelPolling } from "@/lib/usePanelPolling";
@@ -400,16 +401,7 @@ export default function Home() {
   return (
     <>
       <AppShell
-        topBar={
-          <TopBar
-            theme={theme}
-            username={authUser?.username ?? ""}
-            isAdmin={authUser?.is_admin ?? false}
-            hasApiKey={hasApiKey}
-            onThemeToggle={() => useWorkspaceStore.getState().toggleTheme()}
-            onLogout={handleLogout}
-          />
-        }
+        topBar={<TopBar />}
         sidebar={
           <Sidebar
             activePanel={safePanel}
@@ -429,6 +421,15 @@ export default function Home() {
               useContentStore.getState().setActiveOutlineRel(rel);
               useWorkspaceStore.setState({ activePanel: "artifacts" });
             }}
+            footer={
+              <SidebarFooter
+                theme={theme}
+                username={authUser?.username ?? ""}
+                hasApiKey={hasApiKey}
+                onThemeToggle={() => useWorkspaceStore.getState().toggleTheme()}
+                onLogout={handleLogout}
+              />
+            }
           />
         }
         rail={writingDomain && activeWorkspaceId ? <WorkRail /> : null}

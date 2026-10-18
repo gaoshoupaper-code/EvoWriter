@@ -126,6 +126,15 @@ class WritingEventSink:
         self._workspace_id = f"{self._owner_id}_{self._workspace_path.name}"
         self._active_tasks: dict[str, dict] = {}
         self._subagent_call_counts: dict[str, int] = {}
+        # ── 行事件装配状态（REQ-20261018-235653，FR-001）──
+        # row_seq：全局单调递增行序号（客户端按它排时间线）；
+        # response_rows：主代理模型调用的 run_id → {"reasoning"/"text": row_id}，
+        # 让同一响应的思考/正文共享 response_id，并支撑 end 全量兜底（FR-002）。
+        self._row_seq = 0
+        self._response_rows: dict[str, dict[str, str]] = {}
+        # call_id → 工具/子代理行 id；(行 id, 工具名) 栈供无 call_id 时按名回退
+        self._tool_row_ids: dict[str, str] = {}
+        self._tool_row_stack: list[tuple[str, str]] = []
         # FR-002：持有 trace_recorder + trace_id，用于构造章节抽取入库的 publish_callback
         #（写 trace run_meta 事件，与 harness 的 _make_quality_callback 对齐）。None 不埋点。
         self._trace_recorder = trace_recorder
@@ -149,6 +158,10 @@ class WritingEventSink:
             if tool_calls:
                 evt_data["tool_calls"] = tool_calls
             frames.append(_sse("model_output", evt_data))
+            # 行事件（FR-001/FR-002）：子代理调用期间不进主时间线（FR-005），
+            # 其产出经 task 聚合行摘要呈现。
+            if not self._active_tasks:
+                frames.extend(self._row_model_end(event, text))
 
         elif kind == "on_chain_start" and name == "tools":
             frames.extend(await self._handle_tool_start(data))
@@ -163,6 +176,7 @@ class WritingEventSink:
                 "call_id": _extract_tool_call_id(data),
                 "error": str(err)[:500],
             }))
+            frames.extend(self._row_tool_terminal(name, _extract_tool_call_id(data), "failed"))
 
         elif kind == "on_chat_model_stream":
             chunk = data.get("chunk")
@@ -188,8 +202,90 @@ class WritingEventSink:
                     reasoning = str(ak.get("reasoning_content", "") or "")
             if reasoning:
                 frames.append(_sse("reasoning_stream", {"content": reasoning}))
+            # 行事件（FR-001）：流式增量进行；子代理调用期间抑制（FR-005）。
+            if not self._active_tasks and (content or reasoning):
+                frames.extend(self._row_model_stream(event, content, reasoning))
 
         return frames
+
+    # ── 行事件装配（REQ-20261018-235653，DEC-003 行寻址 SSE）──────────
+
+    def _row_open(self, kind: str, row_id: str | None = None, **extra: Any) -> tuple[str, str]:
+        """开一行并返回 (行 id, 帧)。行序号全局单调递增，客户端按它排时间线。"""
+        self._row_seq += 1
+        rid = row_id or f"row-{self._row_seq}"
+        payload: dict[str, Any] = {"op": "open", "seq": self._row_seq, "id": rid, "kind": kind}
+        payload.update(extra)
+        return rid, _sse("row", payload)
+
+    def _row_model_stream(self, event: dict, content: str, reasoning: str) -> list[str]:
+        """主代理模型流式增量 → 思考/正文行的开行与追加（同一 run_id 共享 response_id）。"""
+        run_id = str(event.get("run_id") or "")
+        rows = self._response_rows.setdefault(run_id, {})
+        frames: list[str] = []
+        if content:
+            rid = rows.get("text")
+            if not rid:
+                rid, frame = self._row_open("text", response_id=run_id)
+                rows["text"] = rid
+                frames.append(frame)
+            frames.append(_sse("row", {"op": "delta", "id": rid, "text": content}))
+        if reasoning:
+            rid = rows.get("reasoning")
+            if not rid:
+                rid, frame = self._row_open("reasoning", response_id=run_id)
+                rows["reasoning"] = rid
+                frames.append(frame)
+            frames.append(_sse("row", {"op": "delta", "id": rid, "text": reasoning}))
+        return frames
+
+    def _row_model_end(self, event: dict, text: str) -> list[str]:
+        """主代理模型调用结束 → 行终态；未流式的调用在此开行即全量（FR-002 必丢路径修复）。"""
+        run_id = str(event.get("run_id") or "")
+        rows = self._response_rows.get(run_id)
+        if rows is None:
+            if not text:
+                return []
+            rid, frame = self._row_open("text", response_id=run_id)
+            return [frame, _sse("row", {"op": "end", "id": rid, "state": "complete", "text": text})]
+
+        frames: list[str] = []
+        text_rid = rows.get("text")
+        if text and not text_rid:
+            # 该响应只走了非流式通道：开行 + 全量终态，一段到位
+            text_rid, frame = self._row_open("text", response_id=run_id)
+            rows["text"] = text_rid
+            frames.append(frame)
+        if text_rid:
+            end_payload: dict[str, Any] = {"op": "end", "id": text_rid, "state": "complete"}
+            if text:
+                # end 携带全量快照：客户端整体替换，与流式增量对齐去重（AC-002）
+                end_payload["text"] = text
+            frames.append(_sse("row", end_payload))
+        if rows.get("reasoning"):
+            frames.append(_sse("row", {"op": "end", "id": rows["reasoning"], "state": "complete"}))
+        self._response_rows.pop(run_id, None)
+        return frames
+
+    def _row_tool_terminal(
+        self, name: str, call_id: str | None, state: str, summary: str | None = None,
+    ) -> list[str]:
+        """工具/子代理行终态；按 call_id 找行，无 call_id 时按工具名从栈顶回退。找不到返回空列表
+        （该行停留 streaming，由流结束时客户端兜底关行，安全降级）。"""
+        rid = self._tool_row_ids.pop(call_id, None) if call_id else None
+        if not rid:
+            for i in range(len(self._tool_row_stack) - 1, -1, -1):
+                if self._tool_row_stack[i][1] == name:
+                    rid = self._tool_row_stack.pop(i)[0]
+                    break
+        else:
+            self._tool_row_stack = [item for item in self._tool_row_stack if item[0] != rid]
+        if not rid:
+            return []
+        payload: dict[str, Any] = {"op": "end", "id": rid, "state": state}
+        if summary:
+            payload["summary"] = summary
+        return [_sse("row", payload)]
 
     # ── task 工具开始：派发焦点信息 + 维护元信息 ──────────────────
 
@@ -198,6 +294,9 @@ class WritingEventSink:
         frames: list[str] = []
         tool_inputs = data.get("input", [])
         parent_task_id, subagent_name = _current_parent_task(self._active_tasks)
+        # 行事件（FR-001/FR-005）：子代理内部的工具调用（active_tasks 非空时到达）
+        # 不开行——子代理内容只经聚合行呈现；主代理并行批次里的非 task 工具照常开行。
+        in_subagent = bool(self._active_tasks)
         for tc in tool_inputs:
             if not isinstance(tc, dict):
                 continue
@@ -224,6 +323,21 @@ class WritingEventSink:
                     }
                 call_payload["subagent_type"] = sub
                 call_payload["iteration"] = call_ordinal
+                # 子代理聚合行（DEC-002）：主时间线单行 + 摘要展开
+                rid, frame = self._row_open(
+                    "subagent", row_id=call_id or None,
+                    subagent_type=sub, iteration=call_ordinal,
+                )
+                if call_id:
+                    self._tool_row_ids[call_id] = rid
+                self._tool_row_stack.append((rid, tool_name))
+                frames.append(frame)
+            elif not in_subagent:
+                rid, frame = self._row_open("tool", row_id=call_id or None, tool=tool_name)
+                if call_id:
+                    self._tool_row_ids[call_id] = rid
+                self._tool_row_stack.append((rid, tool_name))
+                frames.append(frame)
             frames.append(_sse("tool_call", call_payload))
         return frames
 
@@ -236,9 +350,15 @@ class WritingEventSink:
             "output": str(data.get("output", ""))[:2000],
             "call_id": _extract_tool_call_id(data),
         }
+        frames: list[str] = [_sse("tool_output", output_payload)]
         if name == "task":
             await self._on_task_completed(data, output_payload)
-        return [_sse("tool_output", output_payload)]
+            # 子代理聚合行终态：摘要 = task 产出概要（FR-005）
+            summary = str(data.get("output", ""))[:500]
+            frames.extend(self._row_tool_terminal(name, _extract_tool_call_id(data), "complete", summary=summary))
+        else:
+            frames.extend(self._row_tool_terminal(name, _extract_tool_call_id(data), "complete"))
+        return frames
 
     async def _on_task_completed(self, data: dict, output_payload: dict[str, Any]) -> None:
         """task 完成：按 subagent 类型触发领域副作用（D8 B 类）。

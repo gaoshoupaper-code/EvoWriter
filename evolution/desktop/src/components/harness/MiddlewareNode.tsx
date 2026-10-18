@@ -108,7 +108,7 @@ export function MiddlewareNode({
                     </span>
                   </div>
                 </>
-              ) : Object.keys(mw.params).length > 0 ? (
+              ) : Object.keys(mw.params ?? {}).length > 0 ? (
                 <div className="mw-detail-row">
                   <span className="mw-detail-val">{JSON.stringify(mw.params, null, 2)}</span>
                 </div>

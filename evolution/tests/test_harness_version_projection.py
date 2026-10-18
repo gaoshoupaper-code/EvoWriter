@@ -237,5 +237,63 @@ class RegistryCleanupTest(unittest.TestCase):
         self.assertEqual(result["removed_versions"], [])
 
 
+class ManifestStackContractTest(unittest.TestCase):
+    """清单投影的展示契约（自包含合成数据，不依赖 harnesses/repo 工作区形态）。
+
+    前端 MiddlewareNode 对 mw.params 直接 Object.keys——缺字段崩整页
+    （Middleware Tab 黑屏，线上 manifest 布局 v42+ 曾缺）。
+    """
+
+    def test_every_manifest_mount_carries_params(self) -> None:
+        from app.versioning.middleware_projection import project_manifest_stacks
+        from contracts.architecture_manifest import ArchitectureManifest
+
+        source = (
+            '"""段闸。"""\n'
+            "class StageGateMiddleware:\n"
+            "    def before_agent(self):\n"
+            "        pass\n"
+            "    def awrap_model_call(self, handler):\n"
+            "        pass\n"
+        )
+        manifest = ArchitectureManifest.model_validate(
+            {
+                "schema_version": "writer.architecture/1",
+                "agents": [
+                    {
+                        "name": "writer",
+                        "role": "main",
+                        "prompt": "prompts/writer_system.md",
+                        "middleware": ["stage_gate"],
+                        "delegates": ["sub"],
+                        "context_files": ["demand.md"],
+                        "artifact_paths": ["outline/a.md"],
+                    },
+                    {
+                        "name": "sub",
+                        "role": "sub",
+                        "delegated_by": "writer",
+                        "prompt": "prompts/sub.md",
+                    },
+                ],
+            }
+        )
+        stacks = project_manifest_stacks(
+            {"middleware/stage_gate.py": source}, manifest
+        )
+
+        self.assertEqual(set(stacks), {"writer", "sub"})
+        mounts = [m for stack in stacks.values() for m in stack]
+        # 覆盖三类挂载来源：清单 domain 项、runtime 直挂项、基础链项
+        classes = {m["class_name"] for m in mounts}
+        self.assertIn("StageGateMiddleware", classes)
+        self.assertIn("TraceMiddleware", classes)
+        self.assertIn("ContextAssemblerMiddleware", classes)
+        self.assertIn("ArtifactValidationMiddleware", classes)
+        for mount in mounts:
+            self.assertIn("params", mount, f"{mount['class_name']} 缺 params 字段")
+            self.assertEqual(mount["params"], {})
+
+
 if __name__ == "__main__":
     unittest.main()

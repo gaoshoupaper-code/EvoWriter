@@ -40,6 +40,12 @@ export function SkillsTab({
     ? agents.some((a) => diffs.get(a.name)?.skills)
     : false;
 
+  // 空态：当前视角所有 agent 均无技能且无删除记录（v48 起架构未用 skills 目录，
+  // 诚实提示而非渲染空白页，避免误判为加载失败）
+  const hasAnySkills = agents.some(
+    (a) => a.skills.length > 0 || (diffs?.get(a.name)?.skills?.removed.length ?? 0) > 0,
+  );
+
   return (
     <div>
       <div className="diff-toggle-bar">
@@ -52,6 +58,10 @@ export function SkillsTab({
         />
         <span>显示升级差异{!hasAnySkillsDiff && "（本版本无 skills 变更）"}</span>
       </div>
+
+      {!hasAnySkills && (
+        <div className="monitor-empty">该版本所有 Agent 均无 skills。</div>
+      )}
 
       {agents.map((agent) => {
         // 边缘场景：skills 为空且无删除 → 不显示该段

@@ -407,7 +407,9 @@ def project_manifest_stacks(
         class_name = module_class.get(module)
         if class_name is None:
             return None
-        return {"class_name": class_name, "group": group, "optional": optional}
+        # params 必填：前端 MiddlewareNode 直接 Object.keys(mw.params)，
+        # 缺字段会崩整页（manifest 布局曾漏此字段导致 Middleware Tab 黑屏）
+        return {"class_name": class_name, "params": {}, "group": group, "optional": optional}
 
     stacks: dict[str, list[dict[str, Any]]] = {}
     for agent in manifest.agents:
@@ -416,19 +418,19 @@ def project_manifest_stacks(
             m = _mount(module, "base")
             if m:
                 mounts.append(m)
-        mounts.append({"class_name": "TraceMiddleware", "group": "runtime", "optional": True})
+        mounts.append({"class_name": "TraceMiddleware", "params": {}, "group": "runtime", "optional": True})
         for module in agent.middleware:
             m = _mount(module, "agent")
             if m:
                 mounts.append(m)
         if agent.context_files:
-            mounts.append({"class_name": "ContextAssemblerMiddleware", "group": "runtime", "optional": False})
+            mounts.append({"class_name": "ContextAssemblerMiddleware", "params": {}, "group": "runtime", "optional": False})
         if agent.delegates:
             m = _mount("revision_limit", "agent")
             if m:
                 mounts.append(m)
         if agent.artifact_paths:
-            mounts.append({"class_name": "ArtifactValidationMiddleware", "group": "runtime", "optional": False})
+            mounts.append({"class_name": "ArtifactValidationMiddleware", "params": {}, "group": "runtime", "optional": False})
         stacks[agent.name] = [_enrich_mount(mount, catalog) for mount in mounts]
     return stacks
 

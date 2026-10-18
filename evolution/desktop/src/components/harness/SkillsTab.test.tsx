@@ -110,4 +110,13 @@ describe("SkillsTab 技能卡片", () => {
     expect(screen.getByText(/git show 失败/)).toBeTruthy();
     expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
   });
+
+  it("所有 agent 无技能时显示空态提示，不渲染空白页", () => {
+    const bare = makeAgent({ skills: [] });
+    render(<SkillsTab agents={[bare]} diffs={null} />);
+
+    // 空态文案可见（v48 起架构无 skills 目录，诚实提示避免误判为加载失败）
+    expect(screen.getByText("该版本所有 Agent 均无 skills。")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /skill-card/ })).toBeNull();
+  });
 });

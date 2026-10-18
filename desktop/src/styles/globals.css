@@ -54,13 +54,13 @@
   --motion-duration: 140ms;
   --motion-ease: ease-out;
 
-  --bg: #e8e2d5;
+  --bg: #e9e1cc;
   --ink: #2e2618;
-  --muted: #5e584e;
-  --panel: #e8e2d5;
-  --panel-solid: #eee8dc;
-  --panel-soft: #ded7c9;
-  --chrome: #d8d1c2;
+  --muted: #5a544a;
+  --panel: #e9e1cc;
+  --panel-solid: #f0e9d8;
+  --panel-soft: #ded2b5;
+  --chrome: #d9cfb4;
   --line: rgba(62, 50, 28, 0.16);
   --line-strong: rgba(62, 50, 28, 0.24);
   --teal: #286b58;

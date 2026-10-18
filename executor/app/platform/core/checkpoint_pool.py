@@ -53,6 +53,10 @@ class CheckpointPool:
 
             cm = AsyncSqliteSaver.from_conn_string(str(self._db_path(user_id)))
             saver = await cm.__aenter__()
+            # 首次使用的用户库没有 checkpoints 表（from_conn_string 的上下文
+            # 管理器不建表）——setup() 幂等建表，存量库不受影响（热修：新用户
+            # 首次生成曾因缺表直接 500）。
+            await saver.setup()
             self._savers[user_id] = saver
             self._cms[user_id] = cm
             return saver

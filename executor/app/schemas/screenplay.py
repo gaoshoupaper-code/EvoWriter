@@ -180,9 +180,25 @@ class OutlineFileEntry(BaseModel):
 class WorkspaceOutlineContent(BaseModel):
     """管线阶段条 + outline 产物全集（桌面端 outline 视图 / SSE watch 载荷）。"""
 
-    kind: str = Field(description="pipeline | legacy（旧五件套工作区，files 为空）")
+    kind: str = Field(description="five | legacy（旧五件套工作区，files 为空）")
     pipeline: dict[str, Any] = Field(default_factory=dict, description="pipeline_status 输出")
     files: list[OutlineFileEntry] = Field(default_factory=list)
+
+
+class ManuscriptContent(BaseModel):
+    """单章正文（REQ-20261018-115508 FR-009 人修编辑载荷）。"""
+
+    chapter: int = Field(description="章号")
+    markdown: str = Field(default="", description="正文全文（markdown）")
+    status: str = Field(default="draft", description="draft（初稿）| finalized（人修定稿）")
+    exists: bool = Field(default=False, description="该章正文是否已落盘")
+
+
+class ManuscriptSaveRequest(BaseModel):
+    """正文保存请求（客户端直写，不经过 agent）。"""
+
+    markdown: str = Field(min_length=1, description="修改后的正文全文")
+    finalize: bool = Field(default=False, description="true = 本次保存后人修定稿（状态行改写）")
 
 
 class ScreenplayGenerateRequest(BaseModel):

@@ -1,52 +1,55 @@
-"""单主控三步管线编排层（REQ-20261015-161200 FR-002/003，DEC-005）。
+"""五段式管线编排层（REQ-20261018-115508 FR-002，DEC-001/002/010）。
 
-编排归 executor 代码：管「下一步做什么单元、用哪个会话 thread」。
-产物目录即进度真相源（FR-001）：outline/ 目录扫描定进度；`outline/_pipeline.json`
-是可重建的加速层（contracts.outline_pipeline 共享契约）。
+编排归 executor 代码：管「当前在哪一大段、装配哪份段规程、用哪个会话
+thread」。产物目录即进度真相源：五段产物树扫描定进度（contracts.
+writing_artifacts 唯一实现）；`.writing/state.json` 是可重建的加速层。
 
-三步制（DEC-001）：①定世界观 → ②定总纲和卷纲 → ③定章纲批滚动。
-流程推进由主控 agent（writer）按目录自主调度；本层只提供下一单元提示与
-会话/resume 定位，不再有泳道路由与回炉状态机。
+五段制（DEC-001 单 agent 技能切换）：题材 → 总纲 → 卷纲 → 章纲 → 正文。
+路由三来源优先级：resume 续跑（回到原会话）> 点名跳段（handoff 写入的
+override_stage，消费即清）> 目录扫描自动判定（DEC-002）。
 
-legacy（DEC-011）：旧五件套（storyline.md）与旧七步（outline/00-06 文件）
-工作区均只读——agent_name=None 装配首个 main，directive 声明只读模式。
+legacy（DEC-010）：旧五件套（storyline.md）、旧七步（outline/00-06）、
+三步制（outline/世界观.md 等）一律只读——agent_name=None 装配首个 main，
+directive 声明只读模式；classify 委托 contracts（旧三步制 outline/ 目录
+存在即 legacy）。
 
 纯同步模块（唯一副作用是状态文件读写），可独立单测。
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
-from contracts.outline_ledger_contract import (
-    BATCH_FILE_PATTERN,
+from contracts.writing_artifacts import (
+    STAGE_CHAPTER,
+    STAGE_LABELS,
+    STAGE_LEGACY,
+    STAGE_THEME,
     MASTER_FILENAME,
-    VOLUME_FILE_PATTERN,
-    WORLDVIEW_FILENAME,
-)
-from contracts.outline_pipeline import (
-    PHASE_CHAPTERS,
-    PHASE_LEGACY,
-    PHASE_OUTLINE,
-    PHASE_WORLDVIEW,
-    PipelineState,
-    load_pipeline_state,
-    save_pipeline_state,
+    STYLE_FILENAME,
+    THEME_FILENAME,
+    WritingProgress,
+    classify_writing_workspace,
+    derive_stage,
+    load_writing_state,
+    save_writing_state,
+    scan_writing_progress,
 )
 
-# 单主控 agent 名（architecture.json 唯一 main）
-MAIN_AGENT = "writer"
+# 单 agent 架构名（architecture.json 唯一 main）
+MAIN_AGENT = "author"
 
-# 旧七步产物签名前缀（00-赛道 ~ 06-章纲；命中即 legacy 只读）
-_SEVEN_STEP_PREFIXES = ("00-", "01-", "02-", "03-", "04-", "05-", "06-")
-
-# legacy 会话键（与管线主控会话键区分，互不串台）
+# legacy 会话键（与主管线会话键区分，互不串台）
 _LEGACY_AGENT_KEY = "legacy"
 
-# 阶段条三步标签（desktop pipeline-steps 同名对齐；next_unit 取值即此三者）
-LABEL_WORLDVIEW = "世界观"
-LABEL_OUTLINE = "总纲卷纲"
-LABEL_CHAPTERS = "章纲"
+# 各段任务书说明（拼进 directive；段内细流程在 harness 段规程提示词里）
+_STAGE_DETAIL = {
+    STAGE_THEME: "定主题三件套（核心爽点 → 核心矛盾 → 核心爽点剧情），逐项确认后落盘。",
+    "outline": "五步把主题抻成核心纲（主线 → 小目标 → 地图 → 角色 → 节点）。",
+    "volume": "逐卷把核心纲一行抻成卷纲（卷末大爽点 → 拆阶段 → 排节奏 → 质检）。",
+    STAGE_CHAPTER: "摊区间 → 批次出卡 → 批次总检 → 落盘回写（伏笔表/节奏表）。",
+    "text": "照章纲起草正文（读档 → 起草 → 自检报告 → 交作者人修）。",
+}
 
 
 @dataclass
@@ -54,94 +57,95 @@ class RouteDecision:
     agent_name: str | None          # None = manifest 首个 main（legacy 只读模式）
     thread_id: str                  # langgraph thread（会话派生）
     directive: str                  # 任务书（拼进 user prompt 头部）
-    phase: str                      # worldview / outline / chapters / legacy
+    phase: str                      # theme/outline/volume/chapter/text/legacy
     new_session: bool = False       # 本轮是否新会话（fresh 丢弃重开标记）
-
-
-@dataclass
-class OutlineProgress:
-    """outline/ 目录扫描结果（目录即进度）。"""
-
-    worldview_done: bool = False
-    master_done: bool = False
-    volumes: list[int] = field(default_factory=list)       # 已有卷纲的卷号升序
-    batches: dict[int, int] = field(default_factory=dict)  # 卷号 → 最大批号
+    used_override: bool = False     # 本轮是否消费了点名跳段（commit 时清除）
 
 
 def classify_workspace(workspace: Path) -> str:
-    """"legacy"（旧五件套或旧七步，只读）| "pipeline"（三步制 / 全新）。"""
-    workspace = Path(workspace)
-    if (workspace / "storyline.md").exists():
-        return "legacy"
-    outline = workspace / "outline"
-    if outline.is_dir():
-        for f in outline.iterdir():
-            if f.name.startswith(_SEVEN_STEP_PREFIXES):
-                return "legacy"
-    return "pipeline"
+    """"legacy"（旧五件套/旧七步/三步制，只读）| "five"（五段制/全新）。"""
+    return classify_writing_workspace(workspace)
 
 
-def scan_progress(workspace: Path) -> OutlineProgress:
-    """扫描 outline/ 目录推导进度（快照函数，不落盘）。"""
-    workspace = Path(workspace)
-    prog = OutlineProgress(
-        worldview_done=(workspace / "outline" / WORLDVIEW_FILENAME).is_file(),
-        master_done=(workspace / "outline" / MASTER_FILENAME).is_file(),
-    )
-    if not (workspace / "outline").is_dir():
-        return prog
-    for f in (workspace / "outline").iterdir():
-        m = VOLUME_FILE_PATTERN.match(f.name)
-        if m:
-            prog.volumes.append(int(m.group(1)))
-            continue
-        m = BATCH_FILE_PATTERN.match(f.name)
-        if m:
-            vol, batch = int(m.group(1)), int(m.group(2))
-            prog.batches[vol] = max(prog.batches.get(vol, 0), batch)
-    prog.volumes.sort()
-    return prog
+def scan_progress(workspace: Path) -> WritingProgress:
+    """五段产物树扫描（快照函数，不落盘；委托 contracts 唯一实现）。"""
+    return scan_writing_progress(workspace)
 
 
-def scan_phase(workspace: Path) -> str:
-    """按目录定下一步的段位：世界观 → 总纲卷纲 → 章纲（章纲批滚动归章纲段）。"""
-    prog = scan_progress(workspace)
-    if not prog.worldview_done:
-        return PHASE_WORLDVIEW
-    if not prog.master_done or not prog.volumes:
-        return PHASE_OUTLINE
-    return PHASE_CHAPTERS
+def scan_stage(workspace: Path) -> str:
+    """按产物树定下一大段（DEC-002 目录扫描自动判定）。"""
+    return derive_stage(scan_writing_progress(workspace))
+
+
+def current_stage(workspace: Path) -> str:
+    """装配用段解析（C3 修复）：点名跳段（override_stage）优先于扫描——
+    与 route() 同口径，供 agent.py 段规程注入消费（stage_gate 自行读状态，
+    同一语义）。legacy 返回扫描段（legacy 装配走只读 directive）。"""
+    if classify_workspace(workspace) == "legacy":
+        return scan_stage(workspace)
+    override = load_writing_state(workspace).override_stage
+    return override if override in STAGE_LABELS else scan_stage(workspace)
+
+
+def _status_line(workspace: Path, rel: str) -> str:
+    """读产物文件头的状态行（进度摘要用；缺文件返回未落盘标记）。"""
+    try:
+        for ln in (workspace / rel).read_text(encoding="utf-8").splitlines()[:6]:
+            s = ln.strip()
+            if s.startswith(">") and "状态" in s:
+                return s.lstrip("> ").strip()
+    except (OSError, UnicodeDecodeError):
+        pass
+    return "未落盘"
+
+
+def _progress_summary(workspace: Path, prog: WritingProgress) -> str:
+    """进度摘要（每轮注入 directive，FR-002：文件事实+状态行，几百字内）。"""
+    lines = [
+        f"主题：{_status_line(workspace, THEME_FILENAME)}",
+        f"总纲：{_status_line(workspace, MASTER_FILENAME)}",
+        f"文风卡：{'已就绪' if prog.style_ready else '待起草（章纲段首次进入时起草）'}",
+        f"卷纲：已到第 {prog.volumes[-1]} 卷" if prog.volumes else "卷纲：未开始",
+        f"章纲：已出 {len(prog.chapter_outlines)} 章"
+        + (f"（最新第 {prog.chapter_outlines[-1]} 章）" if prog.chapter_outlines else ""),
+    ]
+    if prog.chapter_texts:
+        finalized = sum(1 for m in prog.chapter_texts.values() if m.finalized)
+        lines.append(
+            f"正文：已写 {len(prog.chapter_texts)} 章（{finalized} 章已人修定稿，"
+            f"最新第 {max(prog.chapter_texts)} 章）"
+        )
+    else:
+        lines.append("正文：未开始")
+    return "\n".join(lines)
+
+
+def _unit_detail(workspace: Path, stage: str) -> str:
+    prog = scan_writing_progress(workspace)
+    detail = _STAGE_DETAIL.get(stage, "")
+    extra = ""
+    if stage == "volume":
+        nxt = (prog.volumes[-1] if prog.volumes else 0) + 1
+        extra = f"当前目标：第 {nxt} 卷卷纲。"
+    elif stage == STAGE_CHAPTER:
+        stock = len(prog.chapter_outlines) - len(prog.chapter_texts)
+        extra = f"细纲库存 {stock} 章（低于 3 章提醒补纲）。"
+    elif stage == "text":
+        outlined = set(prog.chapter_outlines)
+        written = set(prog.chapter_texts)
+        nxt = min(outlined - written) if outlined - written else None
+        extra = f"当前目标：第 {nxt} 章正文。" if nxt else ""
+    return f"{detail}{extra}"
 
 
 def next_unit_label(workspace: Path) -> str:
-    """下一单元标签（阶段条高亮与任务书共用；取值为三步标签之一）。"""
-    phase = scan_phase(workspace)
-    return {
-        PHASE_WORLDVIEW: LABEL_WORLDVIEW,
-        PHASE_OUTLINE: LABEL_OUTLINE,
-        PHASE_CHAPTERS: LABEL_CHAPTERS,
-    }[phase]
+    """下一单元标签（阶段条高亮与任务书共用；五段标签之一或 legacy 文案）。"""
+    if classify_workspace(workspace) == "legacy":
+        return "旧版工作区（只读）"
+    return STAGE_LABELS.get(scan_stage(workspace), STAGE_LABELS[STAGE_THEME])
 
 
-def _unit_detail(workspace: Path) -> str:
-    """下一单元的具体说明（任务书正文用）。"""
-    prog = scan_progress(workspace)
-    if not prog.worldview_done:
-        return "本单元：①定世界观（outline/世界观.md）"
-    if not prog.master_done:
-        return "本单元：②定总纲（outline/总纲.md + character/core/ 主角与 BOSS 档案）"
-    if not prog.volumes:
-        return "本单元：②定第 1 卷卷纲（outline/卷纲-第1卷.md，含黄金三章设计）"
-    cur = prog.volumes[-1]
-    nxt = prog.batches.get(cur, 0) + 1
-    return (
-        f"本单元：③第 {cur} 卷第 {nxt} 批章纲（outline/章纲-卷{cur}批{nxt}.md，"
-        "每批 5-8 章，同步更新期待台账）。若当前卷的期待已清账、卷末大兑现已安排，"
-        f"改做第 {cur + 1} 卷卷纲"
-    )
-
-
-def _session_thread(state: PipelineState, base_thread_id: str, agent: str, *, new: bool) -> str:
+def _session_thread(state, base_thread_id: str, agent: str, *, new: bool) -> str:
     """会话 thread 派生：new=True 递增序号；否则沿用当前（无则新开）。"""
     if new or agent not in state.active_threads:
         seq = state.sessions.get(agent, 0) + 1
@@ -156,26 +160,24 @@ def route(
     *,
     user_text: str = "",
     resume_trace: str | None = None,
-    fresh: bool = False,
 ) -> RouteDecision:
-    """路由决策（唯一入口）。不写盘——状态落盘由 start_session/finish 调用方驱动。
+    """路由决策（唯一入口）。不写盘——状态落盘由 commit_route 调用方驱动。
 
     Args:
-        resume_trace: resume 续跑的 trace_id（有值 = 回到该 agent 当前会话）。
-        fresh: 用户显式丢弃重开（作废未决拍板，新会话）。
+        resume_trace: resume 续跑的 trace_id（有值 = 回到当前会话，不消费跳段）。
     """
     workspace = Path(workspace)
-    state = load_pipeline_state(workspace)
+    state = load_writing_state(workspace)
 
-    # ── legacy：旧五件套 / 旧七步 → 只读模式（DEC-011）──
+    # ── legacy：旧五件套 / 旧七步 / 三步制 → 只读模式（DEC-010）──
     if classify_workspace(workspace) == "legacy":
         thread_id = _session_thread(state, base_thread_id, _LEGACY_AGENT_KEY, new=True)
         return RouteDecision(
             agent_name=None,
             thread_id=thread_id,
-            phase=PHASE_LEGACY,
+            phase=STAGE_LEGACY,
             directive=(
-                "【旧版工作区·只读】本 workspace 是旧版结构（五件套或旧七步 outline），"
+                "【旧版工作区·只读】本 workspace 是旧版结构（五件套、旧七步或三步制），"
                 "不支持在新流程续写修订。可以查看、总结、答疑；"
                 "不修改任何文件。用户要开新书时新建工作目录。"
             ),
@@ -183,15 +185,25 @@ def route(
         )
 
     agent = MAIN_AGENT
+    # ── 阶段三来源：resume > 点名跳段（消费即清，commit 时落）> 目录扫描 ──
+    used_override = False
+    if resume_trace:
+        stage = scan_stage(workspace)
+    elif state.override_stage:
+        stage = state.override_stage
+        used_override = True
+    else:
+        stage = scan_stage(workspace)
+
+    label = STAGE_LABELS.get(stage, stage)
+    prog = scan_writing_progress(workspace)
     directive = (
-        f"【管线任务】当前下一单元：{next_unit_label(workspace)}。{_unit_detail(workspace)}。"
-        "按主文档单元流程：委托子代理起草 → confirm_with_user 拍板 → 批准后委托落盘 → 停下。"
-        "用户要求修改既有产物时，按「谁产出谁能改」委托原产出子代理修订，修订稿同样过拍板。"
+        f"【五段管线】当前段：{label}（{stage}）。{_unit_detail(workspace, stage)}\n"
+        "段内流程见系统提示词附带的当前段规程；一轮最多问 1-2 个问题，回复后必停。\n"
+        f"【进度摘要】\n{_progress_summary(workspace, prog)}"
     )
 
     # ── 会话与 resume 定位（沿用：resume 回到原会话 thread）──
-    # Command(resume) 打到无挂起 interrupt 的新 thread 会直接报错。找不到匹配
-    # （状态被重建/旧 trace）时按新会话开（回执内容已在产物里，最多重起草一轮）。
     new_session = True
     if resume_trace:
         for name in state.active_threads:
@@ -202,71 +214,72 @@ def route(
                 break
     if new_session:
         thread_id = _session_thread(state, base_thread_id, agent, new=True)
-    state.phase = scan_phase(workspace)
     return RouteDecision(
         agent_name=agent, thread_id=thread_id, directive=directive,
-        phase=scan_phase(workspace), new_session=new_session,
+        phase=stage, new_session=new_session, used_override=used_override,
     )
 
 
 def commit_route(workspace: Path, decision: RouteDecision, trace_id: str) -> None:
-    """generate_stream 拿到 trace 后落状态（会话与 active trace 登记）。"""
-    state = load_pipeline_state(workspace)
+    """generate_stream 拿到 trace 后落状态（会话与 active trace 登记；消费跳段）。"""
+    state = load_writing_state(workspace)
     agent = decision.agent_name or _LEGACY_AGENT_KEY
     state.active_threads[agent] = decision.thread_id
-    if decision.phase != PHASE_LEGACY:
-        state.phase = decision.phase
+    if decision.phase != STAGE_LEGACY:
+        state.stage = decision.phase
     state.active_traces[agent] = trace_id
+    if decision.used_override:
+        state.override_stage = None  # 点名跳段消费即清（DEC-002）
     seq = decision.thread_id.rsplit(":", 1)[-1]
     if seq.isdigit():
         state.sessions[agent] = max(state.sessions.get(agent, 0), int(seq))
-    save_pipeline_state(workspace, state)
+    save_writing_state(workspace, state)
 
 
 def on_interrupt(workspace: Path, agent_name: str | None, trace_id: str) -> None:
     """interrupt 命中（awaiting_input）：登记 active trace 供 resume 定位与作废。"""
     agent = agent_name or _LEGACY_AGENT_KEY
-    state = load_pipeline_state(workspace)
+    state = load_writing_state(workspace)
     state.active_traces[agent] = trace_id
-    save_pipeline_state(workspace, state)
+    save_writing_state(workspace, state)
 
 
 def on_run_complete(workspace: Path, agent_name: str | None) -> None:
     """run 正常完成：清 active trace + 相位重扫。"""
     agent = agent_name or _LEGACY_AGENT_KEY
-    state = load_pipeline_state(workspace)
+    state = load_writing_state(workspace)
     state.active_traces.pop(agent, None)
-    if classify_workspace(workspace) == "pipeline":
-        state.phase = scan_phase(workspace)
-    save_pipeline_state(workspace, state)
+    if classify_workspace(workspace) == "five":
+        state.stage = scan_stage(workspace)
+    save_writing_state(workspace, state)
 
 
 def on_run_abandoned(workspace: Path, agent_name: str | None) -> None:
     """run 被作废（丢弃重开 / 用户停止）：只清 active trace。"""
     agent = agent_name or _LEGACY_AGENT_KEY
-    state = load_pipeline_state(workspace)
+    state = load_writing_state(workspace)
     state.active_traces.pop(agent, None)
-    save_pipeline_state(workspace, state)
+    save_writing_state(workspace, state)
 
 
 def pop_awaiting_trace(workspace: Path, agent_name: str | None) -> str | None:
     """丢弃重开：取出并清除该 agent 的未决拍板 trace_id（供执行端作废账面）。"""
     agent = agent_name or _LEGACY_AGENT_KEY
-    state = load_pipeline_state(workspace)
+    state = load_writing_state(workspace)
     trace = state.active_traces.pop(agent, None)
-    save_pipeline_state(workspace, state)
+    save_writing_state(workspace, state)
     return trace
 
 
 def pipeline_status(workspace: Path) -> dict:
-    """桌面端阶段条数据（FR-008）：kind / 相位 / 下一单元标签 / 未决拍板。"""
+    """桌面端阶段条数据：kind / 相位 / 下一单元标签 / 未决拍板。"""
     workspace = Path(workspace)
-    state = load_pipeline_state(workspace)
+    state = load_writing_state(workspace)
     kind = classify_workspace(workspace)
     return {
         "kind": kind,
-        "phase": state.phase,
-        "next_unit": next_unit_label(workspace) if kind == "pipeline" else "旧版工作区（只读）",
+        "phase": state.stage,
+        "next_unit": next_unit_label(workspace),
         "awaiting": {
             agent: trace for agent, trace in state.active_traces.items() if trace
         },
@@ -276,10 +289,11 @@ def pipeline_status(workspace: Path) -> dict:
 
 __all__ = [
     "MAIN_AGENT",
-    "OutlineProgress",
     "RouteDecision",
+    "WritingProgress",
     "classify_workspace",
     "commit_route",
+    "current_stage",
     "next_unit_label",
     "on_interrupt",
     "on_run_abandoned",
@@ -287,6 +301,6 @@ __all__ = [
     "pipeline_status",
     "pop_awaiting_trace",
     "route",
-    "scan_phase",
     "scan_progress",
+    "scan_stage",
 ]

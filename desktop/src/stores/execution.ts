@@ -23,7 +23,6 @@ import { derivePhaseFromMessage } from "@/lib/execution-phase";
 import {
   flushThreadPersist,
   restoreThreadMessages,
-  saveLastDemandFields,
   scheduleThreadPersist,
 } from "@/lib/session-persist";
 import {
@@ -313,7 +312,6 @@ interface ExecutionState {
   resetMessages: () => void;
   clearThreadMessages: () => void;
   submit: (promptText: string) => Promise<void>;
-  submitDemand: (fields: import("@/lib/demand").DemandFields) => Promise<void>;
   resume: (resumeText: string) => Promise<void>;
   stop: () => void;
   retry: () => void;
@@ -382,20 +380,6 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   submit: async (promptText) => {
     await performSubmit(set, get, promptText);
   },
-  submitDemand: async (fields) => {
-    // 表单直入（FR-002/DEC-013）：渲染 demand.md，kickoff 指令发给故事专家，
-    // 对话里展示的是需求摘要而不是整个模板。
-    // FR-001（REQ-20261009-224433）：发起提交即记忆上次表单（未提交的填写不落记忆）。
-    void saveLastDemandFields(fields);
-    const { renderDemandMd, demandSummary, DEMAND_KICKOFF_PROMPT } = await import("@/lib/demand");
-    const workspaceStore = await import("@/stores/workspace").then((m) => m.useWorkspaceStore.getState());
-    const activeWorkspaceId = workspaceStore.activeWorkspaceId;
-    const title = workspaceStore.workspaces.find((w) => w.workspace_id === activeWorkspaceId)?.title;
-    await performSubmit(set, get, DEMAND_KICKOFF_PROMPT, {
-      demandMd: renderDemandMd(fields, title ?? undefined),
-      userDisplay: demandSummary(fields),
-    });
-  },
 
   resume: async (resumeText) => {
     await performSubmit(set, get, resumeText);
@@ -457,8 +441,6 @@ export function _resetExecutionPersistForTests() {
 type StreamReader = { read: () => Promise<{ done: boolean; value: Uint8Array | undefined }>; cancel: () => Promise<void> };
 
 type SubmitOptions = {
-  /** 表单直入：demand.md 全文（执行端写入 workspace，故事专家消费）。 */
-  demandMd?: string;
   /** 对话气泡里展示的用户消息（默认用 promptText）。 */
   userDisplay?: string;
 };
@@ -597,7 +579,7 @@ async function performSubmit(
       headers: { "Content-Type": "application/json" },
       body: isResume
         ? { thread_id: userMessageThreadId, resume: trimmedPrompt, trace_id: resumeTraceId ?? undefined }
-        : { thread_id: userMessageThreadId, prompt: trimmedPrompt, demand_md: opts.demandMd ?? undefined },
+        : { thread_id: userMessageThreadId, prompt: trimmedPrompt },
     })) as StreamReader;
     set({ streamReader: reader });
 

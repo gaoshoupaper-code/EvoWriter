@@ -480,6 +480,24 @@ class MetaAgentService(BaseAgentService):
                     resolved[scope] = suffix
             styles = resolved or None
 
+        # 五段制段规程注入（REQ-20261018-115508 DEC-002）：author 的段流程
+        # 提示词按当前大段经 styles 通道注入——styles 是解释器既有的 prompt
+        # suffix 注入口，复用它避免为「按段换提示词」扩清单 schema（TD：
+        # styles 通道复用）。段解析用 current_stage（点名跳段优先，与
+        # stage_gate/route 同口径，C3 修复）。legacy（agent_name=None）不注入。
+        if agent_name == "author":
+            try:
+                from app.domains.writing.pipeline import classify_workspace, current_stage
+
+                if classify_workspace(workspace_path) == "five":
+                    stage_prompt_fn = getattr(pkg, "stage_prompt", None)
+                    if callable(stage_prompt_fn):
+                        stage_text = stage_prompt_fn(current_stage(workspace_path))
+                        if stage_text:
+                            styles = {**(styles or {}), "author": stage_text}
+            except Exception:  # noqa: BLE001 — 注入失败退回常驻骨架，不阻塞装配
+                logger.warning("段规程注入失败，退回常驻骨架", exc_info=True)
+
         ctx = RuntimeContext(
             model=model,
             backend=backend,
@@ -708,23 +726,6 @@ class MetaAgentService(BaseAgentService):
             yield _sse("final", response.model_dump())
             return
 
-        # 表单直入（FR-002/DEC-009）：demand_md 有值时写入 workspace/demand.md，
-        # 故事专家经 ContextAssembler 消费。大纲三件套已存在时拒绝——首次生成
-        # 的唯一入口是表单，产出后的迭代走 ChatPanel 修订对话（FR-004）。
-        demand_md_in = getattr(payload, "demand_md", None)
-        if demand_md_in and demand_md_in.strip():
-            workspace_path = Path(thread.workspace_path)
-            has_legacy = (workspace_path / "storyline.md").exists()
-            has_outline = (workspace_path / "outline").is_dir()
-            if has_legacy or has_outline:
-                yield _sse("status", {
-                    "status": "demand_rejected",
-                    "reason": "大纲已生成：修订请使用对话入口，表单仅用于首次生成。",
-                })
-                return
-            (workspace_path / "demand.md").write_text(demand_md_in, encoding="utf-8")
-            logger.info("表单 demand.md 已写入: %s（%d 字符）", workspace_path, len(demand_md_in))
-
         # 多用户：分库 checkpointer 先解析；model 构建推迟到 Run 绑定之后
         # （FR-004 Run 级模型锁定：绑定快照有值时 model/base_url 锁定为快照值）。
         checkpointer = await self._resolve_checkpointer(owner_id)
@@ -736,9 +737,9 @@ class MetaAgentService(BaseAgentService):
         llm_override = None
         binding = None
 
-        # 单主控三步管线路由（REQ-20261015-161200 FR-002/003，DEC-005）：
-        # 决定下一单元任务书与用哪个会话 thread；resume 沿未决拍板的
-        # 原会话续跑；fresh=丢弃重开。
+        # 五段式管线路由（REQ-20261018-115508 FR-002）：决定当前大段任务书
+        # 与用哪个会话 thread；resume 沿未决拍板的原会话续跑；
+        # fresh_session=丢弃重开（作废旧 trace，见下方 pop 分支）。
         from app.domains.writing.pipeline import (
             pipeline_status,
             pop_awaiting_trace,
@@ -750,7 +751,6 @@ class MetaAgentService(BaseAgentService):
             workspace_path, thread.thread_id,
             user_text=payload.primary_text() or "",
             resume_trace=trace_id_in if resume_value is not None else None,
-            fresh=bool(getattr(payload, "fresh_session", False)),
         )
         agent_name = pipe_decision.agent_name
         lg_thread_id = pipe_decision.thread_id
@@ -827,9 +827,16 @@ class MetaAgentService(BaseAgentService):
         )
 
         # 管线状态落盘（会话与 active trace 登记）+ 桌面端阶段条事件（FR-010）
+        # R3 修复：状态写是加速层（目录即进度），失败 best-effort 不裸断 SSE。
         from app.domains.writing import pipeline as writing_pipeline
 
-        writing_pipeline.commit_route(workspace_path, pipe_decision, trace.trace_id)
+        try:
+            writing_pipeline.commit_route(workspace_path, pipe_decision, trace.trace_id)
+        except OSError:
+            logger.warning(
+                "管线状态落盘失败（best-effort，目录即进度可重建）: %s", workspace_path,
+                exc_info=True,
+            )
         try:
             yield _sse("pipeline", {
                 **pipeline_status(workspace_path),
@@ -891,7 +898,10 @@ class MetaAgentService(BaseAgentService):
                 # domain 层决定调用时机；recorder 写 run_awaiting + 更新 index +
                 # notify evolution（不清内存，等 Command(resume) 续接）。
                 self.trace_recorder.await_input_run(thread, trace.trace_id)
-                writing_pipeline.on_interrupt(workspace_path, agent_name, trace.trace_id)
+                try:
+                    writing_pipeline.on_interrupt(workspace_path, agent_name, trace.trace_id)
+                except OSError:
+                    logger.warning("on_interrupt 状态写失败（best-effort）", exc_info=True)
                 interrupt_payload: dict[str, Any] = {
                     "thread_id": thread.thread_id,
                     "source": "interview",
@@ -916,7 +926,10 @@ class MetaAgentService(BaseAgentService):
             content = self._extract_text(result.full_result)
             response = self._response_from_workspace_artifacts(payload, content, thread)
             self.trace_recorder.complete_run(thread, trace.trace_id)
-            writing_pipeline.on_run_complete(workspace_path, agent_name)
+            try:
+                writing_pipeline.on_run_complete(workspace_path, agent_name)
+            except OSError:
+                logger.warning("on_run_complete 状态写失败（best-effort）", exc_info=True)
             for trace_update in self._trace_updates(trace_queue):
                 yield trace_update
             snapshot = self.trace_recorder.read_run_snapshot(thread, trace.trace_id)
@@ -942,7 +955,10 @@ class MetaAgentService(BaseAgentService):
             # - 否则：running 期间连接断开 → cancelled（agent 被 finally 真中止不可恢复）
             if self.trace_recorder.is_user_stop_requested(trace.trace_id):
                 self.trace_recorder.cancel_run(thread, trace.trace_id, reason="user_stop")
-                writing_pipeline.on_run_abandoned(workspace_path, agent_name)
+                try:
+                    writing_pipeline.on_run_abandoned(workspace_path, agent_name)
+                except OSError:
+                    logger.warning("on_run_abandoned 状态写失败（best-effort）", exc_info=True)
                 # 用户停止也要结算预扣（已消耗的 token 不退）
                 self._settle_credits_if_any(thread.thread_id, force_stopped=False)
             elif self.trace_recorder.is_awaiting_input(trace.trace_id):
@@ -1007,44 +1023,59 @@ class MetaAgentService(BaseAgentService):
             if value not in ("", [], {})
         ]
         free_text = payload.primary_text()
-        context = "\n".join(context_lines) or "用户没有提供结构化字段。"
-        request_text = free_text or "请根据工作区当前进度继续下一产出单元。"
+        context = "\n".join(context_lines) or "作者没有提供结构化字段。"
+        request_text = free_text or "请按当前段规程继续推进。"
 
-        # 首轮构建（无任何大纲产物）注入管线起步说明；后续轮不注入。
+        # 首轮构建（五段产物全空）注入题材段起步说明（AC-001：纯对话开场，
+        # 走题材第 0 步摸底：流程介绍 + 书名/类型两问）；后续轮不注入。
         workspace_path = getattr(thread, "workspace_path", "") or ""
         first_build = bool(workspace_path) and not (
-            (Path(workspace_path) / "storyline.md").exists()
+            (Path(workspace_path) / "主题.md").exists()
+            or (Path(workspace_path) / "storyline.md").exists()
             or (Path(workspace_path) / "outline").is_dir()
         )
         first_section = (
-            "## 首次构建（硬性）\n\n"
-            "从第①步「定世界观」开始，按主控系统提示词的单元流程推进："
-            "委托子代理起草 → confirm_with_user 拍板 → 批准后委托落盘 → 停下等用户下一条消息。"
-            "严禁自动连跑多个单元；拍板前子代理不得写任何产物。\n\n"
+            "## 新书首轮（硬性）\n\n"
+            "这是一本全新的书：按题材段第 0 步开场——先用三四行向作者说清五段流程"
+            "（题材→总纲→卷纲→章纲→正文、逐项确认、逐步落盘），再问两个问题："
+            "「这本书叫什么？暂定名也行。你想写什么类型？有没有一个模糊的点子？」"
+            "拿到书名后进入第 1 步定核心爽点。\n\n"
             if first_build
             else ""
         )
         directive_section = f"{directive}\n\n" if directive else ""
 
+        # 旧客户端兼容垫片（A1 修复）：已发布桌面端的表单仍会发 demand_md——
+        # 表单入口已砍（DEC-003），但其内容作为摸底素材并入本轮消息，走访谈
+        # 流程消化（题材段照常逐项确认），不静默丢弃。
+        demand_md = getattr(payload, "demand_md", None)
+        demand_section = (
+            "## 旧版客户端表单内容（摸底素材）\n\n"
+            "以下是旧版桌面端表单提交的内容，按摸底素材处理：先复述要点并向作者确认，"
+            "再按当前段流程逐项走访谈，不直接当作已确认需求：\n\n"
+            f"{demand_md.strip()[:4000]}\n\n"
+            if demand_md and demand_md.strip()
+            else ""
+        )
+
         return (
-            "请根据用户需求执行创作任务。\n"
+            "请根据作者消息推进创作。\n"
             "当前工作目录：/\n"
             f"当前 session：{thread.thread_id}\n\n"
             f"{directive_section}"
             f"{first_section}"
+            f"{demand_section}"
             "## 管线说明\n\n"
-            "当前系统为单主控三步大纲管线（REQ-20261015-161200）：①定世界观 →"
-            " ②定总纲和卷纲（含主角/BOSS 档案）→ ③定章纲批滚动（含期待台账，"
-            "埋钩子回收钩子）。主控 writer 调度 worldview / outline / chapters 三个子代理，"
-            "目录即进度，不写正文。\n\n"
+            "当前系统为五段式访谈创作管线（REQ-20261018-115508）：题材 → 总纲 →"
+            " 卷纲 → 章纲 → 正文，单 agent 技能切换，目录即进度。产物读写只经语义"
+            "工具（read_artifact/save_artifact 等），不接触文件路径；拍板一律"
+            " confirm_with_user 出决策卡；每轮回复后必停，严禁自动连跑。\n\n"
             "## 产物要求\n\n"
-            "- 产物写入 outline/ 目录（世界观.md、总纲.md、卷纲-第N卷.md、"
-            "章纲-卷N批M.md、期待台账.md）与 character/core|support/。\n"
-            "- 输出风格 5 条铁律：禁破折号（——）补充解释；禁解释性引导语；"
-            "每条设定一句话、列表化；卷纲/章纲/台账用表格；不写设计理由。\n"
-            "- 不写正文。\n\n"
-
-            "用户需求：\n"
+            "- 落盘产物：主题、总纲（含伏笔登记表）、文风卡、卷纲（逐卷）、"
+            "章纲（逐章指令卡）、正文（逐章，初稿+自检报告）。\n"
+            "- 文件头两行：标题行 + 状态日期行；约束级/参考级分区泾渭分明。\n"
+            "- 每有一个点被作者确认，立即落盘一次（校验编辑优先，新建用全量）。\n\n"
+            "作者消息：\n"
             f"{request_text}\n\n"
             "可用上下文（字段可能不完整，也可能包含额外信息）：\n"
             f"{context}\n\n"
@@ -1112,22 +1143,31 @@ class MetaAgentService(BaseAgentService):
         content: str,
         thread: ThreadSummary,
     ) -> ScreenplayGenerateResponse:
-        """收尾锚点检查（FR-007/REQ-20260930-163019）：确认本轮确有产物落盘。
+        """收尾锚点检查（FR-007/REQ-20260930-163019 沿革）。
 
-        v8 时代还强制要求 outline.md / evaluation.md——v9+ 单故事专家不产出
-        这两个文件，旧检查曾使全新工作目录的任务收尾必炸（DEC-008/009）。
-        三步管线（REQ-20261015-161200）同理：管线工作区锚定 outline/
-        产物（任一 .md）。legacy 工作区分两种：旧五件套锚 storyline.md；
-        旧七步（outline/00-06）无 storyline.md，同样锚 outline/ 任一 .md
-        ——锚点跟产物走，否则这两类工作区收尾必炸（trace 误标 failed）。
+        五段制（REQ-20261018-115508）：访谈轮可以只问答不落盘（题材段摸底、
+        检验追问都是合法的无产物轮）——five 工作区不再强制产物锚点，回复即
+        交付。legacy 工作区保留旧锚：旧五件套锚 storyline.md 非空；旧七步/
+        三步制锚 outline/ 任一 .md。
         """
         from app.domains.writing.pipeline import classify_workspace
 
         title = payload.fallback_title()
         workspace_path = Path(thread.workspace_path)
+        kind = classify_workspace(workspace_path)
+        if kind == "five":
+            return ScreenplayGenerateResponse(
+                mode="live",
+                thread_id=thread.thread_id,
+                workspace_id=thread.workspace_id,
+                session_name=thread.session_name,
+                workspace_path=thread.workspace_path,
+                title=title,
+                content=content,
+            )
         storyline_path = workspace_path / "storyline.md"
         outline_dir = workspace_path / "outline"
-        if classify_workspace(workspace_path) == "legacy" and storyline_path.exists():
+        if storyline_path.exists():
             if not storyline_path.read_text(encoding="utf-8").strip():
                 raise ValueError(f"未产出故事线（storyline.md 为空）: {storyline_path}")
         else:

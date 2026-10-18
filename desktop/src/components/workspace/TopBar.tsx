@@ -1,6 +1,4 @@
-import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import type { WorkspaceSummary } from "../../lib/types";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -8,45 +6,27 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-import { Button } from "@/components/ui/button";
 
 type ThemeMode = "light" | "dark";
 
 type TopBarProps = {
-  workspaces: WorkspaceSummary[];
-  activeWorkspaceId: string;
-  creatingWorkspace: boolean;
-  deletingWorkspace: boolean;
   theme: ThemeMode;
   username: string;
   isAdmin: boolean;
   hasApiKey: boolean;
-  onWorkspaceChange: (workspaceId: string) => void;
-  onCreateWorkspace: () => void;
-  onDeleteWorkspace: (workspaceId: string) => void;
   onThemeToggle: () => void;
   onLogout: () => void;
 };
 
+/** 顶栏（REQ-20261018-115508 DEC-011）：书选择迁入作品侧栏，
+ * 顶栏只留品牌 + 用户菜单（设置/登出）+ 主题切换。 */
 export function TopBar({
-  workspaces,
-  activeWorkspaceId,
-  creatingWorkspace,
-  deletingWorkspace,
   theme,
   username,
-  isAdmin,
   hasApiKey,
-  onWorkspaceChange,
-  onCreateWorkspace,
-  onDeleteWorkspace,
   onThemeToggle,
   onLogout,
 }: TopBarProps) {
-  const activeWorkspace = workspaces.find((w) => w.workspace_id === activeWorkspaceId);
-  // 决策3：顶部「书名：」+ title 静态标签（数据源=workspace.title）
-  const displayLabel = activeWorkspace?.title ? `书名：${activeWorkspace.title}` : "选择一个工作目录";
-
   return (
     <header className="dashboard-topbar">
       <div className="brand">
@@ -55,56 +35,6 @@ export function TopBar({
           <strong>思衍</strong>
           <small>AI writing workspace</small>
         </span>
-      </div>
-
-      <div className="workspace-switcher" aria-label="工作目录管理">
-        <div className="workspace-control-row">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <button className="workspace-menu-trigger" type="button">
-                <span>{displayLabel}</span>
-                <span className="session-menu-caret">▾</span>
-              </button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="center" className="w-[340px]">
-              {workspaces.length ? (
-                workspaces.map((workspace) => (
-                  <DropdownMenuItem
-                    key={workspace.workspace_id}
-                    className={`flex items-center justify-between gap-2 ${workspace.workspace_id === activeWorkspaceId ? "bg-primary/5" : ""}`}
-                    onClick={() => onWorkspaceChange(workspace.workspace_id)}
-                  >
-                    <span className="truncate text-sm">
-                      {workspace.domain === "image" ? "🎨 " : "✍️ "}{workspace.title}
-                    </span>
-                    <button
-                      className="session-option-delete"
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteWorkspace(workspace.workspace_id);
-                      }}
-                      disabled={deletingWorkspace || creatingWorkspace}
-                      aria-label={`删除 ${workspace.title}`}
-                    >
-                      删除
-                    </button>
-                  </DropdownMenuItem>
-                ))
-              ) : (
-                <p className="session-empty">还没有工作目录。</p>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
-          <Button
-            className="thread-button workspace-create-button bg-gradient-to-br from-[var(--teal)] to-[var(--blue)] shadow-md hover:shadow-lg hover:-translate-y-px transition-all"
-            type="button"
-            onClick={onCreateWorkspace}
-            disabled={creatingWorkspace}
-          >
-            {creatingWorkspace ? "创建中" : "新建"}
-          </Button>
-        </div>
       </div>
 
       <div className="workspace-actions">

@@ -1,6 +1,6 @@
 /**
- * 三步制阶段共享模块测试（REQ-20261015-161200 FR-008）。
- * 覆盖：完成度推导（目录即进度）、活跃步匹配、相位文案。
+ * 五段制阶段共享模块测试（REQ-20261018-115508 FR-011）。
+ * 覆盖：五步完成度推导（目录即进度）、活跃步匹配、相位文案。
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -11,63 +11,68 @@ import {
 } from "@/lib/pipeline-steps";
 
 const FULL_FILES = [
-  "outline/世界观.md",
-  "outline/总纲.md",
-  "outline/卷纲-第1卷.md",
-  "outline/章纲-卷1批1.md",
-  "outline/期待台账.md",
+  "主题.md",
+  "总纲.md",
+  "卷纲/第01卷.md",
+  "章纲/第001章.md",
+  "正文/第001章开局.md",
 ];
 
 describe("isStepDone 完成度推导", () => {
-  it("第 0 步看世界观单文件", () => {
-    expect(isStepDone(0, ["outline/世界观.md"])).toBe(true);
-    expect(isStepDone(0, ["outline/总纲.md"])).toBe(false);
+  it("第 0 步看主题.md", () => {
+    expect(isStepDone(0, ["主题.md"])).toBe(true);
+    expect(isStepDone(0, ["总纲.md"])).toBe(false);
   });
 
-  it("第 1 步看总纲 + 至少一份卷纲", () => {
-    expect(isStepDone(1, ["outline/总纲.md"])).toBe(false);
-    expect(isStepDone(1, ["outline/总纲.md", "outline/卷纲-第1卷.md"])).toBe(true);
-    expect(isStepDone(1, ["outline/总纲.md", "outline/卷纲-第12卷.md"])).toBe(true);
+  it("第 1 步看总纲.md", () => {
+    expect(isStepDone(1, ["主题.md"])).toBe(false);
+    expect(isStepDone(1, ["总纲.md"])).toBe(true);
   });
 
-  it("第 2 步看至少一份章纲批", () => {
-    expect(isStepDone(2, ["outline/章纲-卷1批1.md"])).toBe(true);
-    expect(isStepDone(2, ["outline/章纲-卷10批23.md"])).toBe(true);
-    expect(isStepDone(2, ["outline/期待台账.md"])).toBe(false);
+  it("第 2 步看至少一份卷纲", () => {
+    expect(isStepDone(2, ["总纲.md"])).toBe(false);
+    expect(isStepDone(2, ["卷纲/第01卷.md"])).toBe(true);
+    expect(isStepDone(2, ["卷纲/第12卷.md"])).toBe(true);
   });
 
-  it("旧七步文件名不算三步产物", () => {
-    expect(isStepDone(0, ["outline/00-赛道.md"])).toBe(false);
-    expect(isStepDone(1, ["outline/04-总纲.md", "outline/05-卷纲/第1卷.md"])).toBe(false);
+  it("第 3 步看至少一份章纲", () => {
+    expect(isStepDone(3, ["章纲/第001章.md"])).toBe(true);
+    expect(isStepDone(3, ["卷纲/第01卷.md"])).toBe(false);
   });
 
-  it("全部完成后三步齐绿", () => {
-    for (let n = 0; n < 3; n++) expect(isStepDone(n, FULL_FILES)).toBe(true);
-  });
-});
-
-describe("activeStepIndex 活跃步匹配", () => {
-  it("next_unit 含步骤名且未完成 → 该步为活跃", () => {
-    const pipeline = { kind: "pipeline", phase: "outline", next_unit: "总纲卷纲" } as any;
-    const rels = ["outline/世界观.md"];
-    expect(activeStepIndex(pipeline, rels)).toBe(1);
+  it("第 4 步看至少一份正文（允许带章名）", () => {
+    expect(isStepDone(4, ["正文/第001章一百级回家.md"])).toBe(true);
+    expect(isStepDone(4, ["正文/第012章.md"])).toBe(true);
+    expect(isStepDone(4, ["章纲/第001章.md"])).toBe(false);
   });
 
-  it("已完成或名字不匹配 → -1（无活跃高亮）", () => {
-    const pipeline = { kind: "pipeline", phase: "chapters", next_unit: "章纲" } as any;
-    expect(activeStepIndex(pipeline, FULL_FILES)).toBe(-1);
+  it("五步全绿", () => {
+    for (let n = 0; n < 5; n++) {
+      expect(isStepDone(n, FULL_FILES)).toBe(true);
+    }
+    expect(PIPELINE_STEPS).toHaveLength(5);
   });
 });
 
-describe("三步命名与相位文案", () => {
-  it("三步名字与副标齐全", () => {
-    expect(PIPELINE_STEPS.map((s) => s.label)).toEqual(["世界观", "总纲卷纲", "章纲"]);
-    for (const s of PIPELINE_STEPS) expect(s.hint.length).toBeGreaterThan(0);
+describe("activeStepIndex 活跃步", () => {
+  it("next_unit 含未完成步名时高亮该步", () => {
+    const rels = ["主题.md", "总纲.md"];
+    expect(activeStepIndex({ kind: "five", phase: "volume", next_unit: "卷纲", awaiting: {} }, rels)).toBe(2);
+    expect(activeStepIndex({ kind: "five", phase: "chapter", next_unit: "章纲", awaiting: {} }, rels)).toBe(3);
   });
 
-  it("phase 显示名对齐三步", () => {
-    expect(phaseDisplayName("worldview")).toBe("定世界观");
-    expect(phaseDisplayName("outline")).toBe("定总纲卷纲");
-    expect(phaseDisplayName("chapters")).toBe("定章纲");
+  it("该步已完成 → 不高亮（-1）", () => {
+    expect(activeStepIndex({ kind: "five", phase: "text", next_unit: "正文", awaiting: {} }, FULL_FILES)).toBe(-1);
+  });
+});
+
+describe("phaseDisplayName 相位文案", () => {
+  it("五段各有文案，未知值原样返回", () => {
+    expect(phaseDisplayName("theme")).toBe("定题材");
+    expect(phaseDisplayName("outline")).toBe("定总纲");
+    expect(phaseDisplayName("volume")).toBe("定卷纲");
+    expect(phaseDisplayName("chapter")).toBe("定章纲");
+    expect(phaseDisplayName("text")).toBe("写正文");
+    expect(phaseDisplayName("mystery")).toBe("mystery");
   });
 });

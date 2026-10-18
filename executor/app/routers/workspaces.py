@@ -9,6 +9,7 @@ v8 产物路由（outline/detail-outline/storyline-graph/novel 及导出）已�
 from __future__ import annotations
 
 import json
+import logging
 import time
 from pathlib import Path
 
@@ -26,6 +27,8 @@ from app.schemas.screenplay import (
     OutlineFileEntry,
     PanoramaEvent,
     HookProgress,
+    ManuscriptContent,
+    ManuscriptSaveRequest,
     RhythmDataModel,
     RhythmPoint,
     ShapeSlotModel,
@@ -39,25 +42,62 @@ from app.schemas.screenplay import (
     WorkspaceWorldviewContent,
 )
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
-# outline 产物目录内文件上限（防异常 workspace 撑爆载荷；正常 < 100）
+# outline 产物目录内文件上限（防异常 workspace 撑爆载荷）。五段制长跑百章级
+# 网文 章纲+正文 可达数百文件（C7 修复：200→2000；legacy 工作区沿用小上限）
 _MAX_OUTLINE_FILES = 200
+_MAX_FIVE_FILES = 2000
 
 
 def _read_outline_content(workspace_path: Path) -> WorkspaceOutlineContent:
-    """outline 产物全集 + 管线阶段条数据（REQ-20261015-161200 FR-008，DEC-011）。
+    """五段产物树全集 + 管线阶段条数据（REQ-20261018-115508 FR-011，DEC-011）。
 
-    三步管线工作区：kind=pipeline，扫描 outline/ 产物。
-    旧七步工作区：kind=legacy + files 照常返回（桌面端只读查看，无修订入口）。
+    五段制工作区：kind=five，扫描根级五段产物（主题/总纲/文风 + 卷纲/章纲/正文）。
+    旧七步/三步制工作区：kind=legacy + files 照常返回 outline/（只读查看）。
     旧五件套工作区：kind=legacy、files 为空（内容走旧面板）。
     """
     from app.domains.writing.pipeline import classify_workspace, pipeline_status
+    from contracts.writing_artifacts import (
+        CHAPTER_OUTLINE_DIR,
+        MASTER_FILENAME,
+        STYLE_FILENAME,
+        TEXT_DIR,
+        THEME_FILENAME,
+        VOLUME_DIR,
+    )
 
     kind = classify_workspace(workspace_path)
-    if kind != "pipeline" and not (workspace_path / "outline").is_dir():
+    if kind == "five":
+        files: list[OutlineFileEntry] = []
+        cap = _MAX_FIVE_FILES
+        candidates = [
+            workspace_path / THEME_FILENAME,
+            workspace_path / MASTER_FILENAME,
+            workspace_path / STYLE_FILENAME,
+        ]
+        for d in (workspace_path / VOLUME_DIR, workspace_path / CHAPTER_OUTLINE_DIR,
+                  workspace_path / TEXT_DIR):
+            if d.is_dir():
+                candidates.extend(sorted(d.glob("*.md"), key=lambda p: p.as_posix()))
+        for f in candidates:
+            if not f.is_file() or len(files) >= cap:
+                continue
+            try:
+                files.append(OutlineFileEntry(
+                    rel=f.relative_to(workspace_path).as_posix(),
+                    markdown=f.read_text(encoding="utf-8"),
+                ))
+            except OSError:
+                continue
+        return WorkspaceOutlineContent(
+            kind="five", pipeline=pipeline_status(workspace_path), files=files
+        )
+    if not (workspace_path / "outline").is_dir():
         return WorkspaceOutlineContent(kind="legacy", pipeline={"kind": "legacy"})
-    files: list[OutlineFileEntry] = []
+    legacy_files: list[OutlineFileEntry] = []
     roots = [
         workspace_path / "outline",
         workspace_path / "worldview",
@@ -70,13 +110,15 @@ def _read_outline_content(workspace_path: Path) -> WorkspaceOutlineContent:
             rel = f.relative_to(workspace_path).as_posix()
             if root.name == "worldview" and f.name not in allowed_extra:
                 continue  # legacy worldview.md 走旧面板
-            if len(files) >= _MAX_OUTLINE_FILES:
+            if len(legacy_files) >= _MAX_OUTLINE_FILES:
                 break
             try:
-                files.append(OutlineFileEntry(rel=rel, markdown=f.read_text(encoding="utf-8")))
+                legacy_files.append(OutlineFileEntry(rel=rel, markdown=f.read_text(encoding="utf-8")))
             except OSError:
                 continue
-    return WorkspaceOutlineContent(kind=kind, pipeline=pipeline_status(workspace_path), files=files)
+    return WorkspaceOutlineContent(
+        kind="legacy", pipeline=pipeline_status(workspace_path), files=legacy_files
+    )
 
 
 def _attach_panorama(
@@ -153,8 +195,9 @@ def _classify_changes(changes, workspace_path: Path) -> set[str]:
         if not parts:
             continue
         top = parts[0]
-        if top == "outline":
-            categories.add("outline")  # 双管线产物（含 _pipeline.json 变更不触发，watch 只看 .md）
+        # 五段制产物树（REQ-20261018-115508）：根级三件 + 三个子目录都走 outline 事件
+        if top in ("主题.md", "总纲.md", "文风.md", "outline", "卷纲", "章纲", "正文"):
+            categories.add("outline")
         elif top in ("storyline.md", "timeline.md", "hooks.md") or (len(parts) > 1 and parts[0] == "storyline"):
             categories.add("storyline")
         elif top == "worldview.md":
@@ -276,12 +319,99 @@ def get_workspace_objects(workspace_id: str, user: CurrentUser = Depends(current
 
 @router.get("/workspaces/{workspace_id}/outline", response_model=WorkspaceOutlineContent)
 def get_workspace_outline(workspace_id: str, user: CurrentUser = Depends(current_user)) -> WorkspaceOutlineContent:
-    """outline 产物全集 + 管线阶段条（REQ-20261011-142529 FR-010；legacy 返回 kind=legacy）。"""
+    """五段产物树全集 + 管线阶段条（REQ-20261018-115508 FR-011；legacy 返回 kind=legacy）。"""
     thread_store = get_thread_store()
     workspace = thread_store.get_workspace(user.user_id, workspace_id)
     if workspace is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return _read_outline_content(Path(workspace.workspace_path))
+
+
+def _find_manuscript(workspace_path: Path, chapter: int) -> Path | None:
+    """定位某章正文文件（允许带章名：第NNN章<章名>.md）。"""
+    from contracts.writing_artifacts import TEXT_DIR
+
+    text_dir = workspace_path / TEXT_DIR
+    if not text_dir.is_dir():
+        return None
+    matches = sorted(text_dir.glob(f"第{chapter:03d}章*.md"))
+    return matches[0] if matches else None
+
+
+def _manuscript_status(path: Path) -> str:
+    from contracts.writing_artifacts import parse_manuscript_status
+
+    try:
+        return parse_manuscript_status(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return "draft"
+
+
+@router.get("/workspaces/{workspace_id}/manuscript/{chapter}", response_model=ManuscriptContent)
+def get_manuscript(workspace_id: str, chapter: int, user: CurrentUser = Depends(current_user)) -> ManuscriptContent:
+    """读单章正文（人修编辑器数据源，REQ-20261018-115508 FR-009）。"""
+    thread_store = get_thread_store()
+    workspace = thread_store.get_workspace(user.user_id, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    path = _find_manuscript(Path(workspace.workspace_path), chapter)
+    if path is None:
+        return ManuscriptContent(chapter=chapter, markdown="", status="draft", exists=False)
+    try:
+        markdown = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.exception("正文读取失败: workspace=%s chapter=%s", workspace_id, chapter)
+        raise HTTPException(status_code=500, detail="正文读取失败，请重试") from exc
+    return ManuscriptContent(
+        chapter=chapter, markdown=markdown,
+        status=_manuscript_status(path), exists=True,
+    )
+
+
+@router.put("/workspaces/{workspace_id}/manuscript/{chapter}", response_model=ManuscriptContent)
+def save_manuscript(
+    workspace_id: str, chapter: int, payload: ManuscriptSaveRequest,
+    user: CurrentUser = Depends(current_user),
+) -> ManuscriptContent:
+    """保存人修正文（客户端直写，不经过 agent——FR-009/DEC-007 第三层）。
+
+    finalize=true 时把状态行改写为「人修定稿」（agent 的偏差回写前置条件）。
+    """
+    from datetime import date
+
+    thread_store = get_thread_store()
+    workspace = thread_store.get_workspace(user.user_id, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace_path = Path(workspace.workspace_path)
+    path = _find_manuscript(workspace_path, chapter)
+    if path is None:
+        raise HTTPException(status_code=404, detail=f"第 {chapter} 章正文尚未起草（先由 agent 生成初稿）")
+    text = payload.markdown
+    if payload.finalize:
+        lines = text.splitlines()
+        replaced = False
+        for i, ln in enumerate(lines[:8]):
+            if ln.strip().startswith(">") and "状态" in ln:
+                lines[i] = f"> 状态：人修定稿｜{date.today().isoformat()}"
+                replaced = True
+                break
+        if not replaced:
+            lines.insert(1, f"> 状态：人修定稿｜{date.today().isoformat()}")
+        text = "\n".join(lines) + ("\n" if not text.endswith("\n") else "")
+    import uuid as _uuid
+
+    tmp = path.with_suffix(f"{path.suffix}.{_uuid.uuid4().hex[:8]}.tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        tmp.replace(path)
+    except OSError as exc:
+        logger.exception("正文保存失败: workspace=%s chapter=%s", workspace_id, chapter)
+        raise HTTPException(status_code=500, detail="正文保存失败，请重试") from exc
+    return ManuscriptContent(
+        chapter=chapter, markdown=text,
+        status=_manuscript_status(path), exists=True,
+    )
 
 
 @router.get("/workspaces/{workspace_id}/watch")

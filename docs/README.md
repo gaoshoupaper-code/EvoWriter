@@ -135,27 +135,28 @@ website/  = 官网（Astro 静态站）—— 项目介绍 + 桌面端下载页
 
 ## 一个请求怎么流转（核心数据流）
 
-以"用户点生成剧本"为例，一次请求的完整旅程：
+以"用户在 desktop 对话里推进创作"为例，一次请求的完整旅程：
 
 ```
-1. 用户在 frontend 网页填好需求，点"生成"
+1. 用户在 desktop 对话框发消息（新书首轮由 agent 走题材段摸底：问书名/点子）
        ↓
-2. frontend 把请求发到 executor 的某个 API（HTTP 请求）
+2. desktop 把请求发到 executor 的某个 API（HTTP 请求，Rust 中继）
        ↓
 3. executor 的 router（在 app/routers/screenplay.py）收到请求
        ↓
 4. router 调用 MetaAgentService（在 domains/writing/agent.py）
    这是写作流水线的"服务壳"
        ↓
-5. 服务壳构建运行时上下文，调 harness 包（evolution/harnesses/current/）装配 agent，
-   再编排 SSE 流式生成。流水线四岗位（访谈员→故事建筑师→分场细化员→正文写手）
-   的装配逻辑都在 harness 包内，每个环节产出一份中间文件，传给下一环
+5. 服务壳构建运行时上下文，调 harness 包（evolution/harnesses/repo/）装配 agent，
+   再编排 SSE 流式生成。五段式访谈管线（题材→总纲→卷纲→章纲→正文）是**单 agent
+   技能切换**：executor 按产物树扫描判定当前大段、注入对应段规程提示词；agent 经
+   语义工具落盘（路径收权），拍板走决策卡，每确认一项立即落盘
        ↓
-6. 流水线跑完，剧本成品返回给 router
+6. 流水线跑完，本轮回复返回给 router
        ↓
-7. router 通过 HTTP 响应把剧本返回 frontend
+7. router 通过 HTTP 响应把结果返回 desktop
        ↓
-8. frontend 把剧本显示给用户
+8. desktop 把结果展示给用户（产物在作品侧栏的产物树里查看）
 ```
 
 **关键认知**：真正"干活"的是第 5 步的那条流水线。它就是 `domains/writing/` 要讲的故事。

@@ -9,8 +9,6 @@ import { InterviewOptions } from "./InterviewOptions";
 import { ImageReviewCard } from "./ImageReviewCard";
 import { SessionMenu } from "./SessionMenu";
 import { ExecutionView } from "./ExecutionView";
-import { DemandForm } from "./DemandForm";
-import { DEMAND_SKIP_CLARIFICATION_PROMPT, type DemandFields } from "../../lib/demand";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 
@@ -34,10 +32,6 @@ type ChatPanelProps = {
   onCreateThread: () => void;
   onSelectThread: (threadId: string) => void;
   onDeleteThread: (threadId: string) => void;
-  /** v9 表单直入：写作域 + 大纲未产出时，composer 区渲染需求表单（FR-002） */
-  writingDomain?: boolean;
-  outlineReady?: boolean;
-  onDemandSubmit?: (fields: DemandFields) => Promise<void>;
   stageFlows?: (StageFlow | null)[];
   onRetry?: () => void;
 };
@@ -62,9 +56,6 @@ export function ChatPanel({
   onCreateThread,
   onSelectThread,
   onDeleteThread,
-  writingDomain = false,
-  outlineReady = false,
-  onDemandSubmit,
   stageFlows,
   onRetry,
 }: ChatPanelProps) {
@@ -73,21 +64,11 @@ export function ChatPanel({
   const [expanded, setExpanded] = useState(false);
   const [canExpand, setCanExpand] = useState(false);
 
-  // HITL 选项化：最后一条 assistant 处于 awaitingInput 且带 options 时，禁用底部 composer
-  //（提交改走选项区「提交」按钮，避免与「自定义/补充」框职责混淆）
+  // HITL 选项化（DEC-005 单输入面）：最后一条 assistant 处于 awaitingInput 且
+  // 带选项时，禁用底部 composer（提交改走拍板卡；卡内补充框是唯一塞料通道）
   const lastMessage = messages[messages.length - 1];
   const awaitingWithOptions =
     lastMessage?.role === "assistant" && !!lastMessage?.awaitingInput?.options?.length;
-  // 修订门控（FR-004）：写作域大纲未产出时，对话输入不可用（表单是唯一首发入口）。
-  // 门控只锁首发（会话里还没有用户消息）：首发后表单不再渲染（下方互斥分支），
-  // 若停前补拉竞态/拉空导致三件套仍空，继续锁 composer 就是死局——
-  // 交付态提示「要改的话跟我说」却无处可输（线上 bug：回执阶段输入框卡死）。
-  const hasUserMessage = messages.some((m) => m.role === "user");
-  const revisionLocked = writingDomain && !outlineReady && !hasUserMessage;
-  // FR-002（REQ-20261009-224433）表单居中态：写作域首屏（未提交需求）时，
-  // 欢迎语 + 表单整体垂直居中主区，替代旧「贴底 composer」布局。
-  const demandStage = writingDomain && !outlineReady && !hasUserMessage && !!onDemandSubmit;
-  const welcomeText = messages[0]?.role === "assistant" ? messages[0].content : "我们开始新的故事吧～";
 
   useEffect(() => {
     const input = inputRef.current;
@@ -127,7 +108,7 @@ export function ChatPanel({
 
   return (
     <section
-      className={`conversation-panel panel-surface${demandStage ? " demand-stage-mode" : ""}`}
+      className="conversation-panel panel-surface"
       aria-label="创作对话"
     >
       {/* 标题带简化（REQ-20261013-181350 DEC-008）：去「Dialogue/创作对话」大标题、
@@ -160,22 +141,8 @@ export function ChatPanel({
         </div>
       </div>
 
-      {/* v9 表单直入（FR-002）：写作域首次生成走需求表单；大纲产出前对话入口不可用（FR-004）。
-          居中态（FR-002，REQ-20261009-224433）：欢迎语 + 表单垂直居中主区。
-          key=activeThreadId：切换/新建会话时强制重挂——预填回到上次提交的记忆，
-          未提交的草稿不跨会话残留（FR-001）。 */}
-      {demandStage ? (
-        <div className="demand-stage">
-          <p className="demand-stage-welcome">{welcomeText}</p>
-          <DemandForm
-            key={activeThreadId}
-            onSubmit={onDemandSubmit}
-            disabled={!hasActiveWorkspace}
-            submitting={loading}
-          />
-        </div>
-      ) : (
-      <>
+      {/* 五段制（REQ-20261018-115508 DEC-003）：砍表单纯对话开场——
+          对话即入口，新书首轮由 agent 走题材第 0 步摸底。 */}
       <div className="message-list" ref={listRef}>
         {messages.map((message, index) => {
           // 三步管线阶段徽章（REQ-20261015-161200）：消息带产出段位
@@ -183,17 +150,19 @@ export function ChatPanel({
           // legacy 与未知值回退「小衍」
           const label =
             message.role === "assistant"
-              ? message.agent === "worldview"
-                ? "世界观"
-                : message.agent === "outline"
-                  ? "总纲卷纲"
-                  : message.agent === "chapters"
-                    ? "章纲"
-                    : message.agent === "storydesign"
-                      ? "设计教练"
-                      : message.agent === "storystructure"
-                        ? "结构教练"
-                        : "小衍"
+              ? message.agent === "author"
+                ? "陪练"
+                : message.agent === "worldview"
+                  ? "世界观"
+                  : message.agent === "outline"
+                    ? "总纲卷纲"
+                    : message.agent === "chapters"
+                      ? "章纲"
+                      : message.agent === "storydesign"
+                        ? "设计教练"
+                        : message.agent === "storystructure"
+                          ? "结构教练"
+                          : "小衍"
               : "你";
           const isLastAssistant = message.role === "assistant" && index === messages.length - 1;
           const flow = stageFlows?.[index] ?? null;
@@ -236,32 +205,12 @@ export function ChatPanel({
                     disabled={loading}
                   />
                 ) : message.awaitingInput.options?.length ? (
-                  <>
-                    <InterviewOptions
-                      options={message.awaitingInput.options}
-                      multiSelect={!!message.awaitingInput.multi_select}
-                      onSubmit={onResumeSubmit}
-                      disabled={loading}
-                    />
-                    {/* FR-003 / DEC-004（REQ-20261009-224433）：大纲未产出（首轮
-                        方向提案/澄清拍板）时附「跳过」入口——跳过只能由用户显式
-                        触发；发出的指令与 harness 提示词「不用问了直接写」口径
-                        对齐。修订轮（大纲已产出）不显示。 */}
-                    {writingDomain && !outlineReady ? (
-                      <div className="clarification-skip">
-                        <button
-                          type="button"
-                          className="clarification-skip-button"
-                          disabled={loading}
-                          onClick={() => {
-                            void onResumeSubmit(DEMAND_SKIP_CLARIFICATION_PROMPT);
-                          }}
-                        >
-                          跳过澄清，直接生成
-                        </button>
-                      </div>
-                    ) : null}
-                  </>
+                  <InterviewOptions
+                    options={message.awaitingInput.options}
+                    multiSelect={!!message.awaitingInput.multi_select}
+                    onSubmit={onResumeSubmit}
+                    disabled={loading}
+                  />
                 ) : null
               ) : null}
               {/* shimmer 兜底：最后一条 assistant + loading + 无 ExecutionView 内容时
@@ -278,7 +227,7 @@ export function ChatPanel({
         })}
       </div>
 
-      {/* v9 表单直入（FR-002）：提交后表单退场，进入对话态。 */}
+      {/* composer：无卡时输入框是唯一输入（DEC-005 单输入面） */}
       <form className="chat-composer" onSubmit={onSubmit}>
         <div className={`chat-input-wrap${expanded ? " expanded" : ""}`}>
           <textarea
@@ -288,14 +237,8 @@ export function ChatPanel({
             rows={1}
             onChange={(event) => onPromptChange(event.target.value)}
             onKeyDown={handleInputKeyDown}
-            disabled={loading || awaitingWithOptions || revisionLocked}
-            placeholder={
-              awaitingWithOptions
-                ? "请在上方选项区选择并提交"
-                : revisionLocked
-                  ? "大纲生成完成后，可在此对话修订（如：主角动机不合理）"
-                  : undefined
-            }
+            disabled={loading || awaitingWithOptions}
+            placeholder={awaitingWithOptions ? "请在上方拍板卡选择并提交" : undefined}
           />
           {canExpand ? (
             <button
@@ -323,14 +266,12 @@ export function ChatPanel({
           <Button
             className="send-button min-h-[46px] rounded-[14px] px-4 text-sm font-black bg-gradient-to-br from-[var(--coral)] to-[var(--gold)] shadow-lg hover:shadow-xl hover:-translate-y-px transition-all"
             type="submit"
-            disabled={loading || awaitingWithOptions || revisionLocked}
+            disabled={loading || awaitingWithOptions}
           >
             {loading ? "生成中" : "发送"}
           </Button>
         </div>
       </form>
-      </>
-      )}
     </section>
   );
 }

@@ -1,11 +1,11 @@
-export type WorkspacePanel = "chat" | "characters" | "objects" | "worldview" | "outline";
+export type WorkspacePanel = "chat" | "artifacts";
 
-// ── 单主控三步管线（REQ-20261015-161200 FR-008，DEC-005）──
+// ── 五段式创作管线（REQ-20261018-115508 FR-011，DEC-001）──
 
 /** 管线阶段条状态（executor pipeline_status 输出） */
 export type PipelineStatus = {
-  kind: string; // pipeline | legacy
-  phase: string; // worldview | outline | chapters | legacy
+  kind: string; // five | legacy
+  phase: string; // theme | outline | volume | chapter | text | legacy
   next_unit: string;
   awaiting: Record<string, string>;
   updated_at?: string;

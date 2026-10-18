@@ -56,12 +56,12 @@ def test_user_prompt_has_no_pipeline_remnants() -> None:
 
 def test_user_prompt_states_single_expert_scope() -> None:
     prompt = _build_prompt()
-    # 三步管线（REQ-20261015-161200 FR-002）：单主控三子代理 + 三步 + 不写正文
-    assert "单主控三步大纲管线" in prompt
-    assert "定世界观" in prompt
-    assert "定总纲和卷纲" in prompt
-    assert "定章纲" in prompt
-    assert "不写正文" in prompt
+    # 五段制（REQ-20261018-115508 FR-001）：单 agent 技能切换 + 五段 + 语义工具 + 必停
+    assert "五段式访谈创作管线" in prompt
+    for stage in ("题材", "总纲", "卷纲", "章纲", "正文"):
+        assert stage in prompt
+    assert "语义" in prompt and "confirm_with_user" in prompt
+    assert "必停" in prompt and "严禁自动连跑" in prompt
 
 
 def _thread_with_workspace(tmp_path: Path):
@@ -81,26 +81,26 @@ def _service() -> MetaAgentService:
 
 
 def test_first_build_injects_clarify_gate(tmp_path: Path) -> None:
-    """FR-003（REQ-20261015-161200）：无任何大纲产物时，委托文本注入首次构建
-    指令——从第①步定世界观开始、单元拍板后落盘、严禁自动连跑。
+    """AC-001（REQ-20261018-115508）：五段产物全空时，委托文本注入新书首轮
+    指令——题材段第 0 步摸底（流程介绍 + 书名/类型两问）。
     """
     payload = ScreenplayGenerateRequest(prompt="写一部玄幻长篇", thread_id="t-test")
     prompt = _service()._build_user_prompt(payload, _thread_with_workspace(tmp_path))  # type: ignore[arg-type]
 
     for fragment in (
-        "首次构建", "定世界观", "拍板", "严禁自动连跑",
+        "新书首轮", "第 0 步", "暂定名", "严禁自动连跑",
     ):
-        assert fragment in prompt, f"首发委托文本缺管线起步指令: {fragment}"
+        assert fragment in prompt, f"首发委托文本缺新书起步指令: {fragment}"
     assert "ask_user" not in prompt, "委托文本不得引用种子线工具"
 
 
 def test_revision_after_outline_has_no_clarify_gate(tmp_path: Path) -> None:
-    """FR-003：storyline.md 已存在（修订/增量）时不得注入首次构建指令，避免干扰迭代。"""
-    (tmp_path / "storyline.md").write_text("# 故事核心\n\n- **Logline**：测试", encoding="utf-8")
+    """主题.md 已存在（推进/修订轮）时不得注入新书首轮指令，避免干扰访谈。"""
+    (tmp_path / "主题.md").write_text("# 主题 · 书\n> 状态：第 1 步\n", encoding="utf-8")
     payload = ScreenplayGenerateRequest(prompt="主角动机再改改", thread_id="t-test")
     prompt = _service()._build_user_prompt(payload, _thread_with_workspace(tmp_path))  # type: ignore[arg-type]
 
-    assert "首次构建" not in prompt
+    assert "新书首轮" not in prompt
     assert "ask_user" not in prompt
 
 
@@ -118,14 +118,14 @@ def _fake_thread(tmp_path: Path):
 
 
 def test_finalization_anchors_on_storyline_only(tmp_path: Path) -> None:
-    """FR-007 收尾锚点（REQ-20261011-142529 双锚点）：legacy 锚 storyline.md，
-    管线工作区锚 outline/ 产物——锚点跟产物走，否则管线收尾必炸误标 failed。"""
+    """收尾锚点（REQ-20261018-115508）：five 工作区访谈轮可不落产物（回复即
+    交付，不再强制产物锚）；legacy 锚 storyline.md / outline/ 产物（旧口径）。"""
     service = MetaAgentService.__new__(MetaAgentService)
     payload = ScreenplayGenerateRequest(prompt="x", thread_id="t-test")
 
-    # 全新空工作区（pipeline 口径）→ 收尾失败，错误指向 outline 产物
-    with pytest.raises(FileNotFoundError, match="outline"):
-        service._response_from_workspace_artifacts(payload, "done", _fake_thread(tmp_path))
+    # 全新空工作区（five）→ 访谈问答轮合法，收尾成功
+    response0 = service._response_from_workspace_artifacts(payload, "done", _fake_thread(tmp_path))
+    assert response0.mode == "live"
 
     # legacy：storyline.md 存在但为空 → 收尾失败
     (tmp_path / "storyline.md").write_text("", encoding="utf-8")
@@ -139,7 +139,7 @@ def test_finalization_anchors_on_storyline_only(tmp_path: Path) -> None:
     assert not hasattr(response, "markdown") or not response.markdown
     assert not hasattr(response, "evaluation_markdown") or not response.evaluation_markdown
 
-    # pipeline：outline/ 有产物（含子目录）→ 收尾成功；_pipeline.json 不算产物
+    # legacy（旧七步）：outline/ 只有状态文件不算产物 → 失败；有 .md → 成功
     ws2 = tmp_path / "ws-pipeline"
     (ws2 / "outline").mkdir(parents=True)
     (ws2 / "outline" / "_pipeline.json").write_text("{}", encoding="utf-8")

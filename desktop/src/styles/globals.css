@@ -6948,3 +6948,215 @@ html[data-theme="dark"] .provider-item {
   grid-template-columns: 1fr 1fr;
   gap: 10px;
 }
+
+/* ── 作品侧栏（REQ-20261018-115508 FR-011，DEC-011）：书列表 + 五段产物树 ── */
+
+.sidebar-group-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 14px;
+}
+
+.sidebar-new-book {
+  border: 1px solid rgba(34, 166, 153, 0.35);
+  border-radius: var(--radius-md);
+  background: var(--panel-soft);
+  color: var(--teal);
+  font-size: var(--text-ui-xs);
+  font-weight: 800;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.sidebar-new-book:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.sidebar-empty {
+  padding: 6px 14px;
+  color: var(--muted);
+  font-size: var(--text-ui-sm);
+}
+
+.sidebar-books {
+  list-style: none;
+  display: grid;
+  gap: 2px;
+  padding: 0 8px;
+}
+
+.sidebar-books li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sidebar-book {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-lg);
+  padding: 8px 10px;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sidebar-book:hover,
+.sidebar-book.active {
+  border-color: rgba(34, 166, 153, 0.22);
+  background: var(--panel-soft);
+}
+
+.sidebar-book.active {
+  box-shadow: inset 3px 0 0 var(--teal); /* design-lint:allow 侧栏激活指示条 */
+}
+
+.sidebar-book-icon {
+  flex-shrink: 0;
+  font-size: var(--text-ui-sm);
+}
+
+.sidebar-book-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-ui-sm);
+  font-weight: 700;
+}
+
+.sidebar-book-delete {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-ui-xs);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: var(--radius-md);
+}
+
+.sidebar-book-delete:hover {
+  color: #dc2626;
+  background: rgba(220, 38, 38, 0.08);
+}
+
+.sidebar-tree {
+  max-height: 46vh;
+  overflow-y: auto;
+}
+
+.sidebar-tree-group {
+  display: grid;
+  gap: 2px;
+  padding: 0 8px;
+}
+
+.sidebar-tree-group + .sidebar-tree-group {
+  margin-top: 8px;
+}
+
+.sidebar-tree-group-label {
+  padding: 2px 6px;
+  color: var(--muted);
+  font-size: var(--text-ui-xs);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+}
+
+.sidebar-tree-group ul {
+  list-style: none;
+  display: grid;
+  gap: 1px;
+}
+
+.sidebar-tree-item {
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  font-size: var(--text-ui-sm);
+  text-align: left;
+  padding: 5px 6px 5px 16px;
+  cursor: pointer;
+}
+
+.sidebar-tree-item:hover,
+.sidebar-tree-item.active {
+  background: var(--panel-soft);
+  color: var(--teal);
+}
+
+/* ── 正文人修编辑器（REQ-20261018-115508 FR-009，DEC-004）── */
+
+.manuscript-state {
+  color: var(--muted);
+  font-size: var(--text-ui-sm);
+  padding: 12px 0;
+}
+
+.manuscript-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.manuscript-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.manuscript-status {
+  font-size: var(--text-ui-xs);
+  font-weight: 800;
+  border-radius: 999px;
+  padding: 3px 10px;
+}
+
+.manuscript-status.draft {
+  color: #b45309;
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.manuscript-status.finalized {
+  color: #047857;
+  background: rgba(16, 185, 129, 0.14);
+}
+
+.manuscript-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.manuscript-textarea {
+  width: 100%;
+  min-height: 52vh;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--panel-soft);
+  padding: 16px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: var(--text-ui-sm);
+  line-height: 1.9;
+  resize: vertical;
+}
+
+.manuscript-textarea:focus-visible {
+  outline: 2px solid rgba(34, 166, 153, 0.4);
+  outline-offset: 1px;
+}
+
+.manuscript-hint {
+  color: var(--muted);
+  font-size: var(--text-ui-xs);
+}

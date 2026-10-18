@@ -41,27 +41,31 @@ class TestApplyStyleSuffix(unittest.TestCase):
             model=object(), backend=object(), checkpointer=None,
             workspace_path=Path("/tmp"), styles=styles,
         )
-        agent = self.manifest.agent("writer")
+        agent = self.manifest.agent("author")
         abc = AgentBuildCtx(ctx, self.manifest, agent, "harness_current", self.pkg_dir)
         return _system_prompt(abc)
 
     def test_no_suffix_returns_original(self):
         """无 suffix（styles=None）应返回 prompt 原文。"""
-        body = (self.pkg_dir / "prompts" / "writer_system.md").read_text(
+        body = (self.pkg_dir / "prompts" / "author_base.md").read_text(
             encoding="utf-8"
         ).strip()
         self.assertEqual(self._prompt(None), body)
 
     def test_empty_suffix_returns_original(self):
         """空字符串 suffix 应原样返回（falsy 值短路不追加）。"""
-        body = (self.pkg_dir / "prompts" / "writer_system.md").read_text(
+        body = (self.pkg_dir / "prompts" / "author_base.md").read_text(
             encoding="utf-8"
         ).strip()
-        self.assertEqual(self._prompt({"writer": ""}), body)
+        self.assertEqual(self._prompt({"author": ""}), body)
 
     def test_suffix_appended(self):
-        """有 suffix 应按 manifest agent 名取值并追加到 prompt 末尾（两换行分隔）。"""
-        result = self._prompt({"writer": "风格：简洁有力。"})
+        """有 suffix 应按 manifest agent 名取值并追加到 prompt 末尾（两换行分隔）。
+
+        五段制（REQ-20261018-115508 DEC-002）：styles["author"] 承载当前段
+        流程提示词（stage_prompt 注入），同一机制。
+        """
+        result = self._prompt({"author": "风格：简洁有力。"})
         self.assertTrue(result.endswith("\n\n风格：简洁有力。"))
 
 

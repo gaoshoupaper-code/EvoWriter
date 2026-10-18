@@ -496,39 +496,8 @@ function panelRender(props: Partial<Parameters<typeof ChatPanel>[0]> = {}) {
     onCreateThread: () => {},
     onSelectThread: () => {},
     onDeleteThread: () => {},
-    writingDomain: true,
-    outlineReady: false,
-    onDemandSubmit: vi.fn(async () => {}),
     ...props,
   };
   return { props: base, ...render(<ChatPanel {...base} />) };
 }
 
-describe("FR-003/DEC-004（REQ-20261009-224433）：首轮拍板跳过入口", () => {
-  it("大纲未产出时的 choice interrupt 显示跳过按钮；点击发跳过指令 resume", async () => {
-    const user = userEvent.setup();
-    const { props } = panelRender();
-
-    await screen.findByTestId("interview-options", {}, { timeout: 5000 });
-    const skipBtn = await screen.findByRole("button", { name: "跳过澄清，直接生成" });
-    await user.click(skipBtn);
-
-    await waitFor(() => {
-      expect(props.onResumeSubmit).toHaveBeenCalledWith("不用问了，直接写。");
-    });
-  });
-
-  it("大纲已产出（修订轮 confirm）不显示跳过按钮", async () => {
-    panelRender({ outlineReady: true });
-
-    await screen.findByTestId("interview-options", {}, { timeout: 5000 });
-    expect(screen.queryByRole("button", { name: "跳过澄清，直接生成" })).toBeNull();
-  });
-
-  it("非写作域面板不显示跳过按钮", async () => {
-    panelRender({ writingDomain: false });
-
-    await screen.findByTestId("interview-options", {}, { timeout: 5000 });
-    expect(screen.queryByRole("button", { name: "跳过澄清，直接生成" })).toBeNull();
-  });
-});

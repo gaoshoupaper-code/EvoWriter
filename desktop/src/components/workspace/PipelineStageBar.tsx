@@ -7,18 +7,17 @@ import {
 } from "../../lib/pipeline-steps";
 
 /**
- * 大纲面板阶段条（REQ-20261015-161200 FR-008）——
- * 三步进度横条 + 当前停点，只在大纲面板渲染；
- * 对话侧的进度展示已迁入右侧作品栏。
+ * 产物面板阶段条（REQ-20261018-115508 FR-011）——
+ * 五段进度横条 + 当前停点；对话侧的进度展示在右侧作品浮窗（DEC-012）。
  */
 type PipelineStageBarProps = {
   pipeline: PipelineStatus | null;
-  /** outline 产物相对路径集合（步骤完成度推导） */
+  /** 五段产物相对路径集合（步骤完成度推导） */
   fileRels: string[];
 };
 
 export function PipelineStageBar({ pipeline, fileRels }: PipelineStageBarProps) {
-  if (!pipeline || pipeline.kind !== "pipeline") {
+  if (!pipeline || pipeline.kind !== "five") {
     if (pipeline?.kind === "legacy") {
       return (
         <div className="pipeline-stage-bar legacy">

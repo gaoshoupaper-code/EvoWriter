@@ -80,6 +80,10 @@ class AgentSpec(BaseModel):
     definition      动态钩子定义模块路径（可选；纯清单 agent 不需要）
     artifact_paths  产物校验文件列表（相对 workspace 根；ArtifactValidation 用）
     max_revisions   审查修订上限（挂 delegates 的 agent 生效；默认 1）
+    disable_file_tools  True = 装配时对内置文件工具（read_file/write_file/
+                    edit_file/ls/glob/grep/execute）全拒——agent 只能经
+                    语义工具读写产物（REQ-20261018-115508 FR-003 路径收权；
+                    FilesystemMiddleware 不可移除，用 permissions 全拒实现）
     """
 
     name: str
@@ -98,6 +102,7 @@ class AgentSpec(BaseModel):
     definition: str | None = None
     artifact_paths: list[str] = Field(default_factory=list)
     max_revisions: int = 1
+    disable_file_tools: bool = False
 
 
 class ArchitectureManifest(BaseModel):

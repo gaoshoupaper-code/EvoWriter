@@ -257,6 +257,14 @@ def _build_compiled(abc: AgentBuildCtx) -> CompiledSubAgent:
         subagents=sub_specs,
         middleware=middleware,
         backend=effective_backend,
+        # 路径收权（REQ-20261018-115508 FR-003）：清单声明 disable_file_tools
+        # 的 agent 对内置文件工具全拒——读写只能走语义工具。FilesystemMiddleware
+        # 是 DeepAgents 不可移除的脚手架，用 permissions 全拒实现「无路径面」。
+        permissions=(
+            [FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny")]
+            if agent.disable_file_tools
+            else None
+        ),
         # checkpointer 仅 main（子代理在父 task 调用内执行，父已捕获完整历史）
         checkpointer=abc.ctx.checkpointer if agent.role == "main" else None,
         skills=skill_sources,

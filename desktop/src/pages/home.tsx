@@ -2,18 +2,14 @@ import { FormEvent, useEffect, useMemo, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { AppShell } from "@/components/workspace/AppShell";
-import { CharactersPanel } from "@/components/workspace/CharactersPanel";
-import { ObjectsPanel } from "@/components/workspace/ObjectsPanel";
+import { ArtifactPanel } from "@/components/workspace/ArtifactPanel";
 import { ChatPanel } from "@/components/workspace/ChatPanel";
 import { ConfirmDialog } from "@/components/workspace/ConfirmDialog";
-import { OutlinePanel } from "@/components/workspace/OutlinePanel";
 import { Sidebar } from "@/components/workspace/Sidebar";
 import { WorkRail } from "@/components/workspace/WorkRail";
 import { TopBar } from "@/components/workspace/TopBar";
-import { WorldviewPanel } from "@/components/workspace/WorldviewPanel";
-import { API_BASE_URL, apiFetch, trackCopy } from "@/lib/api";
-import { projectStageFlow } from "@/lib/stage";
 import { usePanelPolling } from "@/lib/usePanelPolling";
+import { projectStageFlow } from "@/lib/stage";
 import type { StageFlow } from "@/lib/stage";
 import type { WorkspacePanel } from "@/lib/types";
 import { useExecutionStore, setExecutionDeps, installExecutionPersist } from "@/stores/execution";
@@ -23,12 +19,7 @@ import { useContentStore } from "@/stores/content";
 import { useWorkrailStore } from "@/stores/workrail";
 import { applyUiFontSize, loadUiFontSize } from "@/components/ui/UiFontSizeControl";
 
-const initialAssistantMessage = {
-  role: "assistant" as const,
-  content: "先选择一个工作目录，再开启或恢复创作会话。",
-};
-
-const WORKSPACE_PANELS = ["chat", "outline", "characters", "objects", "worldview"] as const;
+const WORKSPACE_PANELS = ["chat", "artifacts"] as const;
 
 /** 作品栏瞬态重置（review 修复）：跨工作区不携带失败标记/高亮/基线 */
 function resetWorkrailTransient() {
@@ -93,32 +84,14 @@ export default function Home() {
   const traceDetail = useTraceStore((s) => s.traceDetail);
   const historyDetails = useTraceStore((s) => s.historyDetails);
 
-  // contentStore
-  const characters = useContentStore((s) => s.characters);
-  const charactersLoading = useContentStore((s) => s.charactersLoading);
-  const activeCharacterFilename = useContentStore((s) => s.activeCharacterFilename);
-  const objects = useContentStore((s) => s.objects);
-  const objectsLoading = useContentStore((s) => s.objectsLoading);
-  const activeObjectFilename = useContentStore((s) => s.activeObjectFilename);
-  const worldviewMarkdown = useContentStore((s) => s.worldviewMarkdown);
-  const worldviewLoading = useContentStore((s) => s.worldviewLoading);
-  const storylineMarkdown = useContentStore((s) => s.storylineMarkdown);
+  // contentStore（五段产物树；旧面板字段经轮询 setter 维持兼容）
   const outlineKind = useContentStore((s) => s.outlineKind);
   const outlinePipeline = useContentStore((s) => s.outlinePipeline);
   const outlineFiles = useContentStore((s) => s.outlineFiles);
   const activeOutlineRel = useContentStore((s) => s.activeOutlineRel);
 
   const aiDisabled = !hasApiKey;
-  // v9 表单直入/修订门控（FR-002/FR-004）：写作域以产物内容判定大纲是否产出
-  // （双管线工作区看 outline 产物，旧五件套看 storyline/人物/世界观）
-  const outlineReady = Boolean(
-    outlineFiles.length > 0 ||
-      storylineMarkdown?.trim() ||
-      characters.length > 0 ||
-      worldviewMarkdown?.trim(),
-  );
   const writingDomain = activeWorkspace?.domain !== "image";
-  const workspacePath = activeWorkspace?.workspace_path ?? activeThread?.workspace_path;
 
   // ── 注入 executionDeps（连接三个 store）──
   // 只在首次挂载时注入一次。deps 引用的是 store 的 getState/setState，始终拿到最新值。
@@ -396,24 +369,35 @@ export default function Home() {
       <AppShell
         topBar={
           <TopBar
-            workspaces={workspaces}
-            activeWorkspaceId={activeWorkspaceId}
-            creatingWorkspace={creatingWorkspace}
-            deletingWorkspace={deletingWorkspace}
             theme={theme}
             username={authUser?.username ?? ""}
             isAdmin={authUser?.is_admin ?? false}
             hasApiKey={hasApiKey}
-            onWorkspaceChange={(id) => useWorkspaceStore.getState().setActiveWorkspaceId(id)}
-            onCreateWorkspace={() => useWorkspaceStore.setState({ workspaceCreateOpen: true })}
-            onDeleteWorkspace={(workspaceId) =>
-              useWorkspaceStore.setState({ pendingDeleteWorkspaceId: workspaceId, workspaceDeleteOpen: true })
-            }
             onThemeToggle={() => useWorkspaceStore.getState().toggleTheme()}
             onLogout={handleLogout}
           />
         }
-        sidebar={<Sidebar activePanel={safePanel} onPanelChange={setActivePanel} />}
+        sidebar={
+          <Sidebar
+            activePanel={safePanel}
+            onPanelChange={setActivePanel}
+            workspaces={workspaces}
+            activeWorkspaceId={activeWorkspaceId}
+            creatingWorkspace={creatingWorkspace}
+            deletingWorkspace={deletingWorkspace}
+            onSelectWorkspace={(id) => useWorkspaceStore.getState().setActiveWorkspaceId(id)}
+            onCreateWorkspace={() => useWorkspaceStore.setState({ workspaceCreateOpen: true })}
+            onDeleteWorkspace={(workspaceId) =>
+              useWorkspaceStore.setState({ pendingDeleteWorkspaceId: workspaceId, workspaceDeleteOpen: true })
+            }
+            files={outlineFiles}
+            activeRel={activeOutlineRel}
+            onSelectArtifact={(rel) => {
+              useContentStore.getState().setActiveOutlineRel(rel);
+              useWorkspaceStore.setState({ activePanel: "artifacts" });
+            }}
+          />
+        }
         rail={writingDomain && activeWorkspaceId ? <WorkRail /> : null}
       >
         {safePanel === "chat" ? (
@@ -443,49 +427,21 @@ export default function Home() {
             onCreateThread={handleCreateThread}
             onSelectThread={handleSelectThread}
             onDeleteThread={handleDeleteThread}
-            writingDomain={writingDomain}
-            outlineReady={outlineReady}
-            onDemandSubmit={async (fields) => {
-              if (aiDisabled) { toast.error("请先在设置页填写你的 API Key，才能使用 AI 生成。"); return; }
-              await useExecutionStore.getState().submitDemand(fields);
-            }}
             stageFlows={stageFlows}
             onRetry={handleRetry}
           />
         ) : null}
 
-        {safePanel === "characters" ? (
-          <CharactersPanel
-            characters={characters}
-            activeFilename={activeCharacterFilename}
-            loading={charactersLoading}
-            onSelectCharacter={(f) => useContentStore.getState().setActiveCharacterFilename(f)}
-          />
-        ) : null}
-
-        {safePanel === "objects" ? (
-          <ObjectsPanel
-            objects={objects}
-            activeFilename={activeObjectFilename}
-            loading={objectsLoading}
-            onSelectObject={(f) => useContentStore.getState().setActiveObjectFilename(f)}
-          />
-        ) : null}
-
-        {safePanel === "outline" ? (
-          <OutlinePanel
+        {safePanel === "artifacts" && activeWorkspaceId ? (
+          <ArtifactPanel
             kind={outlineKind}
             pipeline={outlinePipeline}
             files={outlineFiles}
             activeRel={activeOutlineRel}
             onSelect={(rel) => useContentStore.getState().setActiveOutlineRel(rel)}
+            workspaceId={activeWorkspaceId}
           />
         ) : null}
-
-        {safePanel === "worldview" ? (
-          <WorldviewPanel workspacePath={workspacePath} markdown={worldviewMarkdown} loading={worldviewLoading} />
-        ) : null}
-
 
       </AppShell>
 

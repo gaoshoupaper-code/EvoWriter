@@ -40,10 +40,8 @@ import {
   initSessionPersist,
   normalizeRestoredMessages,
   persistThreadMessages,
-  readLastDemandFields,
   readLastPosition,
   restoreThreadMessages,
-  saveLastDemandFields,
   saveLastPosition,
   scheduleThreadPersist,
 } from "@/lib/session-persist";
@@ -201,26 +199,6 @@ describe("上次位置（FR-001）", () => {
   });
 });
 
-describe("需求表单记忆（FR-001，REQ-20261009-224433）", () => {
-  it("save 后可 read 回来；账号间隔离", async () => {
-    const fields = { platform: "番茄", category: "玄幻", premise: "废物少年逆袭", goldenFinger: "万器图录复刻兵器" };
-    await saveLastDemandFields(fields);
-    expect(await readLastDemandFields()).toEqual(fields);
-    initSessionPersist({ getUsername: () => "bob" });
-    expect(await readLastDemandFields()).toBeNull();
-  });
-
-  it("覆盖语义：第二次提交覆盖第一次", async () => {
-    await saveLastDemandFields({ platform: "番茄", category: "玄幻", premise: "A", goldenFinger: "g" });
-    await saveLastDemandFields({ platform: "番茄", category: "玄幻", premise: "B", goldenFinger: "g" });
-    expect((await readLastDemandFields())!.premise).toBe("B");
-  });
-
-  it("损坏数据（非对象 fields）返回 null，不抛异常", async () => {
-    stores.set("sessions/alice.store", new Map([["__last_demand__", { fields: "broken" }]]));
-    expect(await readLastDemandFields()).toBeNull();
-  });
-});
 
 describe("失败语义（FR-002：静默降级）", () => {
   it("store load 抛错时 restore 返回 null、persist 不抛", async () => {

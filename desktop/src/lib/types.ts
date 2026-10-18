@@ -160,8 +160,41 @@ export type WorkspaceObjectContent = {
 };
 
 export type StreamEvent = {
-  type: "model_output" | "tool_call" | "tool_output" | "tool_error" | "model_stream" | "reasoning_stream" | "final" | "trace_event" | "trace_snapshot" | "interrupt" | "credit_exhausted" | "pipeline";
+  type: "model_output" | "tool_call" | "tool_output" | "tool_error" | "model_stream" | "reasoning_stream" | "final" | "trace_event" | "trace_snapshot" | "interrupt" | "credit_exhausted" | "pipeline" | "row";
   data: Record<string, unknown>;
+};
+
+// ── 行级时间线（REQ-20261018-235653，FR-001）──
+// 服务端行装配（executor WritingEventSink）产出的行事件落成的时间线行，
+// 新消息的真相源（DEC-001 A 档）：思考/正文/工具/子代理按行序交错。
+// 旧消息无 rows 字段 → 走旧渲染（FR-007 双轨）。
+
+export type TimelineRowKind = "reasoning" | "text" | "tool" | "subagent";
+
+export type TimelineRowStatus = "streaming" | "complete" | "interrupted" | "failed";
+
+export type TimelineRow = {
+  /** 全局单调递增行序号（服务端分配），时间线按它排序 */
+  seq: number;
+  id: string;
+  kind: TimelineRowKind;
+  /** 同一模型响应的思考/正文/工具共享的响应标识（对齐 ZCode assistantResponseId） */
+  responseId?: string;
+  /** 思考段开段时的活跃子任务人话名快照 */
+  label?: string;
+  /** 思考/正文行的文本（end 携带全量时整体替换，保证流式/全量对齐） */
+  text?: string;
+  status: TimelineRowStatus;
+  startedAt: number;
+  endedAt?: number;
+  // 工具行
+  toolName?: string;
+  callId?: string;
+  // 子代理行
+  subagentType?: string;
+  iteration?: number;
+  /** 子代理行摘要（task 工具产出概要，FR-005） */
+  summary?: string;
 };
 
 export type TraceStatus = "running" | "awaiting_input" | "completed" | "failed" | "cancelled";
@@ -348,6 +381,9 @@ export type ChatMessage = {
   tools?: ToolStatus[];
   // 思考流分段（DEC-005：思考段与工具行穿插的时间线；恢复/回看共用）
   thoughts?: ThoughtSegment[];
+  // 行级时间线（REQ-20261018-235653）：行事件流的落点；有值时走 RowTimeline 渲染。
+  // 旧消息无此字段（FR-007 双轨）。
+  rows?: TimelineRow[];
   contentFormat?: "text" | "markdown";
   // 三步管线阶段徽章（REQ-20261015-161200）：assistant 消息
   // 创建时从 contentStore.outlinePipeline.phase 盖章（worldview/outline/chapters；

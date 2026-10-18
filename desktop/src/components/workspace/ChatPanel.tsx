@@ -182,13 +182,17 @@ export function ChatPanel({
                   onRetry={onRetry}
                 />
               ) : null}
-              <div className="message-content">
-                {message.role === "assistant" && message.contentFormat === "markdown" ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{message.content}</ReactMarkdown>
-                ) : (
-                  <p className="message-plaintext">{message.content}</p>
-                )}
-              </div>
+              {/* FR-003（REQ-20261018-235653）：行消息的正文块在时间线内按位置渲染，
+                  底部正文区不重复显示；无正文行的行消息（仅工具/思考/失败说明）仍走底部 */}
+              {!(message.role === "assistant" && message.rows?.some((r) => r.kind === "text")) ? (
+                <div className="message-content">
+                  {message.role === "assistant" && message.contentFormat === "markdown" ? (
+                    <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{message.content}</ReactMarkdown>
+                  ) : (
+                    <p className="message-plaintext">{message.content}</p>
+                  )}
+                </div>
+              ) : null}
               {/* HITL：按 awaitingInput.kind 路由渲染（DD4）。
                   choice → InterviewOptions（写作访谈）
                   image_review → ImageReviewCard（文生图评审）
@@ -196,20 +200,29 @@ export function ChatPanel({
               {message.role === "assistant" &&
                 index === messages.length - 1 &&
                 message.awaitingInput ? (
-                  message.awaitingInput.kind === "image_review" ? (
-                    <ImageReviewCard
-                      payload={message.awaitingInput as unknown as import("../../lib/api").ImageReviewInterrupt}
-                      onSubmit={onImageReviewSubmit}
-                      disabled={loading}
-                    />
-                  ) : message.awaitingInput.options?.length ? (
-                    <InterviewOptions
-                      options={message.awaitingInput.options}
-                      multiSelect={!!message.awaitingInput.multi_select}
-                      onSubmit={onResumeSubmit}
-                      disabled={loading}
-                    />
-                  ) : null
+                  <>
+                    {/* FR-004（REQ-20261018-235653）：行模式下提问文案随 HITL 卡展示
+                        （正文不被提问覆盖，旧管线提问仍写在 content 里，不重复渲染） */}
+                    {message.rows?.length &&
+                    message.awaitingInput.kind !== "image_review" &&
+                    message.awaitingInput.question ? (
+                      <p className="interview-question" data-testid="interview-question">{message.awaitingInput.question}</p>
+                    ) : null}
+                    {message.awaitingInput.kind === "image_review" ? (
+                      <ImageReviewCard
+                        payload={message.awaitingInput as unknown as import("../../lib/api").ImageReviewInterrupt}
+                        onSubmit={onImageReviewSubmit}
+                        disabled={loading}
+                      />
+                    ) : message.awaitingInput.options?.length ? (
+                      <InterviewOptions
+                        options={message.awaitingInput.options}
+                        multiSelect={!!message.awaitingInput.multi_select}
+                        onSubmit={onResumeSubmit}
+                        disabled={loading}
+                      />
+                    ) : null}
+                  </>
                 ) : null}
               {/* shimmer 兜底：最后一条 assistant + loading + 无 ExecutionView 内容时
                   （FR-002：思考行到达后 shimmer 退场，时间线本身即执行反馈） */}

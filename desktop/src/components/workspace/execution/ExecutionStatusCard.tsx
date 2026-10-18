@@ -29,6 +29,10 @@ interface ExecutionStatusCardProps {
   children?: ReactNode;
   /** 展开区为空时隐藏折叠交互（纯摘要卡） */
   expandable?: boolean;
+  /** 挂载时默认展开（REQ-20261018-235653 FR-003：行消息运行中时间线实时生长） */
+  defaultOpen?: boolean;
+  /** 流结束时保持展开不自动收拢（行消息提问态：正文时间线保留到中断点，FR-004） */
+  keepOpenOnEnd?: boolean;
 }
 
 export function ExecutionStatusCard({
@@ -38,8 +42,10 @@ export function ExecutionStatusCard({
   tone,
   children,
   expandable = true,
+  defaultOpen = false,
+  keepOpenOnEnd = false,
 }: ExecutionStatusCardProps) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(defaultOpen);
   // 执行中耗时每秒跳动；终态静止
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -48,12 +54,13 @@ export function ExecutionStatusCard({
     return () => clearInterval(timer);
   }, [loading]);
 
-  // 完成即收拢（FR-004/AC-005）：loading true→false 时折叠回摘要行
+  // 完成即收拢（FR-004/AC-005）：loading true→false 时折叠回摘要行。
+  // keepOpenOnEnd（REQ-20261018-235653 FR-004）：行消息提问中断时保留展开。
   const prevLoadingRef = useRef(false);
   useEffect(() => {
-    if (prevLoadingRef.current && !loading) setExpanded(false);
+    if (prevLoadingRef.current && !loading && !keepOpenOnEnd) setExpanded(false);
     prevLoadingRef.current = loading;
-  }, [loading]);
+  }, [loading, keepOpenOnEnd]);
 
   const running = message.tools?.findLast((t) => t.status === "running");
   const actionLabel = currentTaskLabel(message.tools);

@@ -15,8 +15,9 @@
  */
 import { create } from "zustand";
 import { toast } from "sonner";
-import type { AskUserOption, ChatMessage, ScreenplayResponse, StreamEvent, ThoughtSegment, ToolStatus, TraceLogEvent, TraceRunSummary } from "@/lib/types";
+import type { AskUserOption, ChatMessage, ScreenplayResponse, StreamEvent, ThoughtSegment, TimelineRow, ToolStatus, TraceLogEvent, TraceRunSummary } from "@/lib/types";
 import { appendReasoning, closeStreamingThought, currentTaskLabel } from "@/lib/thoughts";
+import { applyRowEvent, closeStreamingRows, concatTextRows } from "@/lib/rows";
 import { streamRequest } from "@/lib/stream";
 import { watchPipelineAfterDisconnect } from "@/lib/usePanelPolling";
 import { appendLiveTraceEvent } from "@/lib/trace";
@@ -554,6 +555,21 @@ async function performSubmit(
     }
   };
 
+  // 行级时间线（REQ-20261018-235653，FR-001/FR-006）：row 事件流的本地累积，
+  // 与 thoughts 同一节拍 flush 进 message.rows。rowMode 一旦开启（收到首个 row 事件），
+  // 正文/思考以行为真相源——旧 model_stream/reasoning_stream 增量不再消费（DEC-006 双发下
+  // 避免子代理文本混入 content，FR-005），content 改由正文行拼接派生。
+  let rowSegments: TimelineRow[] = [];
+  let rowsDirty = false;
+  let rowMode = false;
+  const closeRows = (status: "interrupted" | "complete" | "failed") => {
+    const closed = closeStreamingRows(rowSegments, status);
+    if (closed !== rowSegments) {
+      rowSegments = closed;
+      rowsDirty = true;
+    }
+  };
+
   try {
     let userMessageThreadId = activeThreadId;
     const displayText = opts.userDisplay ?? trimmedPrompt;
@@ -653,12 +669,20 @@ async function performSubmit(
           const event = { type: eventType as StreamEvent["type"], data: JSON.parse(eventData) as Record<string, unknown> };
 
           if (event.type === "model_stream") {
-            streamedText += String(event.data.content ?? "");
+            if (!rowMode) streamedText += String(event.data.content ?? "");
           } else if (event.type === "reasoning_stream") {
-            // FR-003：reasoning token 续写末段或开新段；label 快照自当前 tools
-            const label = currentTaskLabel(get().messages[assistantIdx]?.tools);
-            thoughtSegments = appendReasoning(thoughtSegments, String(event.data.content ?? ""), label);
-            thoughtsDirty = true;
+            // FR-003：reasoning token 续写末段或开新段；label 快照自当前 tools。
+            // 行模式（FR-001）下思考走行事件，旧增量不消费——双发去重（DEC-006）。
+            if (!rowMode) {
+              const label = currentTaskLabel(get().messages[assistantIdx]?.tools);
+              thoughtSegments = appendReasoning(thoughtSegments, String(event.data.content ?? ""), label);
+              thoughtsDirty = true;
+            }
+          } else if (event.type === "row") {
+            // 行事件（FR-001）：首个 row 事件起 rows 成为消息真相源
+            rowMode = true;
+            rowSegments = applyRowEvent(rowSegments, event.data);
+            rowsDirty = true;
           } else if (event.type === "trace_event") {
             const traceEvent = event.data as TraceLogEvent;
             if (traceEvent.type === "run_start") {
@@ -712,13 +736,16 @@ async function performSubmit(
             const msg = (event.data as { message?: string })?.message ?? "积分耗尽";
             d.setLiveTraceId("");
             closeThoughts("interrupted");
+            closeRows("interrupted");
             toast.error(msg);
+            const note = `⚠️ ${msg}\n\n已创作的内容已保存，补充积分后可继续创作。`;
             set((state) => ({
               messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
                 ...message,
                 status: "failed",
                 thoughts: thoughtSegments,
-                content: `⚠️ ${msg}\n\n已创作的内容已保存，补充积分后可继续创作。`,
+                ...(rowSegments.length ? { rows: rowSegments } : {}),
+                content: !message.content || message.content === "正在执行..." ? note : `${message.content}\n\n${note}`,
                 contentFormat: "markdown",
               })),
             }));
@@ -745,12 +772,18 @@ async function performSubmit(
             const interruptKind = iv.kind ?? "choice";
             // DEC-007：提问中断——末段思考标 interrupted（时间线保留到中断点）
             closeThoughts("interrupted");
+            closeRows("interrupted");
             set((state) => ({
               messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
                 ...message,
-                content: interruptKind === "image_review"
-                  ? `第 ${iv.round ?? "?"} 轮图像评审：3 版 6 图已生成，请打分`
-                  : iv.question || "等待你的输入",
+                // FR-004（REQ-20261018-235653）：行模式下正文不被提问覆盖——
+                // 已输出行原样保留，提问由 HITL 卡展示；旧管线维持提问写正文的既有行为。
+                content: rowMode
+                  ? message.content
+                  : interruptKind === "image_review"
+                    ? `第 ${iv.round ?? "?"} 轮图像评审：3 版 6 图已生成，请打分`
+                    : iv.question || "等待你的输入",
+                ...(rowSegments.length ? { rows: rowSegments } : {}),
                 thoughts: thoughtSegments,
                 awaitingInput: {
                   kind: interruptKind, question: iv.question || "", options: iv.options ?? null,
@@ -771,13 +804,21 @@ async function performSubmit(
           // （提案问题），流式叙述文本不得把它盖回去；思考段照常写入。
           let next = message;
           if (thoughtsDirty) next = { ...next, thoughts: thoughtSegments };
-          if (!next.awaitingInput && streamedText) {
+          if (rowsDirty) next = { ...next, rows: rowSegments };
+          if (rowMode) {
+            // 行模式：content 由正文行拼接派生（含中间正文，FR-002/FR-003），
+            // 待答期间（awaitingInput）不动 content
+            if (!next.awaitingInput) {
+              next = { ...next, content: concatTextRows(rowSegments), contentFormat: "markdown" };
+            }
+          } else if (!next.awaitingInput && streamedText) {
             next = { ...next, content: streamedText, contentFormat: "markdown" };
           }
           return next;
         }),
       }));
       thoughtsDirty = false;
+      rowsDirty = false;
     }
 
     if (finalData) {
@@ -786,12 +827,16 @@ async function performSubmit(
         current.map((thread: any) => (thread.thread_id === finalData!.thread_id ? { ...thread, updated_at: new Date().toISOString() } : thread)),
       );
       closeThoughts("done");
+      closeRows("complete");
+      const fallback = `已生成《${finalData.session_name}》的故事材料，工作目录是 ${finalData.workspace_path}`;
       set((state) => ({
         messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
           ...message,
           status: "completed",
           thoughts: thoughtSegments,
-          content: streamedText || `已生成《${finalData.session_name}》的故事材料，工作目录是 ${finalData.workspace_path}`,
+          ...(rowSegments.length ? { rows: rowSegments } : {}),
+          // 行模式：正文行拼接即最终正文（FR-003 交错展示，不垫底）
+          content: (rowMode ? concatTextRows(rowSegments) : streamedText) || fallback,
           contentFormat: "markdown",
         })),
       }));
@@ -805,6 +850,7 @@ async function performSubmit(
         const brokenMessage = "⚠️ 连接中断（未收到完成信号），已生成的内容已保存，可以重试。";
         d.setLiveTraceId("");
         closeThoughts("interrupted");
+        closeRows("interrupted");
         toast.error(brokenMessage);
         // FR-004 失败语义：未收到 final 的关流，服务端可能仍在跑——低频兜底观察
         watchPipelineAfterDisconnect(activeWorkspaceId);
@@ -813,7 +859,8 @@ async function performSubmit(
             ...message,
             status: "failed",
             thoughts: thoughtSegments,
-            content: message.content === "正在执行..." ? brokenMessage : `${message.content}\n\n${brokenMessage}`,
+            ...(rowSegments.length ? { rows: rowSegments } : {}),
+            content: !message.content || message.content === "正在执行..." ? brokenMessage : `${message.content}\n\n${brokenMessage}`,
             contentFormat: "markdown",
           })),
         }));
@@ -824,10 +871,14 @@ async function performSubmit(
     if (errMsg.includes("积分") || errMsg.includes("403") || errMsg.includes("冻结")) {
       d.setLiveTraceId("");
       closeThoughts("interrupted");
+      closeRows("interrupted");
       toast.error("积分余额不足，账户已冻结。请联系管理员补充积分。");
+      const creditNote = "⚠️ 积分余额不足，无法开始创作。请联系管理员补充积分。";
       set((state) => ({
         messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
-          ...message, status: "failed", thoughts: thoughtSegments, content: "⚠️ 积分余额不足，无法开始创作。请联系管理员补充积分。", contentFormat: "markdown",
+          ...message, status: "failed", thoughts: thoughtSegments,
+          ...(rowSegments.length ? { rows: rowSegments } : {}),
+          content: !message.content || message.content === "正在执行..." ? creditNote : `${message.content}\n\n${creditNote}`, contentFormat: "markdown",
         })),
       }));
       if (isResume) throw submitError;
@@ -836,10 +887,12 @@ async function performSubmit(
     if (submitError instanceof DOMException && submitError.name === "AbortError") {
       d.setLiveTraceId("");
       closeThoughts("interrupted");
+      closeRows("interrupted");
       set((state) => ({
         messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
           ...message, status: "stopped", thoughts: thoughtSegments,
-          content: message.content === "正在执行..." ? "已手动停止。" : `${message.content}\n\n已手动停止。`, contentFormat: "markdown",
+          ...(rowSegments.length ? { rows: rowSegments } : {}),
+          content: !message.content || message.content === "正在执行..." ? "已手动停止。" : `${message.content}\n\n已手动停止。`, contentFormat: "markdown",
         })),
       }));
       if (isResume) throw submitError;
@@ -850,13 +903,15 @@ async function performSubmit(
       const heartbeatMessage = `连接已断开（超过 ${HEARTBEAT_TIMEOUT_MS / 1000} 秒未收到数据），请重试。`;
       d.setLiveTraceId("");
       closeThoughts("interrupted");
+      closeRows("interrupted");
       toast.error(heartbeatMessage);
       // FR-004 失败语义：断连后服务端可能仍在跑——低频轮询兜底观察阶段推进
       watchPipelineAfterDisconnect(activeWorkspaceId);
       set((state) => ({
         messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
           ...message, status: "failed", thoughts: thoughtSegments,
-          content: message.content === "正在执行..." ? `⚠️ ${heartbeatMessage}` : `${message.content}\n\n⚠️ ${heartbeatMessage}`, contentFormat: "markdown",
+          ...(rowSegments.length ? { rows: rowSegments } : {}),
+          content: !message.content || message.content === "正在执行..." ? `⚠️ ${heartbeatMessage}` : `${message.content}\n\n⚠️ ${heartbeatMessage}`, contentFormat: "markdown",
         })),
       }));
       if (isResume) throw submitError;
@@ -864,11 +919,13 @@ async function performSubmit(
     }
 
     closeThoughts("interrupted");
+    closeRows("interrupted");
     toast.error(submitError instanceof Error ? submitError.message : "Unexpected request failure.");
     set((state) => ({
       messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
         ...message, status: "failed", thoughts: thoughtSegments,
-        content: message.content === "正在执行..."
+        ...(rowSegments.length ? { rows: rowSegments } : {}),
+        content: !message.content || message.content === "正在执行..."
           ? "请求失败了。检查后端是否启动后，可以在同一个会话里重试。"
           : `${message.content}\n\n⚠️ 请求失败，可重试。`, contentFormat: "markdown",
       })),

@@ -9,6 +9,11 @@
  * - 写作域思考态走 ThinkingTimeline（作为状态卡的展开内容）
  * - 图片流（activeStreamKind=image）维持拟人 ThinkingView（DEC-006）
  * - asking/终态保留思考时间线可回看（DEC-003/007）
+ *
+ * REQ-20261018-235653（FR-003/FR-007/FR-008）：
+ * - 行消息（message.rows）走 RowTimeline——思考/正文/工具/子代理按行序交错；
+ * - 旧消息（无 rows）维持 ThinkingTimeline（双轨）；
+ * - HistoryFolded 摘要卡退役：历史消息与最新消息同形态（状态卡 + 可展开时间线）。
  */
 import type { ChatMessage, ExecutionPhase } from "@/lib/types";
 import type { StageFlow } from "@/lib/stage";
@@ -17,10 +22,10 @@ import { useExecutionStore } from "@/stores/execution";
 import { BootingView } from "./execution/BootingView";
 import { ThinkingView } from "./execution/ThinkingView";
 import { ThinkingTimeline } from "./execution/ThinkingTimeline";
+import { RowTimeline } from "./execution/RowTimeline";
 import { DeliveryCeremony } from "./execution/DeliveryCeremony";
 import { FailedView } from "./execution/FailedView";
 import { StoppedView } from "./execution/StoppedView";
-import { HistoryFolded } from "./execution/HistoryFolded";
 import { ExecutionStatusCard, formatDurationZh } from "./execution/ExecutionStatusCard";
 
 interface ExecutionViewProps {
@@ -48,57 +53,82 @@ export function ExecutionView({ message, loading, isLastAssistant, stageFlow, on
   // DEC-006：图片流思考态维持拟人 ThinkingView，不进思考时间线
   const activeStreamKind = useExecutionStore((s) => s.activeStreamKind);
   const imageStream = activeStreamKind === "image";
-  // 思考时间线（有思考段才渲染；终态/中断保留可回看，DEC-003/007）
-  const timeline = message.thoughts?.length ? <ThinkingTimeline message={message} loading={loading} /> : null;
 
-  // 历史消息（非活跃）：摘要卡形态（与当前消息的状态卡统一）
-  if (!isLastAssistant && (phase === "delivering" || phase === "idle")) {
-    return <HistoryFolded stageFlow={stageFlow} message={message} />;
-  }
+  // 行消息（FR-003）：末个正文块外置常显（对齐 ZCode 的 visibleAssistantText——
+  // 状态卡收起时最终回答仍可见，不随工作过程折进卡里）；其余行进卡内时间线。
+  const rowList = message.rows ?? [];
+  const isRowMessage = rowList.length > 0;
+  const lastTextIndex = rowList.findLastIndex((row) => row.kind === "text" && !!row.text);
+  const cardRows = isRowMessage && lastTextIndex >= 0
+    ? rowList.filter((_, i) => i !== lastTextIndex)
+    : rowList;
+  const finalTextRow = isRowMessage && lastTextIndex >= 0 ? rowList[lastTextIndex] : null;
+
+  // 时间线选路（FR-003/FR-007）：行消息走行级交错时间线，旧消息走思考时间线；
+  // 终态/中断均保留可回看（DEC-003/007）
+  const timeline = isRowMessage ? (
+    <RowTimeline rows={cardRows} loading={loading} />
+  ) : message.thoughts?.length ? (
+    <ThinkingTimeline message={message} loading={loading} />
+  ) : null;
+
+  // 行消息状态卡行为（FR-003/FR-004）：运行中默认展开实时生长；提问中断（含恢复态）不收拢
+  const rowCardProps = isRowMessage
+    ? { defaultOpen: loading || !!message.awaitingInput, keepOpenOnEnd: !!message.awaitingInput }
+    : {};
 
   switch (phase) {
     case "booting":
-      // FR-002：reasoning 先于首个 tool_call 到达时直接进时间线，不停留在黑屏期
+      // FR-002：reasoning/行先于首个 tool_call 到达时直接进时间线，不停留在黑屏期
       return timeline ?? <BootingView />;
     case "thinking":
       if (imageStream) return <ThinkingView message={message} stageFlow={stageFlow} />;
       return (
-        <ExecutionStatusCard message={message} loading={loading}>
-          {timeline ?? <ThinkingTimeline message={message} loading={loading} />}
-        </ExecutionStatusCard>
+        <>
+          <ExecutionStatusCard message={message} loading={loading} {...rowCardProps}>
+            {timeline ?? <ThinkingTimeline message={message} loading={loading} />}
+          </ExecutionStatusCard>
+          {finalTextRow ? <RowTimeline rows={[finalTextRow]} loading={loading} /> : null}
+        </>
       );
     case "asking":
       // asking 态的 HITL UI 由 ChatPanel 外层渲染（InterviewOptions/ImageReviewCard）
       // 状态卡保留思考时间线到中断点（DEC-007）
       return (
-        <ExecutionStatusCard message={message} summary="已暂停 · 等你回答">
-          {timeline}
-        </ExecutionStatusCard>
+        <>
+          <ExecutionStatusCard message={message} summary="已暂停 · 等你回答" {...rowCardProps}>
+            {timeline}
+          </ExecutionStatusCard>
+          {finalTextRow ? <RowTimeline rows={[finalTextRow]} /> : null}
+        </>
       );
     case "delivering":
       return (
         <>
-          <ExecutionStatusCard message={message} summary={completedSummary(stageFlow)} tone="completed">
+          <ExecutionStatusCard message={message} summary={completedSummary(stageFlow)} tone="completed" {...rowCardProps}>
             {timeline}
           </ExecutionStatusCard>
+          {finalTextRow ? <RowTimeline rows={[finalTextRow]} /> : null}
           <DeliveryCeremony message={message} stageFlow={stageFlow} />
         </>
       );
     case "failed":
       return (
         <>
-          <ExecutionStatusCard message={message} summary="✗ 没能完成" tone="failed">
+          <ExecutionStatusCard message={message} summary="✗ 没能完成" tone="failed" {...rowCardProps}>
             {timeline}
           </ExecutionStatusCard>
+          {finalTextRow ? <RowTimeline rows={[finalTextRow]} /> : null}
           <FailedView message={message} onRetry={onRetry} />
         </>
       );
     case "stopped":
       return (
         <>
-          <ExecutionStatusCard message={message} summary="已停下" tone="completed">
+          <ExecutionStatusCard message={message} summary="已停下" tone="completed" {...rowCardProps}>
             {timeline}
           </ExecutionStatusCard>
+          {finalTextRow ? <RowTimeline rows={[finalTextRow]} /> : null}
           <StoppedView message={message} onRetry={onRetry} />
         </>
       );

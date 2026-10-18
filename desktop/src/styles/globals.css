@@ -5043,6 +5043,65 @@ html[data-theme="dark"] .panel-heading {
   font-size: var(--text-ui-xs);
 }
 
+/* ── RowTimeline 行级时间线（REQ-20261018-235653，FR-003/FR-005）── */
+/* 正文块：markdown 常驻展开，按行序位置渲染（中间正文不垫底） */
+.yan-text-row {
+  margin: 6px 0 6px 20px;
+  font-size: var(--text-ui-sm);
+  color: var(--ink);
+  line-height: 1.7;
+  word-break: break-word;
+}
+.yan-text-row p {
+  margin: 0 0 0.5em;
+}
+.yan-text-row p:last-child {
+  margin-bottom: 0;
+}
+/* 子代理聚合行：单行 + 可展开摘要（DEC-002） */
+.yan-subagent-row {
+  margin: 2px 0;
+}
+.yan-subagent-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 12px 3px 20px;
+  border: none;
+  background: rgba(116, 103, 196, 0.06);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-ui-caption);
+  color: var(--ink);
+  cursor: pointer;
+}
+.yan-subagent-name {
+  font-weight: 600;
+}
+.yan-subagent-iteration,
+.yan-subagent-status {
+  color: var(--muted);
+}
+.yan-subagent-summary {
+  margin: 4px 0 4px 20px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--border);
+  font-size: var(--text-ui-sm);
+  color: var(--ink);
+  opacity: 0.75;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow-y: auto;
+}
+/* 行模式提问文案（FR-004：随 HITL 卡展示，正文不被覆盖） */
+.interview-question {
+  margin: 10px 0 6px;
+  font-size: var(--text-ui-sm);
+  color: var(--ink);
+  font-weight: 600;
+}
+
 /* ── ThinkingView 展开态步骤列表（FR-006）── */
 .yan-thinking-steps-current {
   font-size: var(--text-ui-sm);

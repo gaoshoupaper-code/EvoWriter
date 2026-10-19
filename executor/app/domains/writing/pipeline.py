@@ -55,8 +55,10 @@ class RouteDecision:
     thread_id: str                  # langgraph thread（会话派生）
     directive: str                  # 运行时事实（当前段+进度，拼进 user prompt；禁止行为指令）
     phase: str                      # theme/outline/volume/chapter/text/legacy
-    new_session: bool = False       # 本轮是否新会话（fresh 丢弃重开标记）
+    new_session: bool = False       # 本轮是否新开会话线程（首条消息或丢弃重开）
     used_override: bool = False     # 本轮是否消费了点名跳段（commit 时清除）
+    conversation_id: str = ""       # 客户端会话 id（base thread_id，粘性路由与日志的键）
+    resume_degraded: bool = False   # resume trace 已失配：降级为普通消息续跑
 
 
 def classify_workspace(workspace: Path) -> str:
@@ -144,13 +146,26 @@ def next_unit_label(workspace: Path) -> str:
     return STAGE_LABELS.get(scan_stage(workspace), STAGE_LABELS[STAGE_THEME])
 
 
-def _session_thread(state, base_thread_id: str, agent: str, *, new: bool) -> str:
-    """会话 thread 派生：new=True 递增序号；否则沿用当前（无则新开）。"""
-    if new or agent not in state.active_threads:
-        seq = state.sessions.get(agent, 0) + 1
-        state.sessions[agent] = seq
-        state.active_threads[agent] = f"{base_thread_id}:{agent}:{seq}"
-    return state.active_threads[agent]
+def _sticky_thread_id(base_thread_id: str, agent: str, fork_number: int) -> str:
+    """粘性线程名：派生号即丢弃重开计数（首会话=1）。"""
+    return f"{base_thread_id}:{agent}:{fork_number}"
+
+
+def _conversation_thread(
+    state, base_thread_id: str, agent: str, *, fork: bool = False
+) -> tuple[str, int]:
+    """会话粘性线程（REQ-20261019-222403 FR-001/DEC-001）。
+
+    同一客户端会话（base_thread_id）全程复用同一 langgraph 线程，历史跨轮
+    累积；仅丢弃重开（fresh_session）递增派生号开新线程。返回
+    (thread_id, fork_number)。旧 seq 制线程不迁移（DEC-010）：老书首次对话
+    按派生号 1 起新线程，断尾由执行端 normalize 清理。
+    """
+    if fork:
+        fork_number = state.conversation_forks.get(base_thread_id, 0) + 1
+    else:
+        fork_number = state.conversation_forks.get(base_thread_id, 1)
+    return _sticky_thread_id(base_thread_id, agent, fork_number), fork_number
 
 
 def route(
@@ -159,18 +174,22 @@ def route(
     *,
     user_text: str = "",
     resume_trace: str | None = None,
+    fresh_session: bool = False,
 ) -> RouteDecision:
     """路由决策（唯一入口）。不写盘——状态落盘由 commit_route 调用方驱动。
 
     Args:
         resume_trace: resume 续跑的 trace_id（有值 = 回到当前会话，不消费跳段）。
+        fresh_session: 丢弃重开（作废旧 trace，递增派生号开新线程）。
     """
     workspace = Path(workspace)
     state = load_writing_state(workspace)
 
     # ── legacy：旧五件套 / 旧七步 / 三步制 → 只读模式（DEC-010）──
     if classify_workspace(workspace) == "legacy":
-        thread_id = _session_thread(state, base_thread_id, _LEGACY_AGENT_KEY, new=True)
+        thread_id, fork_number = _conversation_thread(
+            state, base_thread_id, _LEGACY_AGENT_KEY, fork=fresh_session
+        )
         return RouteDecision(
             agent_name=None,
             thread_id=thread_id,
@@ -182,7 +201,8 @@ def route(
                 "不支持在新流程续写修订。可以查看、总结、答疑；"
                 "不修改任何文件。用户要开新书时新建工作目录。"
             ),
-            new_session=True,
+            new_session=fresh_session or base_thread_id not in state.conversation_forks,
+            conversation_id=base_thread_id,
         )
 
     agent = MAIN_AGENT
@@ -203,20 +223,37 @@ def route(
         f"【进度摘要】\n{_progress_summary(workspace, prog)}"
     )
 
-    # ── 会话与 resume 定位（沿用：resume 回到原会话 thread）──
-    new_session = True
+    # ── 会话定位（REQ-20261019-222403 FR-001 粘性）：resume 沿未决拍板回原
+    # 会话；普通消息复用当前会话线程；丢弃重开递增派生号。trace 失配的
+    # resume 降级为普通消息（原拍板已不在，答案文本按新输入续跑）。──
+    resume_degraded = False
+    matched_agent: str | None = None
     if resume_trace:
         for name in state.active_threads:
             if state.active_traces.get(name) == resume_trace:
-                agent = name if name != _LEGACY_AGENT_KEY else MAIN_AGENT
-                thread_id = state.active_threads[name]
-                new_session = False
+                matched_agent = name if name != _LEGACY_AGENT_KEY else MAIN_AGENT
                 break
-    if new_session:
-        thread_id = _session_thread(state, base_thread_id, agent, new=True)
+        if matched_agent is None:
+            resume_degraded = True
+    if matched_agent is not None:
+        agent = matched_agent
+        # 未决拍板所在线程是事实源（commit_route 维护）；粘性派生仅兜底。
+        thread_id = state.active_threads.get(matched_agent) or _sticky_thread_id(
+            base_thread_id, agent, state.conversation_forks.get(base_thread_id, 1)
+        )
+        new_session = False
+    else:
+        agent = MAIN_AGENT
+        thread_id, fork_number = _conversation_thread(
+            state, base_thread_id, agent, fork=fresh_session
+        )
+        new_session = fresh_session or (
+            fork_number == 1 and base_thread_id not in state.conversation_forks
+        )
     return RouteDecision(
         agent_name=agent, thread_id=thread_id, directive=directive,
         phase=stage, new_session=new_session, used_override=used_override,
+        conversation_id=base_thread_id, resume_degraded=resume_degraded,
     )
 
 
@@ -230,9 +267,12 @@ def commit_route(workspace: Path, decision: RouteDecision, trace_id: str) -> Non
     state.active_traces[agent] = trace_id
     if decision.used_override:
         state.override_stage = None  # 点名跳段消费即清（DEC-002）
-    seq = decision.thread_id.rsplit(":", 1)[-1]
-    if seq.isdigit():
-        state.sessions[agent] = max(state.sessions.get(agent, 0), int(seq))
+    # 粘性派生号回写（FR-001）：从线程名尾段解析，只增不减。
+    fork_tail = decision.thread_id.rsplit(":", 1)[-1]
+    if decision.conversation_id and fork_tail.isdigit():
+        state.conversation_forks[decision.conversation_id] = max(
+            state.conversation_forks.get(decision.conversation_id, 0), int(fork_tail)
+        )
     save_writing_state(workspace, state)
 
 

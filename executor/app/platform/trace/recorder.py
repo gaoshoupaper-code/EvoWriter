@@ -699,22 +699,47 @@ class TraceRecorder:
         self._finalize_run(thread, trace_id, "cancelled", duration_ms, error_message)
         return event
 
+    def interrupt_run(self, thread: ThreadSummary, trace_id: str) -> TraceLogEvent:
+        """标记 trace 为 interrupted（断连中断、会话可续，REQ-20261019-222403 FR-002）。
+
+        区别于 cancelled（用户停止/超时清理的终态作废）：interrupted 表示执行因
+        SSE 断连中止——本轮作废（重试按原话重发，不续写半截），但会话粘性
+        线程与已完成轮次历史保留，后续消息照常接续。半截内容由会话消息日志
+        留档（status=interrupted）。事件类型沿用 run_cancelled（下游把该类型
+        当终止信号消费），状态字段区分 interrupted。
+        """
+        duration_ms = self._duration_ms(trace_id)
+        error_message = _CANCEL_REASON_MESSAGES["client_disconnect"]
+        event = self.append_event(
+            trace_id,
+            {
+                "type": "run_cancelled",
+                "status": "interrupted",
+                "source": "system",
+                "duration_ms": duration_ms,
+                "error": error_message,
+            },
+        )
+        self._finalize_run(thread, trace_id, "interrupted", duration_ms, error_message)
+        return event
+
     def finalize_orphan_run(self, thread: ThreadSummary, trace_id: str) -> None:
-        """generate_stream finally 兜底：run 仍停在 running 时补写 cancelled 终态。
+        """generate_stream finally 兜底：run 仍停在 running 时补写 interrupted 终态。
 
         CancelledError 的 except 三路分流（user_stop / awaiting_input 保持 /
-        断连取消）之外还有第四路：生成器被 close/GC（GeneratorExit）或取消
+        断连中断）之外还有第四路：生成器被 close/GC（GeneratorExit）或取消
         异常在中途被拦截转写时，except 分支不执行，run 永久停在 running——
         进化端观测会一直显示"执行中"（EVD-009 的三状态分裂孤儿）。
-        finally 保证执行，在这里按 client_disconnect 补写终态。
-        已终态收尾的（_sequences 已清）与 awaiting_input（等 resume）不补写。
+        finally 保证执行，在这里按断连中断补写终态（FR-002：会话可续语义，
+        非用户作废）。已终态收尾的（_sequences 已清）与 awaiting_input
+        （等 resume）不补写。
         """
         if trace_id not in self._sequences:
             return
         run = self.find_run_by_trace_id(trace_id)
         if run is None or run.status != "running":
             return
-        self.cancel_run(thread, trace_id, reason="client_disconnect")
+        self.interrupt_run(thread, trace_id)
 
     def _fail_run(self, thread: ThreadSummary, trace_id: str, error_message: str) -> TraceLogEvent:
         duration_ms = self._duration_ms(trace_id)

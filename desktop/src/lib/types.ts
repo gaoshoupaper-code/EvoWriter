@@ -160,7 +160,7 @@ export type WorkspaceObjectContent = {
 };
 
 export type StreamEvent = {
-  type: "model_output" | "tool_call" | "tool_output" | "tool_error" | "model_stream" | "reasoning_stream" | "final" | "trace_event" | "trace_snapshot" | "interrupt" | "credit_exhausted" | "pipeline" | "row";
+  type: "model_output" | "tool_call" | "tool_output" | "tool_error" | "model_stream" | "reasoning_stream" | "final" | "trace_event" | "trace_snapshot" | "interrupt" | "credit_exhausted" | "pipeline" | "row" | "status";
   data: Record<string, unknown>;
 };
 
@@ -197,7 +197,7 @@ export type TimelineRow = {
   summary?: string;
 };
 
-export type TraceStatus = "running" | "awaiting_input" | "completed" | "failed" | "cancelled";
+export type TraceStatus = "running" | "awaiting_input" | "completed" | "failed" | "cancelled" | "interrupted";
 
 export type TraceEventType =
   | "run_start"
@@ -392,9 +392,14 @@ export type ChatMessage = {
   agent?: string;
   // D2: 关联本次提交的 trace run（一次提交 = 一条 assistant message = 一个 trace）
   traceId?: string;
-  // D2/P7: 本条消息的执行态（streaming=进行中 / completed / failed / stopped /
-  // answered=拍板卡已被回答，本轮以用户决策收尾，后续输出归新一轮消息）
-  status?: "streaming" | "completed" | "failed" | "stopped" | "answered";
+  // D2/P7: 本条消息的执行态（queued=同会话排队中 / streaming=进行中 / completed /
+  // failed / stopped / answered=拍板卡已被回答，本轮以用户决策收尾，后续输出归新一轮消息）
+  status?: "streaming" | "queued" | "completed" | "failed" | "stopped" | "answered";
+  // 会话消息台账键（REQ-20261019-222403 FR-005/DEC-009）：用户消息的稳定 id，
+  // 服务端日志按 id 幂等入队；排队消息断连后按此 id 补跑。
+  messageId?: string;
+  // 排队消息断连待补跑标记（DEC-009）：下一次提交/重试时自动按序补发。
+  queuedInterrupted?: boolean;
   // T17: 体验阶段（驱动 ExecutionView 子视图切换）。
   // 由 derivePhaseFromMessage 从 status/tools/awaitingInput 实时派生，
   // executionStore 在每次 message 更新后写入。

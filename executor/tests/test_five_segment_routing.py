@@ -65,6 +65,51 @@ def _route(ws: Path, **kwargs):
     return pipeline.route(ws, "thread-1", **kwargs)
 
 
+def test_route_sticky_thread_within_conversation(tmp_path: Path) -> None:
+    """会话粘性（REQ-20261019-222403 FR-001/DEC-001，AC-001）。
+
+    同一客户端会话（base thread）的多条普通消息复用同一 langgraph 线程；
+    不同会话各开各的线程；丢弃重开递增派生号。
+    """
+    d1 = _route(tmp_path)
+    pipeline.commit_route(tmp_path, d1, "trace-1")
+    d2 = _route(tmp_path)
+    assert d2.thread_id == d1.thread_id  # 粘性：不换线程
+    assert d2.new_session is False
+    assert d2.conversation_id == "thread-1"
+
+    # 另一会话（阶段切换后客户端新开的 thread）→ 不同线程
+    d_other = pipeline.route(tmp_path, "thread-2")
+    assert d_other.thread_id.startswith("thread-2:author:")
+    assert d_other.thread_id != d1.thread_id
+
+    # 丢弃重开：派生号递增，开新线程
+    d3 = _route(tmp_path, fresh_session=True)
+    pipeline.commit_route(tmp_path, d3, "trace-3")
+    assert d3.thread_id != d1.thread_id
+    assert d3.thread_id.endswith(":2")
+    state = load_writing_state(tmp_path)
+    assert state.conversation_forks["thread-1"] == 2
+    # fork 后普通消息粘在新线程上
+    d4 = _route(tmp_path)
+    assert d4.thread_id == d3.thread_id
+
+
+def test_route_resume_degrades_on_stale_trace(tmp_path: Path) -> None:
+    """resume trace 失配（跨会话/已被清理）→ 降级普通消息续跑粘性线程（AC-002 边界）。"""
+    d1 = _route(tmp_path)
+    pipeline.commit_route(tmp_path, d1, "trace-1")
+    stale = _route(tmp_path, resume_trace="trace-gone")
+    assert stale.resume_degraded is True
+    assert stale.thread_id == d1.thread_id  # 仍在原会话线程
+    # 命中活跃 trace 的 resume 不降级
+    state = load_writing_state(tmp_path)
+    state.active_traces["author"] = "trace-live"
+    save_writing_state(tmp_path, state)
+    live = _route(tmp_path, resume_trace="trace-live")
+    assert live.resume_degraded is False and live.new_session is False
+
+
 def test_route_empty_workspace_starts_theme(tmp_path: Path) -> None:
     d = _route(tmp_path)
     assert d.agent_name == "author"

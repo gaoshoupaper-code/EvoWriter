@@ -556,6 +556,25 @@ export async function fetchThreadRunState(threadId: string): Promise<ThreadRunSt
   return apiJson<ThreadRunState>(`${API_BASE_URL}/api/threads/${threadId}/run-state`);
 }
 
+// ── 服务端会话消息日志（REQ-20261019-222403 FR-005/DEC-005）──────────
+
+export type ConversationMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  status: string;
+  trace_id?: string | null;
+  ts?: string;
+};
+
+/**
+ * 拉取服务端会话消息日志（唯一事实源）。本地缓存缺失（刷新/换设备/清缓存）
+ * 时用于恢复界面历史。
+ */
+export async function fetchThreadConversation(threadId: string): Promise<ConversationMessage[]> {
+  return apiJson<ConversationMessage[]>(`${API_BASE_URL}/api/threads/${threadId}/conversation`);
+}
+
 export async function fetchTraceDetail(threadId: string, traceId: string) {
   const response = await apiFetch(`${API_BASE_URL}/api/threads/${threadId}/traces/${traceId}`);
   return parseJsonResponse<TraceDetail>(response);

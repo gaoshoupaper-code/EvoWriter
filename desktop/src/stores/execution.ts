@@ -31,6 +31,7 @@ import {
   API_BASE_URL,
   apiFetch,
   createThread as createThreadRequest,
+  fetchThreadConversation,
   fetchThreadRunState,
   updateThread as updateThreadRequest,
   trackCopy,
@@ -42,6 +43,31 @@ import { finalizeAnsweredMessage } from "@/lib/hitl-finalize";
 
 // ── 心跳超时（与原 home.tsx 一致）──
 const HEARTBEAT_TIMEOUT_MS = 45_000;
+
+// ── 并发流管理（REQ-20261019-222403 FR-006：同会话排队串行，客户端放开多流）──
+// loading 升级为引用计数语义：任一写作/图像流在跑即 true；停止取消全部在途流
+// （排队中的流随停止清队一起收口，服务端按 thread 清台账）。
+let activeStreamCount = 0;
+const activeReaders = new Set<{ cancel: () => Promise<void> }>();
+let messageIdSeq = 0;
+
+function beginStream(set: (partial: Partial<ExecutionState>) => void, kind: "writing" | "image") {
+  activeStreamCount += 1;
+  set({ loading: true, activeStreamKind: kind });
+}
+
+function endStream(set: (partial: Partial<ExecutionState>) => void) {
+  activeStreamCount = Math.max(0, activeStreamCount - 1);
+  if (activeStreamCount === 0) set({ loading: false, activeStreamKind: "" });
+}
+
+/** 用户消息台账键（FR-005）：断连补跑按同一 id 重发，服务端幂等入队。 */
+function genMessageId(): string {
+  const cryptoRef = (globalThis as { crypto?: Crypto }).crypto;
+  if (cryptoRef?.randomUUID) return `u-${cryptoRef.randomUUID()}`;
+  messageIdSeq += 1;
+  return `u-${Date.now()}-${messageIdSeq}`;
+}
 
 const initialAssistantMessage: ChatMessage = {
   role: "assistant",
@@ -372,10 +398,20 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
       // 恢复期间新 run 已开始（隐式切换先建会话再提交的窗口）则放弃覆盖，
       // 防止异步恢复的旧列表盖掉在途提交的消息（review P1 竞态修复）
       if (d.getActiveThreadId() !== threadId || get().loading) return;
-      set({ messages: restored || [makeWelcomeMessage(!!d.getActiveWorkspaceId())] });
-      // D-对账：本地恢复后回查服务端 run 真相，纠正断线期间分叉的
-      // 「正在执行...」占位（interrupt 帧断连丢失，两端状态机各走各的）
-      if (restored) void reconcileRestoredRunState(set, get, threadId);
+      if (restored) {
+        set({ messages: restored });
+        // D-对账：本地恢复后回查服务端 run 真相，纠正断线期间分叉的
+        // 「正在执行...」占位（interrupt 帧断连丢失，两端状态机各走各的）
+        void reconcileRestoredRunState(set, get, threadId);
+        return;
+      }
+      // FR-005（REQ-20261019-222403）：本地无记录（换设备/清缓存）→ 服务端
+      // 会话消息日志兜底恢复；再没有才回退欢迎语。
+      void restoreFromServerConversation(threadId).then((fromServer) => {
+        if (d.getActiveThreadId() !== threadId || get().loading) return;
+        set({ messages: fromServer || [makeWelcomeMessage(!!d.getActiveWorkspaceId())] });
+        if (fromServer) void reconcileRestoredRunState(set, get, threadId);
+      });
     });
   },
 
@@ -486,7 +522,75 @@ type StreamReader = { read: () => Promise<{ done: boolean; value: Uint8Array | u
 type SubmitOptions = {
   /** 对话气泡里展示的用户消息（默认用 promptText）。 */
   userDisplay?: string;
+  /** 用户消息台账键：断连补跑时按同一 id 重发（服务端幂等入队，DEC-009）。 */
+  messageId?: string;
+  /** 排队补跑的内层重发（跳过 paused 预处理，防递归）。 */
+  isResend?: boolean;
 };
+
+/** 排队中断待补跑的用户/助手消息对。 */
+type PausedPair = { userIndex: number; content: string; messageId?: string };
+
+function collectPausedPairs(messages: ChatMessage[]): PausedPair[] {
+  const pairs: PausedPair[] = [];
+  for (let i = 0; i < messages.length; i += 1) {
+    if (messages[i].role !== "user") continue;
+    const assistant = messages[i + 1];
+    if (assistant?.role === "assistant" && assistant.queuedInterrupted) {
+      pairs.push({ userIndex: i, content: messages[i].content, messageId: messages[i].messageId });
+      i += 1;
+    }
+  }
+  return pairs;
+}
+
+/** DEC-009 排队补跑：断连时排队未发的消息按序重发，旧占位对移除、原话原 id 重新入队。 */
+async function resendPausedMessages(
+  set: (partial: Partial<ExecutionState> | ((s: ExecutionState) => Partial<ExecutionState>)) => void,
+  get: () => ExecutionState,
+) {
+  for (const pair of collectPausedPairs(get().messages)) {
+    set((state) => ({
+      messages: state.messages.filter((_, idx) => idx !== pair.userIndex && idx !== pair.userIndex + 1),
+    }));
+    await performSubmit(set, get, pair.content, {
+      messageId: pair.messageId,
+      isResend: true,
+      userDisplay: pair.content,
+    });
+  }
+}
+
+/** FR-005：本地缓存缺失时从服务端会话消息日志恢复界面历史。 */
+async function restoreFromServerConversation(threadId: string): Promise<ChatMessage[] | null> {
+  try {
+    const entries = await fetchThreadConversation(threadId);
+    if (!entries.length) return null;
+    return entries.map((entry): ChatMessage => {
+      if (entry.role === "user") {
+        return { role: "user", content: entry.content, messageId: entry.id };
+      }
+      const message: ChatMessage = {
+        role: "assistant",
+        content: entry.content || "",
+        traceId: entry.trace_id ?? undefined,
+      };
+      if (entry.status === "interrupted") {
+        // DEC-004：半截内容显示保留 + 标注中断（FailedView 自带重试入口）
+        message.status = "failed";
+        message.content = entry.content
+          ? `${entry.content}\n\n⚠️ 连接中断，已生成的内容已保存，可以重试。`
+          : "⚠️ 连接中断（未收到完成信号），可以重试。";
+      } else if (entry.status === "completed" || entry.status === "failed" || entry.status === "stopped") {
+        message.status = entry.status;
+      }
+      // running / queued / awaiting 不落终态：交给恢复对账按服务端 run 真相收敛
+      return message;
+    });
+  } catch {
+    return null; // 离线/接口异常：回退欢迎语，不比现状差
+  }
+}
 
 async function performSubmit(
   set: (partial: Partial<ExecutionState> | ((s: ExecutionState) => Partial<ExecutionState>)) => void,
@@ -495,7 +599,14 @@ async function performSubmit(
   opts: SubmitOptions = {},
 ) {
   const trimmedPrompt = promptText.trim();
-  if (!trimmedPrompt || get().loading) return;
+  if (!trimmedPrompt) return;
+  // 图像流没有排队通道：生成中拦截文字提交（写作流已放开并发排队，FR-006）。
+  if (get().activeStreamKind === "image") {
+    toast.error("图像生成中，请稍后再发送文字消息。");
+    return;
+  }
+  // DEC-009：先把排队中断未发的消息按序补跑（isResend 内层不再递归预处理）。
+  if (!opts.isResend) await resendPausedMessages(set, get);
   const d = requireDeps();
 
   const messages = get().messages;
@@ -524,7 +635,8 @@ async function performSubmit(
     return;
   }
 
-  set({ loading: true, result: null, activeStreamKind: "writing" });
+  beginStream(set, "writing");
+  set({ result: null });
 
   if (resumeTraceId) {
     d.setLiveTraceId(resumeTraceId);
@@ -562,10 +674,12 @@ async function performSubmit(
   } catch {
     pipelineAgent = undefined;
   }
+  // FR-005 台账键：用户消息带稳定 id 随请求发出（断连补跑按 id 幂等重发）
+  const messageId = opts.messageId ?? genMessageId();
   set((state) => ({
     messages: [
       ...state.messages,
-      { role: "user", content: trimmedPrompt },
+      { role: "user", content: trimmedPrompt, messageId },
       {
         role: "assistant",
         content: "正在执行...",
@@ -594,7 +708,6 @@ async function performSubmit(
       thoughtsDirty = true;
     }
   };
-
   // 行级时间线（REQ-20261018-235653，FR-001/FR-006）：row 事件流的本地累积，
   // 与 thoughts 同一节拍 flush 进 message.rows。rowMode 一旦开启（收到首个 row 事件），
   // 正文/思考以行为真相源——旧 model_stream/reasoning_stream 增量不再消费（DEC-006 双发下
@@ -610,6 +723,18 @@ async function performSubmit(
     }
   };
 
+  // 断连收尾文案（FR-006/DEC-009）：排队轮断连 → 标 queuedInterrupted 待补跑；
+  // 执行轮断连 → 保留半截内容 + 可重试提示（FR-004）。
+  const breakNote = (message: ChatMessage, note: string): string =>
+    message.status === "queued"
+      ? "排队中连接中断，发送新消息时会自动补发。"
+      : !message.content || message.content === "正在执行..."
+        ? note
+        : `${message.content}\n\n${note}`;
+  const queuedBreakPatch = (message: ChatMessage) =>
+    message.status === "queued" ? { queuedInterrupted: true as const } : {};
+
+  let reader: StreamReader | null = null;
   try {
     let userMessageThreadId = activeThreadId;
     const displayText = opts.userDisplay ?? trimmedPrompt;
@@ -646,13 +771,14 @@ async function performSubmit(
         });
     }
 
-    const reader = (await streamRequest("/api/screenplay/generate/stream", {
+    reader = (await streamRequest("/api/screenplay/generate/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: isResume
-        ? { thread_id: userMessageThreadId, resume: trimmedPrompt, trace_id: resumeTraceId ?? undefined }
-        : { thread_id: userMessageThreadId, prompt: trimmedPrompt },
+        ? { thread_id: userMessageThreadId, resume: trimmedPrompt, trace_id: resumeTraceId ?? undefined, message_id: messageId }
+        : { thread_id: userMessageThreadId, prompt: trimmedPrompt, message_id: messageId },
     })) as StreamReader;
+    activeReaders.add(reader);
     set({ streamReader: reader });
 
     const decoder = new TextDecoder();
@@ -752,6 +878,51 @@ async function performSubmit(
             d.setLiveTraceId(detail.run.status === "running" ? detail.run.trace_id : "");
           } else if (event.type === "model_output") {
             hasModelOutput = true;
+          } else if (event.type === "status") {
+            // 会话编排状态（REQ-20261019-222403）：排队/开跑/截断提示/清队/台账失败
+            const s = String((event.data as { status?: string }).status ?? "");
+            if (s === "queued") {
+              set((state) => ({
+                messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
+                  ...message,
+                  status: "queued",
+                  content: "排队中…前面的生成完成后自动开始",
+                })),
+              }));
+            } else if (s === "started") {
+              set((state) => ({
+                messages: updateAssistantMessage(state.messages, assistantIdx, (message) =>
+                  message.status === "queued"
+                    ? { ...message, status: undefined, content: "正在执行..." }
+                    : message,
+                ),
+              }));
+            } else if (s === "history_truncated") {
+              // FR-007：一次性提示（聊天记录仍完整，仅模型上下文裁剪）
+              const dropped = Number((event.data as { dropped_turns?: number }).dropped_turns ?? 0);
+              toast.info(`对话历史过长：已把最早的 ${dropped} 轮移出上下文（聊天记录仍完整保留）`);
+            } else if (s === "cancelled") {
+              // FR-006 停止清队：排队轮未开始即作废（服务端台账同步 cancelled）
+              set((state) => ({
+                messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
+                  ...message,
+                  status: "stopped",
+                  content: "已停止（排队中，未开始生成）。",
+                })),
+              }));
+              break;
+            } else if (s === "log_failed") {
+              const note = `⚠️ ${String((event.data as { error?: string }).error ?? "会话日志写入失败，本轮未发送")}`;
+              toast.error(note);
+              set((state) => ({
+                messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
+                  ...message,
+                  status: "failed",
+                  content: note,
+                })),
+              }));
+              break;
+            }
           } else if (event.type === "tool_call") {
             set((state) => ({
               messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, tools: upsertRunningTool(message.tools, event) })),
@@ -884,7 +1055,9 @@ async function performSubmit(
       // FR-001（REQ-20261009-002227）：收到过 interrupt 的关流是服务端正常结束
       // （提问后关流等 resume），保持 awaitingInput，不误报断连、不落 failed。
       const current = get().messages[assistantIdx];
-      if (current && current.role === "assistant" && !current.status && !gotInterrupt) {
+      // queued 是非终态（排队中），断流同样要收口（FR-006/DEC-009：标待补跑）
+      const rowTerminal = !!(current && current.status && current.status !== "queued");
+      if (current && current.role === "assistant" && !rowTerminal && !gotInterrupt) {
         const brokenMessage = "⚠️ 连接中断（未收到完成信号），已生成的内容已保存，可以重试。";
         d.setLiveTraceId("");
         closeThoughts("interrupted");
@@ -898,8 +1071,9 @@ async function performSubmit(
             status: "failed",
             thoughts: thoughtSegments,
             ...(rowSegments.length ? { rows: rowSegments } : {}),
-            content: !message.content || message.content === "正在执行..." ? brokenMessage : `${message.content}\n\n${brokenMessage}`,
+            content: breakNote(message, brokenMessage),
             contentFormat: "markdown",
+            ...queuedBreakPatch(message),
           })),
         }));
       }
@@ -949,7 +1123,8 @@ async function performSubmit(
         messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
           ...message, status: "failed", thoughts: thoughtSegments,
           ...(rowSegments.length ? { rows: rowSegments } : {}),
-          content: !message.content || message.content === "正在执行..." ? `⚠️ ${heartbeatMessage}` : `${message.content}\n\n⚠️ ${heartbeatMessage}`, contentFormat: "markdown",
+          content: breakNote(message, `⚠️ ${heartbeatMessage}`), contentFormat: "markdown",
+          ...queuedBreakPatch(message),
         })),
       }));
       if (isResume) throw submitError;
@@ -963,14 +1138,17 @@ async function performSubmit(
       messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
         ...message, status: "failed", thoughts: thoughtSegments,
         ...(rowSegments.length ? { rows: rowSegments } : {}),
-        content: !message.content || message.content === "正在执行..."
-          ? "请求失败了。检查后端是否启动后，可以在同一个会话里重试。"
-          : `${message.content}\n\n⚠️ 请求失败，可重试。`, contentFormat: "markdown",
+        content: breakNote(message,
+          submitError instanceof Error ? submitError.message : "请求失败了。检查后端是否启动后，可以在同一个会话里重试。"),
+        contentFormat: "markdown",
+        ...queuedBreakPatch(message),
       })),
     }));
     if (isResume) throw submitError;
   } finally {
-    set({ streamReader: null, loading: false, activeStreamKind: "" });
+    if (reader) activeReaders.delete(reader);
+    endStream(set);
+    set({ streamReader: null });
   }
 }
 
@@ -979,23 +1157,40 @@ function handleStopGeneration(set: any, get: () => ExecutionState) {
   const activeThreadId = d.getActiveThreadId();
   const liveTraceId = d.getLiveTraceId();
 
-  if (activeThreadId && liveTraceId) {
+  if (activeThreadId) {
+    // FR-006 停止=清空队列：始终发 stop（无 live trace 时 trace_id 传空，
+    // 服务端幂等——正主由 trace 级取消处理，门外排队者由清队分支收口）。
     apiFetch(`${API_BASE_URL}/api/screenplay/stop`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ thread_id: activeThreadId, trace_id: liveTraceId }),
+      body: JSON.stringify({ thread_id: activeThreadId, trace_id: liveTraceId || "" }),
     }).catch(() => {});
   }
   get().streamReader?.cancel().catch(() => {});
+  // 并发多流（排队）：本地全部取消，行内各自收口（排队行收到 cancelled 帧或
+  // 断流兜底落 stopped）
+  for (const r of Array.from(activeReaders)) {
+    void r.cancel().catch(() => {});
+  }
 }
 
 function handleRetry(set: any, get: () => ExecutionState) {
   const d = requireDeps();
+  if (get().loading) return; // FR-003：生成中禁用重试（排队/执行中都不重发）
   const liveTraceId = d.getLiveTraceId();
   if (liveTraceId) {
     trackRegenerate(liveTraceId);
   }
-  const lastUser = [...get().messages].reverse().find((m) => m.role === "user");
+  const messages = get().messages;
+  // 尾部是排队中断对：补跑即重试（resendPausedMessages 会按序补发全部，
+  // 避免同话术双发）
+  const lastUserIdx = messages.map((m) => m.role).lastIndexOf("user");
+  const pairAssistant = messages[lastUserIdx + 1];
+  if (pairAssistant?.role === "assistant" && pairAssistant.queuedInterrupted) {
+    void resendPausedMessages(set, get);
+    return;
+  }
+  const lastUser = [...messages].reverse().find((m) => m.role === "user");
   if (lastUser?.content) {
     void performSubmit(set, get, lastUser.content);
   }
@@ -1023,7 +1218,8 @@ async function performImageStream(
     });
   }
 
-  set({ loading: true, streamReader: null, activeStreamKind: "image" });
+  beginStream(set, "image");
+  set({ streamReader: null });
 
   if (!isResume) {
     set((state) => ({ messages: [...state.messages, { role: "user", content: opts.prompt, contentFormat: "text" }] }));
@@ -1032,11 +1228,13 @@ async function performImageStream(
     messages: [...state.messages, { role: "assistant", content: isResume ? "正在优化..." : "正在生成...", contentFormat: "markdown", tools: [] }],
   }));
 
+  let reader: StreamReader | null = null;
   try {
     const body = isResume ? { thread_id: activeThreadId, prompt: "", resume: opts.resume } : { thread_id: activeThreadId, prompt: opts.prompt };
-    const reader = (await streamRequest("/api/image/generate/stream", {
+    reader = (await streamRequest("/api/image/generate/stream", {
       method: "POST", headers: { "Content-Type": "application/json" }, body,
     })) as StreamReader;
+    activeReaders.add(reader);
     set({ streamReader: reader });
 
     const decoder = new TextDecoder();
@@ -1122,6 +1320,8 @@ async function performImageStream(
   } catch (err) {
     toast.error(err instanceof Error ? err.message : "image stream 失败");
   } finally {
-    set({ streamReader: null, loading: false, activeStreamKind: "" });
+    if (reader) activeReaders.delete(reader);
+    endStream(set);
+    set({ streamReader: null });
   }
 }

@@ -111,6 +111,11 @@ class Settings(BaseSettings):
     memory_embed_base_url: str = ""
     memory_embed_model: str = "embedding-3"
 
+    # 会话历史字符预算（REQ-20261019-222403 FR-007）：粘性会话上下文估算超此值时
+    # 从最老完整轮次裁剪 LLM 输入（消息日志与界面不动）。中文保守 ≈ 1.5 字符/token，
+    # 默认 96000 字符 ≈ 6.4 万 token 历史预算。0 = 关闭裁剪。
+    conversation_history_char_budget: int = 96_000
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

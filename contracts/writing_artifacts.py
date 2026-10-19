@@ -424,6 +424,11 @@ class WritingState(BaseModel):
     sessions: dict[str, int] = Field(default_factory=dict)
     active_threads: dict[str, str] = Field(default_factory=dict)
     active_traces: dict[str, str] = Field(default_factory=dict)
+    conversation_forks: dict[str, int] = Field(
+        default_factory=dict,
+        description="会话粘性派生号（REQ-20261019-222403 FR-001）：客户端会话 id → 丢弃重开计数，"
+        "同一会话全程复用同一 langgraph 线程；旧 sessions seq 制已停用",
+    )
     updated_at: str = ""
 
 

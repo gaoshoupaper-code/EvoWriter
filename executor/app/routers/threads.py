@@ -24,6 +24,8 @@ from app.schemas.screenplay import (
     ThreadUpdateRequest,
 )
 from app.platform.trace import TraceDetail, TraceRunSummary
+from app.domains.writing.conversation_log import ConversationLog, ConversationMessage
+from pathlib import Path
 
 router = APIRouter()
 
@@ -157,6 +159,20 @@ def _reconstruct_awaiting_input(
             asked_at=hitl.timestamp,
         )
     return None
+
+
+@router.get("/threads/{thread_id}/conversation", response_model=list[ConversationMessage])
+def get_thread_conversation(thread_id: str, user: CurrentUser = Depends(current_user)) -> list[ConversationMessage]:
+    """服务端会话消息日志（REQ-20261019-222403 FR-005）。
+
+    客户端本地缓存缺失（刷新/换设备/清缓存）时从服务端恢复界面历史；
+    会话 id 即客户端 thread_id（粘性路由同键）。
+    """
+    thread_store = get_thread_store()
+    thread = thread_store.get_thread(user.user_id, thread_id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    return ConversationLog(Path(thread.workspace_path)).read(thread_id)
 
 
 @router.get("/threads/{thread_id}/run-state", response_model=ThreadRunStateResponse)

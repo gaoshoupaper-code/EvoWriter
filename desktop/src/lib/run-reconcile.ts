@@ -67,6 +67,13 @@ export function reconcileMessagesWithRunState(
       status: "failed",
       content: withNote(last.content, "⚠️ 任务失败（恢复会话时对账发现）。"),
     };
+  } else if (runState.status === "interrupted") {
+    // REQ-20261019-222403 FR-002/AC-002：断连中断（会话可续）——半截内容已保留，
+    // 标 failed（FailedView 自带重试入口，重试按原话接续重发）。
+    patch = {
+      status: "failed",
+      content: withNote(last.content, "连接中断，已生成的内容已保存，可以重试。"),
+    };
   } else {
     // cancelled：落 stopped（含 StoppedView 重试入口）
     patch = {

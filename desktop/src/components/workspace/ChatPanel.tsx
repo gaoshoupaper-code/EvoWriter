@@ -98,7 +98,9 @@ export function ChatPanel({
   function handleInputKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) return;
     event.preventDefault();
-    if (!loading && !awaitingWithOptions) event.currentTarget.form?.requestSubmit();
+    // FR-006（REQ-20261019-222403）：生成中不再禁发——同会话消息排队串行，
+    // 只有等拍板选项时才拦（选了选项等于回答）。
+    if (!awaitingWithOptions) event.currentTarget.form?.requestSubmit();
   }
 
   // ── 历史浏览态：整个对话区（消息+输入）换成只读历史面板（FR-008）──
@@ -266,8 +268,14 @@ export function ChatPanel({
             rows={1}
             onChange={(event) => onPromptChange(event.target.value)}
             onKeyDown={handleInputKeyDown}
-            disabled={loading || awaitingWithOptions}
-            placeholder={awaitingWithOptions ? "请在上方拍板卡选择并提交" : undefined}
+            disabled={awaitingWithOptions}
+            placeholder={
+              awaitingWithOptions
+                ? "请在上方拍板卡选择并提交"
+                : loading
+                  ? "生成中，可以直接输入并回车排队发送"
+                  : undefined
+            }
           />
           {canExpand ? (
             <button

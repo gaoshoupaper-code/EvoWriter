@@ -25,14 +25,15 @@ describe("输入气泡（REQ-20261018-202005 AC-004）", () => {
     expect(p.onSubmit).toHaveBeenCalledOnce();
   });
 
-  it("生成时只显示停止方块，点击不会提交表单", () => {
+  it("生成时只显示停止方块，点击不会提交表单；输入框保持可输入（FR-006 排队）", () => {
     const p = props(true);
     const { container, rerender } = render(<ChatPanel {...p} />);
     const stop = screen.getByRole("button", { name: "停止" });
     expect(container.querySelectorAll(".send-button, .stop-button")).toHaveLength(1);
     expect(stop.querySelector("svg")).not.toBeNull();
     expect(stop).toHaveAttribute("type", "button");
-    expect(screen.getByRole("textbox")).toBeDisabled();
+    // REQ-20261019-222403 FR-006：生成中不再禁发——可输入排队，只有拍板中禁用
+    expect(screen.getByRole("textbox")).toBeEnabled();
     fireEvent.click(stop);
     expect(p.onStop).toHaveBeenCalledOnce();
     expect(p.onSubmit).not.toHaveBeenCalled();
@@ -52,10 +53,10 @@ describe("输入气泡（REQ-20261018-202005 AC-004）", () => {
     expect(p.onSubmit).toHaveBeenCalledOnce();
   });
 
-  it("生成时 Enter 不触发二次发送", () => {
+  it("生成中 Enter 排队发送（FR-006：同会话消息排队串行）", () => {
     const p = props(true);
     render(<ChatPanel {...p} />);
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
-    expect(p.onSubmit).not.toHaveBeenCalled();
+    expect(p.onSubmit).toHaveBeenCalledOnce();
   });
 });

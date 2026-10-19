@@ -132,6 +132,13 @@ export function normalizeRestoredMessages(messages: ChatMessage[], now = Date.no
   return messages.map((m) => {
     const next: ChatMessage = { ...m };
     if (next.status === "streaming") next.status = "stopped";
+    // 排队态恢复（REQ-20261019-222403 DEC-009）：重启后排队流已不存在，
+    // 落 failed + 待补跑标记——下次提交/重试时按原 id 自动补发。
+    if (next.status === "queued") {
+      next.status = "failed";
+      next.queuedInterrupted = true;
+      next.content = "排队中连接中断，发送新消息时会自动补发。";
+    }
     if (next.tools?.some((t) => t.status === "running")) {
       next.tools = next.tools.map((t) => (t.status === "running" ? { ...t, status: "done" as const } : t));
     }

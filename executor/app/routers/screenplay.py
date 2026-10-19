@@ -104,13 +104,16 @@ class StopRequest(BaseModel):
 
 @router.post("/screenplay/stop")
 def stop_screenplay(req: StopRequest, user: CurrentUser = Depends(current_user)):
-    """标记用户请求停止某条 trace（D6 + D-停止真生效）。
+    """标记用户请求停止某条 trace（D6 + D-停止真生效 + FR-006 清空队列）。
 
-    两步：
+    三步：
     1. request_user_stop 打 _user_stop_requested 标记——决定 cancel reason 文案
        （user_stop vs client_disconnect），原有逻辑保留。
     2. cancel_run_task 真正 task.cancel()——把 CancelledError 注入生成器，
        走 generate_stream 的 except 三路分流收尾成 cancelled。
+    3. 清空该会话的排队消息（REQ-20261019-222403 FR-006 默认规则：停止=
+       清空队列）——取消串行门外等待的请求，并把台账里 queued/paused 的
+       用户消息标 cancelled（不复活、不残留待发）。
 
     第 2 步是关键补丁：原来"真停止"完全依赖前端 abort SSE 连接，浏览器刷新/关闭/
     cloudflared 掐断后 abortController 丢失，后台 trace 就停不掉。现在后端主动 kill，
@@ -119,7 +122,32 @@ def stop_screenplay(req: StopRequest, user: CurrentUser = Depends(current_user))
     recorder = get_trace_recorder()
     recorder.request_user_stop(req.trace_id)
     cancelled = recorder.cancel_run_task(req.trace_id)
-    return {"status": "accepted", "trace_id": req.trace_id, "task_cancelled": cancelled}
+    queue_cleared = _clear_conversation_queue(user.user_id, req.thread_id)
+    return {
+        "status": "accepted",
+        "trace_id": req.trace_id,
+        "task_cancelled": cancelled,
+        "queue_cleared": queue_cleared,
+    }
+
+
+def _clear_conversation_queue(user_id: str, thread_id: str) -> int:
+    """停止清队：取消门外等待者 + 台账 queued/paused 消息标 cancelled。best-effort。"""
+    from app.domains.writing.run_gate import get_conversation_gate
+
+    gate = get_conversation_gate(thread_id)
+    cancelled_waiters = gate.clear_for_stop()
+    thread = get_thread_store().get_thread(user_id, thread_id)
+    if thread is not None:
+        from pathlib import Path
+
+        from app.domains.writing.conversation_log import ConversationLog
+
+        log = ConversationLog(Path(thread.workspace_path))
+        for message in log.read(thread_id):
+            if message.role == "user" and message.status in ("queued", "paused"):
+                log.mark_user(thread_id, message.id, "cancelled")
+    return cancelled_waiters
 
 
 # ── 数据闭环 E2：隐式反馈信号埋点 ──────────────────────────

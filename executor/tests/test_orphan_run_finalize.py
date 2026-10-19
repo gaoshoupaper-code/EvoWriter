@@ -56,15 +56,32 @@ class FinalizeOrphanRunTest(unittest.TestCase):
         return handle.trace_id
 
     def test_running_run_gets_cancelled(self, _mock_notify) -> None:
-        """第四路孤儿：except 未收尾仍 running → 兜底补写 cancelled。"""
+        """第四路孤儿：except 未收尾仍 running → 兜底补写 interrupted（FR-002 会话可续）。"""
         trace_id = self._create_running_run()
         self.recorder.finalize_orphan_run(self.thread, trace_id)
         run = self.recorder.find_run_by_trace_id(trace_id)
-        self.assertEqual(run.status, "cancelled")
-        # 终态事件已写盘（jsonl 末尾是 run_cancelled）。
+        self.assertEqual(run.status, "interrupted")
+        # 终态事件已写盘（jsonl 末尾是 run_cancelled，状态字段区分 interrupted）。
         run = self.recorder.find_run_by_trace_id(trace_id)
         events = self.recorder._read_events(Path(self.thread.workspace_path) / run.path)
         self.assertEqual(events[-1].type, "run_cancelled")
+        self.assertEqual(events[-1].status, "interrupted")
+
+    def test_interrupt_run_marks_resumable_terminal(self, _mock_notify) -> None:
+        """interrupt_run（REQ-20261019-222403 FR-002）：断连中断 → 状态 interrupted
+        （区别于用户停止的 cancelled），事件类型 run_cancelled 供下游终止判定。"""
+        trace_id = self._create_running_run()
+        self.recorder.interrupt_run(self.thread, trace_id)
+        run = self.recorder.find_run_by_trace_id(trace_id)
+        self.assertEqual(run.status, "interrupted")
+        events = self.recorder._read_events(Path(self.thread.workspace_path) / run.path)
+        self.assertEqual(events[-1].type, "run_cancelled")
+        self.assertEqual(events[-1].status, "interrupted")
+        # 收尾后内存清理（_sequences 已清 → 二次 finalize 幂等）
+        self.recorder.finalize_orphan_run(self.thread, trace_id)
+        self.assertEqual(
+            self.recorder.find_run_by_trace_id(trace_id).status, "interrupted"
+        )
 
     def test_terminal_run_untouched(self, _mock_notify) -> None:
         """已终态（completed）→ 兜底不重复写、不覆盖状态。"""

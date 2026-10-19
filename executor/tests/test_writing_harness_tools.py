@@ -153,6 +153,228 @@ def test_edit_nonexistent_artifact(tmp_path: Path) -> None:
     assert "尚不存在" in out
 
 
+# ── save_artifact 产物取证（REQ-20261019-203500 FR-001/DEC-001/DEC-004）──
+
+
+class _FakeRecorder:
+    """取证桩：记录 record_artifact_revision 调用与降级标记。"""
+
+    def __init__(self, fail: bool = False) -> None:
+        self.calls: list[dict] = []
+        self.degraded: list[str] = []
+        self._fail = fail
+
+    def record_artifact_revision(
+        self, trace_id, agent_name, *, file_path, content, tool_name=None,
+        parent_revision_id=None, content_hash=None, tool_call_id=None,
+    ):
+        if self._fail:
+            raise RuntimeError("取证故障注入")
+        self.calls.append({
+            "trace_id": trace_id, "agent_name": agent_name, "file_path": file_path,
+            "content": content, "tool_name": tool_name, "tool_call_id": tool_call_id,
+        })
+        return "artifact-rev-fake"
+
+    def _mark_capture_degraded(self, trace_id, reason):
+        self.degraded.append(reason)
+
+
+def _mk_save_rec(ws: Path, recorder, trace_id: str = "trace-x"):
+    registry: dict = {}
+    failures: dict = {}
+    return build_save_artifact_tool(
+        ws, registry, failures, recorder=recorder, trace_id=trace_id,
+    )
+
+
+def test_full_save_records_artifact_revision(tmp_path: Path) -> None:
+    rec = _FakeRecorder()
+    save = _mk_save_rec(tmp_path, rec)
+    content = "# 主题 · 书\n> 状态：定稿\n"
+    out = _call(save, kind="theme", mode="full", content=content)
+    assert "已落盘" in out
+    assert len(rec.calls) == 1
+    call = rec.calls[0]
+    assert call["trace_id"] == "trace-x"
+    assert call["agent_name"] == "author-subagent"
+    assert call["file_path"] == "主题.md"
+    assert call["content"] == content
+    assert call["tool_name"] == "save_artifact"
+    # 取证身份为内容寻址（R1/P0）：同内容幂等、异内容不冲突的契约基础
+    assert isinstance(call["tool_call_id"], str) and call["tool_call_id"].startswith("save_artifact:")
+
+
+def test_full_then_edit_chains_revisions(tmp_path: Path) -> None:
+    """R1/P0 回归：同 run 内 full→edit（内容不同）必须产生 2 条修订且 parent 链接。
+
+    修复前：取证不传 tool_call_id → 恒定 legacy 键 → recorder call_paths 哈希
+    冲突守卫把第二次落盘的取证静默降级（revision_events==1）。
+    """
+    from app.platform.trace.recorder import TraceRecorder
+    from app.schemas.screenplay import ThreadSummary
+
+    thread = ThreadSummary(
+        thread_id="thread-forensic-chain", workspace_id="ws-forensic-chain",
+        session_name="s", workspace_path=str(tmp_path),
+        created_at="2026-10-19T00:00:00+00:00",
+        updated_at="2026-10-19T00:00:00+00:00",
+    )
+    recorder = TraceRecorder()
+    run = recorder.create_run(thread, "/screenplay/generate")
+    registry: dict = {}
+    save = build_save_artifact_tool(
+        tmp_path, registry, {}, recorder=recorder, trace_id=run.trace_id,
+    )
+    reader = build_read_artifact_tool(tmp_path, registry)
+    assert "已落盘" in _call(save, kind="theme", mode="full", content="# 主题 · 书\n> 状态：定稿\n")
+    _call(reader, kind="theme")
+    assert "已落盘" in _call(save, kind="theme", mode="edit", anchor="定稿", replacement="起草中")
+    events = [
+        event for event in recorder.read_trace_events(run.trace_id) or []
+        if event.type == "artifact_revision"
+    ]
+    assert len(events) == 2
+    assert events[1].artifact["parent_revision_id"] == events[0].artifact_revision_id
+    assert "起草中" in (tmp_path / "主题.md").read_text(encoding="utf-8")
+
+
+def test_chapter_text_save_records_revision(tmp_path: Path) -> None:
+    rec = _FakeRecorder()
+    save = _mk_save_rec(tmp_path, rec)
+    out = _call(save, kind="chapter_text", chapter=1, mode="full",
+                content="# 第001章 · 开局\n")
+    assert "已落盘" in out
+    assert rec.calls[0]["file_path"] == "正文/第001章.md"
+
+
+def test_edit_save_records_full_text_after_write(tmp_path: Path) -> None:
+    (tmp_path / "总纲.md").write_text(MASTER, encoding="utf-8")
+    rec = _FakeRecorder()
+    registry: dict = {}
+    save = build_save_artifact_tool(tmp_path, registry, {}, recorder=rec, trace_id="trace-x")
+    _call(build_read_artifact_tool(tmp_path, registry), kind="outline")
+    out = _call(save, kind="outline", mode="edit",
+                anchor="| 一 | 活下去 |", replacement="| 一 | 活下去改 |")
+    assert "已落盘" in out
+    assert len(rec.calls) == 1
+    assert rec.calls[0]["content"] == (tmp_path / "总纲.md").read_text(encoding="utf-8")
+    assert "活下去改" in rec.calls[0]["content"]
+
+
+def test_capture_failure_degrades_without_blocking_write(tmp_path: Path) -> None:
+    """DEC-004：取证失败静默降级——落盘照常成功，trace 留降级痕迹。"""
+    rec = _FakeRecorder(fail=True)
+    save = _mk_save_rec(tmp_path, rec)
+    out = _call(save, kind="theme", mode="full", content="# 主题 · 书\n")
+    assert "已落盘" in out
+    assert (tmp_path / "主题.md").read_text(encoding="utf-8") == "# 主题 · 书\n"
+    assert rec.degraded and "save_artifact_capture_failed" in rec.degraded[0]
+
+
+def test_edit_capture_failure_degrades_without_blocking_write(tmp_path: Path) -> None:
+    """R2（AC-002 边界）：mode=edit 注入取证故障——落盘照常成功，留降级痕迹。"""
+    (tmp_path / "总纲.md").write_text(MASTER, encoding="utf-8")
+    rec = _FakeRecorder(fail=True)
+    registry: dict = {}
+    save = build_save_artifact_tool(tmp_path, registry, {}, recorder=rec, trace_id="trace-x")
+    _call(build_read_artifact_tool(tmp_path, registry), kind="outline")
+    out = _call(save, kind="outline", mode="edit",
+                anchor="| 一 | 活下去 |", replacement="| 一 | 活下去改 |")
+    assert "已落盘" in out
+    updated = (tmp_path / "总纲.md").read_text(encoding="utf-8")
+    assert "活下去改" in updated and "伏笔登记表" in updated
+    assert rec.degraded and "save_artifact_capture_failed" in rec.degraded[0]
+
+
+def test_recorder_without_trace_id_skips_capture(tmp_path: Path) -> None:
+    """R3（FR-001）：recorder 在位但 trace_id 缺失——跳过取证，落盘不受影响。"""
+    rec = _FakeRecorder()
+    registry: dict = {}
+    save = build_save_artifact_tool(tmp_path, registry, {}, recorder=rec, trace_id=None)
+    out = _call(save, kind="theme", mode="full", content="# 主题 · 书\n")
+    assert "已落盘" in out
+    assert (tmp_path / "主题.md").exists()
+    assert rec.calls == []
+    assert rec.degraded == []
+
+
+def test_capture_failure_without_usable_degrade_marker_still_writes(tmp_path: Path) -> None:
+    """P3 收口：降级标记器缺失或自身故障时，取证失败仍不得阻断落盘（DEC-004 兜底完备性）。"""
+
+    class _MarkerlessRecorder:
+        def record_artifact_revision(self, *args, **kwargs):
+            raise RuntimeError("取证故障注入")
+
+    class _MarkerBrokenRecorder(_MarkerlessRecorder):
+        def _mark_capture_degraded(self, trace_id, reason):
+            raise RuntimeError("标记器也炸")
+
+    for name, rec in (("no-marker", _MarkerlessRecorder()), ("broken-marker", _MarkerBrokenRecorder())):
+        ws = tmp_path / name
+        ws.mkdir()
+        save = _mk_save_rec(ws, rec)
+        out = _call(save, kind="theme", mode="full", content="# 主题 · 书\n")
+        assert "已落盘" in out, name
+        assert (ws / "主题.md").exists(), name
+
+
+def test_no_recorder_still_writes(tmp_path: Path) -> None:
+    """无追踪场景（recorder/trace_id 缺失）：落盘不受影响。"""
+    save, _, _ = _mk_save(tmp_path)
+    out = _call(save, kind="theme", mode="full", content="# 主题 · 书\n")
+    assert "已落盘" in out
+    assert (tmp_path / "主题.md").exists()
+
+
+def test_build_hook_wires_recorder_from_ctx(tmp_path: Path) -> None:
+    """build(abc) 装配钩子从 ctx 接 recorder/trace_id，agent 名用 trace 埋点名。"""
+    from harness_current.tools.save_artifact import build as build_save
+
+    rec = _FakeRecorder()
+    abc = SimpleNamespace(
+        workspace_path=tmp_path,
+        trace_name="author-subagent",
+        ctx=SimpleNamespace(trace_recorder=rec, trace_id="trace-y"),
+    )
+    tool = build_save(abc)
+    out = _call(tool, kind="theme", mode="full", content="# 主题 · 书\n")
+    assert "已落盘" in out
+    assert rec.calls[0]["trace_id"] == "trace-y"
+    assert rec.calls[0]["agent_name"] == "author-subagent"
+
+
+def test_repeated_same_content_save_is_idempotent(tmp_path: Path) -> None:
+    """AC-001：同内容二次落盘不产生重复修订（真实 recorder 端到端）。"""
+    from app.platform.trace.recorder import TraceRecorder
+    from app.schemas.screenplay import ThreadSummary
+
+    thread = ThreadSummary(
+        thread_id="thread-forensic", workspace_id="ws-forensic",
+        session_name="s", workspace_path=str(tmp_path),
+        created_at="2026-10-19T00:00:00+00:00",
+        updated_at="2026-10-19T00:00:00+00:00",
+    )
+    recorder = TraceRecorder()
+    run = recorder.create_run(thread, "/screenplay/generate")
+    registry: dict = {}
+    save = build_save_artifact_tool(
+        tmp_path, registry, {}, recorder=recorder, trace_id=run.trace_id,
+    )
+    reader = build_read_artifact_tool(tmp_path, registry)
+    content = "# 主题 · 书\n> 状态：定稿\n"
+    assert "已落盘" in _call(save, kind="theme", mode="full", content=content)
+    _call(reader, kind="theme")
+    assert "已落盘" in _call(save, kind="theme", mode="full", content=content)
+    events = [
+        event for event in recorder.read_trace_events(run.trace_id) or []
+        if event.type == "artifact_revision"
+    ]
+    assert len(events) == 1
+    assert events[0].artifact["logical_key"] == "/主题.md"
+    assert "output" in events[0].payload_refs
+
+
 # ── read_artifact ─────────────────────────────────────────────────
 
 

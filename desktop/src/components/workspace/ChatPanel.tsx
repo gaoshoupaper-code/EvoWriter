@@ -206,7 +206,19 @@ export function ChatPanel({
                     {message.rows?.length &&
                     message.awaitingInput.kind !== "image_review" &&
                     message.awaitingInput.question ? (
-                      <p className="interview-question" data-testid="interview-question">{message.awaitingInput.question}</p>
+                      /* 提问是完整 markdown 文档（段落/表格/加粗），与正文同一套渲染管线；
+                         message-content 复用其 markdown 排版作用域 */
+                      <div
+                        className="message-content interview-question"
+                        data-testid="interview-question"
+                      >
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm, remarkBreaks]}
+                          components={markdownTableComponents}
+                        >
+                          {message.awaitingInput.question}
+                        </ReactMarkdown>
+                      </div>
                     ) : null}
                     {message.awaitingInput.kind === "image_review" ? (
                       <ImageReviewCard

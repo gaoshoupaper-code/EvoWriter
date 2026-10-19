@@ -5094,12 +5094,12 @@ html[data-theme="dark"] .panel-heading {
   max-height: 240px;
   overflow-y: auto;
 }
-/* 行模式提问文案（FR-004：随 HITL 卡展示，正文不被覆盖） */
+/* 行模式提问文案（FR-004：随 HITL 卡展示，正文不被覆盖）。
+   提问是完整 markdown 文档：字号对齐正文（message-content），粗细交给语义标记 */
 .interview-question {
   margin: 10px 0 6px;
-  font-size: var(--text-ui-sm);
+  font-size: var(--text-ui-lg);
   color: var(--ink);
-  font-weight: 600;
 }
 
 /* ── ThinkingView 展开态步骤列表（FR-006）── */

@@ -124,3 +124,21 @@ export function concatTextRows(rows: TimelineRow[] | undefined): string {
     .map((row) => row.text as string)
     .join("\n\n");
 }
+
+/** 拍板已答定格：提问追加为正文行（时间线与派生正文都可回看，不随卡消失）。 */
+export function appendQuestionRow(rows: TimelineRow[], question: string, now: number = Date.now()): TimelineRow[] {
+  const seq = rows.reduce((max, row) => Math.max(max, row.seq), 0) + 1;
+  return [
+    ...rows,
+    {
+      seq,
+      // 本地生成的行，id 带前缀防与服务端行 id 撞车（幂等去重按 id 匹配）
+      id: `answered-q-${seq}`,
+      kind: "text",
+      text: question,
+      status: "complete",
+      startedAt: now,
+      endedAt: now,
+    },
+  ];
+}

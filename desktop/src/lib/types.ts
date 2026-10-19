@@ -359,6 +359,7 @@ export type ExecutionPhase =
   | "booting"
   | "thinking"
   | "asking"
+  | "answered"
   | "delivering"
   | "failed"
   | "stopped";
@@ -391,8 +392,9 @@ export type ChatMessage = {
   agent?: string;
   // D2: 关联本次提交的 trace run（一次提交 = 一条 assistant message = 一个 trace）
   traceId?: string;
-  // D2/P7: 本条消息的执行态（streaming=进行中 / completed / failed / stopped）
-  status?: "streaming" | "completed" | "failed" | "stopped";
+  // D2/P7: 本条消息的执行态（streaming=进行中 / completed / failed / stopped /
+  // answered=拍板卡已被回答，本轮以用户决策收尾，后续输出归新一轮消息）
+  status?: "streaming" | "completed" | "failed" | "stopped" | "answered";
   // T17: 体验阶段（驱动 ExecutionView 子视图切换）。
   // 由 derivePhaseFromMessage 从 status/tools/awaitingInput 实时派生，
   // executionStore 在每次 message 更新后写入。

@@ -38,6 +38,7 @@ import {
   type ThreadRunState,
 } from "@/lib/api";
 import { reconcileMessagesWithRunState } from "@/lib/run-reconcile";
+import { finalizeAnsweredMessage } from "@/lib/hitl-finalize";
 
 // ── 心跳超时（与原 home.tsx 一致）──
 const HEARTBEAT_TIMEOUT_MS = 45_000;
@@ -502,14 +503,15 @@ async function performSubmit(
   const isResume = !!lastAssistant?.awaitingInput;
   const resumeTraceId = isResume ? lastAssistant?.traceId ?? null : null;
 
-  // D4：resume 时立即清空上一条 awaitingInput
+  // D4：resume 时定格上一条拍板卡消息——清 awaitingInput、提问沉淀为正文行、
+  // 终态 answered（时间线与提问可回看，不随卡蒸发）
   const prevAwaitingInputIdx = isResume ? messages.lastIndexOf(lastAssistant!) : -1;
   if (prevAwaitingInputIdx >= 0) {
     set((state) => {
       const target = state.messages[prevAwaitingInputIdx];
       if (!target || target.role !== "assistant" || !target.awaitingInput) return {};
       const next = [...state.messages];
-      next[prevAwaitingInputIdx] = { ...target, awaitingInput: undefined };
+      next[prevAwaitingInputIdx] = finalizeAnsweredMessage(target);
       return { messages: next };
     });
   }

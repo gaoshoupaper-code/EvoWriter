@@ -9,6 +9,7 @@
  *   status === completed  → delivering
  *   status === failed     → failed
  *   status === stopped    → stopped
+ *   status === answered   → answered（拍板卡已答，本轮以用户决策定格）
  *   有任何 tool running    → thinking（涵盖 storybuilding/detail-outline/general）
  *   有思考段仍在流式      → thinking（reasoning 先于首个 tool_call 到达，FR-003）
  *   content 为空/占位     → booting（黑屏期）
@@ -22,6 +23,7 @@ export function derivePhaseFromMessage(message: ChatMessage): ExecutionPhase {
   if (message.status === "completed") return "delivering";
   if (message.status === "failed") return "failed";
   if (message.status === "stopped") return "stopped";
+  if (message.status === "answered") return "answered";
 
   // 有任何 tool running 或思考段仍在流式 → thinking
   //（REQ-20261010-182114：reasoning 到达时不得停留在 booting 黑屏期，

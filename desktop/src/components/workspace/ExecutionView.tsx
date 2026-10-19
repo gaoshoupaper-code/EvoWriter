@@ -102,6 +102,17 @@ export function ExecutionView({ message, loading, isLastAssistant, stageFlow, on
           {finalTextRow ? <RowTimeline rows={[finalTextRow]} /> : null}
         </>
       );
+    case "answered":
+      // 拍板已提交（resume 定格）：本轮以用户决策收尾——时间线保留可回看，
+      // 提问已沉淀为正文行常显（finalTextRow），续跑输出归新一轮消息
+      return (
+        <>
+          <ExecutionStatusCard message={message} summary="✓ 已拍板" tone="completed" {...rowCardProps}>
+            {timeline}
+          </ExecutionStatusCard>
+          {finalTextRow ? <RowTimeline rows={[finalTextRow]} /> : null}
+        </>
+      );
     case "delivering":
       return (
         <>

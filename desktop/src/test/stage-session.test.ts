@@ -2,7 +2,7 @@
  * stageSessionStore 单测（REQ-20261018-175526 FR-004/005/007/012 逻辑层）。
  * 覆盖：
  * - 阶段变化不变量：推进无标注、后退标注申请来源、同阶段清除、生成中不弹、
- *   非 five 清除、无绑定不弹（存量会话兜底）
+ *   非 five 清除、无绑定在主题段不弹、无绑定已推进段走迁移补救（上一阶段完成卡）
  * - confirmTransition：成功建会话绑定新阶段并切换；失败保留挂起（FR-004 失败语义）
  * - restartThread：同阶段新会话；loading 中拒绝（FR-007）
  * - 阶段归属持久化往返 + 删除联动（FR-012/FR-008）
@@ -123,10 +123,15 @@ describe("syncWithPipeline 阶段变化不变量（FR-004）", () => {
     s.syncWithPipeline({ kind: "legacy", phase: "legacy", next_unit: "", awaiting: {} });
     expect(useStageSessionStore.getState().pendingTransition).toBeNull();
 
-    // 无绑定（存量会话）：不触发
+    // 无绑定（存量会话迁移补救）：相位停在主题段不触发；已推进到后续段
+    // 按「上一阶段完成」挂卡片走同一切换路径
     useWorkspaceStore.setState({ activeThreadId: "t-old" });
-    s.syncWithPipeline({ kind: "five", phase: "text", next_unit: "正文", awaiting: {} });
+    s.syncWithPipeline({ kind: "five", phase: "theme", next_unit: "题材", awaiting: {} });
     expect(useStageSessionStore.getState().pendingTransition).toBeNull();
+    s.syncWithPipeline({ kind: "five", phase: "text", next_unit: "正文", awaiting: {} });
+    expect(useStageSessionStore.getState().pendingTransition).toEqual({
+      fromStage: "chapter", toStage: "text", sourceStage: undefined,
+    });
   });
 });
 

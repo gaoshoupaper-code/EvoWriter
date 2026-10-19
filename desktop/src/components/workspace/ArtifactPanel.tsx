@@ -11,6 +11,7 @@ import { markdownTableComponents } from "../../lib/markdown-components";
 import type { OutlineFileEntry, PipelineStatus } from "../../lib/types";
 import { PipelineStageBar } from "./PipelineStageBar";
 import { ManuscriptEditor } from "./ManuscriptEditor";
+import { useWorkspaceStore } from "@/stores/workspace";
 
 type ArtifactPanelProps = {
   kind: string;
@@ -50,6 +51,14 @@ export function ArtifactPanel({
           <span className="section-kicker">Artifacts</span>
           <h2>作品产物</h2>
         </div>
+        {/* 查看产物的显式回程：从对话跳过来后，「返回对话」在视线内，不必找回侧栏 */}
+        <button
+          type="button"
+          className="panel-back-chat"
+          onClick={() => useWorkspaceStore.setState({ activePanel: "chat" })}
+        >
+          ← 返回对话
+        </button>
       </div>
 
       <div className="content-panel-body">

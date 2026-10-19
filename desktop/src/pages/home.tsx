@@ -311,7 +311,10 @@ export default function Home() {
       }
       // DEC-012 隐式切换：完成卡片挂起时直接发送 = 先切换（归档旧会话、开新
       // 会话、同步换页）再提交；创建失败则消息不发送，输入保留在框里不丢。
+      // 发送前用当前相位重算一次挂起——相位若是在卡片渲染后才传到（轮询/
+      // SSE 晚点），这里补挂，保证阶段切换不因 UI 时序漏网。
       const stageSession = useStageSessionStore.getState();
+      stageSession.syncWithPipeline(useContentStore.getState().outlinePipeline);
       if (stageSession.pendingTransition) {
         const ok = await stageSession.confirmTransition();
         if (!ok) return;
@@ -346,6 +349,8 @@ export default function Home() {
       return;
     }
     const stageSession = useStageSessionStore.getState();
+    // 与 handleSubmit 同口径：发送前重算挂起，相位晚到也不漏切换
+    stageSession.syncWithPipeline(useContentStore.getState().outlinePipeline);
     if (stageSession.pendingTransition) {
       const ok = await stageSession.confirmTransition();
       if (!ok) return;

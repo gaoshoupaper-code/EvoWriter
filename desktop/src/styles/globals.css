@@ -507,6 +507,26 @@ a {
   letter-spacing: -0.03em;
 }
 
+/* 产物面板的显式回程（对话↔产物往返）：与阶段历史返回按钮同一视觉语言 */
+.panel-back-chat {
+  min-height: 30px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 12px;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+  font-size: var(--text-ui-sm);
+  font-weight: 800;
+  white-space: nowrap;
+  transition: border-color var(--motion-duration) ease, color var(--motion-duration) ease;
+}
+
+.panel-back-chat:hover {
+  border-color: var(--teal);
+  color: var(--ink);
+}
+
 .section-kicker {
   display: inline-block;
   color: var(--teal-dark);

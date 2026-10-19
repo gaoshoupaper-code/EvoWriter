@@ -349,6 +349,10 @@ async function loadWorkspaceData(
   set({ bootstrapping: true } as any);
   try {
     const data = await fetchWorkspaceBootstrap(workspaceId);
+    // 竞态防线：快速切书（A→B→A）时乱序返回的旧响应直接丢弃——否则 B 的
+    // 会话列表/activeThreadId 会写进 A 的现场，且再点 A 书也不会刷新
+    // （切换 effect 键在 activeWorkspaceId 变化上），表现为「回不去原对话」。
+    if (get().activeWorkspaceId !== workspaceId) return null;
     // 会话选择优先级（FR-001）：上次位置的会话 > 内存中的当前会话 > 第一个会话；
     // 仅接受仍存在于服务器名单中的 id，失效时逐级回退
     const activeThreadId =

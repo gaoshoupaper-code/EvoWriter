@@ -130,17 +130,24 @@ export const useStageSessionStore = create<StageSessionState>((set, get) => ({
     }
     if (!activeThreadId) return;
     const meta = get().threadStageMeta.get(activeThreadId);
-    // 未绑定阶段的存量会话（五段制上线前创建）：不触发卡片，历史侧归「早期」
-    if (!meta) return;
-    if (meta.stage === pipeline.phase) {
+    if (meta && meta.stage === pipeline.phase) {
       if (get().pendingTransition) set({ pendingTransition: null });
       return;
     }
     // run 进行中阶段闸冻结（后端保证 phase 不变）——防御性跳过，结束后信号会再触发
     if (useExecutionStore.getState().loading) return;
-    // 后退切换 = 跳段申请（章纲↔正文往返 / 下游申请改上游），卡片标注来源
-    const sourceStage = stageOrder(pipeline.phase) < stageOrder(meta.stage) ? meta.stage : undefined;
-    set({ pendingTransition: { fromStage: meta.stage, toStage: pipeline.phase, sourceStage } });
+    if (meta) {
+      // 后退切换 = 跳段申请（章纲↔正文往返 / 下游申请改上游），卡片标注来源
+      const sourceStage = stageOrder(pipeline.phase) < stageOrder(meta.stage) ? meta.stage : undefined;
+      set({ pendingTransition: { fromStage: meta.stage, toStage: pipeline.phase, sourceStage } });
+      return;
+    }
+    // 未绑定阶段的存量会话（五段制上线前创建）：相位仍停在主题段不触发；
+    // 已推进到后续段 → 按「上一阶段完成」挂卡片走同一切换路径（迁移补救——
+    // 否则老会话永远不换段，主题历史会一直跟着后续阶段走）
+    if (pipeline.phase === PIPELINE_STEPS[0].phase) return;
+    const prevIdx = Math.max(stageOrder(pipeline.phase) - 1, 0);
+    set({ pendingTransition: { fromStage: PIPELINE_STEPS[prevIdx].phase, toStage: pipeline.phase } });
   },
 
   confirmTransition: async () => {

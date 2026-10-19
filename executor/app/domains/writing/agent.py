@@ -930,6 +930,15 @@ class MetaAgentService(BaseAgentService):
                 writing_pipeline.on_run_complete(workspace_path, agent_name)
             except OSError:
                 logger.warning("on_run_complete 状态写失败（best-effort）", exc_info=True)
+            # 相位推进即时广播（如主题完成→总纲）：on_run_complete 重扫后的相位
+            # 直接送桌面端挂完成卡片，不再依赖停前补拉/轮询的时序兜底。
+            try:
+                yield _sse("pipeline", {
+                    **pipeline_status(workspace_path),
+                    "agent": agent_name,
+                })
+            except Exception:  # noqa: BLE001 — 观测事件不得阻塞主流程
+                pass
             for trace_update in self._trace_updates(trace_queue):
                 yield trace_update
             snapshot = self.trace_recorder.read_run_snapshot(thread, trace.trace_id)

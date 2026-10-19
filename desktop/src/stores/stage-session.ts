@@ -12,11 +12,16 @@
  *
  * 阶段信号源（DEC-013）：contentStore.outlinePipeline——SSE pipeline 事件即时写 +
  * outline 轮询兜底写，两个通道收敛到同一 state，本 store 只做对比。
+ *
+ * 阶段归属补绑三件套（REQ-20261019-232635，修「点主题看不到历史」竞态）：
+ * - ensureThreadStageBinding：首轮建会话绑定，管线未载时拉取兜底（FR-001）；
+ * - confirmTransition 归档补绑：旧会话无标签按 fromStage 补贴（FR-002）；
+ * - remediateUnboundThreads：存量受害会话按创建时间锚点归位「主题」（FR-003）。
  */
 import { create } from "zustand";
 import { toast } from "sonner";
 import type { PipelineStatus, ThreadSummary } from "@/lib/types";
-import { createThread as createThreadRequest } from "@/lib/api";
+import { createThread as createThreadRequest, fetchWorkspaceOutline } from "@/lib/api";
 import { PIPELINE_STEPS, stageLabel } from "@/lib/pipeline-steps";
 import {
   readStageMetas,
@@ -78,6 +83,10 @@ interface StageSessionState {
   /** 启动/切书时恢复该工作区全部会话的阶段归属（FR-012）。 */
   hydrateForWorkspace: (workspaceId: string) => Promise<void>;
   bindThreadStage: (workspaceId: string, threadId: string, stage: string, sourceStage?: string) => void;
+  /** 首轮建会话的阶段绑定（REQ-20261019-232635 FR-001）：管线未载时拉取兜底再绑，竞态不漏绑；失败静默。 */
+  ensureThreadStageBinding: (workspaceId: string, threadId: string) => Promise<void>;
+  /** 存量竞态受害会话归位（REQ-20261019-232635 FR-003）：早于该书最早有标签会话的无标签会话补绑「主题」。 */
+  remediateUnboundThreads: (pipeline: PipelineStatus | null) => void;
   /** 不变量检测：管线阶段 vs 当前会话绑定阶段。由 home 的 effect 在信号变化时调。 */
   syncWithPipeline: (pipeline: PipelineStatus | null) => void;
   /** 完成卡片主按钮 / 隐式切换：归档旧会话、建新会话、清空对话区。 */
@@ -120,6 +129,53 @@ export const useStageSessionStore = create<StageSessionState>((set, get) => ({
     void saveThreadStageMeta(workspaceId, threadId, meta);
   },
 
+  ensureThreadStageBinding: async (workspaceId, threadId) => {
+    try {
+      let pipeline = useContentStore.getState().outlinePipeline;
+      if (!pipeline) {
+        // 新建书竞态（FR-001）：建书流程清空管线状态且不重拉，首轮建会话时
+        // 主动补拉一次——相位写回 store（阶段条即时可用）后再绑定
+        const outline = await fetchWorkspaceOutline(workspaceId);
+        pipeline = outline.pipeline ?? null;
+        if (pipeline) useContentStore.getState().setOutlinePipeline(pipeline);
+      }
+      if (pipeline?.kind === "five" && pipeline.phase) {
+        get().bindThreadStage(workspaceId, threadId, pipeline.phase);
+      }
+    } catch {
+      /* 失败语义：退「早期」分组，不阻塞首轮对话 */
+    }
+  },
+
+  remediateUnboundThreads: (pipeline) => {
+    if (!pipeline || pipeline.kind !== "five") return;
+    const ws = useWorkspaceStore.getState();
+    const workspaceId = ws.activeWorkspaceId;
+    if (!workspaceId) return;
+    const metas = get().threadStageMeta;
+    // 锚点 = 该书最早一条有标签会话的创建时间；无锚点（该书还没有任何有标签
+    // 会话）时判定依据缺失，保守不动（FR-003 边界）
+    let anchor = Number.POSITIVE_INFINITY;
+    for (const t of ws.threads) {
+      if (!metas.get(t.thread_id)) continue;
+      const at = Date.parse(t.created_at);
+      if (!Number.isNaN(at) && at < anchor) anchor = at;
+    }
+    if (!Number.isFinite(anchor)) return;
+    // 首轮竞态漏绑的会话创建必早于锚点；晚于/等于锚点（含时间戳相同）一律
+    // 保守跳过——宁可漏救不误伤（风险条目处置约束）
+    let patched: Map<string, StageThreadMeta> | null = null;
+    for (const t of ws.threads) {
+      if (metas.get(t.thread_id)) continue;
+      const at = Date.parse(t.created_at);
+      if (Number.isNaN(at) || at >= anchor) continue;
+      const meta: StageThreadMeta = { stage: PIPELINE_STEPS[0].phase, boundAt: t.created_at };
+      (patched ??= new Map(metas)).set(t.thread_id, meta);
+      void saveThreadStageMeta(workspaceId, t.thread_id, meta);
+    }
+    if (patched) set({ threadStageMeta: patched });
+  },
+
   syncWithPipeline: (pipeline) => {
     const ws = useWorkspaceStore.getState();
     const activeThreadId = ws.activeThreadId;
@@ -128,6 +184,10 @@ export const useStageSessionStore = create<StageSessionState>((set, get) => ({
       if (get().pendingTransition) set({ pendingTransition: null });
       return;
     }
+    // 存量归位（REQ-20261019-232635 FR-003）：首轮竞态漏绑的会话在此自动补绑。
+    // 本函数是管线信号收敛点（hydrate 主动重算 + home 的 SSE/轮询 effect 都会
+    // 到达），幂等可重入；放在 activeThreadId 早退之前，未选中会话也能归位
+    get().remediateUnboundThreads(pipeline);
     if (!activeThreadId) return;
     const meta = get().threadStageMeta.get(activeThreadId);
     if (meta && meta.stage === pipeline.phase) {
@@ -162,6 +222,11 @@ export const useStageSessionStore = create<StageSessionState>((set, get) => ({
       const thread = await createThreadRequest(workspaceId, newThreadName(pending.toStage));
       // sourceStage 一并落盘（FR-006）：跳段新会话的历史命名带「（正文申请）」
       get().bindThreadStage(workspaceId, thread.thread_id, pending.toStage, pending.sourceStage);
+      // 归档补绑（REQ-20261019-232635 FR-002）：旧会话因首轮竞态无标签时按切换
+      // 来源阶段补贴，历史归组不再漏；正常路径已有标签，不重绑
+      if (ws.activeThreadId && !get().threadStageMeta.has(ws.activeThreadId)) {
+        get().bindThreadStage(workspaceId, ws.activeThreadId, pending.fromStage);
+      }
       // 同步完成消息换页（存旧 + 载新 + 落位），不依赖 React effect 时序
       // （review P1 竞态修复：隐式切换「先建会话再发消息」从此是确定性顺序）
       useExecutionStore.getState().switchThread(thread.thread_id);

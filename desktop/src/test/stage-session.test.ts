@@ -29,8 +29,10 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 }));
 
 const createThreadMock = vi.fn();
+const fetchOutlineMock = vi.fn();
 vi.mock("@/lib/api", () => ({
   createThread: (...args: unknown[]) => createThreadMock(...args),
+  fetchWorkspaceOutline: (...args: unknown[]) => fetchOutlineMock(...args),
 }));
 
 import { useStageSessionStore, stageThreadDisplayName, threadsForStage } from "@/stores/stage-session";
@@ -306,5 +308,150 @@ describe("历史归组与显示名（FR-008）", () => {
     expect(plain).toBe("主题 · 10-18 15:02");
     const sourced = stageThreadDisplayName({ stage: "outline", sourceStage: "text", boundAt: "2026-10-18T15:02:00" });
     expect(sourced).toBe("总纲 · 10-18 15:02（正文申请）");
+  });
+});
+
+describe("ensureThreadStageBinding 首轮竞态兜底（REQ-20261019-232635 FR-001）", () => {
+  it("管线已载：直接绑定当前阶段，不发起拉取", async () => {
+    useContentStore.setState({ outlinePipeline: { kind: "five", phase: "theme", next_unit: "题材", awaiting: {} } });
+    await useStageSessionStore.getState().ensureThreadStageBinding(WS, "t1");
+    expect(useStageSessionStore.getState().threadStageMeta.get("t1")?.stage).toBe("theme");
+    expect(fetchOutlineMock).not.toHaveBeenCalled();
+  });
+
+  it("AC-001 管线未载（新建书竞态）：拉 outline 兜底，绑定 theme 并把相位写回 store", async () => {
+    fetchOutlineMock.mockResolvedValue({
+      kind: "five",
+      pipeline: { kind: "five", phase: "theme", next_unit: "题材", awaiting: {} },
+      files: [],
+    });
+    await useStageSessionStore.getState().ensureThreadStageBinding(WS, "t1");
+    expect(fetchOutlineMock).toHaveBeenCalledWith(WS);
+    expect(useStageSessionStore.getState().threadStageMeta.get("t1")?.stage).toBe("theme");
+    expect(useContentStore.getState().outlinePipeline?.phase).toBe("theme");
+  });
+
+  it("拉取失败：静默不绑、不抛（FR-001 失败语义）", async () => {
+    fetchOutlineMock.mockRejectedValue(new Error("network down"));
+    await expect(useStageSessionStore.getState().ensureThreadStageBinding(WS, "t1")).resolves.toBeUndefined();
+    expect(useStageSessionStore.getState().threadStageMeta.get("t1")).toBeUndefined();
+  });
+
+  it("legacy 管线：不绑定（历史侧归「早期」）", async () => {
+    fetchOutlineMock.mockResolvedValue({
+      kind: "legacy",
+      pipeline: { kind: "legacy", phase: "legacy", next_unit: "", awaiting: {} },
+      files: [],
+    });
+    await useStageSessionStore.getState().ensureThreadStageBinding(WS, "t1");
+    expect(useStageSessionStore.getState().threadStageMeta.get("t1")).toBeUndefined();
+  });
+});
+
+describe("confirmTransition 归档补绑（REQ-20261019-232635 FR-002）", () => {
+  it("AC-002 旧会话无标签（首轮竞态漏绑）：确认切换时补绑 fromStage", async () => {
+    const s = useStageSessionStore.getState();
+    // t-old 无 meta——竞态受害者；管线推进到 outline 走迁移路径挂卡
+    useWorkspaceStore.setState({ activeThreadId: "t-old", threads: [thread("t-old")] });
+    s.syncWithPipeline({ kind: "five", phase: "outline", next_unit: "总纲", awaiting: {} });
+    expect(useStageSessionStore.getState().pendingTransition?.fromStage).toBe("theme");
+
+    createThreadMock.mockResolvedValue(thread("t-new"));
+    const ok = await s.confirmTransition();
+    expect(ok).toBe(true);
+    const meta = useStageSessionStore.getState().threadStageMeta;
+    expect(meta.get("t-new")?.stage).toBe("outline");
+    expect(meta.get("t-old")?.stage).toBe("theme");
+  });
+
+  it("旧会话已有标签：不重绑（meta 引用不变）", async () => {
+    const s = useStageSessionStore.getState();
+    s.bindThreadStage(WS, "t1", "theme");
+    const before = useStageSessionStore.getState().threadStageMeta.get("t1");
+    useWorkspaceStore.setState({ activeThreadId: "t1", threads: [thread("t1")] });
+    s.syncWithPipeline({ kind: "five", phase: "outline", next_unit: "总纲", awaiting: {} });
+    createThreadMock.mockResolvedValue(thread("t2"));
+    await s.confirmTransition();
+    expect(useStageSessionStore.getState().threadStageMeta.get("t1")).toBe(before);
+  });
+});
+
+describe("remediateUnboundThreads 存量归位（REQ-20261019-232635 FR-003）", () => {
+  function threadAt(id: string, iso: string): ThreadSummary {
+    return { ...thread(id), created_at: iso, updated_at: iso };
+  }
+
+  it("AC-003 早于最早有标签会话的无标签会话补绑 theme（boundAt=创建时间，落盘可恢复）", async () => {
+    useWorkspaceStore.setState({
+      threads: [
+        threadAt("t-victim", "2026-10-18T10:00:00Z"),
+        threadAt("t-outline", "2026-10-19T09:00:00Z"),
+      ],
+    });
+    useStageSessionStore.getState().bindThreadStage(WS, "t-outline", "outline");
+
+    useStageSessionStore.getState().remediateUnboundThreads({ kind: "five", phase: "outline", next_unit: "总纲", awaiting: {} });
+
+    const m = useStageSessionStore.getState().threadStageMeta.get("t-victim");
+    expect(m?.stage).toBe("theme");
+    expect(m?.boundAt).toBe("2026-10-18T10:00:00Z");
+    await vi.waitFor(async () =>
+      expect((await readStageMetas(WS))["t-victim"]).toMatchObject({ stage: "theme" }));
+  });
+
+  it("晚于锚点 / 与锚点时间戳相同：保守不补绑", () => {
+    useWorkspaceStore.setState({
+      threads: [
+        threadAt("t-late", "2026-10-20T10:00:00Z"),
+        threadAt("t-eq", "2026-10-19T09:00:00Z"),
+        threadAt("t-anchor", "2026-10-19T09:00:00Z"),
+      ],
+    });
+    useStageSessionStore.getState().bindThreadStage(WS, "t-anchor", "outline");
+
+    useStageSessionStore.getState().remediateUnboundThreads({ kind: "five", phase: "outline", next_unit: "总纲", awaiting: {} });
+
+    const meta = useStageSessionStore.getState().threadStageMeta;
+    expect(meta.get("t-late")).toBeUndefined();
+    expect(meta.get("t-eq")).toBeUndefined();
+  });
+
+  it("无任何有标签会话（无锚点）/ 管线未载 / legacy：不触发", () => {
+    useWorkspaceStore.setState({ threads: [threadAt("t-a", "2026-10-18T10:00:00Z")] });
+    useStageSessionStore.getState().remediateUnboundThreads(null);
+    expect(useStageSessionStore.getState().threadStageMeta.get("t-a")).toBeUndefined();
+
+    useStageSessionStore.getState().remediateUnboundThreads({ kind: "legacy", phase: "legacy", next_unit: "", awaiting: {} });
+    expect(useStageSessionStore.getState().threadStageMeta.get("t-a")).toBeUndefined();
+  });
+
+  it("幂等：重复执行不重绑（meta 引用不变）", () => {
+    useWorkspaceStore.setState({
+      threads: [
+        threadAt("t-victim", "2026-10-18T10:00:00Z"),
+        threadAt("t-outline", "2026-10-19T09:00:00Z"),
+      ],
+    });
+    useStageSessionStore.getState().bindThreadStage(WS, "t-outline", "outline");
+
+    useStageSessionStore.getState().remediateUnboundThreads({ kind: "five", phase: "outline", next_unit: "总纲", awaiting: {} });
+    const first = useStageSessionStore.getState().threadStageMeta.get("t-victim");
+    useStageSessionStore.getState().remediateUnboundThreads({ kind: "five", phase: "outline", next_unit: "总纲", awaiting: {} });
+    expect(useStageSessionStore.getState().threadStageMeta.get("t-victim")).toBe(first);
+  });
+
+  it("管线信号驱动（集成）：syncWithPipeline 到达 five 相位即自动归位（hydrate/SSE/轮询通道共用）", () => {
+    useWorkspaceStore.setState({
+      threads: [
+        threadAt("t-victim", "2026-10-18T10:00:00Z"),
+        threadAt("t-outline", "2026-10-19T09:00:00Z"),
+      ],
+    });
+    useStageSessionStore.getState().bindThreadStage(WS, "t-outline", "outline");
+
+    // 无 activeThreadId 也必须归位（管线晚到通道在选中会话前就能触发）
+    useStageSessionStore.getState().syncWithPipeline({ kind: "five", phase: "outline", next_unit: "总纲", awaiting: {} });
+
+    expect(useStageSessionStore.getState().threadStageMeta.get("t-victim")?.stage).toBe("theme");
   });
 });

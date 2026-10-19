@@ -622,19 +622,17 @@ async function performSubmit(
       get().threadMessages.set(thread.thread_id, get().messages);
       d.setThreads((current: any[]) => [thread, ...current.filter((item: any) => item.thread_id !== thread.thread_id)]);
       d.setActiveThreadId(thread.thread_id);
-      // 阶段制（REQ-20261018-175526 FR-004）：首轮自动创建的会话绑定当前管线
-      // 阶段——后续阶段变化据此触发完成卡片。仅 five 管线绑定（legacy 不绑，
-      // 历史侧归「早期」）；绑定失败同样退化为「早期」分组，不阻塞首轮对话。
-      try {
-        const { useContentStore } = await import("./content");
-        const pipeline = useContentStore.getState().outlinePipeline;
-        if (pipeline?.kind === "five" && pipeline.phase) {
-          const { useStageSessionStore } = await import("./stage-session");
-          useStageSessionStore.getState().bindThreadStage(activeWorkspaceId, thread.thread_id, pipeline.phase);
-        }
-      } catch {
-        /* 阶段绑定是增强信息，失败不阻塞首轮对话 */
-      }
+      // 阶段制（REQ-20261018-175526 FR-004；REQ-20261019-232635 FR-001）：首轮
+      // 自动创建的会话绑定当前管线阶段——后续阶段变化据此触发完成卡片。绑定交给
+      // stage-session 侧 ensure：管线未载（新建书竞态）时主动拉取兜底，竞态不再
+      // 漏绑；失败仍退化为「早期」分组，不阻塞首轮对话。
+      void import("./stage-session")
+        .then(({ useStageSessionStore }) =>
+          useStageSessionStore.getState().ensureThreadStageBinding(activeWorkspaceId, thread.thread_id),
+        )
+        .catch(() => {
+          /* 阶段绑定是增强信息，失败不阻塞首轮对话 */
+        });
     }
 
     const nextSessionName = shouldNameThread ? getSessionTitle(displayText) : "";

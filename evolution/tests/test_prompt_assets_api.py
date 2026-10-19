@@ -31,6 +31,16 @@ def test_extract_stage_prompt_files_literal_dict():
     )
     # 去重 + 排序，保证展示顺序稳定
     assert _extract_stage_prompt_files(src) == ["stage_theme.md", "stage_zhengwen.md"]
+    # 包内真实形态：AnnAssign（带类型注解）+ 键是常量名（值才是文件名字面量）
+    annotated = (
+        'STAGE_PROMPT_FILES: dict[str, str] = {\n'
+        '    THEME: "stage_theme.md",\n'
+        '    TEXT: "stage_zhengwen.md",\n'
+        "}\n"
+    )
+    assert _extract_stage_prompt_files(annotated) == [
+        "stage_theme.md", "stage_zhengwen.md",
+    ]
 
 
 def test_extract_stage_prompt_files_absent_or_broken():

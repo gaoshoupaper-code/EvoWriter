@@ -274,10 +274,17 @@ def _extract_stage_prompt_files(source: str) -> list[str]:
     except SyntaxError:
         return []
     for node in tree.body:
-        if not isinstance(node, ast.Assign):
+        # 两种赋值形态都要认：普通 Assign 与带类型注解的 AnnAssign（包内实际为后者）
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target] if node.target is not None else []
+        else:
             continue
-        target = node.targets[0] if node.targets else None
-        if not (isinstance(target, ast.Name) and target.id == "STAGE_PROMPT_FILES"):
+        if not any(
+            isinstance(target, ast.Name) and target.id == "STAGE_PROMPT_FILES"
+            for target in targets
+        ):
             continue
         if not isinstance(node.value, ast.Dict):
             return []

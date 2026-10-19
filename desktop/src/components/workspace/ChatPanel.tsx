@@ -134,7 +134,8 @@ export function ChatPanel({
       </div>
 
       {/* 五段制（REQ-20261018-115508 DEC-003）：砍表单纯对话开场——
-          对话即入口，新书首轮由 agent 走题材第 0 步摸底。 */}
+          对话即入口，新书首轮开场话术由发版的题材段规程决定（executor
+          不再注入「第 0 步摸底」指令，2026-10-19 注入禁令）。 */}
       <div className="message-list" ref={listRef}>
         {showGuide && hasActiveWorkspace && pipeline?.kind === "five" ? (
           <StageGuide

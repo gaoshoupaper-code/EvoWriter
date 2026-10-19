@@ -1,31 +1,30 @@
 {
-  "schema_version": "writer.architecture/1",
-  "agents": [
-    {
-      "name": "author",
-      "role": "main",
-      "display_name": "创作陪练",
-      "description": "五段式访谈创作 agent（REQ-20261018-115508 DEC-001 单 agent 技能切换）：一轮聊 1-2 个问题带作者定稿 题材→总纲→卷纲→章纲→正文。段流程提示词由 executor 按当前段经 styles 通道注入（author_base 为常驻骨架）。产物读写只经语义工具（路径收权 FR-003，内置文件工具全拒）；confirm_with_user 出决策卡/确认卡拍板；每轮回复后必停。",
-      "prompt": "prompts/author_base.md",
-      "middleware": [
-        "stage_gate"
-      ],
-      "skills": [],
-      "tools": [
-        "read_artifact",
-        "save_artifact",
-        "update_foreshadow_table",
-        "rewrite_rhythm_table",
-        "append_chapter_deviation",
-        "handoff",
-        "confirm_with_user"
-      ],
-      "delegates": [],
-      "context_files": [],
-      "write_permissions": [],
-      "artifact_paths": [],
-      "max_revisions": 1,
-      "disable_file_tools": true
-    }
-  ]
+ "schema_version": "writer.architecture/1",
+ "agents": [
+  {
+   "name": "author",
+   "role": "main",
+   "display_name": "创作陪练",
+   "description": "五段式访谈创作 agent（REQ-20261018-115508 DEC-001 单 agent 技能切换）：一轮聊 1-2 个问题带作者定稿 题材→总纲→卷纲→章纲→正文。段流程提示词由 executor 按当前段经 styles 通道注入（author_base 为常驻骨架）。产物读写只经语义工具（路径收权 FR-003，内置文件工具全拒）；confirm_with_user 出决策卡/确认卡拍板；每轮回复后必停。",
+   "prompt": "prompts/author_base.md",
+   "middleware": [
+    "stage_gate"
+   ],
+   "skills": [],
+   "tools": [
+    "read_artifact",
+    "save_artifact",
+    "update_foreshadow_table",
+    "rewrite_rhythm_table",
+    "append_chapter_deviation",
+    "confirm_with_user"
+   ],
+   "delegates": [],
+   "context_files": [],
+   "write_permissions": [],
+   "artifact_paths": [],
+   "max_revisions": 1,
+   "disable_file_tools": true
+  }
+ ]
 }

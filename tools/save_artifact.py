@@ -17,9 +17,13 @@
 导流 full」实现）；成功落盘后计数清零。
 
 每次「锚点→替换」经既有 TraceMiddleware 进 trace（L4 审计，DEC-008）。
+落盘成功后经 ctx.trace_recorder 冻结 ArtifactRevision——进化侧产物库的唯一
+摄入源（REQ-20261019-203500 FR-001）：内容在手直记，不重读文件；取证失败
+静默降级留痕，绝不影响落盘（DEC-004）。
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -152,7 +156,9 @@ def save_artifact(*args, **kwargs) -> str:  # pragma: no cover - 由 build 闭�
 
 
 def build_save_artifact_tool(
-    workspace_root: Path, registry: dict, failures: dict
+    workspace_root: Path, registry: dict, failures: dict,
+    *, recorder=None, trace_id: str | None = None,
+    agent_name: str = "author-subagent",
 ) -> StructuredTool:
     """构建落盘工具。
 
@@ -160,7 +166,41 @@ def build_save_artifact_tool(
         workspace_root: 工作区根。
         registry:       读取登记（read_artifact 写入，先读后改保险）。
         failures:       编辑失败计数（重试上限退化兜底）。
+        recorder:       TraceRecorder（取证用；None = 无追踪场景，跳过取证）。
+        trace_id:       当前追踪会话标识（None = 无追踪场景）。
+        agent_name:     取证事件的 agent 名（用 trace 埋点名，如 author-subagent）。
     """
+
+    def _capture_revision(rel: str, text: str) -> None:
+        """落盘成功后冻结 ArtifactRevision（进化侧产物库摄入源）。
+
+        内容在手直记，不重读文件——重读会与同文件并发写竞态（平台取证层
+        前科 12494f65）。取证失败静默降级（DEC-004）：留 capture_degraded
+        痕迹，绝不影响落盘结果与工具返回。
+
+        取证身份内容寻址（R1/P0）：tool_call_id 由内容哈希派生。recorder 的
+        call_paths 守卫按 (tool_call_id, 路径) 判「同调用不同内容 = 冲突」——
+        恒定 id 会让同一产物的后续修订全部被误判冲突静默丢弃；per-call 随机
+        id 又会让同内容重落失去幂等去重。内容寻址两头都成立：同内容 → 同 id
+        → 去重返回既有修订；内容变 → id 变 → 新修订且不触冲突守卫。
+        """
+        if recorder is None or not trace_id:
+            return
+        capture_id = "save_artifact:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        try:
+            recorder.record_artifact_revision(
+                trace_id, agent_name,
+                file_path=rel, content=text, tool_name="save_artifact",
+                tool_call_id=capture_id,
+            )
+        except Exception as exc:  # noqa: BLE001 — 取证失败不得影响写作（DEC-004）
+            marker = getattr(recorder, "_mark_capture_degraded", None)
+            if callable(marker):
+                try:
+                    marker(trace_id, f"save_artifact_capture_failed:{rel}:{type(exc).__name__}")
+                except Exception:
+                    pass
+            logger.warning("save_artifact 产物取证失败（已降级）：%s：%s", rel, exc)
 
     def _save(kind: str, volume: int | None = None, chapter: int | None = None,
               mode: str = "edit",
@@ -200,6 +240,7 @@ def build_save_artifact_tool(
                 _atomic_write(path, content)
             except OSError as exc:
                 return f"[save_artifact 失败] 写入失败：{type(exc).__name__}"
+            _capture_revision(rel, content)
             failures.pop(rel, None)
             lines = len(content.splitlines())
             return f"已落盘 {_describe(kind, volume, chapter)}（全量 {lines} 行）。"
@@ -222,6 +263,7 @@ def build_save_artifact_tool(
             _atomic_write(path, new_text)
         except OSError as exc:
             return f"[save_artifact 失败] 写入失败：{type(exc).__name__}"
+        _capture_revision(rel, new_text)
         failures.pop(rel, None)
         return f"已落盘 {_describe(kind, volume, chapter)}（校验编辑：替换 {hits} 处，仅目标区段变更）。"
 
@@ -235,7 +277,11 @@ def build_save_artifact_tool(
 
 
 def build(abc):
-    """架构清单挂载钩子：与 read_artifact 共享读取登记；失败计数挂 ctx。"""
+    """架构清单挂载钩子：与 read_artifact 共享读取登记；失败计数挂 ctx。
+
+    取证接线（REQ-20261019-203500）：recorder/trace_id 来自 RuntimeContext，
+    agent 名用 trace 埋点名（与 TraceMiddleware 同源，如 author-subagent）。
+    """
     registry = getattr(abc.ctx, "artifact_read_registry", None)
     if registry is None:
         registry = {}
@@ -250,7 +296,13 @@ def build(abc):
             abc.ctx.artifact_edit_failures = failures
         except Exception:  # noqa: BLE001
             pass
-    return build_save_artifact_tool(abc.workspace_path, registry, failures)
+    ctx = getattr(abc, "ctx", None)
+    return build_save_artifact_tool(
+        abc.workspace_path, registry, failures,
+        recorder=getattr(ctx, "trace_recorder", None),
+        trace_id=getattr(ctx, "trace_id", None),
+        agent_name=getattr(abc, "trace_name", None) or "author-subagent",
+    )
 
 
 __all__ = [

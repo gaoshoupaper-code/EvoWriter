@@ -276,9 +276,13 @@ def pipeline_status(workspace: Path) -> dict:
     workspace = Path(workspace)
     state = load_writing_state(workspace)
     kind = classify_workspace(workspace)
+    # phase 活推导（REQ-20261019-183150）：state.stage 只是上次运行的快照，
+    # 部署修复/定稿规则变更后 stale 快照不得压过目录事实继续显示旧段
+    # （AC-007：定稿闸上线后卡在卷纲的书打开即回显总纲）。
+    phase = current_stage(workspace) if kind == "five" else state.stage
     return {
         "kind": kind,
-        "phase": state.stage,
+        "phase": phase,
         "next_unit": next_unit_label(workspace),
         "awaiting": {
             agent: trace for agent, trace in state.active_traces.items() if trace

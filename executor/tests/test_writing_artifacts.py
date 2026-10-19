@@ -44,6 +44,7 @@ from contracts.writing_artifacts import (
     stage_allowed_kinds,
     validate_master_final,
     validate_theme_final,
+    validate_volume_final,
 )
 
 
@@ -81,6 +82,22 @@ MASTER_FINAL = """# 总纲 · 测试书
 ### 伏笔登记表
 | 编号 | 伏笔 | 埋于章 | 收于章 | 状态 |
 |---|---|---|---|---|
+"""
+
+VOLUME_FINAL = """# 卷纲 · 第 1 卷 · 活下去
+> 状态：定稿｜2026-10-18
+
+| 卷末大爽点 | 捡到首件神器 |
+|---|---|
+
+## 发展阶段
+阶段表
+## 爽点节奏表
+节奏表
+## 爽点质检表
+质检表
+## 卷末钩子
+本卷收尾埋什么
 """
 
 
@@ -168,8 +185,8 @@ def test_stage_progression(tmp_path: Path) -> None:
     prog = scan_writing_progress(tmp_path)
     assert prog.outline_done and prog.outline_volumes == 2
     assert derive_stage(prog) == STAGE_VOLUME
-    # 第 1 卷卷纲落盘 → 章纲段
-    _touch(tmp_path, "卷纲/第01卷.md")
+    # 第 1 卷卷纲定稿 → 章纲段（草稿卷不切段，见下方定稿闸回归组）
+    _touch(tmp_path, "卷纲/第01卷.md", VOLUME_FINAL)
     assert derive_stage(scan_writing_progress(tmp_path)) == STAGE_CHAPTER
     # 章纲 3 章、正文 2 章 → 正文段（正文滞后）
     for n in (1, 2, 3):
@@ -185,19 +202,92 @@ def test_stage_progression(tmp_path: Path) -> None:
     _touch(tmp_path, "正文/第003章爆发.md", "# 第003章 · 爆发\n> 状态：人修定稿\n")
     assert derive_stage(scan_writing_progress(tmp_path)) == STAGE_VOLUME
     # 全部卷完成 → 回章纲段滚动补纲
-    _touch(tmp_path, "卷纲/第02卷.md")
+    _touch(tmp_path, "卷纲/第02卷.md", VOLUME_FINAL)
     assert derive_stage(scan_writing_progress(tmp_path)) == STAGE_CHAPTER
 
 
-def test_stage_unparseable_master_falls_back(tmp_path: Path) -> None:
-    """总纲卷数解析失败时按已有卷数+1 推进，不阻塞路由。"""
+def test_stage_outline_when_master_final_but_incomplete(tmp_path: Path) -> None:
+    """AC-002：状态行写了定稿但结构残缺（无卷表）→ 结构校验拦下，段停留总纲。"""
     _touch(tmp_path, "主题.md", THEME_FINAL)
     _touch(tmp_path, "总纲.md", "# 总纲 · 书\n> 状态：定稿\n\n## 核心纲\n（无表格）\n")
-    _touch(tmp_path, "卷纲/第01卷.md")
-    for n in (1,):
-        _touch(tmp_path, f"章纲/第{n:03d}章.md")
-        _touch(tmp_path, f"正文/第{n:03d}章开局.md", "# 章\n> 状态：人修定稿\n")
-    assert derive_stage(scan_writing_progress(tmp_path)) == STAGE_VOLUME
+    prog = scan_writing_progress(tmp_path)
+    assert prog.outline_done is False
+    assert derive_stage(prog) == STAGE_OUTLINE
+
+
+# ── 定稿闸（REQ-20261019-183150 FR-001/002；主线脉络事故回归锚）──
+
+
+def test_stage_outline_when_master_draft(tmp_path: Path) -> None:
+    """AC-001：总纲草稿（起草中）不切段——2026-10-19 事故复现锚。
+
+    事故：主线脉络一写进总纲.md，旧规则按「文件存在且非空」切段到卷纲，
+    四段表被阶段闸拦截。定稿闸后草稿留段。
+    """
+    _touch(tmp_path, "主题.md", THEME_FINAL)
+    draft = MASTER_FINAL.replace("> 状态：定稿｜2026-10-18", "> 状态：起草中｜2026-10-19")
+    _touch(tmp_path, "总纲.md", draft)
+    prog = scan_writing_progress(tmp_path)
+    assert prog.outline_done is False
+    assert derive_stage(prog) == STAGE_OUTLINE
+
+
+def test_stage_outline_when_master_status_missing(tmp_path: Path) -> None:
+    """DEC-003 严格口径：无状态行的总纲不算定稿（忘写状态行只卡段、不误切段）。"""
+    _touch(tmp_path, "主题.md", THEME_FINAL)
+    lines = MASTER_FINAL.splitlines()
+    no_status = "\n".join([lines[0], *lines[2:]])
+    _touch(tmp_path, "总纲.md", no_status)
+    prog = scan_writing_progress(tmp_path)
+    assert prog.outline_done is False
+    assert derive_stage(prog) == STAGE_OUTLINE
+
+
+def test_stage_outline_when_master_status_negated(tmp_path: Path) -> None:
+    """状态行「未定稿」不得因含「定稿」子串误判为定稿。"""
+    _touch(tmp_path, "主题.md", THEME_FINAL)
+    draft = MASTER_FINAL.replace("> 状态：定稿｜2026-10-18", "> 状态：未定稿｜2026-10-19")
+    _touch(tmp_path, "总纲.md", draft)
+    assert scan_writing_progress(tmp_path).outline_done is False
+
+
+def test_final_status_line_window(tmp_path: Path) -> None:
+    """状态行须在文件头 8 行内（与正文 parse_manuscript_status 同窗口）。"""
+    _touch(tmp_path, "主题.md", THEME_FINAL)
+    late = "# 总纲 · 书\n" + "\n" * 9 + "> 状态：定稿｜2026-10-18\n\n## 核心纲\n\n| 卷 |\n|---|\n| 一 |\n"
+    _touch(tmp_path, "总纲.md", late)
+    assert scan_writing_progress(tmp_path).outline_done is False
+
+
+def test_stage_volume_when_volume_draft(tmp_path: Path) -> None:
+    """AC-003：卷纲草稿（起草中）不计入 volumes，段停留卷纲可继续编辑。"""
+    _touch(tmp_path, "主题.md", THEME_FINAL)
+    _touch(tmp_path, "总纲.md", MASTER_FINAL)
+    draft = VOLUME_FINAL.replace("> 状态：定稿｜2026-10-18", "> 状态：起草中｜2026-10-19")
+    _touch(tmp_path, "卷纲/第01卷.md", draft)
+    prog = scan_writing_progress(tmp_path)
+    assert prog.volumes == []
+    assert derive_stage(prog) == STAGE_VOLUME
+
+
+def test_stage_volume_when_final_missing_sections(tmp_path: Path) -> None:
+    """AC-003：定稿状态行但缺必备小节 → 不计入 volumes（结构兜底）。"""
+    _touch(tmp_path, "主题.md", THEME_FINAL)
+    _touch(tmp_path, "总纲.md", MASTER_FINAL)
+    _touch(tmp_path, "卷纲/第01卷.md", "# 卷纲 · 第 1 卷\n> 状态：定稿｜2026-10-18\n\n## 发展阶段\n仅一节\n")
+    prog = scan_writing_progress(tmp_path)
+    assert prog.volumes == []
+    assert derive_stage(prog) == STAGE_VOLUME
+
+
+def test_stage_volumes_mixed_finality(tmp_path: Path) -> None:
+    """混合：第 1 卷定稿、第 2 卷起草中 → volumes 只含定稿卷。"""
+    _touch(tmp_path, "主题.md", THEME_FINAL)
+    _touch(tmp_path, "总纲.md", MASTER_FINAL)
+    _touch(tmp_path, "卷纲/第01卷.md", VOLUME_FINAL)
+    draft = VOLUME_FINAL.replace("> 状态：定稿｜2026-10-18", "> 状态：起草中｜2026-10-19")
+    _touch(tmp_path, "卷纲/第02卷.md", draft)
+    assert scan_writing_progress(tmp_path).volumes == [1]
 
 
 # ── 正文状态行（FR-009 / AC-007 前置）─────────────────────────────
@@ -222,6 +312,13 @@ def test_validate_master_final() -> None:
     assert validate_master_final(MASTER_FINAL) == []
     errs = validate_master_final("# 总纲 · 书\n")
     assert any("核心纲" in e for e in errs)
+
+
+def test_validate_volume_final() -> None:
+    assert validate_volume_final(VOLUME_FINAL) == []
+    errs = validate_volume_final("# 卷纲 · 第 1 卷\n> 状态：定稿\n\n## 发展阶段\n仅一节\n")
+    assert any("爽点节奏表" in e for e in errs)
+    assert any("卷末钩子" in e for e in errs)
 
 
 # ── WritingState（DEC-002 handoff override 载体）───────────────────

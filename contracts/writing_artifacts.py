@@ -15,8 +15,10 @@
 路径收权（FR-003）：kind → 相对路径的唯一映射在本模块——agent 语义工具与
 executor 路由都消费这里，agent 永远不见路径。
 
-目录即进度（DEC-002）：阶段推导只看文件事实；主题定稿用结构校验
-（AC-003），其余段以文件存在为准——定稿纪律由 confirm 流程与提示词承担。
+目录即进度（DEC-002 + REQ-20261019-183150 定稿闸）：阶段推导只看文件
+事实；主题定稿用结构校验（AC-003），总纲/卷纲定稿＝状态行「定稿」＋结构
+校验双硬条件——草稿（起草中/无状态行）落盘不得切段。旧「文件存在即完成」
+口径与逐点落盘流程直接冲突（2026-10-19 主线脉络事故：首笔草稿即切段）。
 
 legacy（DEC-010）：旧五件套（storyline.md）、旧七步（outline/00-06）、
 三步制（outline/世界观.md 等）一律只读——outline/ 目录存在即 legacy。
@@ -257,13 +259,47 @@ def validate_master_final(text: str) -> list[str]:
     return errors
 
 
-def parse_manuscript_status(text: str) -> str:
-    """正文状态行 → "finalized"（人修定稿）| "draft"（初稿/无状态行）。"""
-    for ln in text.splitlines()[:8]:
+def validate_volume_final(text: str) -> list[str]:
+    """卷纲定稿结构：落成模板四个必备小节（REQ-20261019-183150 FR-002）。"""
+    errors: list[str] = []
+    joined = "\n".join(_headings(text))
+    for h in ("发展阶段", "爽点节奏表", "爽点质检表", "卷末钩子"):
+        if h not in joined:
+            errors.append(f"[卷纲] 缺必备小节「{h}」")
+    return errors
+
+
+# ── 定稿状态行（REQ-20261019-183150 FR-001：段完成信号）────────────
+
+# 状态行窗口：与正文 parse_manuscript_status 同口径（文件头前 8 行）
+_STATUS_LINE_WINDOW = 8
+
+
+def _status_line_value(text: str) -> str | None:
+    """文件头状态行取值（前 8 行内以「>」开头且含「状态」；无则 None）。"""
+    for ln in text.splitlines()[:_STATUS_LINE_WINDOW]:
         s = ln.strip()
         if s.startswith(">") and "状态" in s:
-            return "finalized" if "人修定稿" in s else "draft"
-    return "draft"
+            return s.lstrip("> ").strip()
+    return None
+
+
+def is_final_status(text: str) -> bool:
+    """段产物定稿判定：状态行含「定稿」且不含否定（未定稿/非定稿）。
+
+    严格口径（DEC-003）：无状态行不算定稿——忘写状态行的草稿只会
+    「该切没切」（handoff 可救），不得反向误切段。
+    """
+    value = _status_line_value(text) or ""
+    if "未定稿" in value or "非定稿" in value:
+        return False
+    return "定稿" in value
+
+
+def parse_manuscript_status(text: str) -> str:
+    """正文状态行 → "finalized"（人修定稿）| "draft"（初稿/无状态行）。"""
+    value = _status_line_value(text) or ""
+    return "finalized" if "人修定稿" in value else "draft"
 
 
 # ── 进度扫描（目录即进度，DEC-002）───────────────────────────────
@@ -307,8 +343,14 @@ def scan_writing_progress(workspace: Path) -> WritingProgress:
     prog.theme_done = bool(theme_text) and validate_theme_final(theme_text) == []
 
     master_text = _read(workspace, MASTER_FILENAME)
-    prog.outline_done = bool(master_text and master_text.strip())
+    # 定稿闸（FR-001）：状态行「定稿」＋结构校验双硬条件——草稿/无状态行
+    # 不切段；解析异常经 is_final_status 自然落到 False（fail-safe 方向）。
     if master_text:
+        prog.outline_done = (
+            bool(master_text.strip())
+            and is_final_status(master_text)
+            and validate_master_final(master_text) == []
+        )
         prog.outline_volumes = _count_master_volumes(master_text)
 
     prog.style_ready = (workspace / STYLE_FILENAME).is_file()
@@ -317,8 +359,16 @@ def scan_writing_progress(workspace: Path) -> WritingProgress:
     if vol_dir.is_dir():
         for f in vol_dir.iterdir():
             m = VOLUME_FILE_PATTERN.match(f.name)
-            if m:
-                prog.volumes.append(int(m.group(1)))
+            if not m:
+                continue
+            # 定稿闸（FR-002）：只统计定稿卷（状态行＋四小节结构）——
+            # 草稿卷不计入，段停留卷纲可继续编辑该卷。
+            text = _read(workspace, f.relative_to(workspace).as_posix())
+            if text is None:
+                continue
+            if not (is_final_status(text) and validate_volume_final(text) == []):
+                continue
+            prog.volumes.append(int(m.group(1)))
         prog.volumes.sort()
 
     co_dir = workspace / CHAPTER_OUTLINE_DIR
@@ -441,6 +491,7 @@ __all__ = [
     "artifact_relpath",
     "classify_writing_workspace",
     "derive_stage",
+    "is_final_status",
     "load_writing_state",
     "parse_manuscript_status",
     "parse_relpath",
@@ -449,4 +500,5 @@ __all__ = [
     "stage_allowed_kinds",
     "validate_master_final",
     "validate_theme_final",
+    "validate_volume_final",
 ]

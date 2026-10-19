@@ -44,6 +44,22 @@ MASTER_FINAL = """# 总纲 · 测试书
 | 一 | 活下去 | 垃圾场 | 工头 | 捡神器 |
 """
 
+VOLUME_FINAL = """# 卷纲 · 第 1 卷 · 活下去
+> 状态：定稿｜2026-10-18
+
+| 卷末大爽点 | 捡到首件神器 |
+|---|---|
+
+## 发展阶段
+阶段表
+## 爽点节奏表
+节奏表
+## 爽点质检表
+质检表
+## 卷末钩子
+本卷收尾埋什么
+"""
+
 
 def _route(ws: Path, **kwargs):
     return pipeline.route(ws, "thread-1", **kwargs)
@@ -117,12 +133,28 @@ def test_pipeline_status_labels(tmp_path: Path) -> None:
     assert pipeline.pipeline_status(tmp_path)["next_unit"] == "总纲"
 
 
+def test_pipeline_status_phase_live_derived(tmp_path: Path) -> None:
+    """REQ-20261019-183150：phase 活推导——stale state.stage 不得压过目录事实。
+
+    事故镜像：总纲只有起草中草稿，旧规则把 state.stage 写成 volume；
+    定稿闸后 pipeline_status 须按目录回显 outline（AC-007 前置）。
+    """
+    (tmp_path / "主题.md").write_text(THEME_FINAL, encoding="utf-8")
+    draft = MASTER_FINAL.replace("> 状态：定稿｜2026-10-18", "> 状态：起草中｜2026-10-19")
+    (tmp_path / "总纲.md").write_text(draft, encoding="utf-8")
+    state = load_writing_state(tmp_path)
+    state.stage = STAGE_VOLUME  # 旧规则留下的 stale 快照
+    save_writing_state(tmp_path, state)
+    status = pipeline.pipeline_status(tmp_path)
+    assert status["phase"] == "outline"
+
+
 def test_next_unit_labels_five_stages(tmp_path: Path) -> None:
     """五段标签齐全（FR-011 阶段条同名对齐）。"""
     (tmp_path / "主题.md").write_text(THEME_FINAL, encoding="utf-8")
     (tmp_path / "总纲.md").write_text(MASTER_FINAL, encoding="utf-8")
     (tmp_path / "卷纲").mkdir()
-    (tmp_path / "卷纲" / "第01卷.md").write_text("# 卷纲", encoding="utf-8")
+    (tmp_path / "卷纲" / "第01卷.md").write_text(VOLUME_FINAL, encoding="utf-8")
     assert pipeline.next_unit_label(tmp_path) == "章纲"
     (tmp_path / "章纲").mkdir()
     (tmp_path / "章纲" / "第001章.md").write_text("# 章", encoding="utf-8")

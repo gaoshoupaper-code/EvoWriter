@@ -10,7 +10,6 @@ import {
   createProviderConfig,
   deleteProviderConfig,
   fetchMeOrNull,
-  fetchMyProfile,
   listProviderConfigs,
   updateProviderConfig,
   type ProviderConfig,
@@ -25,7 +24,6 @@ export default function SettingsPage() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(true);
   const [configs, setConfigs] = useState<ProviderConfig[]>([]);
-  const [quota, setQuota] = useState<{ count: number; quota: number } | null>(null);
   const [activeConfigId, setActiveConfigId] = useState<string | null>(null);
   const [mode, setMode] = useState<FormMode>({ kind: "new" });
   const [submitting, setSubmitting] = useState(false);
@@ -37,19 +35,15 @@ export default function SettingsPage() {
   const [model, setModel] = useState("");
   const [activate, setActivate] = useState(true);
 
-  // 服务器地址（D9/S6：默认写死 + 设置可改）。
-  // 切换后 Rust 端重建 Client + 清 cookie（S6 补充约束），需要重新登录。
+  // 服务器地址：只读展示（由系统统一分配，不提供修改入口）
   const [serverUrl, setServerUrl] = useState("");
-  const [serverUrlInput, setServerUrlInput] = useState("");
-  const [serverUrlSaving, setServerUrlSaving] = useState(false);
 
   // 应用更新（手动检查；启动时 Rust 已自动检查一次并 emit 顶部提示条）
   const [checkingUpdate, setCheckingUpdate] = useState(false);
 
   async function reload() {
     try {
-      const [profile, list] = await Promise.all([fetchMyProfile(), listProviderConfigs()]);
-      setQuota({ count: profile.workspace_count, quota: profile.workspace_quota });
+      const list = await listProviderConfigs();
       setConfigs(list);
       const active = list.find((c) => c.is_active);
       setActiveConfigId(active?.config_id ?? null);
@@ -58,40 +52,10 @@ export default function SettingsPage() {
     }
     // 加载服务器地址（独立于 API profile，来自 Rust Store）
     try {
-      const url = await invoke<string>("get_server_url");
-      setServerUrl(url);
-      setServerUrlInput(url);
+      setServerUrl(await invoke<string>("get_server_url"));
     } catch {
       // Store 读取失败用默认值
       setServerUrl("https://siyen.site");
-      setServerUrlInput("https://siyen.site");
-    }
-  }
-
-  /// 保存服务器地址：写 Store + Rust 重建 Client + 清 cookie（需重新登录）。
-  async function handleSaveServerUrl() {
-    if (serverUrlSaving) return;
-    const trimmed = serverUrlInput.trim();
-    if (!trimmed) {
-      toast.error("服务器地址不能为空。");
-      return;
-    }
-    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
-      toast.error("地址必须以 http:// 或 https:// 开头。");
-      return;
-    }
-    setServerUrlSaving(true);
-    try {
-      const saved = await invoke<string>("set_server_url", { url: trimmed });
-      setServerUrl(saved);
-      setServerUrlInput(saved);
-      toast.success(`服务器地址已更新为 ${saved}。Cookie 已清空，请重新登录。`);
-      // 切换服务器后 cookie 失效，跳登录页
-      setTimeout(() => navigate("/login", { replace: true }), 1500);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "保存服务器地址失败。");
-    } finally {
-      setServerUrlSaving(false);
     }
   }
 
@@ -246,214 +210,196 @@ export default function SettingsPage() {
   }
 
   if (loading) {
-    return <main className="auth-page"><p className="auth-subtitle">加载中…</p></main>;
+    return (
+      <main className="settings-page">
+        <p className="settings-loading">加载中…</p>
+      </main>
+    );
   }
 
   const hasActive = activeConfigId !== null;
   const activeConfig = configs.find((c) => c.config_id === activeConfigId) ?? null;
 
   return (
-    <main className="auth-page" style={{ alignItems: "flex-start", paddingTop: 40 }}>
-      <section className="admin-card" style={{ maxWidth: 880 }}>
-        <header className="admin-header">
-          <h1 className="auth-title">API 配置</h1>
-          <Link to="/" className="admin-back">← 返回工作区</Link>
+    <main className="settings-page">
+      <div className="settings-container">
+        <header className="settings-header">
+          <h1 className="settings-title">设置</h1>
+          <Link to="/" className="settings-back">返回工作区</Link>
         </header>
 
-        <div className="settings-key-status">
-          当前使用：
-          {hasActive && activeConfig ? (
-            <strong className="settings-key-ok">
-              {activeConfig.name}（{activeConfig.model}）
-            </strong>
-          ) : (
-            <strong className="settings-key-missing">未配置（AI 功能不可用）</strong>
-          )}
-        </div>
-
-        <div className="provider-layout">
-          {/* 左侧：配置列表 */}
-          <aside className="provider-list">
-            <div className="provider-list-head">
-              <span>我的配置（{configs.length}）</span>
-              <button type="button" className="admin-link" onClick={resetForm}>+ 新建</button>
+        {/* 模型服务：多套 API 配置管理与切换 */}
+        <section className="settings-card">
+          <header className="settings-card-head">
+            <div className="settings-card-title">
+              <h2>模型服务</h2>
+              <p>保存多套 API 配置，随时切换当前使用的模型。</p>
             </div>
-            {configs.length === 0 ? (
-              <p className="auth-hint" style={{ textAlign: "left" }}>还没有配置，点「新建」添加。</p>
-            ) : (
-              configs.map((c) => (
-                <div
-                  key={c.config_id}
-                  className={`provider-item ${c.config_id === activeConfigId ? "active" : ""} ${mode.kind === "edit" && mode.config.config_id === c.config_id ? "editing" : ""}`}
-                >
-                  <div className="provider-item-main" onClick={() => startEdit(c)}>
-                    <div className="provider-item-name">
-                      {c.name}
-                      {c.is_active ? <span className="provider-badge">使用中</span> : null}
-                    </div>
-                    <div className="provider-item-meta">{c.model} · {c.base_url || "默认地址"}</div>
-                  </div>
-                  <div className="provider-item-actions">
-                    {!c.is_active ? (
-                      <button type="button" className="admin-link" onClick={() => handleActivate(c.config_id)}>切换</button>
-                    ) : null}
-                    <button type="button" className="admin-link danger" onClick={() => handleDelete(c.config_id, c.name)}>删除</button>
-                  </div>
-                </div>
-              ))
-            )}
-            {hasActive ? (
-              <button type="button" className="admin-link danger" style={{ marginTop: 12 }} onClick={handleClearActive}>
-                清除当前激活
-              </button>
-            ) : null}
-          </aside>
+            <span className={`settings-status ${hasActive ? "ok" : "missing"}`}>
+              <span className="settings-status-text">
+                {hasActive && activeConfig
+                  ? `使用中：${activeConfig.name} · ${activeConfig.model}`
+                  : "未配置，AI 功能不可用"}
+              </span>
+            </span>
+          </header>
 
-          {/* 右侧：表单 */}
-          <div className="provider-form">
-            <h3>{mode.kind === "new" ? "新建配置" : `编辑「${mode.config.name}」`}</h3>
-            <form className="auth-form" onSubmit={handleSubmit}>
-              <label className="auth-field">
-                <span>名称（方便区分，如「我的GLM」）</span>
-                <input
-                  className="auth-input"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="给这套配置起个名字"
-                  disabled={submitting}
-                />
-              </label>
-              <label className="auth-field">
-                <span>API Key {mode.kind === "edit" ? "（留空不修改）" : ""}</span>
-                <input
-                  className="auth-input"
-                  type="password"
-                  value={apiKey}
-                  onChange={(e) => setApiKeyInput(e.target.value)}
-                  placeholder={mode.kind === "edit" ? "••••••（已加密保存）" : "sk-..."}
-                  autoComplete="off"
-                  disabled={submitting}
-                />
-              </label>
-              <label className="auth-field">
-                <span>Base URL（可选）</span>
-                <input
-                  className="auth-input"
-                  value={baseUrl}
-                  onChange={(e) => setBaseUrl(e.target.value)}
-                  placeholder="https://open.bigmodel.cn/api/paas/v4"
-                  autoComplete="off"
-                  disabled={submitting}
-                />
-              </label>
-              <label className="auth-field">
-                <span>模型名称</span>
-                <input
-                  className="auth-input"
-                  value={model}
-                  onChange={(e) => setModel(e.target.value)}
-                  placeholder="glm-4.6 / deepseek-chat / gpt-4o 等"
-                  autoComplete="off"
-                  disabled={submitting}
-                />
-              </label>
-              <label className="auth-checkbox">
-                <input
-                  type="checkbox"
-                  checked={activate}
-                  onChange={(e) => setActivate(e.target.checked)}
-                  disabled={submitting}
-                />
-                <span>保存后立即设为当前使用</span>
-              </label>
-              <div className="modal-actions">
-                {mode.kind === "edit" ? (
-                  <button className="modal-button modal-cancel" type="button" onClick={resetForm} disabled={submitting}>
-                    取消编辑
-                  </button>
-                ) : null}
-                <button className="auth-button" type="submit" disabled={submitting} style={{ marginTop: 0, width: "auto" }}>
-                  {submitting ? "保存中…" : mode.kind === "new" ? "保存配置" : "更新配置"}
-                </button>
+          <div className="provider-layout">
+            {/* 左侧：配置列表 */}
+            <aside className="provider-list">
+              <div className="provider-list-head">
+                <span>我的配置（{configs.length}）</span>
+                <button type="button" className="provider-new-btn" onClick={resetForm}>+ 新建</button>
               </div>
-            </form>
-            <p className="auth-hint">
-              平台用 AES-256-GCM 加密存储你的 Key。列表只显示名称/模型，不显示 Key 明文。可保存多套配置方便切换。
-            </p>
-          </div>
-        </div>
-      </section>
+              {configs.length === 0 ? (
+                <p className="provider-empty">还没有配置，点「新建」添加。</p>
+              ) : (
+                configs.map((c) => (
+                  <div
+                    key={c.config_id}
+                    className={`provider-item ${c.config_id === activeConfigId ? "active" : ""} ${mode.kind === "edit" && mode.config.config_id === c.config_id ? "editing" : ""}`}
+                  >
+                    <div className="provider-item-main" onClick={() => startEdit(c)}>
+                      <div className="provider-item-name">
+                        {c.name}
+                        {c.is_active ? <span className="provider-badge">使用中</span> : null}
+                      </div>
+                      <div className="provider-item-meta" title={c.base_url || undefined}>
+                        {c.model} · {c.base_url || "默认地址"}
+                      </div>
+                    </div>
+                    <div className="provider-item-actions">
+                      {!c.is_active ? (
+                        <button type="button" className="provider-action" onClick={() => handleActivate(c.config_id)}>切换</button>
+                      ) : null}
+                      <button type="button" className="provider-action danger" onClick={() => handleDelete(c.config_id, c.name)}>删除</button>
+                    </div>
+                  </div>
+                ))
+              )}
+              {hasActive ? (
+                <button type="button" className="provider-clear-active" onClick={handleClearActive}>
+                  清除当前激活
+                </button>
+              ) : null}
+            </aside>
 
-      {/* 服务器地址配置（D9/S6）：自部署用户改这里，默认连官方服务器 */}
-      <section className="admin-card" style={{ maxWidth: 880, marginTop: 24 }}>
-        <header className="admin-header">
-          <h1 className="auth-title">服务器地址</h1>
-        </header>
-        <div className="settings-key-status">
-          当前连接：<strong className="settings-key-ok">{serverUrl || "加载中…"}</strong>
-        </div>
-        <form
-          className="auth-form"
-          onSubmit={(e) => { e.preventDefault(); handleSaveServerUrl(); }}
-        >
-          <label className="auth-field">
-            <span>服务器地址（http:// 或 https://）</span>
-            <input
-              className="auth-input"
-              value={serverUrlInput}
-              onChange={(e) => setServerUrlInput(e.target.value)}
-              placeholder="https://siyen.site"
-              disabled={serverUrlSaving}
-            />
-          </label>
-          <p className="auth-hint">
-            切换服务器后会清空登录状态，需要重新登录。普通用户无需修改。
-          </p>
-          <button className="auth-button" type="submit" disabled={serverUrlSaving} style={{ marginTop: 0, width: "auto" }}>
-            {serverUrlSaving ? "保存中…" : "保存并重新登录"}
-          </button>
-        </form>
-      </section>
-
-      {/* 应用更新（手动检查；启动时已自动检查一次） */}
-      <section className="admin-card" style={{ maxWidth: 880, marginTop: 24 }}>
-        <header className="admin-header">
-          <h1 className="auth-title">应用更新</h1>
-        </header>
-        <div className="config-update-section">
-          <div className="config-update-info">
-            <strong style={{ fontSize: "var(--text-ui-lg)" }}>检查新版本</strong>
-            <p className="auth-hint" style={{ margin: 0 }}>
-              有新版本时顶部会显示提示条，点「立即更新」即可下载安装并重启。应用启动时也会自动检查一次。
-            </p>
+            {/* 右侧：表单 */}
+            <div className="provider-form">
+              <h3>{mode.kind === "new" ? "新建配置" : `编辑「${mode.config.name}」`}</h3>
+              <form className="auth-form" onSubmit={handleSubmit}>
+                <label className="auth-field">
+                  <span>名称（方便区分，如「我的GLM」）</span>
+                  <input
+                    className="auth-input"
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="给这套配置起个名字"
+                    disabled={submitting}
+                  />
+                </label>
+                <label className="auth-field">
+                  <span>API Key {mode.kind === "edit" ? "（留空不修改）" : ""}</span>
+                  <input
+                    className="auth-input"
+                    type="password"
+                    value={apiKey}
+                    onChange={(e) => setApiKeyInput(e.target.value)}
+                    placeholder={mode.kind === "edit" ? "••••••（已加密保存）" : "sk-..."}
+                    autoComplete="off"
+                    disabled={submitting}
+                  />
+                </label>
+                <label className="auth-field">
+                  <span>Base URL（可选）</span>
+                  <input
+                    className="auth-input"
+                    value={baseUrl}
+                    onChange={(e) => setBaseUrl(e.target.value)}
+                    placeholder="https://open.bigmodel.cn/api/paas/v4"
+                    autoComplete="off"
+                    disabled={submitting}
+                  />
+                </label>
+                <label className="auth-field">
+                  <span>模型名称</span>
+                  <input
+                    className="auth-input"
+                    value={model}
+                    onChange={(e) => setModel(e.target.value)}
+                    placeholder="glm-4.6 / deepseek-chat / gpt-4o 等"
+                    autoComplete="off"
+                    disabled={submitting}
+                  />
+                </label>
+                <label className="auth-checkbox">
+                  <input
+                    type="checkbox"
+                    checked={activate}
+                    onChange={(e) => setActivate(e.target.checked)}
+                    disabled={submitting}
+                  />
+                  <span>保存后立即设为当前使用</span>
+                </label>
+                <div className="settings-form-actions">
+                  {mode.kind === "edit" ? (
+                    <button className="settings-btn" type="button" onClick={resetForm} disabled={submitting}>
+                      取消编辑
+                    </button>
+                  ) : null}
+                  <button className="settings-btn settings-btn-primary" type="submit" disabled={submitting}>
+                    {submitting ? "保存中…" : mode.kind === "new" ? "保存配置" : "更新配置"}
+                  </button>
+                </div>
+              </form>
+              <p className="settings-hint">
+                平台用 AES-256-GCM 加密存储你的 Key。列表只显示名称/模型，不显示 Key 明文。
+              </p>
+            </div>
           </div>
-          <button
-            className="auth-button"
-            type="button"
-            onClick={handleCheckUpdate}
-            disabled={checkingUpdate}
-            style={{ marginTop: 0, width: "auto", whiteSpace: "nowrap" }}
-          >
-            {checkingUpdate ? "检查中…" : "检查更新"}
-          </button>
-        </div>
-      </section>
+        </section>
 
-      {/* 界面字号(FR-007):只改 --ui-font-size 单变量,几何不缩放;见 DESIGN-UI.md */}
-      <section className="admin-card" style={{ maxWidth: 880, marginTop: 24 }}>
-        <header className="admin-header">
-          <h1 className="auth-title">界面字号</h1>
-        </header>
-        <div className="config-update-section">
-          <div className="config-update-info">
-            <strong style={{ fontSize: "var(--text-ui-lg)" }}>文字大小</strong>
-            <p className="auth-hint" style={{ margin: 0 }}>
-              调整整个界面的文字大小，立即生效；图标与间距保持不变，重启后记住选择。
-            </p>
+        {/* 通用：服务器地址（只读）+ 应用更新 + 界面字号 */}
+        <section className="settings-card">
+          <header className="settings-card-head">
+            <div className="settings-card-title">
+              <h2>通用</h2>
+            </div>
+          </header>
+          <div className="settings-rows">
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <strong>服务器地址</strong>
+                <p>应用连接的云端服务，由系统统一分配，不可修改。</p>
+              </div>
+              <code className="settings-server-url" title={serverUrl}>
+                {serverUrl || "加载中…"}
+              </code>
+            </div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <strong>应用更新</strong>
+                <p>启动时自动检查；有新版本时顶部会出现提示条，点「立即更新」即可安装。</p>
+              </div>
+              <button
+                className="settings-btn"
+                type="button"
+                onClick={handleCheckUpdate}
+                disabled={checkingUpdate}
+              >
+                {checkingUpdate ? "检查中…" : "检查更新"}
+              </button>
+            </div>
+            <div className="settings-row">
+              <div className="settings-row-info">
+                <strong>界面字号</strong>
+                <p>调整整个界面的文字大小，立即生效；图标与间距保持不变，重启后记住选择。</p>
+              </div>
+              <UiFontSizeControl />
+            </div>
           </div>
-          <UiFontSizeControl />
-        </div>
-      </section>
+        </section>
+      </div>
     </main>
   );
 }

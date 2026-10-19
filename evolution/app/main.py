@@ -34,6 +34,7 @@ from app.view.traces import router as traces_router
 from app.view.users import router as users_router
 from app.versioning.snapshot_api import router as snapshot_router
 from app.versioning.elements_api import router as elements_router
+from app.versioning.prompt_assets_api import router as prompt_assets_router
 from app.view.active import router as active_api_router
 # 观测事件流 SSE 通道（REQ-20260920-193428 FR-004）：大盘实时推送
 from app.view.events import router as events_router
@@ -143,6 +144,8 @@ app.include_router(users_router, prefix="/api")
 app.include_router(snapshot_router, prefix="/api")
 # Harness 要素展示（前端「Harness 要素」页）
 app.include_router(elements_router, prefix="/api")
+# 提示词草稿审核/编辑/一键发版（Harness 要素页 Prompt Tab）
+app.include_router(prompt_assets_router, prefix="/api")
 # 监测前端新增端点（D7 active 富化 / D8 agent-package）
 app.include_router(active_api_router, prefix="/api")
 # 观测事件流（REQ-20260920-193428）：GET /api/events/stream

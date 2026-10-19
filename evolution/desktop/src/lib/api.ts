@@ -947,6 +947,14 @@ export interface Snapshot {
   based_on_status: "resolved" | "root" | "error";
 }
 
+/** 提示词文件卡（清单版本）：kind 区分常驻骨架 / 段规程 */
+export interface PromptFileInfo {
+  path: string;
+  kind: "base" | "stage";
+  title: string;
+  body: string;
+}
+
 export interface HarnessElementView {
   name: string;
   kind: string; // main | sub（旧版本客户端可能仍见 story_expert 等历史值）
@@ -955,6 +963,7 @@ export interface HarnessElementView {
   runtime_name?: string; // 运行时委托名（如审查器 = review）
   description?: string; // 委托描述（清单版本提供）
   prompt: { body: string };
+  prompt_files?: PromptFileInfo[]; // 完整提示词面（base + stage；旧版本缺省走 body）
   skills: { path: string; name: string; description: string | null; content: string | null; load_error: string | null }[];
   middlewares: {
     hook: string | null; // 旧桌面客户端兼容字段；新客户端使用 hooks
@@ -1010,6 +1019,47 @@ export async function getSnapshots(): Promise<Snapshot[]> {
 
 export async function getHarnessElements(version: number): Promise<HarnessElementsView> {
   return evoJson<HarnessElementsView>(`/api/snapshots/${version}/harness-elements`, { method: "GET" });
+}
+
+// ── 提示词草稿（工作区 live 文件：审核 / 编辑 / 一键发版）──
+// 与要素视图的分工：要素视图是版本快照（只读）；这里读写工作区草稿，
+// 发版走 commit → probe 门禁 → 晋级生产 → executor 热加载。
+
+export interface PromptDraftFile {
+  path: string;
+  title: string;
+  body: string;
+}
+
+export interface PromptDraftView {
+  files: PromptDraftFile[];
+  dirty: boolean; // prompts/ 下有未提交改动
+  head: string; // 工作区基线 commit
+}
+
+export async function getPromptDrafts(): Promise<PromptDraftView> {
+  return evoJson<PromptDraftView>(`/api/prompts/workdir`, { method: "GET" });
+}
+
+export async function savePromptDraft(
+  path: string,
+  content: string,
+): Promise<{ ok: boolean; path: string; dirty: boolean }> {
+  return evoJson<{ ok: boolean; path: string; dirty: boolean }>(`/api/prompts/workdir`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, content }),
+  });
+}
+
+export async function releasePromptDraft(
+  note: string,
+): Promise<{ version: number; commit: string }> {
+  return evoJson<{ version: number; commit: string }>(`/api/prompts/release`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ note }),
+  });
 }
 
 // ── 记忆子系统要素（NWM 6 要素，独立于按 agent 分组的 HarnessElementsView） ──

@@ -17,6 +17,9 @@ vi.mock("@/lib/api", () => ({
   getMemoryElements: vi.fn(),
   getUpgradeDiff: vi.fn(),
   getVersions: vi.fn(),
+  getPromptDrafts: vi.fn(),
+  savePromptDraft: vi.fn(),
+  releasePromptDraft: vi.fn(),
 }));
 
 import * as apiModule from "@/lib/api";

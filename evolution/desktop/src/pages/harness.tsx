@@ -243,7 +243,15 @@ export default function HarnessPage() {
               {scope === "main" && <TabsTrigger value="memory">Memory</TabsTrigger>}
             </TabsList>
             <TabsContent value="prompt">
-              <PromptTab agents={scopedAgents} diffs={diffs} />
+              <PromptTab
+                agents={scopedAgents}
+                diffs={diffs}
+                /* 草稿发版成功：切到新版本（触发要素重拉）+ 刷新版本下拉 */
+                onReleased={(version) => {
+                  setSelectedVersion(version);
+                  refresh();
+                }}
+              />
             </TabsContent>
             <TabsContent value="skills">
               <SkillsTab agents={scopedAgents} diffs={diffs} />

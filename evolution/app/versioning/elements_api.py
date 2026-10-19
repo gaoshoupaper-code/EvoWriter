@@ -263,6 +263,47 @@ def _parse_frontmatter(text: str) -> dict[str, Any]:
     return yaml.safe_load(parts[1]) or {}
 
 
+def _extract_stage_prompt_files(source: str) -> list[str]:
+    """从包 __init__.py 源码提 STAGE_PROMPT_FILES 的文件名列表（AST 字面量解析）。
+
+    五段制的段规程挂载真相源是包自己的声明（executor 同源读取）；
+    解析失败返回 []——该版本无段规程（v48 及更早），要素视图只显示基础 prompt。
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return []
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        target = node.targets[0] if node.targets else None
+        if not (isinstance(target, ast.Name) and target.id == "STAGE_PROMPT_FILES"):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            return []
+        names: list[str] = []
+        for value in node.value.values:
+            try:
+                name = ast.literal_eval(value)
+            except (ValueError, TypeError):
+                continue
+            if isinstance(name, str):
+                names.append(name)
+        return sorted(set(names))
+    return []
+
+
+def _prompt_title(body: str, path: str) -> str:
+    """提示词文件展示标题 = 正文首个 `# ` 标题行；无标题回退文件名。"""
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            return stripped[2:].strip()
+        if stripped:  # 首个非空行不是标题就不再找
+            break
+    return path.rsplit("/", 1)[-1]
+
+
 def _read_prompt(commit: str | None, prompt_path: str) -> str:
     """读单条 prompt 文件全文（相对包根路径）。commit=None 或读取失败返回空串。"""
     if not commit:
@@ -457,11 +498,46 @@ def build_elements_view(version: int) -> dict[str, Any]:
 def _build_manifest_elements_view(
     version: int, commit: str | None, manifest: ArchitectureManifest
 ) -> dict[str, Any]:
-    """清单版要素视图（FR-006/007）：结构、挂载、委托关系全部以清单为准。"""
+    """清单版要素视图（FR-006/007）：结构、挂载、委托关系全部以清单为准。
+
+    prompt_files：author 的完整提示词面（审核/编辑用）——基础 prompt 文件 +
+    包声明的段规程文件（STAGE_PROMPT_FILES，挂到首个 main agent）。
+    旧版本无段规程声明时只有基础文件一项。
+    """
     skills = _build_skill_infos(commit)
     stacks = _manifest_middleware_stacks(commit, manifest)
     tools = _build_tool_infos(commit)
     tool_names = {t["name"] for t in tools}
+
+    stage_files: list[str] = []
+    if commit:
+        try:
+            stage_files = _extract_stage_prompt_files(show_file(commit, "__init__.py"))
+        except Exception:  # noqa: BLE001 — 读不到 __init__ = 无段规程
+            stage_files = []
+    stage_attached = False
+
+    def _prompt_files(prompt_path: str, is_main: bool) -> list[dict[str, Any]]:
+        nonlocal stage_attached
+        files: list[dict[str, Any]] = []
+        body = _read_prompt(commit, prompt_path)
+        if body:
+            files.append({
+                "path": prompt_path, "kind": "base",
+                "title": _prompt_title(body, prompt_path), "body": body,
+            })
+        # 段规程挂到首个 main agent（styles 通道按 agent 名注入，五段制单 main）
+        if is_main and stage_files and not stage_attached:
+            stage_attached = True
+            for name in stage_files:
+                path = f"prompts/{name}"
+                s_body = _read_prompt(commit, path)
+                if s_body:
+                    files.append({
+                        "path": path, "kind": "stage",
+                        "title": _prompt_title(s_body, path), "body": s_body,
+                    })
+        return files
 
     agents = [
         {
@@ -472,6 +548,7 @@ def _build_manifest_elements_view(
             "runtime_name": agent.runtime_name or agent.name,
             "description": agent.description,
             "prompt": {"body": read_prompt_body(commit, (agent.prompt,))},
+            "prompt_files": _prompt_files(agent.prompt, agent.role == "main"),
             "skills": [s for s in skills
                        if any(s["path"] == f"skills/{name}"
                               or s["path"].startswith(f"skills/{name}/")

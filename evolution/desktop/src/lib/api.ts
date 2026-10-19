@@ -695,44 +695,28 @@ export async function stopEvolve(sessionId: string): Promise<{ status: string; s
 }
 
 /**
- * 按 sequence 游标拉取进化 session 的事件帧（trace 重构 20260720_154825）。
- * 返回从 run_meta 派生的 message_updated/phase/log/step/proposal/finalizing 帧。
- *
- * 重构变更：移除 model_stream token 流；新增 message_updated 通知帧（消息已落库，
- * 前端调 loadMessages 拉权威存储）。
+ * 会话级 SSE 流帧（REQ-20261019-183921 FR-004，替代 events/since 轮询）。
+ * data JSON，type 字段区分；行协议帧（row）的字段见 lib/rows.ts。
  */
-export interface EvolveFrame {
+export interface EvolveStreamFrame {
   type:
-    | "message_updated"
-    | "phase"
-    | "activity" // FR-005：运行中活动信号（llm_start/tool_start span 派生，带 ts）
-    | "log"
-    | "step"
-    | "proposal"
-    | "finalizing"
-    | "start"
-    | "end"
-    | "error";
+    | "snapshot" // 连接建立时的会话状态快照（round_active 标记是否有未完成轮次）
+    | "row" // 行协议帧（op=open/delta/end）
+    | "tool_call"
+    | "tool_output"
+    | "tool_error"
+    | "message_updated" // 消息已落库（拉权威消息）
+    | "phase" // 阶段切换
+    | "round_start" // 轮次开始（锁定输入框）
+    | "round_end" // 轮次结束（解锁输入框；status 为轮次终态）
+    | "heartbeat"
+    | "error"; // 后端兜底错误信号（向后兼容旧帧）
   [key: string]: unknown;
-  _seq?: number;
 }
 
-export interface EvolveEventsSinceResponse {
-  frames: EvolveFrame[];
-  max_seq: number;
-  has_more: boolean;
-  session_status: string; // running / conversing / finalizing / pending_review / published / ...
-}
-
-export async function getEvolveSessionEventsSince(
-  sessionId: string,
-  sinceSeq: number,
-  limit = 500,
-): Promise<EvolveEventsSinceResponse> {
-  return evoJson<EvolveEventsSinceResponse>(
-    `/api/evolve/sessions/${sessionId}/events/since?since_seq=${sinceSeq}&limit=${limit}`,
-    { method: "GET" },
-  );
+/** 会话级 SSE 流地址（streamRequest 用，与 evoFetch 同前缀规则）。 */
+export function evolveSessionStreamPath(sessionId: string): string {
+  return evoStreamPath(`/api/evolve/sessions/${sessionId}/stream`);
 }
 
 export async function getEvolveSessions(limit = 50): Promise<{ sessions: EvolveSession[]; total: number }> {
@@ -769,6 +753,7 @@ export interface EvolveMessage {
   content: string; // markdown
   tool_events?: any[] | null; // assistant 消息触发的工具调用列表
   related_points?: string[] | null; // 涉及的进化点 id（双向高亮联动）
+  rows?: import("./rows").TimelineRow[] | null; // 本轮行时间线终态快照（assistant 专属，REQ-20261019-183921）
   seq: number;
   created_at: string;
 }

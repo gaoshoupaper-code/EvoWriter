@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from langgraph.errors import GraphRecursionError
@@ -62,30 +63,30 @@ async def _run_agent_streamed(
     config: dict[str, Any],
     ctx: "EvolveContext",
 ) -> None:
-    """astream_events + EvolveEventSink → 消息持久化 + 通知帧（trace 重构 20260720_154825）。
+    """astream_events + EvolveEventSink → 消息持久化 + 流式广播（REQ-20261019-183921）。
 
-    替代原 Phase 6 的 token 级流式桥接。重大变更：
-      - 不再把 sink 帧当 sse_frame 入库（trace 通道不再背 token 流职责）
-      - sink 帧改为派生两类副作用：
-        1. 持久化消息到 evolve_messages（assistant / tool / system）—— 权威消息源
-        2. 通知帧（type=model_output/tool_output）走 run_meta 通道通知前端：消息更新了，
-           前端 Pull 拉到后调 loadMessages 拉权威消息即可
-
-    设计（D1/D2/D3）：
-      - trace 通道只存 span（TraceMiddleware 拦截 llm/tool）+ run_meta（业务事件）
-      - 消息通道独立，Agent 每轮回复立即落 evolve_messages，前端按 seq 增量拉
-      - 无 token 流：前端轮询频率可降到 2s，DB 压力大幅降低
+    sink 帧派生三路副作用：
+      1. 持久化消息到 evolve_messages（assistant / tool）——权威消息源
+      2. run_meta 通知帧（message_updated）走 trace 通道（观测 + Pull 兜底）
+      3. 行协议帧（row）与信号帧经 stream_hub 广播，前端流式渲染
+         （思考块/正文逐段生长/工具行；行帧不落 trace——D1 原则不变）
 
     消息派生规则（D2）：
-      - model_output 且无 tool_calls → 落 assistant 消息（开场白/对话回复）
+      - model_output 且无 tool_calls → 落 assistant 消息（对话回复）
       - model_output 且有 tool_calls → 不落文本（工具单独走 tool 消息）
-      - tool_output 工具属于 {进化点, write_*, edit_source, validate_changes} → 落 tool 消息
+      - tool_output 工具属于白名单 → 落 tool 消息
       - 其他工具的 tool_output → 不落（只读工具不污染对话历史）
+
+    行快照：round 结束时把 sink.rows（思考/正文/工具行终态）挂到本轮
+    最后一条 assistant 消息（rows_json），历史回看时间线不降级。
     """
     from app.evolve.agent.event_sink import EvolveEventSink
     from app.evolve.evolve_repo import EvolveMessagesRepo
+    from app.evolve.stream_hub import get_stream_hub
 
+    hub = get_stream_hub()
     sink = EvolveEventSink(session_id=ctx.session_id)
+    last_assistant_msg_id: str | None = None
     agent_events = agent.astream_events(
         {"messages": [{"role": "user", "content": user_input}]},
         config=config,
@@ -107,7 +108,23 @@ async def _run_agent_streamed(
             if not frame_type:
                 continue
             try:
-                _persist_message_from_frame(ctx, frame, EvolveMessagesRepo)
+                if frame_type == "row":
+                    # 行协议帧：只广播（不落库、不入 trace）
+                    hub.publish(ctx.session_id, frame)
+                    continue
+                if frame_type in ("tool_call", "tool_error"):
+                    hub.publish(ctx.session_id, frame)
+                    continue
+                if frame_type == "tool_output":
+                    # 工具结果信号帧广播（FR-004 契约声明）；不 continue——
+                    # 后续落库判断照跑（白名单工具落 tool 消息）
+                    hub.publish(ctx.session_id, frame)
+                persisted = _persist_message_from_frame(ctx, frame, EvolveMessagesRepo)
+                if persisted is not None:
+                    if persisted.get("role") == "assistant":
+                        last_assistant_msg_id = persisted["id"]
+                    # 落库成功 → 广播 message_updated（前端增量拉权威消息）
+                    hub.publish(ctx.session_id, {"type": "message_updated"})
                 _emit_notification_frame(ctx, frame)
             except Exception:
                 # 消息持久化失败是严重问题（会让前端看不到 Agent 动作），
@@ -117,6 +134,24 @@ async def _run_agent_streamed(
                     "session %s: 消息派生失败 frame_type=%s（不中断 agent）",
                     ctx.session_id, frame_type,
                 )
+
+    # 行快照收尾：挂到本轮最后一条 assistant 消息（历史回看时间线）。
+    # 取消/异常路径不写——半截时间线不值得回看，落库消息仍完整。
+    if sink.rows and last_assistant_msg_id:
+        try:
+            # 归一化：找不到终态的工具行等残留 streaming——落库前置 interrupted，
+            # 否则历史回看呈永久「正在思考」实时态
+            now_ms = int(time.time() * 1000)
+            normalized = [
+                {**row, "status": "interrupted", "endedAt": now_ms}
+                if row.get("status") == "streaming" else row
+                for row in sink.rows
+            ]
+            EvolveMessagesRepo.attach_rows(last_assistant_msg_id, normalized)
+        except Exception:
+            logger.exception(
+                "session %s: 行快照持久化失败（不影响消息）", ctx.session_id,
+            )
 
     # 循环结束后写 step_stats run_meta（DD5+DD8）：观测实际跑了多少个 superstep。
     if ctx.recorder and ctx.trace_id_self and sink.max_superstep > 0:
@@ -159,13 +194,16 @@ def _persist_message_from_frame(
     ctx: "EvolveContext",
     frame: dict[str, Any],
     messages_repo: Any,
-) -> None:
+) -> dict[str, Any] | None:
     """根据 sink 帧派生持久化消息到 evolve_messages（D2）。
 
     规则：
-      - model_output 无 tool_calls → assistant 消息（开场白/对话回复）
+      - model_output 无 tool_calls → assistant 消息（对话回复）
       - tool_output 工具在白名单 → tool 消息（含 related_points 关联进化点）
       - 其他帧（model_output 有 tool_calls / tool_call / tool_error）→ 不落
+
+    Returns:
+        落库的消息 dict；未落库返回 None。
     """
     frame_type = frame.get("type")
 
@@ -174,20 +212,19 @@ def _persist_message_from_frame(
         tool_calls = frame.get("tool_calls") or []
         # 有工具调用 → 不落文本消息（工具单独走 tool 消息，避免重复）
         if tool_calls or not text.strip():
-            return
+            return None
         # 纯文本回复 → assistant 消息
-        messages_repo.append(
+        return messages_repo.append(
             ctx.session_id, role="assistant", content=text,
         )
-        return
 
     if frame_type == "tool_output":
         tool_name = frame.get("tool_name", "")
         if tool_name not in _MESSAGE_TOOLS:
-            return
+            return None
         output_summary = frame.get("output_summary", "")
         if not output_summary:
-            return
+            return None
 
         # 进化点工具的 related_points 关联（前端双向高亮联动用）
         related_points: list[str] | None = None
@@ -204,11 +241,11 @@ def _persist_message_from_frame(
         }]
         # 渲染为可读的 tool 消息内容
         content = f"[工具·{tool_name}] {output_summary[:300]}"
-        messages_repo.append(
+        return messages_repo.append(
             ctx.session_id, role="tool", content=content,
             tool_events=tool_events, related_points=related_points,
         )
-        return
+    return None
 
 
 def _emit_notification_frame(ctx: "EvolveContext", frame: dict[str, Any]) -> None:
@@ -266,7 +303,7 @@ async def _handle_recursion_error(ctx: "EvolveContext", round_name: str) -> None
 
     Args:
         ctx:        进化上下文
-        round_name: 哪个 round 触顶（inspect/converse/finalize/evolve），用于日志定位
+        round_name: 哪个 round 触顶（converse/finalize），用于日志定位
     """
     from app.evolve import db as ev_db
 
@@ -356,129 +393,6 @@ async def build_evolve_agent(ctx: EvolveContext):
         ctx.session_id, ctx.trace_id, ctx.thread_id,
     )
     return agent
-
-
-async def run_inspect_round(ctx: EvolveContext, trace_id: str) -> dict[str, Any]:
-    """探查阶段 round（决策 T2，conversing 之前的准备）。
-
-    流程：
-      1. 创建 recorder run + 构建 agent（带 checkpointer + thread_id）
-      2. status = running（FlowGuard 不拦，只读工具可用）
-      3. Agent 基于注入的概览（FR-004）直接发开场白——不预拉证据：
-         trace/产物/harness 证据工具留给对话阶段按需调用（FR-005 修正）
-      4. 发完开场白自然结束（不进入落地，因为没用户对话）
-      5. 探查完成 → status 转 conversing，等用户第一条消息
-
-    与 run_evolve_session 的区别：不跑落地（design_doc/落地编码留给 finalize round）。
-    Agent 开场白作为 assistant 消息持久化到 evolve_messages 表（Phase 3 接入时）。
-
-    Returns:
-        {"status": "conversing"|"failed"|"cancelled", "session_id": ...}
-    """
-    from app.evolve import db as ev_db
-    from app.evolve.ctx import STATUS_RUNNING, STATUS_CONVERSING, STATUS_FAILED, STATUS_CANCELLED
-
-    ctx.trace_id = trace_id
-    ctx.session_status = STATUS_RUNNING
-    ev_db.update_session(ctx.session_id, status=STATUS_RUNNING)
-
-    _start_evolution_trace(ctx, "evolve-agent.inspect")
-
-    agent = await build_evolve_agent(ctx)
-    config: dict[str, Any] = {
-        "configurable": {"thread_id": ctx.thread_id},
-        "recursion_limit": 200,  # 显式放开（避免 LangChain 框架默认 25 误杀）
-    }
-    if ctx.recorder and ctx.trace_id_self:
-        config["callbacks"] = [TraceCallbackHandler(ctx.recorder, ctx.trace_id_self)]
-
-    ctx.emit_phase("running")
-    ctx.emit_log("进化 Agent 启动探查阶段...")
-    logger.info("session %s: inspect round 启动 trace=%s", ctx.session_id, trace_id)
-
-    # FR-006（REQ-20260921-124733）：附带评测批次时注入全局弱点视图（降级不阻断）
-    benchmark_section = ""
-    benchmark_report = (ctx.eval_snapshot or {}).get("benchmark_report")
-    if benchmark_report:
-        import json as _json
-        benchmark_section = (
-            "本次会话附带数据集评测全局弱点视图（多 case 聚合，来源评测批次 "
-            f"{benchmark_report.get('batch_id')}，校准状态 {benchmark_report.get('calibration')}）：\n"
-            f"{_json.dumps(benchmark_report.get('weakest_dimensions', []), ensure_ascii=False, indent=1)}\n"
-            "该视图是本次进化的补充证据输入（本会话已绑定作品，作品数据是主证据）。\n\n"
-        )
-
-    user_input = _build_inspect_user_input(ctx, benchmark_section)
-
-    try:
-        await _run_agent_streamed(agent, user_input, config, ctx)
-        # 探查完成，转 conversing 等用户对话
-        ctx.session_status = STATUS_CONVERSING
-        ev_db.update_session(ctx.session_id, status=STATUS_CONVERSING)
-        ctx.emit_phase("conversing")
-        ctx.emit_log("探查阶段完成，进入对话共创阶段。")
-        logger.info("session %s: inspect round 完成，转 conversing", ctx.session_id)
-        return {"status": "conversing", "session_id": ctx.session_id}
-
-    except GraphRecursionError:
-        # 步数触顶（recursion_limit=200）：探查阶段陷入死循环。
-        await _handle_recursion_error(ctx, "inspect")
-        return {
-            "status": "failed", "session_id": ctx.session_id,
-            "error": "inspect round 步数触顶（未收敛）",
-        }
-    except asyncio.CancelledError:
-        logger.info("session %s: inspect round 被用户停止", ctx.session_id)
-        ev_db.update_session(ctx.session_id, status=STATUS_CANCELLED)
-        if ctx.recorder and ctx.trace_id_self:
-            ctx.recorder.cancel_run(ctx.trace_id_self, reason="user_stop")
-        return {"status": "cancelled", "session_id": ctx.session_id}
-    except Exception as e:
-        logger.exception("session %s: inspect round 失败", ctx.session_id)
-        ev_db.update_session(ctx.session_id, status=STATUS_FAILED)
-        if ctx.recorder and ctx.trace_id_self:
-            ctx.recorder.fail_run(ctx.trace_id_self, e)
-        return {"status": "failed", "error": str(e), "session_id": ctx.session_id}
-
-
-def _build_inspect_user_input(ctx: EvolveContext, benchmark_section: str) -> str:
-    """组装探查轮的开场指令（REQ-20261001-131018 FR-005 按需读取修正）。
-
-    开场不预拉证据——作品概览/进化点/发布摘要已由 system prompt 注入（FR-004），
-    Agent 基于概览直接发开场白；trace/产物/harness 源码等证据工具一律按需调用
-    （讨论到具体问题、需要归因时再查）。评估系统已裁撤，不再出现评估报告引用。
-    """
-    if ctx.agent_id:
-        work_section = (
-            f"你（进化 Agent）绑定了作品 workspace_id={ctx.workspace_id}。\n"
-            f"作品概览、既有进化点、历次发布摘要已在你的上下文里。\n\n"
-            f"本阶段任务：直接给用户发一条开场白——\n"
-            f"1. 基于已注入的概览介绍现状（作品规模、上次进化到哪、遗留的进化点）\n"
-            f"2. 提出你建议讨论的方向，让用户决定从哪开始\n\n"
-            f"证据纪律（按需读取，不要开场就拉数据）：\n"
-            f"- 不要在本阶段主动批量调用证据工具（list_work_traces / read_work_trace /\n"
-            f"  read_current_artifacts / list_elements 等）——等讨论到具体问题需要归因时再查\n"
-            f"- 用户提到某个症状（如「大纲老崩」「角色写重复了」）时，再按需调对应工具取证\n"
-            f"- 进化点的 problem 必须引用具体证据（trace_id / 产物修订 / 要素路径），\n"
-            f"  没查证过就不要下结论\n\n"
-            f"其他约束：\n"
-            f"- 不要调 write_design_doc / write_* / edit_source（落地工具）\n"
-            f"- 不要急于 propose 进化点——先和用户对齐方向，再逐个讨论\n"
-        )
-    else:
-        work_section = (
-            f"本阶段任务：\n"
-            f"直接给用户发一条开场白——提出本次进化要讨论的核心方向，让用户决定从哪开始。\n\n"
-            f"约束：\n"
-            f"- 证据工具按需调用，不要开场批量拉取\n"
-            f"- 不要调 write_design_doc / write_* / edit_source（落地工具）\n"
-            f"- 不要急于 propose 进化点——先和用户对齐方向，再逐个讨论\n"
-        )
-    return (
-        f"请开始进化流程的探查阶段。case_id={ctx.case_id}。\n"
-        f"{benchmark_section}"
-        f"{work_section}"
-    )
 
 
 async def run_converse_round(ctx: EvolveContext, user_message: str) -> dict[str, Any]:
@@ -668,7 +582,7 @@ async def run_finalize_round(ctx: EvolveContext) -> dict[str, Any]:
 def _format_work_binding(ctx: EvolveContext) -> str:
     """把作品绑定上下文格式化成 system prompt 的「作品绑定」段（FR-004/DEC-005）。
 
-    三路内容：作品概览（开场快照）+ 既有进化点清单（动态取，含状态）+
+    三路内容：作品概览（会话创建时快照）+ 既有进化点清单（动态取，含状态）+
     历次发布摘要（动态取）。旧会话（未绑定）返回空串。
     """
     if not ctx.agent_id:
@@ -771,7 +685,7 @@ def _format_input_summary(ctx: EvolveContext) -> str:
     """把会话可用输入格式化成 system prompt 的摘要（自由启动，DEC-004）。
 
     输入来源（按可用性）：
-      - 评测弱点视图（附带 benchmark_batch_id 时，inspect round 注入）
+      - 评测弱点视图（附带 benchmark_batch_id 时，ctx 重建时恢复注入）
       - 历史评估快照（旧会话恢复时直读旧表回填）
       - 都没有 → 提示以探查 + 对话为准
     """

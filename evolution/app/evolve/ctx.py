@@ -176,8 +176,14 @@ class EvolveContext:
             )
 
     def emit_phase(self, phase: str) -> None:
-        """便捷方法：推阶段切换事件（Phase 5 协议）。"""
+        """便捷方法：推阶段切换事件（Phase 5 协议；SSE 双通道 REQ-20261019-183921）。"""
         self.emit_step("phase", "switched", phase=phase)
+        try:
+            from app.evolve.stream_hub import get_stream_hub
+            get_stream_hub().publish(self.session_id, {"type": "phase", "phase": phase})
+        except Exception:
+            # 广播失败不影响 trace 通道（SSE 断线由落库收敛）
+            pass
 
     def emit_log(self, message: str) -> None:
         if self.recorder and self.trace_id_self:

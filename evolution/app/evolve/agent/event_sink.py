@@ -1,30 +1,32 @@
-"""EvolveEventSink — 进化 Agent 专属事件处理器（trace 重构 20260720_154825）。
-
-**重大变更**：移除 token 级流式（on_chat_model_stream），改为只消费轮次级事件。
-trace 通道从此只存框架级 span + 业务 run_meta，token 流不再污染 event_payloads。
+"""EvolveEventSink — 进化 Agent 专属事件处理器（trace 重构 20260720_154825；
+流式行装配 REQ-20261019-183921 FR-004，DEC-001）。
 
 职责：
-  消费 LangGraph astream_events 产出的事件，转换为：
-    1. 结构化帧 dict（含 type 字段）—— 供 _run_agent_streamed 派生：
-       - SSE 帧给前端（model_output / tool_call / tool_output）
-       - 持久化消息（assistant / tool / system）到 evolve_messages
-    2. 跟踪 LangGraph superstep 最大值（观测用）
+  消费 LangGraph astream_events 产出的事件，转换为两类结构化帧 dict：
+    1. 轮次级帧（model_output / tool_call / tool_output / tool_error）——
+       供 _run_agent_streamed 派生消息持久化（evolve_messages）+ run_meta 通知。
+       token 不入 trace（D1 原则不变：trace 只存 span + run_meta）。
+    2. 行协议帧（row: open/delta/end）——与客户端写作流同构的行寻址 SSE
+       （executor WritingEventSink 同款装配），经 stream_hub 广播给前端做
+       思考块/正文逐段生长/工具行时间线。行帧不落任何存储；终态快照由
+       round 收尾一次性挂到本轮最后一条 assistant 消息（rows_json）。
 
-事件类型（重构后）：
-  - model_output   Agent 一轮回复完整文本 + 工具调用意图（on_chat_model_end）
-  - tool_call      工具调用开始（on_chain_start(tools)）—— 仅当本轮有工具调用时
-  - tool_output    工具调用结果（on_tool_end）
-  - tool_error     工具调用错误（on_tool_error）
+行装配状态：
+  - _row_seq：全局单调递增行序号（客户端按它排时间线）
+  - _response_rows：模型调用 run_id → {"reasoning"/"text": row_id}，
+    同一响应的思考/正文行共享 response_id；end 帧带全量 text 兜底
+    （流式增量与 on_chat_model_end 全量对齐去重）
+  - _tool_row_ids / _tool_row_stack：call_id → 工具行；无 call_id 按名回退
+  - rows：行终态快照（rows_json 用），open/delta/end 时同步维护
 
-移除的事件（D3 决策）：
-  - model_stream   逐 token 增量（on_chat_model_stream）—— 砍掉，token 不入 trace
-
-设计原则（D1）：trace 通道职责单一，只存 span + run_meta；消息通道独立。
-sink 只产结构化帧，不直接调 EvolveMessagesRepo（持久化由 _run_agent_streamed 协调）。
+reasoning（DEC-005 降级设计）：on_chat_model_stream 的 chunk.
+additional_kwargs.reasoning_content 携带思考增量（DeepSeek-R/GLM thinking
+等推理型模型）；非推理模型不产出该字段——自动降级为只有 text 行。
 """
 from __future__ import annotations
 
 import logging
+import time
 from typing import Any
 
 logger = logging.getLogger("evolution.evolve.agent.event_sink")
@@ -40,20 +42,25 @@ _PROPOSAL_TOOLS = frozenset({
 
 
 class EvolveEventSink:
-    """进化 Agent 的事件处理器（trace 重构后）。
+    """进化 Agent 的事件处理器。
 
-    只消费轮次级事件（model_end / tool_end / tool_error），token 流（model_stream）
-    不再处理。产出的结构化帧由 _run_agent_streamed 协调，派生为：
-      - 前端 Pull 帧（通知前端刷新消息）
-      - 持久化消息（落 evolve_messages）
+    消费轮次级事件（model_end / tool_start / tool_end / tool_error）与
+    流式事件（model_stream 的 content / reasoning），产出轮次帧 + 行协议帧。
+    sink 只产帧不做 IO（持久化与广播由 _run_agent_streamed 协调）。
     """
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
-        # 跟踪 LangGraph superstep 最大值（DD5）：从事件 metadata.langgraph_step 取，
-        # session 结束时由 _run_agent_streamed 写 step_stats run_meta（DD8）。
-        # 与 GraphRecursionError 的计数口径对齐，能直接回答"会不会触顶 200"。
+        # 跟踪 LangGraph superstep 最大值（DD5）：session 结束时由
+        # _run_agent_streamed 写 step_stats run_meta（DD8）。
         self.max_superstep = 0
+        # ── 行装配状态（REQ-20261019-183921 FR-001/FR-002）──
+        self._row_seq = 0
+        self._response_rows: dict[str, dict[str, str]] = {}
+        self._tool_row_ids: dict[str, str] = {}
+        self._tool_row_stack: list[tuple[str, str]] = []
+        # 行终态快照（rows_json 持久化用），camelCase 对齐前端 TimelineRow。
+        self.rows: list[dict[str, Any]] = []
 
     async def on_event_dicts(self, event: dict) -> list[dict]:
         """处理一个 astream_events 事件，返回结构化帧 dict 列表。
@@ -62,23 +69,22 @@ class EvolveEventSink:
             event: LangGraph astream_events(version="v2") 产出的 event dict。
 
         Returns:
-            [{"type": "model_output"|"tool_call"|"tool_output"|"tool_error", ...}, ...]
-            空列表表示该事件不产出帧（如 token 流 / 不关心的事件）。
+            [{"type": "model_output"|"tool_call"|"tool_output"|"tool_error"|"row", ...}, ...]
+            空列表表示该事件不产出帧。
         """
         frames: list[dict] = []
         kind = event.get("event", "")
         name = event.get("name", "")
         data = event.get("data", {}) or {}
 
-        # 跟踪 LangGraph superstep 最大值（DD5）：每条 astream_events 都带 metadata，
-        # 其中 langgraph_step 是当前 superstep 序号。取 max 用于观测实际步数。
+        # 跟踪 LangGraph superstep 最大值（DD5）。
         step = (event.get("metadata") or {}).get("langgraph_step")
         if isinstance(step, int) and step > self.max_superstep:
             self.max_superstep = step
 
         try:
             if kind == "on_chat_model_end":
-                frames.extend(self._handle_model_end(data))
+                frames.extend(self._handle_model_end(event, data))
 
             elif kind == "on_chain_start" and name == "tools":
                 frames.extend(self._handle_tools_start(data))
@@ -89,8 +95,8 @@ class EvolveEventSink:
             elif kind == "on_tool_error":
                 frames.extend(self._handle_tool_error(name, data))
 
-            # on_chat_model_stream（token 流）：D3 决策砍掉，不再处理。
-            # 这样 trace 通道不再被 token 噪音污染，event_count 反映真实轮次数。
+            elif kind == "on_chat_model_stream":
+                frames.extend(self._handle_model_stream(event, data))
 
         except Exception:
             # sink 内部异常不应中断 agent 流——记日志继续
@@ -101,15 +107,13 @@ class EvolveEventSink:
 
         return frames
 
-    # ── 轮次级事件处理（返回 dict 列表，含 type 字段）─────────────
+    # ── 轮次级事件处理 ─────────────────────────────────────────
 
-    def _handle_model_end(self, data: dict) -> list[dict]:
+    def _handle_model_end(self, event: dict, data: dict) -> list[dict]:
         """on_chat_model_end：Agent 一轮回复完整文本 + 工具调用意图。
 
-        产出 model_output 帧（含 text + tool_calls）。
-        _run_agent_streamed 据此派生：
-          - 无 tool_calls → 持久化 assistant 消息（开场白/对话回复）
-          - 有 tool_calls → 不落 assistant 文本（工具单独走 tool 消息）
+        产出 model_output 帧（消息持久化派生）+ 行终态帧（FR-002）：
+        未流式的调用在此开行即全量（必丢路径兜底）。
         """
         output = data.get("output")
         text = _extract_model_text(output)
@@ -118,14 +122,16 @@ class EvolveEventSink:
         evt: dict[str, Any] = {"type": "model_output", "text": text}
         if tool_calls:
             evt["tool_calls"] = tool_calls
-        return [evt]
+
+        frames: list[dict] = [evt]
+        # 行终态：正文行 end（带全量 text 兜底）+ 思考行 end
+        frames.extend(self._row_model_end(event, text))
+        return frames
 
     def _handle_tools_start(self, data: dict) -> list[dict]:
         """on_chain_start(tools)：工具调用开始。
 
-        产出 tool_call 帧（tool_name/input/call_id）。
-        注意：实际 tool_output 在 on_tool_end 才完整；这里只给"开始"信号，
-        用于前端立即显示"Agent 在调 xxx 工具"（通过 Pull 拉到帧后刷新消息列表）。
+        产出 tool_call 帧（轮次信号）+ 工具行 open 帧（前端时间线）。
         """
         frames: list[dict] = []
         tool_inputs = data.get("input", [])
@@ -145,40 +151,186 @@ class EvolveEventSink:
                 "input": _summarize_tool_args(tool_name, args),
                 "call_id": call_id,
             })
+            # 工具行 open（行 id 用 call_id：终态按 call_id 精确回找）
+            rid, frame = self._row_open("tool", row_id=call_id or None, tool=tool_name)
+            if call_id:
+                self._tool_row_ids[call_id] = rid
+            self._tool_row_stack.append((rid, tool_name))
+            frames.append(frame)
 
         return frames
 
     def _handle_tool_end(self, name: str, data: dict) -> list[dict]:
-        """on_tool_end：工具调用完成，产出结果摘要。
-
-        产出 tool_output 帧（tool_name/output_summary/call_id）。
-        结果只取摘要（避免大块输出拥堵）。
-
-        _run_agent_streamed 据此对落地/进化点工具派生 tool 消息持久化。
-        """
+        """on_tool_end：工具调用完成，产出结果摘要 + 工具行终态。"""
         output = data.get("output")
         output_str = _extract_tool_output_text(output)
         call_id = _extract_tool_call_id(data)
 
-        # 工具调用的"开始"信号已由 _handle_tools_start 产出 tool_call 帧；
-        # 这里产出 tool_output 帧，让前端能区分"开始 / 完成"。
-        return [{
+        frames: list[dict] = [{
             "type": "tool_output",
             "tool_name": name,
-            "output_summary": output_str[:500],  # 截断防 Pull 帧过大
+            "output_summary": output_str[:500],  # 截断防帧过大
             "call_id": call_id,
         }]
+        frames.extend(self._row_tool_terminal(name, call_id, "complete"))
+        return frames
 
     def _handle_tool_error(self, name: str, data: dict) -> list[dict]:
-        """on_tool_error：工具调用错误。产出 tool_error 帧。"""
+        """on_tool_error：工具调用错误。产出 tool_error 帧 + 工具行失败终态。"""
         err = data.get("error") or data.get("output") or ""
         call_id = _extract_tool_call_id(data)
-        return [{
+        frames: list[dict] = [{
             "type": "tool_error",
             "tool_name": name,
             "call_id": call_id,
             "error": str(err)[:500],
         }]
+        frames.extend(self._row_tool_terminal(name, call_id, "failed"))
+        return frames
+
+    def _handle_model_stream(self, event: dict, data: dict) -> list[dict]:
+        """on_chat_model_stream：流式增量 → 思考/正文行的开行与追加。
+
+        content → text 行；reasoning_content（推理型模型）→ reasoning 行。
+        同一 run_id 的行共享 response_id。
+        """
+        chunk = data.get("chunk")
+        content = ""
+        if hasattr(chunk, "content"):
+            content = chunk.content
+        elif isinstance(chunk, dict):
+            content = chunk.get("content", "")
+        if not isinstance(content, str):
+            content = ""
+
+        reasoning = ""
+        if hasattr(chunk, "additional_kwargs"):
+            reasoning = str(chunk.additional_kwargs.get("reasoning_content", "") or "")
+        elif isinstance(chunk, dict):
+            msg = chunk.get("message") or chunk
+            if isinstance(msg, dict):
+                ak = msg.get("additional_kwargs") or {}
+                reasoning = str(ak.get("reasoning_content", "") or "")
+
+        if not content and not reasoning:
+            return []
+
+        run_id = str(event.get("run_id") or "")
+        rows = self._response_rows.setdefault(run_id, {})
+        frames: list[dict] = []
+        if content:
+            rid = rows.get("text")
+            if not rid:
+                rid, frame = self._row_open("text", response_id=run_id)
+                rows["text"] = rid
+                frames.append(frame)
+            frames.append({"type": "row", "op": "delta", "id": rid, "text": content})
+            self._row_delta(rid, content)
+        if reasoning:
+            rid = rows.get("reasoning")
+            if not rid:
+                rid, frame = self._row_open("reasoning", response_id=run_id)
+                rows["reasoning"] = rid
+                frames.append(frame)
+            frames.append({"type": "row", "op": "delta", "id": rid, "text": reasoning})
+            self._row_delta(rid, reasoning)
+        return frames
+
+    # ── 行装配（REQ-20261019-183921，对齐 executor WritingEventSink）──
+
+    def _row_open(self, kind: str, row_id: str | None = None, **extra: Any) -> tuple[str, dict]:
+        """开一行并返回 (行 id, row 帧)。行序号全局单调递增。"""
+        self._row_seq += 1
+        rid = row_id or f"row-{self._row_seq}"
+        payload: dict[str, Any] = {"op": "open", "seq": self._row_seq, "id": rid, "kind": kind}
+        payload.update(extra)
+        payload["type"] = "row"
+
+        snapshot: dict[str, Any] = {
+            "seq": self._row_seq,
+            "id": rid,
+            "kind": kind,
+            "status": "streaming",
+            "startedAt": int(time.time() * 1000),
+        }
+        if isinstance(extra.get("response_id"), str):
+            snapshot["responseId"] = extra["response_id"]
+        if isinstance(extra.get("tool"), str):
+            snapshot["toolName"] = extra["tool"]
+        self.rows.append(snapshot)
+        return rid, payload
+
+    def _row_delta(self, rid: str, text: str) -> None:
+        """行增量追加（快照维护；帧由调用方产出）。"""
+        for row in self.rows:
+            if row["id"] == rid and row["status"] == "streaming":
+                row["text"] = (row.get("text") or "") + text
+                return
+
+    def _row_model_end(self, event: dict, text: str) -> list[dict]:
+        """模型调用结束 → 行终态；未流式的调用在此开行即全量。"""
+        run_id = str(event.get("run_id") or "")
+        rows = self._response_rows.get(run_id)
+        if rows is None:
+            if not text:
+                return []
+            rid, frame = self._row_open("text", response_id=run_id)
+            self._response_rows[run_id] = {"text": rid}
+            end = self._row_end_frame(rid, "complete", text=text)
+            return [frame, end]
+
+        frames: list[dict] = []
+        text_rid = rows.get("text")
+        if text and not text_rid:
+            # 该响应只走了非流式通道：开行 + 全量终态
+            text_rid, frame = self._row_open("text", response_id=run_id)
+            rows["text"] = text_rid
+            frames.append(frame)
+        if text_rid:
+            # end 携带全量快照：前端整体替换，与流式增量对齐去重。
+            # text 提取失败（如 reasoning-only content）时省略——空串会清空
+            # 前端已积累的流式增量（对齐 executor 的 if text guard）
+            frames.append(self._row_end_frame(text_rid, "complete", text=text or None))
+        if rows.get("reasoning"):
+            frames.append(self._row_end_frame(rows["reasoning"], "complete"))
+        self._response_rows.pop(run_id, None)
+        return frames
+
+    def _row_tool_terminal(
+        self, name: str, call_id: str | None, state: str,
+    ) -> list[dict]:
+        """工具行终态；按 call_id 找行，无 call_id 时按工具名从栈顶回退。
+
+        找不到返回空列表（该行停留 streaming，由流结束时前端兜底关行，
+        安全降级——对齐 executor 同款语义）。
+        """
+        rid = self._tool_row_ids.pop(call_id, None) if call_id else None
+        if not rid:
+            for i in range(len(self._tool_row_stack) - 1, -1, -1):
+                if self._tool_row_stack[i][1] == name:
+                    rid = self._tool_row_stack.pop(i)[0]
+                    break
+        else:
+            self._tool_row_stack = [item for item in self._tool_row_stack if item[0] != rid]
+        if not rid:
+            return []
+        return [self._row_end_frame(rid, state)]
+
+    def _row_end_frame(
+        self, rid: str, state: str, *, text: str | None = None,
+    ) -> dict[str, Any]:
+        """行终态帧 + 快照收尾（status/endedAt/全量 text 替换）。"""
+        payload: dict[str, Any] = {"type": "row", "op": "end", "id": rid, "state": state}
+        if text is not None:
+            payload["text"] = text
+        for row in self.rows:
+            if row["id"] == rid and row["status"] == "streaming":
+                row["status"] = state
+                row["endedAt"] = int(time.time() * 1000)
+                if text is not None:
+                    row["text"] = text
+                break
+        return payload
 
 
 # ── 辅助函数 ─────────────────────────────────────────────────
@@ -195,6 +347,13 @@ def _extract_model_text(output: Any) -> str:
         return output
     if hasattr(output, "content"):
         content = output.content
+        if isinstance(content, list):
+            # 多段 content（reasoning 模型可能返回 [{"type":"text",...}]）
+            return "\n".join(
+                item.get("text", "")
+                for item in content
+                if isinstance(item, dict) and item.get("type") == "text"
+            )
         return content if isinstance(content, str) else str(content)
     if isinstance(output, dict):
         return output.get("content", "") or ""
@@ -257,7 +416,7 @@ def _extract_tool_output_text(output: Any) -> str:
 
 
 def _summarize_tool_args(tool_name: str, args: dict) -> dict[str, Any]:
-    """工具参数摘要（避免大块 args 拥堵 Pull 帧）。
+    """工具参数摘要（避免大块 args 拥堵帧）。
 
     长字段（如 content/code/changes_json）截断到 200 字符 + 标记 truncated。
     """
@@ -273,6 +432,4 @@ def _summarize_tool_args(tool_name: str, args: dict) -> dict[str, Any]:
     return summary
 
 
-__all__ = [
-    "EvolveEventSink",
-]
+__all__ = ["EvolveEventSink"]

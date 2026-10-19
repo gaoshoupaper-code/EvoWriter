@@ -29,6 +29,8 @@ class EvolveCancelConvergeTest(unittest.TestCase):
             with patch.object(evolve_api, "get_recorder", return_value=MagicMock(
                 get_trace_id_by_session=MagicMock(return_value=None)
             )), patch.object(evolve_api, "ev_db") as mock_db:
+                # 真实时序：stop 端点已置 cancelling——幂等分流据此走停止语义
+                mock_db.get_session.return_value = {"status": "cancelling"}
                 await evolve_api._converge_evolve_cancel("sess-1", task)
                 mock_db.update_session.assert_called_once_with("sess-1", status="cancelled")
 
@@ -52,6 +54,7 @@ class EvolveCancelConvergeTest(unittest.TestCase):
                     return None
                 mock_aio.wait_for = lambda *a, **k: _noop()
                 mock_aio.shield = lambda x: x
+                mock_db.get_session.return_value = {"status": "cancelling"}
                 await evolve_api._converge_evolve_cancel("sess-1", task)
                 mock_db.update_session.assert_called_once_with("sess-1", status="cancel_timeout")
 

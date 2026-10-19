@@ -1,8 +1,7 @@
-"""evolve API —— 进化触发 + 查询 + SSE + 发版/丢弃（三功能解耦，决策 S8/S9）。
+"""evolve API —— 进化触发 + 查询 + 流式 + 发版/丢弃（三功能解耦，决策 S8/S9）。
 
-端点（自由启动改造，REQ-20260921-124733 DEC-004）：
-  POST /api/evolve/start-converse               触发对话式进化（无必填业务输入；
-                                                benchmark_batch_id 可选附带弱点视图）
+端点（零开场改造 REQ-20261019-183921：新建会话直入 conversing，无 inspect round）：
+  POST /api/evolve/agents/{agent_id}/sessions  开新会话（同步建会话 + trace，返回即可对话）
   GET  /api/evolve/sessions                     session 列表（最新在前）
   GET  /api/evolve/sessions/{id}                单 session 详情
   GET  /api/evolve/sessions/{id}/messages       消息分页
@@ -12,9 +11,9 @@
   POST /api/evolve/sessions/{id}/publish        发版（S9/S12：git commit + bootstrap config + snapshot）
   POST /api/evolve/sessions/{id}/discard        丢弃（S9：git reset 回 production + 状态推进）
 
-执行模型（D3/D4：trace 统一接管 SSE）：
-  start 时注入 recorder 到 ctx → 后台 task 跑 inspect round → recorder 产 trace 事件 →
-  前端按消息/事件端点轮询。SessionEvents 已删除。
+执行模型（D3/D4：trace 统一接管事件；前端走会话级 SSE 流 + 落库消息兜底）：
+  start 同步建会话（conversing）→ 用户消息触发后台 round → recorder 产 trace 事件、
+  stream_hub 广流行帧 → 前端流式渲染，断线以落库消息收敛。
 """
 from __future__ import annotations
 
@@ -24,7 +23,8 @@ import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from contracts.cancel_state import HARD_STOP_DEADLINE_SECONDS, is_terminal
@@ -96,7 +96,7 @@ class EvolveStartRequest(BaseModel):
 class EvolveStartResponse(BaseModel):
     session_id: str
     trace_id: str
-    status: str  # started_converse
+    status: str  # conversing（零开场：返回即处可对话态）
 
 
 # ── 触发 ────────────────────────────────────────────────────
@@ -110,15 +110,16 @@ class EvolveStartResponse(BaseModel):
 async def start_agent_session(
     agent_id: str, req: EvolveStartRequest
 ) -> EvolveStartResponse:
-    """在进化 Agent 下开启新会话（FR-002，DEC-002 入口统一）。
+    """在进化 Agent 下开启新会话（FR-002，DEC-002 入口统一；REQ-20261019-183921 零开场）。
 
     流程：
       1. Agent 存在 + active + 作品未被删（FR-009：已删则拒绝开新会话）
       2. 组装开场注入快照（FR-004/DEC-005：作品概览 + trace/产物规模；
          概览拉取失败降级不阻断）
-      3. 后台跑 inspect round（探查 + 开场白 → 转 conversing）
+      3. 同步建会话（直入 conversing）+ 建 trace（首条消息的事件通道）
+      4. 返回即处可对话态——用户第一条消息触发首轮 converse round
 
-    探查/对话阶段可与其他会话并行（DEC-004）；落地互斥在 finalize 端点校验。
+    对话阶段可与其他会话并行（DEC-004）；落地互斥在 finalize 端点校验。
     """
     from app.evolve import agents_repo
 
@@ -145,37 +146,35 @@ async def start_agent_session(
             detail="绑定作品已被删除，无法开新会话（DEC-010）",
         )
 
-    session_id, ctx = _prepare_evolve_session(agent, work_context)
-
-    # FR-006（REQ-20260921-124733）：附带评测批次时注入全局弱点视图（降级不阻断）
+    # FR-006（REQ-20260921-124733）：附带评测批次时先组装弱点视图——必须在
+    # _prepare_evolve_session 之前：trace 创建（_start_evolution_trace）从
+    # ctx.eval_snapshot 读批次 id 写 external_refs（零开场前移后观测元数据
+    # 不丢）；弱点视图由对话轮 system prompt 消费，ctx 重建时恢复。
+    benchmark_summary = None
     if req.benchmark_batch_id:
         from app.benchmark import report as bench_report
-        summary = bench_report.build_summary_for_evolve(req.benchmark_batch_id)
-        if summary is not None:
-            ctx.eval_snapshot["benchmark_report"] = summary
-            ev_db.update_session(session_id, benchmark_batch_id=req.benchmark_batch_id)
-            logger.info(
-                "进化 session %s 附带评测批次 %s 弱点视图（维度 %d 个）",
-                session_id, req.benchmark_batch_id, len(summary.get("weakest_dimensions", [])),
-            )
-        else:
+        benchmark_summary = bench_report.build_summary_for_evolve(req.benchmark_batch_id)
+        if benchmark_summary is None:
             logger.warning(
                 "评测批次 %s 无可聚合数据，进化会话正常启动（无全局视图）",
                 req.benchmark_batch_id,
             )
 
-    # 后台跑 inspect round（探查 + 开场白 → 转 conversing）
-    from app.evolve.agent.agent import run_inspect_round
-    task = asyncio.create_task(_run_round_bg(ctx, run_inspect_round, ctx.trace_id))
-    _running_tasks[session_id] = task
+    session_id, ctx = _prepare_evolve_session(agent, work_context, benchmark_summary)
+    if benchmark_summary is not None:
+        ev_db.update_session(session_id, benchmark_batch_id=req.benchmark_batch_id)
+        logger.info(
+            "进化 session %s 附带评测批次 %s 弱点视图（维度 %d 个）",
+            session_id, req.benchmark_batch_id, len(benchmark_summary.get("weakest_dimensions", [])),
+        )
 
     logger.info(
-        "进化 session 启动（Agent=%s 作品=%s）: session=%s benchmark_batch=%s",
+        "进化 session 启动（Agent=%s 作品=%s）: session=%s benchmark_batch=%s（零开场，直入对话）",
         agent_id, agent.get("workspace_id"), session_id, req.benchmark_batch_id,
     )
     return EvolveStartResponse(
         session_id=session_id, trace_id=ctx.trace_id,
-        status="started_converse",
+        status="conversing",
     )
 
 
@@ -239,8 +238,15 @@ def _assemble_work_context(agent: dict[str, Any]) -> dict[str, Any]:
 
 def _prepare_evolve_session(
     agent: dict[str, Any], work_context: dict[str, Any],
+    benchmark_summary: dict[str, Any] | None = None,
 ) -> tuple[str, EvolveContext]:
-    """创建进化会话 + 构建上下文（Agent 绑定模式，DEC-002）。"""
+    """创建进化会话 + 构建上下文（Agent 绑定模式，DEC-002；零开场 REQ-20261019-183921）。
+
+    直入 conversing（无 inspect round），并在创建时同步建自观测 trace——
+    首条用户消息的 message_updated 事件依赖 trace 通道（send_message 直写）。
+    benchmark_summary 必须在 trace 创建前塞进 ctx.eval_snapshot：trace 的
+    external_refs 从这里读批次 id（观测元数据）。
+    """
     if get_recorder() is None:
         raise HTTPException(status_code=503, detail={
             "message": "Trace recorder unavailable; evolution was not started",
@@ -250,8 +256,13 @@ def _prepare_evolve_session(
     session_id = uuid.uuid4().hex[:12]
     ev_db.create_session(
         session_id, case_id="", agent_id=agent["agent_id"], work_context=work_context,
+        status=STATUS_CONVERSING,
     )
     ctx = _build_evolve_ctx(session_id)
+    if benchmark_summary is not None:
+        ctx.eval_snapshot["benchmark_report"] = benchmark_summary
+    from app.evolve.agent.agent import _start_evolution_trace
+    _start_evolution_trace(ctx, "evolve-agent.session")
     return session_id, ctx
 
 
@@ -262,28 +273,41 @@ async def _run_round_bg(
 ) -> None:
     """通用后台 round 执行器（决策 T2 按需触发）。
 
-    round 函数自己负责状态推进 + recorder 收尾，本函数只做异常兜底 + task 注册表清理。
+    round 函数自己负责状态推进 + recorder 收尾，本函数只做异常兜底 + task 注册表
+    清理 + round 边界帧广播（stream_hub：round_start / round_end，前端据此
+    锁定/解锁输入框——REQ-20261019-183921 FR-005）。
 
     Args:
         ctx: 进化上下文
-        round_fn: round 函数（run_inspect_round / run_converse_round / run_finalize_round）
-        *args: 传给 round_fn 的位置参数（如 trace_id / user_message）
+        round_fn: round 函数（run_converse_round / run_finalize_round）
+        *args: 传给 round_fn 的位置参数（如 user_message）
     """
+    from app.evolve.stream_hub import get_stream_hub
+
+    hub = get_stream_hub()
+    hub.publish(ctx.session_id, {
+        "type": "round_start", "round": getattr(round_fn, "__name__", "round"),
+    })
     try:
         result = await round_fn(ctx, *args)
+        status = result.get("status")
         # cancelled 是用户停止的合法终态，不算失败
-        if result.get("status") not in (
+        if status not in (
             "done", "conversing", "pending_review", "cancelled", None,
         ):
             ev_db.update_session(ctx.session_id, status="failed")
+            status = "failed"
+        hub.publish(ctx.session_id, {"type": "round_end", "status": status})
     except asyncio.CancelledError:
         logger.info("进化 session %s round %s 被取消", ctx.session_id, round_fn.__name__)
         # round 函数自己处理 cancelled；这里兜底（取消在进入 round 前命中）
         ev_db.update_session(ctx.session_id, status="cancelled")
+        hub.publish(ctx.session_id, {"type": "round_end", "status": "cancelled"})
         raise
     except Exception as e:
         logger.exception("进化 session %s round %s 异常", ctx.session_id, round_fn.__name__)
         ev_db.update_session(ctx.session_id, status="failed")
+        hub.publish(ctx.session_id, {"type": "round_end", "status": "failed"})
     finally:
         _running_tasks.pop(ctx.session_id, None)
 
@@ -566,19 +590,34 @@ async def stop_session(session_id: str) -> dict[str, Any]:
             detail=f"session 状态为 {current}，只有 running/conversing/finalizing 可停止",
         )
 
-    # 立即标记 cancelling（DEC-002）。
+    # 立即标记 cancelling（DEC-002）。记录停止前状态：conversing 的停止只停
+    # 对话轮（FR-005：会话回 conversing 可继续输入）；finalizing 的停止是流程
+    # 中断（维持 cancelled 终态）。
     ev_db.update_session(session_id, status="cancelling")
 
     # 后台 asyncio task 做 10 秒硬终止收敛。
     task = _running_tasks.get(session_id)
-    asyncio.create_task(_converge_evolve_cancel(session_id, task))
+    asyncio.create_task(_converge_evolve_cancel(session_id, task, pre_status=current))
     return {"status": "cancelling", "session_id": session_id}
 
 
-async def _converge_evolve_cancel(session_id: str, task: asyncio.Task | None) -> None:
-    """进化取消收敛：task.cancel → 等 10s → recorder 强制收敛 → 标 cancelled/cancel_timeout。
+async def _converge_evolve_cancel(
+    session_id: str,
+    task: asyncio.Task | None,
+    pre_status: str = STATUS_RUNNING,
+) -> None:
+    """进化取消收敛：task.cancel → 等 10s → recorder 强制收敛 → 状态分流（FR-005）。
 
     CON-003/EDGE-007：超时未退出标 cancel_timeout（诚实告警，不谎报 cancelled）。
+
+    状态分流（REQ-20261019-183921 FR-005「停止后可继续对话」）：
+      - 停止前 conversing（停的是对话轮）→ 恢复 conversing，用户可继续输入；
+      - 停止前 finalizing/running（流程中断，不可续）→ cancelled；
+      - 收敛期间轮次自然完成并推进了状态（如 finalize 刚转 pending_review）→
+        尊重当前状态不覆盖（幂等）。
+    无论落库状态如何，都广播 round_end(cancelled)：task.cancel 若未触发
+    _run_round_bg 的 publish（卡在不可取消段），前端只能靠这里解锁（重复
+    到达前端幂等处理）。
     """
     recorder = get_recorder()
     trace_id_self = recorder.get_trace_id_by_session(session_id) if recorder else None
@@ -599,165 +638,98 @@ async def _converge_evolve_cancel(session_id: str, task: asyncio.Task | None) ->
     if recorder and trace_id_self:
         recorder.cancel_run(trace_id_self, reason="user_stop")
 
-    final_status = "cancelled" if converged_in_time else "cancel_timeout"
+    # 状态分流：轮次在停止请求与收敛之间自然完成并推进状态时尊重之（幂等）。
+    # 「推进」= 状态已不是取消系（cancelling/cancelled/cancel_timeout——取消路径
+    # 自己写的产物，含 _run_round_bg 兜底在 round 启动初期命中的 cancelled）且
+    # 不同于 pre_status。取消系状态若被尊重，conversing 停止会误落终态废会话
+    # （FR-005 竞态：取消击中 build_evolve_agent 阶段时兜底先写 cancelled）。
+    current = ev_db.get_session(session_id)
+    cur_status = (current or {}).get("status")
+    if (cur_status is not None
+            and cur_status not in ("cancelling", "cancelled", "cancel_timeout")
+            and cur_status != pre_status):
+        final_status = cur_status
+    elif converged_in_time and pre_status == STATUS_CONVERSING:
+        final_status = STATUS_CONVERSING
+    else:
+        final_status = "cancelled" if converged_in_time else "cancel_timeout"
     ev_db.update_session(session_id, status=final_status)
+
+    from app.evolve.stream_hub import get_stream_hub
+    get_stream_hub().publish(session_id, {"type": "round_end", "status": "cancelled"})
     logger.info("进化 session %s 取消收敛完成 status=%s", session_id, final_status)
 
 
 # ── SSE 实时流 ──────────────────────────────────────────────
 
 
-# ── trace 稳定性重构：Pull 模式事件流（替代 SSE，设计 20260720_203000）──
+# ── 会话级流式通道（REQ-20261019-183921 FR-004，替代 Pull 轮询）─────
+
+# SSE 空闲心跳间隔（秒）。与观测大盘同款量级；nginx 代理场景防 read timeout。
+_STREAM_HEARTBEAT_SECONDS = 15.0
 
 
-class EvolveEventsSinceResponse(BaseModel):
-    """进化 session 事件游标拉取响应（Pull 主导）。"""
-    frames: list[dict[str, Any]]   # 从 run_meta 派生的 step/log/phase/proposal/finalizing/message_updated 帧
-    max_seq: int                    # 本次返回的最大 sequence（前端下次 since_seq）；无事件时 = since_seq
-    has_more: bool                  # 是否还有更多事件未拉（罕见，重构后事件密度低）
-    session_status: str             # session 当前状态（running/conversing/...），前端据此判断是否继续轮询
+def _sse_data(frame: dict[str, Any]) -> str:
+    """帧 dict → SSE data 行（单行 JSON，空行结帧）。"""
+    return "data: " + json.dumps(frame, ensure_ascii=False) + "\n\n"
 
 
-@router.get("/evolve/sessions/{session_id}/events/since", response_model=EvolveEventsSinceResponse)
-def get_session_events_since(
-    session_id: str,
-    since_seq: int = Query(0, ge=0, description="返回 sequence > since_seq 的事件"),
-    limit: int = Query(500, ge=1, le=1000, description="单次返回上限"),
-) -> EvolveEventsSinceResponse:
-    """按 sequence 游标拉取进化 session 的事件帧（trace 重构 20260720_154825）。
+@router.get("/evolve/sessions/{session_id}/stream")
+async def stream_session_events(session_id: str) -> StreamingResponse:
+    """会话级 SSE 流（FR-004：行协议帧 + 信号帧实时推送）。
 
-    实现：从 evolve_sessions.self_trace_id 反查 trace_id → 查 event_payloads 表的
-    run_meta 事件 → 用 _trace_event_to_sse 派生成 phase/proposal/finalizing/
-    message_updated/step/log 帧。
+    帧类型（data JSON，type 字段区分）：
+      - row          行协议帧（op=open/delta/end，思考/正文/工具行）
+      - tool_call / tool_output / tool_error   工具信号
+      - message_updated   消息已落库（前端拉权威消息）
+      - round_start / round_end   轮次边界（前端锁定/解锁输入框）
+      - snapshot     连接建立时的会话状态快照
+      - heartbeat    空闲心跳
 
-    重构变更（D1/D3）：
-      - 不再有 model_stream token 流帧（每 token 一行的污染源已移除）
-      - 新增 message_updated 帧：Agent 消息已落 evolve_messages，前端据此调
-        GET /messages 拉权威消息（按 after_seq 增量）
-      - 事件密度大幅降低（每轮 LLM/工具只产 1-2 个 run_meta，而非 N 个 token）
-      - 前端轮询间隔可放宽到 2s（无 token 流实时性要求）
+    无回放缓冲：行帧是过程性展示，断线后由前端重拉落库消息收敛（FR-006）。
     """
     session = ev_db.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"session {session_id} 不存在")
 
-    self_trace_id = session.get("self_trace_id")
-    frames: list[dict[str, Any]] = []
-    max_seq = since_seq
+    from app.evolve.stream_hub import get_stream_hub
+    hub = get_stream_hub()
+    initial_status = session.get("status", "running")
+    # round_active：连接建立时该会话是否有未完成轮次（FR-006 断线复位——
+    # round_end 帧落在断线窗口时，前端靠 snapshot 真相复位输入锁）。
+    running_task = _running_tasks.get(session_id)
+    round_active = running_task is not None and not running_task.done()
+    # subscribe 必须在 handler 层（send start 头之前）完成：Starlette 先发
+    # 响应头再迭代 generator，若订阅放 generator 内，头发出瞬间发布的帧
+    # 会落进无订阅者通道而丢失（对齐 view/events.py 的时序设计）。
+    queue = hub.subscribe(session_id)
 
-    if self_trace_id:
-        rows = db.query_all(
-            """SELECT sequence, payload_json FROM event_payloads
-               WHERE trace_id=? AND sequence>?
-               ORDER BY sequence LIMIT ?""",
-            (self_trace_id, since_seq, limit + 1),
-        )
-        has_more = len(rows) > limit
-        rows = rows[:limit]
+    async def gen():
+        try:
+            yield _sse_data({
+                "type": "snapshot", "session_status": initial_status,
+                "round_active": round_active,
+            })
+            while True:
+                try:
+                    frame = await asyncio.wait_for(
+                        queue.get(), timeout=_STREAM_HEARTBEAT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    yield _sse_data({"type": "heartbeat"})
+                    continue
+                yield _sse_data(frame)
+        finally:
+            hub.unsubscribe(session_id, queue)
 
-        for r in rows:
-            seq = r["sequence"]
-            if seq > max_seq:
-                max_seq = seq
-            try:
-                from app.core.models import TraceLogEvent
-                evt = TraceLogEvent.model_validate(json.loads(r["payload_json"]))
-                frame = _trace_event_to_sse(evt)
-                if frame:
-                    frame["_seq"] = seq
-                    frames.append(frame)
-            except Exception:
-                # 单条解析失败不阻断其它事件。
-                continue
-    else:
-        has_more = False
-
-    return EvolveEventsSinceResponse(
-        frames=frames,
-        max_seq=max_seq,
-        has_more=has_more,
-        session_status=session.get("status", "running"),
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # nginx 不缓冲，帧即时到达
+        },
     )
-
-
-def _trace_event_to_sse(event: Any) -> dict[str, Any] | None:
-    """trace 事件 → 前端 Pull 帧派生（trace 重构 20260720_154825）。
-
-    重构后只派生以下帧（移除了 sse_frame 桥接 / model_stream）：
-      - type=llm_start           → {type:"activity", phase:"thinking"}（FR-005 思考信号）
-      - type=tool_start          → {type:"activity", phase:"tool", label}（FR-005 工具信号）
-      - tool="phase"            → {type:"phase", phase}（阶段切换）
-      - tool="proposal"         → {type:"proposal", ...}（浮窗进化点状态变更）
-      - tool="finalizing"       → {type:"finalizing", ...}（落地进度）
-      - tool="message_updated"  → {type:"message_updated"}（前端据此调 loadMessages）
-      - 含 message 字段（无 tool）→ {type:"log", message}（思考日志）
-      - 含 tool 字段（其他）      → {type:"step", **data}（业务步骤，向后兼容）
-
-    设计变更（D1/D3）：
-      - 不再有 sse_frame 桥接：token 流不入 trace，事件数与 span 数对齐
-      - 新增 message_updated 帧：消息已落 evolve_messages，前端拉权威存储
-      - 前端不再维护临时消息 state，全部走 loadMessages 增量拉
-
-    FR-005 活动信号：从 TraceMiddleware 已写入的 llm_start/tool_start span 事件
-    派生，不新增事件写入（取证段 5-7 分钟内只读工具不落消息，若无可见信号
-    用户无法区分「在跑」与「挂了」）。派生只读 event.type/tool_name 字段，
-    不依赖 input（llm_start 的 input 已被 recorder 外化，可能为 null）。
-    """
-    if event.type == "llm_start":
-        return {
-            "type": "activity", "phase": "thinking", "label": "正在思考/撰写回复…",
-            "ts": str(event.timestamp or ""),
-        }
-    if event.type == "tool_start":
-        name = event.tool_name or "工具"
-        return {
-            "type": "activity", "phase": "tool", "label": f"正在调用 {name}",
-            "ts": str(event.timestamp or ""),
-        }
-
-    if event.type != "run_meta" or not event.input:
-        return None
-    data = event.input if isinstance(event.input, dict) else {}
-    tool = data.get("tool", "")
-
-    # trace 重构：消息更新通知（前端调 loadMessages 增量拉）
-    if tool == "message_updated":
-        return {"type": "message_updated"}
-
-    # 阶段切换事件
-    if tool == "phase":
-        phase = data.get("phase")
-        if phase:
-            return {"type": "phase", "phase": phase}
-        return None
-
-    # 进化点状态变更（决策 B/M 浮窗实时同步）
-    if tool == "proposal":
-        return {
-            "type": "proposal",
-            "action": data.get("action"),
-            "point_id": data.get("point_id"),
-            "seq": data.get("seq"),
-            "target": data.get("target"),
-            "chosen_option": data.get("chosen_option"),
-        }
-
-    # 落地进度事件（决策 W）
-    if tool == "finalizing":
-        return {
-            "type": "finalizing",
-            "event": data.get("status"),  # edit/validate/change_log
-            "target": data.get("target"),
-            "result": data.get("result"),
-        }
-
-    # 旧协议：log + step（保留向后兼容）
-    if "message" in data and not tool:
-        return {"type": "log", "message": data["message"]}
-    if tool:
-        return {"type": "step", **data}
-    return None
-
 
 # ── 发版 / 丢弃（Phase 4，S9/S12）────────────────────────────
 
@@ -1110,9 +1082,12 @@ async def send_message(session_id: str, req: EvolveMessageRequest) -> dict[str, 
             detail=f"重建 ctx 失败（session {session_id} 会话行缺失）",
         )
 
-    # 通知前端"用户消息已落库"（前端轮询拉到 message_updated 帧即调 loadMessages，
-    # 把乐观消息替换为权威消息）。_rebuild_ctx_from_db 已 resume trace 内存状态，
-    # 此处同步写——必须在启动 task 之前，否则前端要等 Agent 回复才能看到刷新。
+    # 通知前端"用户消息已落库"（前端把乐观消息替换为权威消息）。
+    # 双通道：run_meta（trace 观测 + Pull 兜底）+ stream_hub（SSE 实时）。
+    # _rebuild_ctx_from_db 已 resume trace 内存状态，此处同步写——必须在
+    # 启动 task 之前，否则前端要等 Agent 回复才能看到刷新。
+    from app.evolve.stream_hub import get_stream_hub
+    get_stream_hub().publish(session_id, {"type": "message_updated"})
     if ctx.recorder and ctx.trace_id_self:
         try:
             ctx.recorder.append_business_event(
@@ -1318,6 +1293,20 @@ def _rebuild_ctx_from_db(session_id: str) -> EvolveContext | None:
             }
             if not ctx.trace_id:
                 ctx.trace_id = ev.get("trace_id") or ""
+
+    # 附带评测批次的会话：恢复全局弱点视图（零开场改造——原 inspect round 消费，
+    # 现由首轮对话的 system prompt 消费，防功能随 inspect 退役而静默失效）
+    benchmark_batch_id = session.get("benchmark_batch_id")
+    if benchmark_batch_id and not ctx.eval_snapshot.get("benchmark_report"):
+        try:
+            from app.benchmark import report as bench_report
+            summary = bench_report.build_summary_for_evolve(benchmark_batch_id)
+            if summary is not None:
+                ctx.eval_snapshot["benchmark_report"] = summary
+        except Exception:
+            logger.exception(
+                "session %s 弱点视图恢复失败（降级不阻断对话）", session_id,
+            )
 
     _ensure_trace_resumed(ctx)
     return ctx

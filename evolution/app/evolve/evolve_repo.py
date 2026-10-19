@@ -125,12 +125,12 @@ class EvolveMessagesRepo:
             after_seq: 增量拉取——只返回 seq > after_seq 的消息；None = 全量
             limit: 上限（防意外大查询）
         Returns:
-            [{id, session_id, role, content, tool_events, related_points, seq, created_at}, ...]
-            tool_events / related_points 已反序列化为原生类型。
+            [{id, session_id, role, content, tool_events, related_points, rows, seq, created_at}, ...]
+            tool_events / related_points / rows 已反序列化为原生类型。
         """
         if after_seq is not None:
             rows = db.query_all(
-                """SELECT id, session_id, role, content, tool_events, related_points, seq, created_at
+                """SELECT id, session_id, role, content, tool_events, related_points, rows_json, seq, created_at
                    FROM evolve_messages
                    WHERE session_id = ? AND seq > ?
                    ORDER BY seq ASC LIMIT ?""",
@@ -138,7 +138,7 @@ class EvolveMessagesRepo:
             )
         else:
             rows = db.query_all(
-                """SELECT id, session_id, role, content, tool_events, related_points, seq, created_at
+                """SELECT id, session_id, role, content, tool_events, related_points, rows_json, seq, created_at
                    FROM evolve_messages
                    WHERE session_id = ?
                    ORDER BY seq ASC LIMIT ?""",
@@ -150,7 +150,7 @@ class EvolveMessagesRepo:
     def get_by_id(message_id: str) -> dict[str, Any] | None:
         """按 id 查单条消息。"""
         row = db.query_one(
-            """SELECT id, session_id, role, content, tool_events, related_points, seq, created_at
+            """SELECT id, session_id, role, content, tool_events, related_points, rows_json, seq, created_at
                FROM evolve_messages WHERE id = ?""",
             (message_id,),
         )
@@ -189,6 +189,21 @@ class EvolveMessagesRepo:
         return cur.rowcount > 0
 
     @staticmethod
+    def attach_rows(message_id: str, rows: list[dict[str, Any]]) -> bool:
+        """把本轮行时间线终态快照挂到 assistant 消息（REQ-20261019-183921）。
+
+        round 收尾时写一次（非逐帧写库）；历史回看据此还原思考/工具时间线。
+
+        Returns:
+            True 命中已更新；False id 不存在。
+        """
+        cur = db.execute(
+            "UPDATE evolve_messages SET rows_json = ? WHERE id = ?",
+            (_dumps_or_none(rows), message_id),
+        )
+        return cur.rowcount > 0
+
+    @staticmethod
     def count_by_session(session_id: str) -> int:
         """统计 session 的消息数（用于旧会话识别——0 条即为旧版会话）。"""
         row = db.query_one(
@@ -207,6 +222,7 @@ class EvolveMessagesRepo:
             "content": row["content"],
             "tool_events": _loads_or_none(row.get("tool_events")),
             "related_points": _loads_or_none(row.get("related_points")),
+            "rows": _loads_or_none(row.get("rows_json")),
             "seq": row["seq"],
             "created_at": row["created_at"],
         }

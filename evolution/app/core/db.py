@@ -456,6 +456,8 @@ def init_db() -> None:
             -- role=user 为用户输入；role=assistant 为 Agent 回复（含 markdown + 内嵌引用）。
             -- tool_events 存该消息触发的工具调用摘要（assistant 消息专属）。
             -- related_points 存该消息涉及的进化点 id 列表（用于浮窗↔对话双向高亮联动）。
+            -- rows_json 存该轮次行时间线终态快照（REQ-20261019-183921：思考/正文/工具行，
+            -- round 收尾一次性写入本轮最后一条 assistant 消息，回看不降级）。
             CREATE TABLE IF NOT EXISTS evolve_messages (
                 id              TEXT PRIMARY KEY,             -- uuid
                 session_id      TEXT NOT NULL,                -- FK evolve_sessions（逻辑外键）
@@ -463,6 +465,7 @@ def init_db() -> None:
                 content         TEXT NOT NULL,                -- 消息正文（markdown）
                 tool_events     TEXT,                         -- JSON：工具调用列表（assistant 专属）
                 related_points  TEXT,                         -- JSON：涉及的进化点 id 列表（联动高亮）
+                rows_json       TEXT,                         -- JSON：本轮行时间线终态快照（assistant 专属）
                 seq             INTEGER NOT NULL,             -- 会话内序号（从 1 递增）
                 created_at      TEXT NOT NULL,
                 UNIQUE(session_id, seq)
@@ -698,6 +701,8 @@ def init_db() -> None:
         _migrate_evolve_sessions_driver_fields(conn)
         # 三功能解耦：evolve_sessions 补 eval_ref 列（关联评估报告，决策 S6/T2）
         _migrate_evolve_sessions_eval_ref(conn)
+        # 零开场+流式：evolve_messages 补 rows_json 列（行时间线快照，REQ-20261019-183921）
+        _migrate_evolve_messages_rows(conn)
         # 数据闭环：manual_tests 补 origin_layer 列（golden|growing，进化区分验证/探索，决策 A6）
         _migrate_manual_tests_origin_layer(conn)
         _init_trace_v2_tables(conn)
@@ -955,6 +960,20 @@ def _migrate_evolve_sessions_eval_ref(conn: sqlite3.Connection) -> None:
         return
     with _lock:
         conn.execute("ALTER TABLE evolve_sessions ADD COLUMN eval_ref TEXT")
+        conn.commit()
+
+
+def _migrate_evolve_messages_rows(conn: sqlite3.Connection) -> None:
+    """幂等迁移：给 evolve_messages 表补 rows_json 列（REQ-20261019-183921）。
+
+    存量库靠此 ALTER 补；新库建表已含该列。存行时间线终态快照
+    （思考/正文/工具行），round 收尾写入本轮最后一条 assistant 消息。
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(evolve_messages)").fetchall()}
+    if "rows_json" in existing:
+        return
+    with _lock:
+        conn.execute("ALTER TABLE evolve_messages ADD COLUMN rows_json TEXT")
         conn.commit()
 
 

@@ -4,13 +4,16 @@ import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import type { EvolveMessage, EvolvePoint } from "@/lib/api";
 import ProposalCard from "./ProposalCard";
+import { RowTimeline } from "./RowTimeline";
 
 /**
- * 单条对话消息渲染（决策 Y/X）。
+ * 单条对话消息渲染（决策 Y/X；形态对齐客户端，REQ-20261019-183921 FR-003）。
  *
- * 用户消息：纯文本气泡（决策 X，无 markdown 渲染避免输入框输入的 # 被误解为标题）。
- * Agent 消息：markdown 渲染（标题/列表/表格/代码块）+ 内嵌进化点卡片。
- * 系统消息：系统事件（落地进度等，决策 W）。
+ * 用户消息：右侧小气泡纯文本（不渲染 markdown，避免输入 # 被误解为标题）。
+ * Agent 消息：无气泡全宽——角色标签「进化师」+ markdown 渲染（标题/列表/表格/
+ * 代码块）+ 内嵌进化点卡片 + 本轮思考时间线回看（消息 rows 的 reasoning 行，
+ * 折叠「思考 · N 秒」；正文/工具行不重复渲染——正文在 content，工具在 tool 消息）。
+ * 系统消息：单行小字（落地进度等，决策 W）。
  *
  * 进化点卡片渲染逻辑：
  *   - 通过 related_points 字段关联进化点 id 列表
@@ -82,10 +85,11 @@ const EvolveMessageBubble = forwardRef<HTMLDivElement, Props>(function EvolveMes
     );
   }
 
-  // 用户消息：纯文本气泡（不渲染 markdown，避免输入 # 被误解）
+  // 用户消息：右侧小气泡纯文本（不渲染 markdown，避免输入 # 被误解）
   if (isUser) {
     return (
       <div ref={ref} className="evolve-msg user" data-message-id={message.id}>
+        <span className="ev-msg-role">你</span>
         <div className="msg-bubble">
           <p className="msg-text">{message.content}</p>
         </div>
@@ -93,14 +97,15 @@ const EvolveMessageBubble = forwardRef<HTMLDivElement, Props>(function EvolveMes
     );
   }
 
-  // Agent 消息：markdown + 内嵌进化点卡片
+  // Agent 消息：无气泡全宽——角色标签 + 思考时间线回看 + markdown + 进化点卡片
   const segments = parseEmbeddedPoints(message.content, points);
 
   return (
     <div ref={ref} className="evolve-msg assistant" data-message-id={message.id}>
-      <div className="msg-avatar" aria-hidden>
-        <span className="avatar-glyph">🧬</span>
-      </div>
+      <span className="ev-msg-role">进化师</span>
+      {message.rows && message.rows.length > 0 && (
+        <RowTimeline rows={message.rows} reasoningOnly />
+      )}
       <div className="msg-body">
         {segments.map((seg, idx) => {
           if (seg.type === "text") {

@@ -116,11 +116,8 @@ class AgentSessionStartTest(unittest.TestCase):
             conn.execute("DELETE FROM evolve_agents")
 
     def _start(self, agent_id: str):
-        # recorder 桩：不真跑 inspect round——会话创建后立即把后台 task 停掉
-        # 的成本高；改为直接断言 503 守门前的会话已建？不行，503 时不建会话。
-        # 这里直接走 503 之外的成功路径：mock get_recorder 返回 None 会 503。
-        # 所以本类只测守门分支；成功路径的注入断言用 _assemble_work_context
-        # + _build_evolve_ctx 直连测试（见 WorkContextInjectionTest）。
+        # recorder 桩：get_recorder 返回 None 时守门 503；成功路径的直建断言
+        # 见 StartSessionNoOpeningTest（那里 mock recorder 走通全链）。
         return self.client.post(
             f"/api/evolve/agents/{agent_id}/sessions", json={})
 
@@ -154,6 +151,114 @@ class AgentSessionStartTest(unittest.TestCase):
     def test_missing_agent_404(self):
         r = self._start("ghost")
         self.assertEqual(r.status_code, 404)
+
+
+class StartSessionNoOpeningTest(unittest.TestCase):
+    """FR-001（REQ-20261019-183921）：新建会话零开场——直建 conversing，无 inspect round。
+
+    会话创建同步完成：概览注入组装（降级不阻断）+ trace 创建（首条消息的
+    message_updated 事件有通道），返回后会话即处可对话态，不产生任何
+    Agent 消息与后台任务。
+    """
+
+    def setUp(self):
+        self.client = TestClient(app)
+        with db.transaction() as conn:
+            conn.execute("DELETE FROM evolve_messages")
+            conn.execute("DELETE FROM evolve_points")
+            conn.execute("DELETE FROM evolve_sessions")
+            conn.execute("DELETE FROM evolve_agents")
+
+    def test_start_creates_conversing_session_directly(self):
+        import types
+
+        from app.evolve import api as evolve_api
+        from app.evolve.evolve_repo import EvolveMessagesRepo
+
+        agent = _make_agent("零开场Agent")
+        recorder = mock.Mock()
+        recorder.create_run.return_value = types.SimpleNamespace(trace_id="tr-noop-1")
+        with mock.patch.object(evolve_api, "get_recorder", return_value=recorder), \
+             mock.patch.object(executor_client, "fetch_workspace", side_effect=_ok_fetch):
+            r = self.client.post(
+                f"/api/evolve/agents/{agent['agent_id']}/sessions", json={})
+
+        self.assertEqual(r.status_code, 202)
+        body = r.json()
+        self.assertEqual(body["status"], "conversing")
+        # 会话落库即为 conversing（非 running→conversing 两段）
+        sess = ev_db.get_session(body["session_id"])
+        self.assertEqual(sess["status"], "conversing")
+        # 无 inspect round：无后台任务、无 Agent 消息
+        self.assertFalse(evolve_api._running_tasks)
+        self.assertEqual(EvolveMessagesRepo.list_by_session(body["session_id"]), [])
+        # trace 同步创建（供首条用户消息的 message_updated 事件使用）
+        recorder.create_run.assert_called_once()
+        self.assertEqual(recorder.create_run.call_args.kwargs.get("session_type"), "evolve")
+
+    def test_start_with_benchmark_records_external_refs(self):
+        """附带评测批次：trace external_refs 携带批次 id（前移修复的元数据断言）。"""
+        import types
+
+        from app.evolve import api as evolve_api
+
+        agent = _make_agent("批次Agent")
+        recorder = mock.Mock()
+        recorder.create_run.return_value = types.SimpleNamespace(trace_id="tr-bench-1")
+        summary = {"batch_id": "batch-77", "weakest_dimensions": [{"dimension": "d"}]}
+        with mock.patch.object(evolve_api, "get_recorder", return_value=recorder),              mock.patch.object(executor_client, "fetch_workspace", side_effect=_ok_fetch),              mock.patch("app.benchmark.report.build_summary_for_evolve", return_value=summary):
+            r = self.client.post(
+                f"/api/evolve/agents/{agent['agent_id']}/sessions",
+                json={"benchmark_batch_id": "batch-77"},
+            )
+        self.assertEqual(r.status_code, 202)
+        kwargs = recorder.create_run.call_args.kwargs
+        self.assertEqual(kwargs.get("external_refs", {}).get("benchmark_batch_id"), "batch-77")
+        sess = ev_db.get_session(r.json()["session_id"])
+        self.assertEqual(sess.get("benchmark_batch_id"), "batch-77")
+
+    def test_start_still_injects_work_context(self):
+        """DEC-002：去开场但保留作品概览注入（work_context 落会话行）。"""
+        import types
+
+        from app.evolve import api as evolve_api
+
+        agent = _make_agent("注入保留Agent")
+        recorder = mock.Mock()
+        recorder.create_run.return_value = types.SimpleNamespace(trace_id="tr-noop-2")
+        with mock.patch.object(evolve_api, "get_recorder", return_value=recorder), \
+             mock.patch.object(executor_client, "fetch_workspace", side_effect=_ok_fetch):
+            r = self.client.post(
+                f"/api/evolve/agents/{agent['agent_id']}/sessions", json={})
+
+        self.assertEqual(r.status_code, 202)
+        sess = ev_db.get_session(r.json()["session_id"])
+        wc = sess.get("work_context") or {}
+        self.assertEqual(wc.get("probe"), "ok")
+        self.assertEqual(wc.get("overview", {}).get("title"), WORK["title"])
+
+    def test_start_degrades_when_executor_unreachable(self):
+        """FR-001 失败语义：executor 概览拉取失败时会话仍创建成功（conversing）。"""
+        import types
+
+        from app.evolve import api as evolve_api
+
+        agent = _make_agent("降级开场Agent")
+
+        def _boom(ws):
+            raise executor_client.ExecutorUnavailableError("down")
+
+        recorder = mock.Mock()
+        recorder.create_run.return_value = types.SimpleNamespace(trace_id="tr-noop-3")
+        with mock.patch.object(evolve_api, "get_recorder", return_value=recorder), \
+             mock.patch.object(executor_client, "fetch_workspace", side_effect=_boom):
+            r = self.client.post(
+                f"/api/evolve/agents/{agent['agent_id']}/sessions", json={})
+
+        self.assertEqual(r.status_code, 202)
+        sess = ev_db.get_session(r.json()["session_id"])
+        self.assertEqual(sess["status"], "conversing")
+        self.assertEqual((sess.get("work_context") or {}).get("probe"), "unreachable")
 
 
 class WorkContextInjectionTest(unittest.TestCase):
@@ -332,38 +437,3 @@ class LandingChannelMutexTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
-
-class InspectOnDemandTest(unittest.TestCase):
-    """FR-005 按需读取修正：开场指令不得引导预拉 trace/产物/评估。
-
-    用户纠偏（2026-10-01）：一上来就读会话记录、还提评估报告（已废弃）——
-    证据工具必须按需调用，开场白基于注入概览直接发。
-    """
-
-    def test_bound_inspect_input_no_prewarm_no_eval(self):
-        from app.evolve.agent.agent import _build_inspect_user_input
-        from app.evolve.ctx import EvolveContext
-
-        ctx = EvolveContext("sess-od")
-        ctx.agent_id = "agent-od"
-        ctx.workspace_id = "ws-od"
-        text = _build_inspect_user_input(ctx, "")
-        # 按需纪律存在
-        self.assertIn("按需", text)
-        self.assertIn("不要在本阶段主动批量调用证据工具", text)
-        # 不引导预拉
-        self.assertNotIn("列出作品会话记录", text)
-        self.assertNotIn("翻看绑定作品的证据", text)
-        # 无废弃评估引用
-        self.assertNotIn("评估报告", text)
-        self.assertNotIn("评估 finding", text)
-
-    def test_unbound_inspect_input_also_on_demand(self):
-        from app.evolve.agent.agent import _build_inspect_user_input
-        from app.evolve.ctx import EvolveContext
-
-        ctx = EvolveContext("sess-od2")
-        text = _build_inspect_user_input(ctx, "")
-        self.assertIn("按需调用", text)
-        self.assertNotIn("评估报告", text)

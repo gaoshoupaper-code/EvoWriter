@@ -1,21 +1,30 @@
 import { useEffect, useRef, useState } from "react";
 import type { EvolveAgent, EvolveMessage, EvolvePoint } from "@/lib/api";
+import type { TimelineRow } from "@/lib/rows";
 import AgentLaunchCard from "./AgentLaunchCard";
 import EvolveMessageBubble from "./EvolveMessageBubble";
+import { RowTimeline, RoundPendingIndicator } from "./RowTimeline";
 
 /**
- * 中部对话区（决策 J/K/L/X）。
+ * 中部对话区（决策 J/K/L/X；形态对齐客户端 ChatPanel，REQ-20261019-183921 FR-002/003）。
  *
- * 三种视图状态：
- *   - idle（无选中会话）：空态引导卡（AgentLaunchCard——「新开会话」统一走
- *     NewSessionDialog 独立组件，工具栏常驻可点，交互修正 2026-10-01）
- *   - conversing / running / finalizing：显示对话流 + 输入框（conversing 可输入）
+ * 视图状态：
+ *   - idle（无选中会话）：空态引导卡（AgentLaunchCard）
+ *   - 活跃（conversing/running/finalizing）：对话流 + 行时间线 + 输入框
  *   - terminal（published/discarded/failed/cancelled）：只读对话流
  *
- * 输入框（决策 X）：纯文本 + Enter 发送，Shift+Enter 换行。conversing 状态可输入，
- * 其他状态禁用（finalizing 等待落地完成）。
+ * 零开场（FR-001/FR-002）：新建会话消息列表为空时显示静态引导语
+ * 「直接输入你想关注的问题」——不经模型、零等待。
  *
- * Agent 主动开场（决策 J）：inspect round 跑完后会有一条 assistant 消息。
+ * 消息布局（FR-003，照客户端）：单列；用户消息右侧小气泡纯文本；
+ * Agent 消息无气泡全宽 markdown + 角色标签 + 内嵌进化点卡片；
+ * tool/system 消息单行小字。
+ *
+ * 进行中时间线（FR-004）：round_running 时消息流末尾渲染 liveRows
+ * （思考折叠块/正文逐段生长/工具行）；无行时兜底「正在思考」。
+ *
+ * 输入框（FR-003/FR-005，照客户端 composer）：Enter 发送、Shift+Enter 换行、
+ * 中文输入法组词保护、自动伸缩；轮次进行中禁用且发送键变停止键。
  *
  * 双向高亮联动（决策 N）：
  *   - 点击浮窗进化点 → 滚动到本区对应消息（onScrollToMessage 触发）
@@ -31,13 +40,16 @@ interface Props {
   selectedAgentName: string | null;
   stopping: boolean;
   highlightedPointId: string | null; // 来自浮窗点击
-  activity: { label: string; at: number } | null; // FR-005 运行中活动信号（父层已做过期隐藏）
+  liveRows: TimelineRow[]; // 当前轮行时间线（进行中）
+  roundRunning: boolean; // 轮次运行中（round_start→round_end）
   onOpenNewSession: () => void;
   onOpenReview?: () => void; // 待审查时跳审查报告页（发布/丢弃入口）
   onSend: (content: string) => void;
   onStop: () => void;
   onPointHover: (pointId: string | null) => void;
 }
+
+const COMPOSER_MAX_HEIGHT = 3 * 1.65 * 16; // 3 行自动伸缩上限（行高 1.65 × 16px）
 
 export default function ConversationPanel({
   selectedSessionId,
@@ -49,7 +61,8 @@ export default function ConversationPanel({
   selectedAgentName,
   stopping,
   highlightedPointId,
-  activity,
+  liveRows,
+  roundRunning,
   onOpenNewSession,
   onOpenReview,
   onSend,
@@ -57,14 +70,14 @@ export default function ConversationPanel({
   onPointHover,
 }: Props) {
   const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
-  // 自动滚到底（新消息到达时）
+  // 自动滚到底（新消息/新行到达时）
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [messages]);
+  }, [messages, liveRows]);
 
   // 浮窗点击进化点 → 滚动到对应消息（决策 N 双向联动）
   useEffect(() => {
@@ -96,35 +109,46 @@ export default function ConversationPanel({
 
   // ── 对话视图 ────────────────────────────────────────────────
   const isConversing = status === "conversing";
-  const isRunning = status === "running" || status === "finalizing";
   const isPendingReview = status === "pending_review";
   const isTerminal =
     status === "published" ||
     status === "discarded" ||
     status === "failed" ||
-    status === "cancelled";
-  const canInput = isConversing;
+    status === "cancelled" ||
+    status === "cancel_timeout";
+  // 轮次进行中输入锁定（roundRunning 由 SSE round_start/round_end 驱动）；
+  // finalizing 等落地完成同样锁定
+  const locked = roundRunning || status === "finalizing" || status === "running" || status === "cancelling";
+  const canInput = isConversing && !locked;
 
-  async function handleSend() {
+  function handleSend() {
     const content = input.trim();
     if (!content || !canInput) return;
-    setSending(true);
     setInput("");
-    try {
-      await onSend(content);
-    } finally {
-      setSending(false);
+    onSend(content);
+    // 收起输入框高度并回焦
+    if (inputRef.current) {
+      inputRef.current.style.height = "auto";
+      inputRef.current.focus();
     }
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (e.key === "Enter" && !e.shiftKey) {
+    // 中文输入法组词中的 Enter 不发送（对齐客户端 isComposing 保护）
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
-      void handleSend();
+      handleSend();
     }
   }
 
+  // 自动伸缩：内容撑高到 3 行上限（对齐客户端 collapsedHeight 口径）
+  function autoResize(el: HTMLTextAreaElement) {
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, COMPOSER_MAX_HEIGHT)}px`;
+  }
+
   const statusBadge = STATUS_LABEL[status ?? ""] ?? status;
+  const showTimeline = roundRunning || liveRows.length > 0;
 
   return (
     <section className="conversation-panel">
@@ -134,36 +158,14 @@ export default function ConversationPanel({
           <span className="status-text">{statusBadge}</span>
           <code className="session-id">{selectedSessionId.slice(0, 8)}</code>
         </div>
-        {(isRunning || isConversing) && (
-          <button
-            type="button"
-            className="stop-btn"
-            onClick={onStop}
-            disabled={stopping}
-          >
-            {stopping ? "停止中…" : "停止"}
-          </button>
-        )}
       </header>
 
       <div className="message-list">
-        {/* FR-005 运行中活动指示：取证/思考期间让用户看到 Agent 还活着 */}
-        {activity && (
-          <div className="activity-indicator" role="status">
-            <span className="activity-dot" aria-hidden />
-            <span className="activity-label">{activity.label}</span>
-          </div>
-        )}
-        {messages.length === 0 ? (
+        {messages.length === 0 && !showTimeline ? (
+          // FR-002 零开场空态：静态引导语（不经模型生成）
           <div className="conv-empty">
-            <div className="empty-glyph">⏳</div>
-            <p className="empty-text">
-              {isRunning
-                ? "Agent 正在准备开场分析（基于作品概览），请稍候…"
-                : isConversing
-                  ? "等待 Agent 回复…" // conversing 但无消息：用户已发首条消息，等 Agent 回复
-                  : "等待 Agent 发出开场白…"}
-            </p>
+            <div className="empty-glyph">🧬</div>
+            <p className="empty-text">直接输入你想关注的问题</p>
           </div>
         ) : (
           <>
@@ -180,6 +182,16 @@ export default function ConversationPanel({
                 onPointClick={onPointHover}
               />
             ))}
+            {/* 进行中轮次的行时间线（FR-004）：思考块/正文生长/工具行 */}
+            {showTimeline && (
+              <div className="ev-live-round">
+                {liveRows.length > 0 ? (
+                  <RowTimeline rows={liveRows} />
+                ) : (
+                  roundRunning && <RoundPendingIndicator />
+                )}
+              </div>
+            )}
             <div ref={messagesEndRef} />
           </>
         )}
@@ -189,37 +201,61 @@ export default function ConversationPanel({
           自动跳转只在落地结束那一瞬触发一次，错过就没有入口（线上发现 2026-10-01），
           这里给 pending_review 一个常驻入口 */}
       {isPendingReview && onOpenReview ? (
-        <footer className="composer review-cta">
+        <footer className="ev-composer review-cta">
           <span className="review-cta-note">落地已完成，等待人工审查后发布</span>
-          <button type="button" className="send-btn" onClick={onOpenReview}>
+          <button type="button" className="ev-send-button" onClick={onOpenReview}>
             查看审查报告并发布 →
           </button>
         </footer>
       ) : (
-        <footer className="composer">
-          <textarea
-            className="composer-input"
-            placeholder={
-              canInput
-                ? "和 Agent 讨论改进点…（Enter 发送，Shift+Enter 换行）"
-                : isTerminal
-                  ? "会话已结束"
-                  : "Agent 正在工作，请稍候…"
-            }
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={!canInput}
-            rows={2}
-          />
-          <button
-            type="button"
-            className="send-btn"
-            onClick={handleSend}
-            disabled={!canInput || sending || !input.trim()}
-          >
-            {sending ? "发送中…" : "发送"}
-          </button>
+        <footer className="ev-composer">
+          <div className="ev-input-wrap">
+            <textarea
+              ref={inputRef}
+              className="ev-input"
+              placeholder={
+                canInput
+                  ? "输入你关注的问题…（Enter 发送，Shift+Enter 换行）"
+                  : isTerminal
+                    ? "会话已结束"
+                    : "Agent 正在工作…"
+              }
+              value={input}
+              onChange={(e) => {
+                setInput(e.target.value);
+                autoResize(e.target);
+              }}
+              onKeyDown={handleKeyDown}
+              disabled={!canInput}
+              rows={1}
+            />
+          </div>
+          <div className="ev-composer-actions">
+            {locked && !isTerminal ? (
+              // 轮次进行中：发送键位置换成停止键（FR-005，对齐客户端）
+              <button
+                type="button"
+                className="ev-stop-button"
+                onClick={onStop}
+                disabled={stopping}
+                title={stopping ? "停止中…" : "停止本轮"}
+                aria-label="停止"
+              >
+                {stopping ? "…" : "■"}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="ev-send-button"
+                onClick={handleSend}
+                disabled={!canInput || !input.trim()}
+                title="发送"
+                aria-label="发送"
+              >
+                ↑
+              </button>
+            )}
+          </div>
         </footer>
       )}
     </section>
@@ -227,7 +263,7 @@ export default function ConversationPanel({
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  running: "探查中",
+  running: "处理中",
   conversing: "对话共创中",
   finalizing: "落地中",
   pending_review: "待审查",
@@ -235,4 +271,5 @@ const STATUS_LABEL: Record<string, string> = {
   discarded: "已丢弃",
   failed: "失败",
   cancelled: "已取消",
+  cancel_timeout: "停止超时",
 };

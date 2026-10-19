@@ -16,15 +16,20 @@ def create_session(
     case_id: str = "",
     agent_id: str | None = None,
     work_context: dict[str, Any] | None = None,
+    status: str = "running",
 ) -> None:
-    """创建一个 evolve session（启动时调用；agent_id/work_context 为作品绑定注入，REQ-20261001-131018）。"""
+    """创建一个 evolve session（启动时调用；agent_id/work_context 为作品绑定注入，REQ-20261001-131018）。
+
+    status 默认 running（旧链路兼容）；REQ-20261019-183921 零开场改造后
+    新会话由 API 层直传 conversing——不再有 inspect round 先行。
+    """
     now = datetime.now(UTC).isoformat()
     db.execute(
         """INSERT INTO evolve_sessions
            (session_id, case_id, status, agent_id, work_context_json, created_at, updated_at)
-           VALUES (?, ?, 'running', ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
         (
-            session_id, case_id, agent_id,
+            session_id, case_id, status, agent_id,
             json.dumps(work_context, ensure_ascii=False) if work_context else None,
             now, now,
         ),

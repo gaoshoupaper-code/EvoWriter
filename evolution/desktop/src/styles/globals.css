@@ -10817,10 +10817,11 @@ html[data-theme="dark"] .blueprint-body h1 { color: var(--teal); }
 
 .message-list {
   overflow-y: auto;
-  padding: 20px 24px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
+  padding: 24px 16px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr); /* 列宽锁死容器宽，防宽表撑开顶走右侧气泡 */
+  align-content: start;
+  gap: 20px;
 }
 
 .conv-empty {
@@ -10831,72 +10832,52 @@ html[data-theme="dark"] .blueprint-body h1 { color: var(--teal); }
 }
 .conv-empty .empty-glyph { font-size: 32px; margin-bottom: 8px; } /* design-lint:allow 展示型空状态图标 */
 
-/* FR-005 运行中活动指示条：取证/思考期间显示 Agent 当前动作 */
-.activity-indicator {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  justify-self: center;
-  padding: 4px 14px;
-  border: 1px solid var(--line);
-  border-radius: 999px;
-  background: var(--bg-inset, rgba(127, 127, 127, 0.08));
-  color: var(--muted);
-  font-size: var(--text-ui-sm);
-}
-.activity-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent, #4f8ef7);
-  animation: activity-pulse 1.4s ease-in-out infinite;
-}
-@keyframes activity-pulse {
-  0%, 100% { opacity: 0.35; }
-  50% { opacity: 1; }
-}
-
+/* ── 对话消息（形态对齐客户端 ChatPanel，REQ-20261019-183921 FR-003）── */
 .evolve-msg {
   display: flex;
-  gap: 12px;
+  flex-direction: column;
+  min-width: 0;
   max-width: 100%;
 }
 
-.evolve-msg.user { justify-content: flex-end; }
+.evolve-msg.user {
+  flex-direction: row;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.ev-msg-role {
+  flex: none;
+  font-size: var(--text-ui-sm);
+  font-weight: 800;
+  color: var(--muted);
+}
+
+.evolve-msg.user .ev-msg-role { color: var(--ink); }
 
 .evolve-msg.user .msg-bubble {
-  background: linear-gradient(135deg, var(--teal), var(--teal-dark));
-  color: white;
-  padding: 10px 14px;
-  border-radius: var(--radius-lg) var(--radius-lg) var(--radius-sm) var(--radius-lg);
-  max-width: 70%;
-  font-size: var(--text-ui-base);
-  line-height: 1.6;
+  width: fit-content;
+  max-width: min(100%, 36rem);
+  color: var(--ink);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 12px 16px;
+  background: var(--panel-soft);
+  box-shadow: none;
 }
 
 .msg-bubble .msg-text {
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.evolve-msg.assistant { align-items: flex-start; }
-
-.evolve-msg.assistant .msg-avatar {
-  width: 32px;
-  height: 32px;
-  border-radius: 50%;
-  background: var(--panel-solid);
-  border: 1px solid var(--line);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
   font-size: var(--text-ui-lg);
+  line-height: 1.7;
 }
+
+.evolve-msg.assistant { align-items: stretch; }
 
 .msg-body {
-  flex: 1;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -10904,14 +10885,9 @@ html[data-theme="dark"] .blueprint-body h1 { color: var(--teal); }
 }
 
 .msg-markdown {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-sm) var(--radius-lg) var(--radius-lg) var(--radius-lg);
-  padding: 12px 16px;
-  font-size: var(--text-ui-base);
-  line-height: 1.7;
+  font-size: var(--text-ui-lg);
+  line-height: 1.86;
   color: var(--ink);
-  max-width: 86%;
 }
 .msg-markdown p { margin: 6px 0; }
 .msg-markdown p:first-child { margin-top: 0; }
@@ -10945,7 +10921,7 @@ html[data-theme="dark"] .blueprint-body h1 { color: var(--teal); }
 .msg-markdown th { background: var(--panel-soft); font-weight: 600; }
 .msg-markdown strong { font-weight: 600; }
 
-.evolve-msg.system { justify-content: center; }
+.evolve-msg.system { justify-content: center; flex-direction: row; }
 .evolve-msg.system .system-content {
   font-size: var(--text-ui-sm);
   color: var(--muted);
@@ -10954,6 +10930,112 @@ html[data-theme="dark"] .blueprint-body h1 { color: var(--teal); }
   padding: 3px 10px;
   border-radius: var(--radius-lg);
 }
+
+/* ── 行时间线（REQ-20261019-183921 FR-003，移植自写作端 yan-* 体系）── */
+.yan-status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.yan-status-dot[data-status="running"] {
+  background: #5f7cff;
+  animation: stage-pulse 1.2s ease-in-out infinite;
+}
+.yan-status-dot[data-status="completed"] { background: var(--teal); }
+.yan-status-dot[data-status="failed"] { background: #e5484d; }
+
+.yan-thought-timeline {
+  margin: 4px 0 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.yan-thought-row { display: flex; flex-direction: column; }
+.yan-thought-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 5px 12px;
+  border-radius: var(--radius-lg);
+  background: rgba(116, 103, 196, 0.06);
+  border: none;
+  cursor: pointer;
+  font-size: var(--text-ui-caption);
+  color: var(--ink);
+  align-self: flex-start;
+  transition: background 0.15s ease;
+}
+.yan-thought-trigger:hover { background: rgba(116, 103, 196, 0.12); }
+.yan-thought-live-title {
+  white-space: nowrap;
+  animation: stage-focus-breathe 1.8s ease-in-out infinite;
+}
+.yan-thought-done-title { white-space: nowrap; color: var(--muted); }
+.yan-thought-interrupted { color: var(--danger, #c2452d); animation: none; }
+.yan-thought-caret { font-size: var(--text-ui-xs); color: var(--muted); flex: none; }
+.yan-thought-text {
+  margin: 4px 0 4px 20px;
+  padding: 8px 12px;
+  border-left: 2px solid var(--line);
+  max-height: 240px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.yan-thought-para {
+  margin: 0;
+  font-size: var(--text-ui-sm);
+  color: var(--ink);
+  opacity: 0.75;
+  line-height: 1.7;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+.yan-thought-fallback {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: var(--radius-lg);
+  background: rgba(116, 103, 196, 0.06);
+  font-size: var(--text-ui-caption);
+  color: var(--ink);
+  align-self: flex-start;
+}
+.yan-thought-fallback-text { animation: stage-focus-breathe 1.8s ease-in-out infinite; }
+.yan-tool-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 1px 12px 1px 20px;
+  font-size: var(--text-ui-sm);
+  color: var(--muted);
+}
+.yan-tool-row-mark { width: 14px; text-align: center; flex: none; }
+.yan-tool-row[data-status="done"] .yan-tool-row-mark { color: var(--good, #3a9d5d); }
+.yan-tool-row[data-status="running"] .yan-tool-row-mark {
+  color: var(--ink);
+  animation: stage-focus-breathe 1.8s ease-in-out infinite;
+}
+.yan-tool-row[data-status="failed"],
+.yan-tool-row[data-status="failed"] .yan-tool-row-name { color: var(--danger, #c2452d); }
+.yan-tool-row-name { color: var(--ink); }
+.yan-tool-row-elapsed { font-size: var(--text-ui-xs); }
+.yan-text-row {
+  margin: 6px 0 6px 20px;
+  font-size: var(--text-ui-sm);
+  color: var(--ink);
+  line-height: 1.7;
+  word-break: break-word;
+}
+.yan-text-row p { margin: 0 0 0.5em; }
+.yan-text-row p:last-child { margin-bottom: 0; }
+.ev-live-round { min-width: 0; }
 
 /* ── 进化点卡片（消息内嵌）── */
 .proposal-card {
@@ -11081,32 +11163,82 @@ html[data-theme="dark"] .recommendation-body { color: var(--teal); }
 .chosen-note { color: var(--muted); font-style: italic; }
 
 /* ── 输入框 ── */
-.composer {
-  border-top: 1px solid var(--line);
-  padding: 12px 20px;
+/* ── 输入区（形态对齐客户端 composer，REQ-20261019-183921 FR-003/005）── */
+.ev-composer {
   display: flex;
-  gap: 10px;
-  background: var(--panel-soft);
+  flex-direction: column;
+  min-width: 0;
+  border-top: 1px solid var(--line);
+  padding: 8px 16px 16px;
+  background: var(--bg);
 }
 
-.composer-input {
-  flex: 1;
-  resize: none;
-  padding: 10px 12px;
+.ev-input-wrap {
+  position: relative;
+  min-width: 0;
+  padding: 12px;
   border: 1px solid var(--line-strong);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-xl);
   background: var(--panel-solid);
-  color: var(--ink);
-  font-size: var(--text-ui-caption);
-  line-height: 1.6;
-  font-family: inherit;
-  min-height: 42px;
-  max-height: 120px;
+  transition: border-color 0.15s ease;
 }
-.composer-input:focus { outline: 2px solid var(--teal); outline-offset: -1px; }
-.composer-input:disabled { opacity: 0.6; cursor: not-allowed; }
 
-/* 待审查行动条（composer 区替换态）与历史行审查按钮——落地完成后常驻发布入口 */
+.ev-input-wrap:focus-within { border-color: var(--teal); }
+
+.ev-input {
+  display: block;
+  width: 100%;
+  min-height: 1.65em;
+  max-height: 4.95em; /* 3 行自动伸缩上限（JS 同步控制） */
+  resize: none;
+  overflow-y: auto;
+  scrollbar-width: none;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  color: var(--ink);
+  background: transparent;
+  font-size: var(--text-ui-base);
+  line-height: 1.65;
+  font-family: inherit;
+  outline: none;
+}
+
+.ev-input::-webkit-scrollbar { display: none; }
+.ev-input:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.ev-composer-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.ev-send-button,
+.ev-stop-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 50%;
+  padding: 0;
+  color: var(--panel-solid);
+  background: var(--ink);
+  cursor: pointer;
+  font-size: 14px;
+  transition: opacity 0.15s ease;
+}
+
+.ev-send-button:hover,
+.ev-stop-button:hover { opacity: 0.85; }
+
+.ev-send-button:disabled,
+.ev-stop-button:disabled { cursor: not-allowed; opacity: 0.5; }
+
+.ev-stop-button { background: var(--danger, #c2452d); }
+
+
 .review-cta-note { flex: 1; align-self: center; font-size: var(--text-ui-caption); color: var(--muted); }
 .history-review-btn {
   margin-left: auto;

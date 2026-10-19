@@ -2,12 +2,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
+  evolveSessionStreamPath,
   finalizeEvolve,
   getEvolveAgent,
   getEvolveMessages,
   getEvolvePoints,
   getEvolveSession,
-  getEvolveSessionEventsSince,
   getEvolveSessions,
   getLandingChannel,
   listBenchmarkBatches,
@@ -20,7 +20,10 @@ import {
   type EvolveMessage,
   type EvolvePoint,
   type EvolveSession,
+  type EvolveStreamFrame,
 } from "@/lib/api";
+import { streamRequest } from "@/lib/stream";
+import { applyRowEvent, closeStreamingRows, type TimelineRow } from "@/lib/rows";
 import AgentLaunchCard from "./AgentLaunchCard";
 import ConversationPanel from "./ConversationPanel";
 import NewSessionDialog from "./NewSessionDialog";
@@ -56,6 +59,9 @@ import PointsDrawer from "./PointsDrawer";
  */
 const AGENT_STORAGE_KEY = "evolve.selectedAgentId";
 
+// SSE 空闲看门狗：3 个心跳周期（服务端 15s/跳）无 chunk 视为死流
+const READ_IDLE_TIMEOUT_MS = 45_000;
+
 export default function WorkbenchTab({
   initialSessionId,
   initialSession,
@@ -85,24 +91,21 @@ export default function WorkbenchTab({
   const [points, setPoints] = useState<EvolvePoint[]>([]);
   const [acceptedCount, setAcceptedCount] = useState(0);
 
+  // 当前轮行时间线（SSE row 帧归并，REQ-20261019-183921 FR-004）。
+  // 进行中渲染完整时间线；round_end 后清空，回看时间线由消息 rows 提供。
+  const [liveRows, setLiveRows] = useState<TimelineRow[]>([]);
+  // 轮次运行中（round_start→true / round_end→false）：输入框禁用 + 停止键
+  const [roundRunning, setRoundRunning] = useState(false);
+
   // 交互态
   const [starting, setStarting] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [finalizing, setFinalizing] = useState(false);
   const [highlightedPointId, setHighlightedPointId] = useState<string | null>(null);
   const streamCancelRef = useRef<(() => void) | null>(null);
-
-  // ── 运行中活动指示（FR-005）────────────────────────────
-  // 后端从 llm_start/tool_start span 事件派生 activity 帧；这里只保留最新
-  // 一条（label + 时间戳）。90s 无新帧视为空闲自动隐藏——覆盖取证段频繁工具
-  // 调用与思考段长回复生成，round 结束后指示自然消退。
-  const [activity, setActivity] = useState<{ label: string; at: number } | null>(null);
-  useEffect(() => {
-    if (!activity) return;
-    const left = 90_000 - (Date.now() - activity.at);
-    const timer = setTimeout(() => setActivity(null), Math.max(left, 0));
-    return () => clearTimeout(timer);
-  }, [activity]);
+  // 当前选中会话的实时引用：reschedule 重订检查用——函数闭包里的
+  // selectedSessionId 是旧 render 值，切会话后旧流的重订判断会恒真复活
+  const selectedSessionIdRef = useRef<string | null>(null);
 
   // ── 轮询：评测批次 + Agent 列表 + 落地通道 ─────────────────
   // 只列已完成（done/partial）批次——弱点视图只对完成批次有意义
@@ -156,11 +159,14 @@ export default function WorkbenchTab({
   const loadPoints = useCallback(async (sessionId: string) => {
     try {
       const ptsResp = await getEvolvePoints(sessionId);
+      // await 后应用前守卫：切会话竞态窗口内旧会话数据不覆盖新会话
+      if (selectedSessionIdRef.current !== sessionId) return;
       if (ptsResp) {
         setPoints(ptsResp.points);
         setAcceptedCount(ptsResp.accepted_count);
       }
     } catch {
+      if (selectedSessionIdRef.current !== sessionId) return;
       setPoints([]);
       setAcceptedCount(0);
     }
@@ -170,8 +176,10 @@ export default function WorkbenchTab({
   const loadMessages = useCallback(async (sessionId: string) => {
     try {
       const msgResp = await getEvolveMessages(sessionId);
+      if (selectedSessionIdRef.current !== sessionId) return;
       if (msgResp) setMessages(msgResp.messages);
     } catch {
+      if (selectedSessionIdRef.current !== sessionId) return;
       setMessages([]);
     }
   }, []);
@@ -189,13 +197,15 @@ export default function WorkbenchTab({
     (s: EvolveSession) => {
       streamCancelRef.current?.();
       setSelectedSessionId(s.session_id);
+      selectedSessionIdRef.current = s.session_id;
       setSelectedStatus(s.status);
       setHighlightedPointId(null);
-      setActivity(null);
+      setLiveRows([]);
+      setRoundRunning(false);
       void loadSessionDetail(s.session_id);
-      // 活跃会话订阅 Pull 事件流
-      if (["running", "conversing", "finalizing"].includes(s.status)) {
-        subscribeStream(s.session_id);
+      // 活跃会话订阅 SSE 流
+      if (["running", "conversing", "finalizing", "cancelling"].includes(s.status)) {
+        subscribeStream(s.session_id, 0);
       }
     },
     [loadSessionDetail],
@@ -257,14 +267,16 @@ export default function WorkbenchTab({
     setMessages([]);
     setPoints([]);
     setAcceptedCount(0);
+    setLiveRows([]);
+    setRoundRunning(false);
     try {
       const resp = await startEvolveAgentSession(agentId, benchmarkBatchId);
       setNewSessionOpen(false);
       setSelectedSessionId(resp.session_id);
-      setSelectedStatus("running");
-      setActivity(null); // 新会话不继承旧会话的活动指示（FR-005）
-      toast.success(`进化已启动：${resp.session_id.slice(0, 8)}`);
-      subscribeStream(resp.session_id);
+      selectedSessionIdRef.current = resp.session_id;
+      setSelectedStatus("conversing"); // 零开场：返回即处可对话态（FR-001）
+      toast.success(`进化会话已就绪：${resp.session_id.slice(0, 8)}`);
+      subscribeStream(resp.session_id, 0);
       void refreshBatches();
       void refreshHasAnySession();
     } catch (err) {
@@ -274,163 +286,182 @@ export default function WorkbenchTab({
     }
   }
 
-  // ── trace 重构：Pull 轮询（设计 20260720_154825）──
-  // 重构后事件密度大幅降低（不再有 token 流），轮询间隔放宽到 2s。
-  // 前端不再维护临时消息 state——所有消息（assistant/tool/system）都从
-  // evolve_messages 权威存储拉取，事件帧只是"通知该刷消息了"的信号。
-  async function subscribeStream(sessionId: string) {
+  // ── 会话级 SSE 流（REQ-20261019-183921 FR-004，替代 Pull 轮询）──
+  // streamRequest（Rust 中继）→ 按 \n\n 切帧解析 data JSON → 行帧归并进
+  // liveRows、信号帧触发消息/进化点刷新。断流以落库消息收敛（FR-006）：
+  // 会话仍活跃则指数退避重订，终态则拉最终详情。
+  async function subscribeStream(sessionId: string, attempt: number) {
     streamCancelRef.current?.();
     let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let sinceSeq = 0;
+    let reader: Awaited<ReturnType<typeof streamRequest>> | null = null;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearIdleTimer = () => {
+      if (idleTimer) {
+        clearTimeout(idleTimer);
+        idleTimer = null;
+      }
+    };
 
     streamCancelRef.current = () => {
       cancelled = true;
-      if (timer) {
-        clearTimeout(timer);
-        timer = null;
-      }
+      clearIdleTimer();
+      reader?.cancel().catch(() => undefined);
     };
 
-    const POLL_INTERVAL_MS = 2000;  // 重构后无 token 流，2s 足够
-    const ERROR_BACKOFF_MS = 3000;
+    try {
+      reader = await streamRequest(evolveSessionStreamPath(sessionId), { method: "GET" });
+    } catch {
+      if (!cancelled) reschedule(sessionId, attempt);
+      return;
+    }
 
-    const poll = async () => {
-      if (cancelled) return;
-      try {
-        const resp = await getEvolveSessionEventsSince(sessionId, sinceSeq);
-        if (cancelled) return;
-
-        // 事件驱动刷新：只要 trace 有新事件（max_seq 推进），就刷新消息 + 进化点。
-        // 不依赖后端产出特定的 message_updated 帧——max_seq 推进说明 Agent 在跑
-        // （写 llm/tool/business 事件），此时拉一次权威存储即可拿到最新消息。
-        // 注：业务事件的 input 被 recorder 外化后 event.input 为 null，导致
-        // _trace_event_to_sse 派生出的 frames 可能为空，故以 max_seq 推进为准，
-        // 不以 frames.length 为准（否则永远不刷新）。
-        // sinceSeq 游标保证不重复处理事件；loadMessages 全量替换 state，天然幂等。
-        const has_new_events = resp.max_seq > sinceSeq;
-        if (has_new_events) {
-          void loadMessages(sessionId);
-          void loadPoints(sessionId);
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let gotChunk = false;
+    try {
+      while (!cancelled) {
+        // 空闲看门狗（FR-006）：半开连接（睡眠唤醒/换网）下 read 永不返回，
+        // 心跳也到不了——45s（3 个心跳周期）无 chunk 视为死流走 reschedule
+        const chunk = await Promise.race([
+          reader.read(),
+          new Promise<never>((_, reject) => {
+            idleTimer = setTimeout(() => reject(new Error("stream idle")), READ_IDLE_TIMEOUT_MS);
+          }),
+        ]);
+        clearIdleTimer();
+        if (!gotChunk) {
+          gotChunk = true;
+          attempt = 0; // 连接健康：退避阶梯归零
         }
-
-        // 派发每帧到 handleSseFrame（处理 phase/proposal/end/error 等副作用）
-        for (const frame of resp.frames) {
-          handleSseFrame(sessionId, frame);
+        const { done, value } = chunk;
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() ?? "";
+        for (const part of parts) {
+          const dataLines = part.split("\n").filter((l) => l.startsWith("data:"));
+          if (dataLines.length === 0) continue; // 注释帧/心跳外的杂项
+          let frame: EvolveStreamFrame;
+          try {
+            frame = JSON.parse(dataLines.map((l) => l.slice(5).trim()).join("\n"));
+          } catch {
+            continue; // 畸形帧丢弃，不断流
+          }
+          handleFrame(sessionId, frame);
         }
-        sinceSeq = resp.max_seq;
-
-        // 用后端权威 session_status 纠正本地 selectedStatus（防 phase 帧丢失导致
-        // 状态漂移——漂移到非 conversing 会让输入框 + 拍板按钮误禁用）。
-        // 函数式更新避免闭包里的 selectedStatus 陈旧。参考 evaluation.tsx 范式。
-        if (resp.session_status) {
-          setSelectedStatus((prev) =>
-            prev !== resp.session_status ? resp.session_status : prev,
-          );
-        }
-
-        // has_more=true：事件积压（罕见，重构后事件密度低），立即续拉。
-        if (resp.has_more) {
-          timer = setTimeout(poll, 0);
-          return;
-        }
-
-        // session_status 终态：派发 end 帧，然后停止轮询。
-        // cancel_timeout 与后端 is_terminal 对齐（review finding-13）——RC3 修复后
-        // 该状态首次真正可达，遗漏会让 2s 轮询永不停。
-        const terminal = [
-          "published",
-          "discarded",
-          "failed",
-          "cancelled",
-          "cancel_timeout",
-        ].includes(resp.session_status);
-        if (terminal) {
-          handleSseFrame(sessionId, { type: "end" });
-          return;
-        }
-
-        // running 中：安排下次轮询。
-        timer = setTimeout(poll, POLL_INTERVAL_MS);
-      } catch {
-        if (cancelled) return;
-        // 网络抖动：退避后继续（不丢已拉帧）。
-        timer = setTimeout(poll, ERROR_BACKOFF_MS);
       }
-    };
-
-    poll();
+    } catch {
+      // 网络断/服务重启/空闲超时：走兜底
+    } finally {
+      clearIdleTimer();
+      if (!cancelled) reschedule(sessionId, attempt);
+    }
   }
 
-  function handleSseFrame(sessionId: string, frame: any) {
+  /** 断流兜底：会话仍活跃 → 退避重订；终态 → 拉最终详情收敛（FR-006）。 */
+  async function reschedule(sessionId: string, attempt: number) {
+    if (selectedSessionIdRef.current !== sessionId) return; // 已切走：旧会话不碰当前状态
+    setLiveRows((prev) => closeStreamingRows(prev, "interrupted"));
+    const scheduleRetry = (backoff: number) => {
+      // timer 挂进 cancel 链：切会话/新订阅/组件卸载时清理（不留无主重订）
+      const timer = setTimeout(() => {
+        if (selectedSessionIdRef.current === sessionId) void subscribeStream(sessionId, attempt + 1);
+      }, backoff);
+      const prev = streamCancelRef.current;
+      streamCancelRef.current = () => {
+        clearTimeout(timer);
+        prev?.();
+      };
+    };
+    try {
+      const sess = await getEvolveSession(sessionId);
+      if (selectedSessionIdRef.current !== sessionId) return;
+      setSelectedStatus((prev) => (prev !== sess.status ? sess.status : prev));
+      await loadSessionDetail(sessionId);
+      const active = ["running", "conversing", "finalizing", "cancelling"].includes(sess.status);
+      if (active) {
+        scheduleRetry(Math.min(1000 * 2 ** attempt, 8000));
+      }
+    } catch {
+      // 详情也拉不到（网络整体不可用）：退避重试
+      scheduleRetry(Math.min(1000 * 2 ** attempt, 8000));
+    }
+  }
+
+  function handleFrame(sessionId: string, frame: EvolveStreamFrame) {
     if (!frame || typeof frame !== "object") return;
+    if (selectedSessionIdRef.current !== sessionId) return; // 已切会话：丢弃旧流帧
     switch (frame.type) {
       case "heartbeat":
         break;
-      case "activity": {
-        // FR-005 运行中活动信号：llm_start/tool_start span 派生。
-        // at 用帧携带的事件侧 ts（review finding-4）：重放历史帧时按真实发生
-        // 时间过期，空闲会话不再出现假「正在运行」指示；解析失败回退本地时钟。
-        if (frame.label) {
-          const ts = typeof frame.ts === "string" ? Date.parse(frame.ts) : NaN;
-          setActivity({
-            label: String(frame.label),
-            at: Number.isFinite(ts) ? ts : Date.now(),
-          });
+      case "snapshot": {
+        const status = frame.session_status;
+        if (typeof status === "string" && status) {
+          setSelectedStatus((prev) => (prev !== status ? status : prev));
+        }
+        // 断线重连/晚订阅复位（FR-006）：round_end 落在断线窗口时，按服务端
+        // 真相复位输入锁；liveRows 清空重建（interrupted 行不再拒增量）
+        setRoundRunning(frame.round_active === true);
+        setLiveRows([]);
+        break;
+      }
+      case "row":
+        // 行协议帧归并（open/delta/end，畸形载荷在纯函数内丢弃）
+        setLiveRows((prev) => applyRowEvent(prev, frame));
+        break;
+      case "message_updated":
+        // 消息已落库：拉权威消息 + 进化点（幂等全量）
+        void loadMessages(sessionId);
+        void loadPoints(sessionId);
+        break;
+      case "phase": {
+        if (typeof frame.phase === "string" && frame.phase) {
+          setSelectedStatus(frame.phase);
         }
         break;
       }
-      case "message_updated":
-        // 消息刷新已由 poll 的事件驱动统一处理（拉到任意新帧即 loadMessages）。
-        // 此 case 仅作语义标记，无额外副作用。
+      case "round_start":
+        setRoundRunning(true);
+        setLiveRows([]); // 新一轮新时间线
         break;
-      case "phase":
-        // 阶段切换（inspect → conversing → finalizing）——立即纠正本地状态。
-        // 消息/进化点刷新已由 poll 统一处理。
-        setSelectedStatus(frame.phase);
-        setActivity(null);
-        break;
-      case "proposal":
-        // 进化点状态变更——浮窗刷新已由 poll 的 loadPoints 统一处理。
-        break;
-      case "finalizing":
-        // 落地进度事件——消息刷新已由 poll 统一处理。
-        break;
-      case "log": {
-        // 思考日志事件——后端 emit_log 写的 run_meta，未落消息表。
-        // 这里不展示（避免与持久化消息重复），日志可去 trace 详情页看。
-        break;
-      }
-      case "step": {
-        // 业务步骤事件（read_eval_report 等）——同 log，不展示在对话区。
-        break;
-      }
-      case "end": {
-        // 流结束 → 刷新会话详情（拿最终 status）
-        setActivity(null);
-        void refreshBatches();
+      case "round_end": {
+        // 轮次结束：解锁输入、清空时间线（回看由消息 rows 承担，防同轮思考块
+        // 双份渲染）、拉权威状态回填（failed/cancelled 后不残留 conversing
+        // 导致发送被 409）
+        const status = typeof frame.status === "string" ? frame.status : "";
+        setRoundRunning(false);
+        setLiveRows([]);
         void loadSessionDetail(sessionId);
-        // 检查是否需要跳 review-report（pending_review 时，决策 AA）
-        setTimeout(async () => {
+        void refreshBatches();
+        const refreshStatus = async (): Promise<string | null> => {
           try {
-            const sessResp = await getEvolveSession(sessionId);
-            if (sessResp.status === "pending_review") {
-              navigate(`/evolve/${sessionId}/review`);
-            }
-            setSelectedStatus(sessResp.status);
+            const sess = await getEvolveSession(sessionId);
+            if (selectedSessionIdRef.current !== sessionId) return null;
+            setSelectedStatus((prev) => (prev !== sess.status ? sess.status : prev));
+            return sess.status;
           } catch {
-            // 静默
+            return null;
           }
-        }, 500);
+        };
+        void refreshStatus();
+        // pending_review：落地完成自动跳审查（决策 AA）；延迟半秒等状态落库可见
+        if (status === "pending_review") {
+          setTimeout(() => {
+            void refreshStatus().then((final) => {
+              if (final === "pending_review") {
+                navigate(`/evolve/${sessionId}/review`);
+              }
+            });
+          }, 500);
+        }
         break;
       }
-      case "error": {
+      case "error":
         toast.error("Agent 执行出错，请查看详情");
         void refreshBatches();
         break;
-      }
       default:
-        // 未知事件类型——重构后只有上面几种，安全忽略。
+        // tool_call/tool_output/tool_error 信号帧：展示由行时间线承担
         break;
     }
   }
@@ -461,13 +492,12 @@ export default function WorkbenchTab({
   // ── 停止（决策 L：只停输出，会话保留）───────────────────────
   async function handleStop() {
     if (!selectedSessionId) return;
-    if (!window.confirm("确定停止 Agent 输出？会话保留，可继续输入。")) return;
     setStopping(true);
     try {
       await stopEvolve(selectedSessionId);
-      streamCancelRef.current?.();
-      setActivity(null); // 停止成功即撤下活动指示（review finding-15）
       toast.success("已停止");
+      // round_end(cancelled) 帧会经 SSE 到达收口；万一连接已断，
+      // reschedule 兜底也会收敛——这里不重复处理
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "停止失败");
     } finally {
@@ -547,7 +577,8 @@ export default function WorkbenchTab({
         selectedAgentName={selectedAgentName}
         stopping={stopping}
         highlightedPointId={highlightedPointId}
-        activity={activity}
+        liveRows={liveRows}
+        roundRunning={roundRunning}
         onOpenNewSession={() => setNewSessionOpen(true)}
         onOpenReview={
           selectedSessionId

@@ -230,7 +230,6 @@ a {
   background:
     linear-gradient(135deg, rgba(245, 238, 218, 0.96), rgba(240, 232, 208, 0.88)),
     var(--panel);
-  backdrop-filter: blur(22px);
 }
 
 .dashboard-body {
@@ -242,7 +241,9 @@ a {
   border-radius: 0;
   overflow: hidden;
   background: var(--panel);
-  backdrop-filter: blur(22px);
+  /* 不加 backdrop-filter：WebView2 下全屏常驻 blur 层会触发滚动/切页时
+     上半屏画面冻结的合成器 bug（2026-10 排查）；--panel 0.9x 不透明，
+     去 blur 视觉无损 */
 }
 
 .dashboard-sidebar,
@@ -2063,7 +2064,6 @@ a {
   grid-template-rows: auto 1fr auto;
   border-left: 1px solid var(--line);
   background: rgba(248, 240, 218, 0.96);
-  backdrop-filter: blur(8px);
   box-shadow: var(--shadow-elevated);
   z-index: 10;
   overflow: hidden;

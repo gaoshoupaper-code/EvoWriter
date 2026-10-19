@@ -76,6 +76,28 @@ async def _collect(gen) -> list[str]:
     return frames
 
 
+async def _collect_into(gen, out: list[str]) -> list[str]:
+    async for frame in gen:
+        out.append(frame)
+    return out
+
+
+async def _wait_started(frames: list[str], timeout: float = 5.0) -> None:
+    """确定性等待该 run 已开跑（status started 帧 ⇒ 会话门已持有）。
+
+    修测试竞态：固定 sleep 不保证首个 run 已完成 acquire，后到请求可能
+    反而先拿到锁（全套件负载下偶发），排队断言随之失真。
+    """
+    import time as _time
+
+    deadline = _time.perf_counter() + timeout
+    while _time.perf_counter() < deadline:
+        if any(f.startswith("event: status") and '"started"' in f for f in frames):
+            return
+        await asyncio.sleep(0.02)
+    raise AssertionError("run 未在超时内开跑（会话门未持有，测试前置不成立）")
+
+
 def _frame_status(frame: str) -> str | None:
     if not frame.startswith("event: status"):
         return None
@@ -325,11 +347,12 @@ class ConversationContinuityTest(unittest.TestCase):
                 h.use_completing_stream("第二轮正文")
                 with ExitStack() as es:
                     h.patch_all(es)
+                    frames1: list[str] = []
                     gen1 = h.service.generate_stream(
                         _payload(h.thread.thread_id, "第一轮"), h.thread, owner_id="tester",
                     )
-                    t1 = asyncio.create_task(_collect(gen1))
-                    await asyncio.sleep(0.2)
+                    t1 = asyncio.create_task(_collect_into(gen1, frames1))
+                    await _wait_started(frames1)  # 确定性：run1 已持门再提交第二条
                     gen2 = h.service.generate_stream(
                         _payload(h.thread.thread_id, "第二轮"), h.thread, owner_id="tester",
                     )
@@ -337,7 +360,7 @@ class ConversationContinuityTest(unittest.TestCase):
                     await asyncio.sleep(0.3)
                     assert not t2.done(), "第二轮应排队等待"
                     release.set()
-                    frames1 = await t1
+                    await t1
                     frames2 = await t2
                 return h, frames1, frames2
 
@@ -447,4 +470,160 @@ class ConversationContinuityTest(unittest.TestCase):
         assert roles == [("user", "running"), ("assistant", "completed")]
         assert data[1]["content"] == "echo:" + "端点回放测试"[-30:] or data[1]["content"].startswith("echo:")
         assert data[1]["trace_id"]
+        h.cleanup()
+
+    # ── review R-002：停止清队后同 id 重发不得复活 ─────────────────────
+
+    def test_stopped_message_not_revived_by_resend(self, _n):
+        from contextlib import ExitStack
+
+        async def scenario():
+            async with self._harness() as h:
+                # 先经台账制造一条被停止清队作废的消息
+                conv_log = ConversationLog(h.ws)
+                stopped_id = conv_log.admit_user(h.thread.thread_id, "被停掉的消息", message_id="u-stop")
+                conv_log.mark_user(h.thread.thread_id, stopped_id, "cancelled")
+                with ExitStack() as es:
+                    h.patch_all(es)
+                    frames = await h.run_stream(
+                        _payload(h.thread.thread_id, "被停掉的消息", message_id="u-stop")
+                    )
+                runs = h.recorder.list_runs(h.thread)
+                return h, frames, runs
+
+        h, frames, runs = asyncio.run(scenario())
+        statuses = [s for s in (_frame_status(f) for f in frames) if s]
+        assert statuses == ["cancelled"], f"应只收到 cancelled 收口帧: {statuses}"
+        assert not any(f.startswith("event: final") for f in frames)
+        assert runs == [], "不得创建任何 trace（消息不复活）"
+        # 台账状态仍 cancelled
+        msgs = ConversationLog(h.ws).read(h.thread.thread_id)
+        assert [m.status for m in msgs] == ["cancelled"]
+        h.cleanup()
+
+    # ── review R-003：排队跨多个心跳周期仍保 FIFO ──────────────────────
+
+    def test_queue_fifo_preserved_across_heartbeats(self, _n):
+        from contextlib import ExitStack
+        from unittest.mock import patch as mock_patch
+
+        from app.domains.writing import agent as writing_agent
+
+        async def scenario():
+            async with self._harness() as h:
+                release1 = asyncio.Event()
+                # 心跳周期压到 50ms：第一轮放行前跨多个心跳，验证 acquire 不被
+                # 超时取消重排（wait_for 版本会在此乱序）
+                with mock_patch.object(writing_agent, "_QUEUE_HEARTBEAT_S", 0.05):
+                    with ExitStack() as es:
+                        h.patch_all(es)
+                        h.use_hanging_stream("第一轮", release1, dangling=False, invoke=True)
+                        h.use_completing_stream("第二轮")
+                        h.use_completing_stream("第三轮")
+                        live1: list[str] = []
+                        t1 = asyncio.create_task(_collect_into(h.service.generate_stream(
+                            _payload(h.thread.thread_id, "第1轮请求"), h.thread, owner_id="tester",
+                        ), live1))
+                        await _wait_started(live1)  # 确定性：run1 先持门
+                        t2 = asyncio.create_task(_collect(h.service.generate_stream(
+                            _payload(h.thread.thread_id, "第2轮请求"), h.thread, owner_id="tester",
+                        )))
+                        t3 = asyncio.create_task(_collect(h.service.generate_stream(
+                            _payload(h.thread.thread_id, "第3轮请求"), h.thread, owner_id="tester",
+                        )))
+                        # 完成顺序记录：FIFO 下必须与提交顺序一致
+                        completion_order: list[int] = []
+
+                        async def _record(index: int, task):
+                            await task
+                            completion_order.append(index)
+
+                        watchers = [
+                            asyncio.ensure_future(_record(1, t1)),
+                            asyncio.ensure_future(_record(2, t2)),
+                            asyncio.ensure_future(_record(3, t3)),
+                        ]
+                        await asyncio.sleep(0.4)  # > 多个心跳周期
+                        assert not any(t.done() for t in [t1, t2, t3])
+                        release1.set()
+                        frames = list(await asyncio.gather(*watchers))
+                        frames = [await t for t in [t1, t2, t3]]
+                entries = ConversationLog(h.ws).read(h.thread.thread_id)
+                assistants = [m for m in entries if m.role == "assistant"]
+                return h, frames, completion_order, assistants
+
+        h, frames, completion_order, assistants = asyncio.run(scenario())
+        for stream_frames in frames:
+            assert any(f.startswith("event: final") for f in stream_frames)
+        # 完成顺序 = 提交顺序（FIFO 未被心跳重排；串行门保证一轮一跑）
+        assert len(assistants) == 3
+        assert completion_order == [1, 2, 3], f"排队乱序: {completion_order}"
+        # 台账开壳顺序同样 = 提交顺序
+        order = [m.trace_id for m in assistants]
+        assert len(set(order)) == 3
+        h.cleanup()
+
+    # ── review R2-P1：授予先于取消观察 → 锁必须被归还 ──────────────────
+
+    def test_queue_cancel_after_grant_returns_lock(self, _n):
+        from contextlib import ExitStack
+        from unittest.mock import patch as mock_patch
+
+        from app.domains.writing import agent as writing_agent
+        from app.domains.writing.run_gate import get_conversation_gate
+
+        async def scenario():
+            async with self._harness() as h:
+                release1 = asyncio.Event()
+                with mock_patch.object(writing_agent, "_QUEUE_HEARTBEAT_S", 0.05):
+                    with ExitStack() as es:
+                        h.patch_all(es)
+                        h.use_hanging_stream("第一轮", release1, dangling=False, invoke=True)
+                        h.use_completing_stream("第二轮")
+                        live1: list[str] = []
+                        t1 = asyncio.create_task(_collect_into(h.service.generate_stream(
+                            _payload(h.thread.thread_id, "第1轮"), h.thread, owner_id="tester",
+                        ), live1))
+                        await _wait_started(live1)
+                        # 慢消费者：只拉两帧（queued 状态 + ping）就停手——
+                        # 生成器悬在 ping yield 上，看不见 acquire 的授予
+                        gen2 = h.service.generate_stream(
+                            _payload(h.thread.thread_id, "第2轮"), h.thread, owner_id="tester",
+                        )
+                        it2 = gen2.__aiter__()
+                        f1 = await it2.__anext__()  # status queued
+                        assert "queued" in f1
+                        f2 = await it2.__anext__()  # ping
+                        assert f2.startswith(":")
+                        gate = get_conversation_gate(h.thread.thread_id)
+                        # 放行第一轮 → 锁转移到第2轮的 acquire_task（生成器仍悬着，
+                        # 看不见授予）
+                        release1.set()
+                        await t1
+                        assert gate._lock.locked(), "锁已被第2轮 acquire 持有（未观察）"
+                        # 取消慢消费者：finally 的 done-callback 兜底归还授予的锁
+                        t2 = asyncio.ensure_future(it2.__anext__())
+                        t2.cancel()
+                        try:
+                            await t2
+                        except asyncio.CancelledError:
+                            pass
+                        deadline = asyncio.get_event_loop().time() + 3.0
+                        while gate._lock.locked() and asyncio.get_event_loop().time() < deadline:
+                            await asyncio.sleep(0.02)
+                        lock_state = gate._lock.locked()
+                        # 第三轮：必须能立刻拿到锁并完成（不死锁）
+                        h.use_completing_stream("第三轮")
+                        t3 = asyncio.create_task(_collect(h.service.generate_stream(
+                            _payload(h.thread.thread_id, "第3轮"), h.thread, owner_id="tester",
+                        )))
+                        frames3 = await asyncio.wait_for(t3, timeout=3.0)
+                entries = ConversationLog(h.ws).read(h.thread.thread_id)
+                return h, lock_state, frames3, entries
+
+        h, lock_state, frames3, entries = asyncio.run(scenario())
+        assert lock_state is False, "授予归还前锁应已释放（done-callback）"
+        assert any(f.startswith("event: final") for f in frames3), "第三轮不死锁、正常完成"
+        roles = [(m.role, m.status) for m in entries]
+        assert ("user", "paused") in roles, "被取消的排队消息应落 paused"
         h.cleanup()

@@ -122,14 +122,81 @@ def test_stop_clears_queued_and_paused(tmp_path: Path, monkeypatch) -> None:
     paused_id = log.admit_user("conv-1", "挂起消息")
     log.mark_user("conv-1", paused_id, "paused")
 
-    class _Store:
-        def get_thread(self, user_id, thread_id):
-            return SimpleNamespace(workspace_path=str(tmp_path))
+    thread = SimpleNamespace(
+        thread_id="conv-1", workspace_path=str(tmp_path),
+        workspace_id="w", session_name="s", user_id="u1",
+        created_at="", updated_at="",
+    )
+    # _clear_conversation_queue 生产上只在 async stop 端点内调用——会话门
+    # 依赖运行中的事件循环，同步上下文需 asyncio.run 包裹
+    import asyncio
 
-    monkeypatch.setattr(sp, "get_thread_store", lambda: _Store())
-    gate = get_conversation_gate("conv-1")
-    cleared = sp._clear_conversation_queue("u1", "conv-1")
+    async def _run() -> tuple[int, "ConversationGate"]:
+        gate = get_conversation_gate("conv-1")
+        return sp._clear_conversation_queue(thread), gate
+
+    cleared, gate = asyncio.run(_run())
     assert cleared == 0  # 本用例无门外等待者
     assert gate.epoch == 1  # 纪元递增：等待者据此区分 cancelled/paused
     msgs = log.read("conv-1")
     assert [m.status for m in msgs] == ["cancelled", "cancelled"]
+
+
+def test_stop_clear_skips_unowned_thread(tmp_path: Path, monkeypatch) -> None:
+    """review R-D：归属校验先行——foreign thread_id 不触碰会话门（epoch 不动）。"""
+    from types import SimpleNamespace
+
+    from app.routers import screenplay as sp
+
+    class _Store:
+        def get_thread(self, user_id, thread_id):
+            return None  # 非本人会话
+
+    monkeypatch.setattr(sp, "get_thread_store", lambda: _Store())
+    from app.domains.writing import run_gate
+
+    monkeypatch.setattr(
+        run_gate, "get_conversation_gate",
+        lambda cid: (_ for _ in ()).throw(AssertionError("foreign thread must not touch gate")),
+    )
+    # 直接走端点（async）：foreign → queue_cleared=0，gate 未被触碰
+    import asyncio
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from app.auth import current_user
+
+    app = FastAPI()
+    app.include_router(sp.router)
+    app.dependency_overrides[current_user] = lambda: SimpleNamespace(user_id="attacker")
+
+    class _Rec:
+        def request_user_stop(self, trace_id):
+            pass
+
+        def cancel_run_task(self, trace_id):
+            return False
+
+    monkeypatch.setattr(sp, "get_trace_recorder", lambda: _Rec())
+    client = TestClient(app)
+    resp = client.post("/screenplay/stop", json={"thread_id": "victim", "trace_id": "t"})
+    assert resp.status_code == 200
+    assert resp.json()["queue_cleared"] == 0
+
+
+def test_admit_refuses_cancelled_requeue(tmp_path: Path) -> None:
+    """FR-006/review R-002：停止清队作废的消息不得借同 id 重发复活。"""
+    log = _make_log(tmp_path)
+    uid = log.admit_user("conv-1", "被停掉的消息", message_id="u-stopped")
+    log.mark_user("conv-1", uid, "cancelled")
+    assert log.admit_user("conv-1", "被停掉的消息", message_id="u-stopped") is None
+    # 台账无新记录（状态仍 cancelled，未回到 queued）
+    msgs = log.read("conv-1")
+    assert len(msgs) == 1 and msgs[0].status == "cancelled"
+    # 非 cancelled 的重发仍正常入队
+    uid2 = log.admit_user("conv-1", "正常补跑", message_id="u-paused")
+    assert uid2 == "u-paused"
+    log.mark_user("conv-1", uid2, "paused")
+    assert log.admit_user("conv-1", "正常补跑", message_id="u-paused") == "u-paused"
+    assert [m.status for m in log.read("conv-1")] == ["cancelled", "queued"]

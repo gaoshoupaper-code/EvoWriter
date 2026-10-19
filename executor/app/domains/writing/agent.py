@@ -881,6 +881,13 @@ class MetaAgentService(BaseAgentService):
                 "error": "会话日志写入失败，本轮已拒绝；请重试。",
             })
             return
+        if user_msg_id is None:
+            # FR-006：该消息已被停止清队作废——拒绝借重发复活，按已取消收口。
+            yield _sse("status", {
+                "status": "cancelled",
+                "message_id": getattr(payload, "message_id", None),
+            })
+            return
 
         # ── FR-006 会话串行门：同会话同刻只跑一轮，后到排队（FIFO）────────
         gate = get_conversation_gate(conversation_id)
@@ -889,25 +896,39 @@ class MetaAgentService(BaseAgentService):
             entered_epoch = gate.epoch
             waiter = asyncio.current_task()
             gate.register_waiter(waiter)
+            # FIFO 保位：acquire 任务整个排队期只创建一次，心跳用 asyncio.wait
+            # 计时、绝不取消它——wait_for 超时会取消并重排队尾，15s 心跳后
+            # 队序就被打乱了（review R-003）。
+            acquire_task = asyncio.ensure_future(gate.wait_acquire())
+            exited_cleanly = False
             try:
                 while True:
-                    try:
-                        await asyncio.wait_for(
-                            gate.wait_acquire(), timeout=_QUEUE_HEARTBEAT_S
-                        )
+                    done, _ = await asyncio.wait({acquire_task}, timeout=_QUEUE_HEARTBEAT_S)
+                    if acquire_task.done():
+                        acquire_task.result()  # 取出结果（Lock.acquire 不会失败）
+                        exited_cleanly = True
                         break
-                    except asyncio.TimeoutError:
-                        yield ": ping\n\n"  # 排队期心跳（客户端 45s 断流阈值）
-                    except asyncio.CancelledError:
-                        # 停止清队（epoch 前进）→ cancelled；连接断开 → paused
-                        # （DEC-009：保留待发，客户端回访后按序补跑）。
-                        conv_log.mark_user(
-                            conversation_id, user_msg_id,
-                            "cancelled" if gate.epoch != entered_epoch else "paused",
-                        )
-                        raise
+                    yield ": ping\n\n"  # 排队期心跳（客户端 45s 断流阈值）
             finally:
                 gate.unregister_waiter(waiter)
+                if not exited_cleanly:
+                    # 排队期退出（断连/停止清队/取消落在 ping yield）：放弃排队
+                    # 并落状态——放 finally 保证所有退出路径都有账。
+                    # 停止清队（epoch 前进）→ cancelled；连接断开 → paused
+                    # （DEC-009：保留待发，客户端回访后按序补跑）。
+                    # 锁归还（R2-P1）：授予可能先于取消观察落地——等待者挂在
+                    # ping yield 上没看见 acquire_task 已 done，cancel 对已完成
+                    # 任务是 no-op，锁会悬死。done-callback 兜底归还。
+                    def _return_lock_if_granted(task: asyncio.Task) -> None:
+                        if not task.cancelled() and task.exception() is None:
+                            gate.release()
+
+                    acquire_task.add_done_callback(_return_lock_if_granted)
+                    acquire_task.cancel()
+                    conv_log.mark_user(
+                        conversation_id, user_msg_id,
+                        "cancelled" if gate.epoch != entered_epoch else "paused",
+                    )
             if gate.epoch != entered_epoch:
                 gate.release()
                 conv_log.mark_user(conversation_id, user_msg_id, "cancelled")

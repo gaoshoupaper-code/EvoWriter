@@ -57,12 +57,20 @@ class ConversationGate:
         return cancelled
 
 
-_gates: dict[str, ConversationGate] = {}
+_gates: dict[tuple[object, str], ConversationGate] = {}
 
 
 def get_conversation_gate(conversation_id: str) -> ConversationGate:
-    gate = _gates.get(conversation_id)
+    """取会话门。注册表按（事件循环, 会话 id）隔离：
+
+    asyncio.Lock 绑定首个竞争它的循环，跨循环复用会 RuntimeError。生产
+    单进程单循环下等价于全局唯一；测试/多循环环境各自拿各自的门，
+    不串台（review R-loop：模块级单键注册表曾让测试间泄漏锁绑定）。
+    """
+    loop = asyncio.get_running_loop()
+    key = (loop, conversation_id)
+    gate = _gates.get(key)
     if gate is None:
         gate = ConversationGate()
-        _gates[conversation_id] = gate
+        _gates[key] = gate
     return gate

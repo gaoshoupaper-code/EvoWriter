@@ -99,6 +99,33 @@ const FINAL_ONLY = (text: string) => encode([
   }),
 ]);
 
+/** 排队后挂住、手动 break() 才断流的流（无 final → 断连兜底）。 */
+function queuedThenBreakStream() {
+  const prefix = RUN2_PREFIX;
+  let phase: "prefix" | "gate" = "prefix";
+  let index = 0;
+  let pending: ((c: { done: false; value: Uint8Array } | { done: true; value: undefined }) => void) | null = null;
+  return {
+    read: () =>
+      new Promise<{ done: false; value: Uint8Array } | { done: true; value: undefined }>((resolve) => {
+        if (phase === "prefix") {
+          resolve({ done: false, value: prefix[index++] });
+          if (index >= prefix.length) phase = "gate";
+          return;
+        }
+        pending = resolve;
+      }),
+    cancel: () => {
+      pending?.({ done: true, value: undefined });
+      return Promise.resolve();
+    },
+    breakStream: () => {
+      pending?.({ done: true, value: undefined });
+    },
+    release: () => {}, // 类型兼容 gatedStream 工厂签名（本流用 breakStream 断流）
+  };
+}
+
 // 按调用序消费的流工厂队列（每项返回带 release 的可控流）
 let factories: Array<() => ReturnType<typeof gatedStream>> = [];
 let streamCalls: { body: Record<string, unknown> }[] = [];
@@ -132,6 +159,7 @@ vi.mock("@/lib/api", () => ({
   fetchThreadTraces: vi.fn().mockResolvedValue([]),
   fetchTraceDetail: vi.fn().mockResolvedValue(null),
   fetchThreadRunState: vi.fn().mockResolvedValue({ trace_id: null, status: "idle", awaiting: null }),
+  apiFetch: vi.fn().mockResolvedValue({ ok: true, status: 200, json: () => Promise.resolve({}), text: () => Promise.resolve("") }),
   fetchThreadConversation: vi.fn().mockResolvedValue([]),
   createThread: vi.fn().mockResolvedValue({ thread_id: "thread-1", workspace_id: "ws-1", session_name: "s", workspace_path: "/t", created_at: "", updated_at: "" }),
   updateThread: vi.fn().mockResolvedValue({ thread_id: "thread-1" }),
@@ -216,12 +244,7 @@ describe("FR-006 会话排队与 DEC-009 断连补跑", () => {
     const input = await screen.findByRole("textbox", {}, { timeout: 10000 });
     await user.type(input, "第一轮：写第三章{Enter}");
     await user.type(input, "排队消息：加个反转{Enter}");
-    await waitFor(() => {
-      expect(screen.getByText(/排队中/)).toBeInTheDocument();
-    }, { timeout: 5000 });
-
-    // 排队流断连：done 无 final → failed + 待补跑文案
-    s2.stream.release();
+    // 排队帧与断流收尾可能同批到达（瞬态「排队中」不保证可渲染）——直接等稳定态
     await waitFor(() => {
       expect(screen.getByText(/自动补发/)).toBeInTheDocument();
     }, { timeout: 5000 });
@@ -249,5 +272,74 @@ describe("FR-006 会话排队与 DEC-009 断连补跑", () => {
     await waitFor(() => {
       expect(screen.getByText("新消息完成")).toBeInTheDocument();
     }, { timeout: 5000 });
+  });
+
+  it("两个排队中断对：下一条消息触发时按序全部补跑、原 id 幂等（review R-001/R-002）", async () => {
+    const user = userEvent.setup();
+    const s1 = { stream: gatedStream(RUN1_FINAL, RUN1_AFTER) };
+    const sA = queuedThenBreakStream();
+    const sB = queuedThenBreakStream();
+    factories = [() => s1.stream, () => sA, () => sB];
+    render(<MemoryRouter initialEntries={["/"]}><Home /></MemoryRouter>);
+
+    const input = await screen.findByRole("textbox", {}, { timeout: 10000 });
+    await user.type(input, "第一轮：写第三章{Enter}");
+    await user.type(input, "排队甲：加个反转{Enter}");
+    await user.type(input, "排队乙：换个视角{Enter}");
+    // 两条都稳定挂起在排队态
+    await waitFor(() => expect(screen.getAllByText(/排队中/).length).toBe(2), { timeout: 5000 });
+    // 一起断连（如应用离线）：两条都成待补跑对
+    sA.breakStream();
+    sB.breakStream();
+    await waitFor(() => expect(screen.getAllByText(/自动补发/).length).toBe(2), { timeout: 5000 });
+
+    const idA = streamCalls[1]?.body.message_id;
+    const idB = streamCalls[2]?.body.message_id;
+    expect(idA).toBeTruthy();
+    expect(idB).toBeTruthy();
+    expect(idA).not.toBe(idB);
+
+    // 补跑两条（原 id）+ 新消息一条
+    factories = [
+      () => gatedStream(FINAL_ONLY("甲补跑完成"), []),
+      () => gatedStream(FINAL_ONLY("乙补跑完成"), []),
+      () => gatedStream(FINAL_ONLY("新消息完成"), []),
+    ];
+    await user.type(input, "新消息：下一章{Enter}");
+    await waitFor(() => expect(streamCalls.length).toBeGreaterThanOrEqual(6), { timeout: 8000 });
+    expect((streamCalls[3]?.body as { prompt?: string; message_id?: string }).prompt).toBe("排队甲：加个反转");
+    expect(streamCalls[3]?.body.message_id).toBe(idA);
+    expect((streamCalls[4]?.body as { prompt?: string }).prompt).toBe("排队乙：换个视角");
+    expect(streamCalls[4]?.body.message_id).toBe(idB);
+    expect((streamCalls[5]?.body as { prompt?: string }).prompt).toBe("新消息：下一章");
+    await waitFor(() => expect(screen.getByText("甲补跑完成")).toBeInTheDocument(), { timeout: 5000 });
+    await waitFor(() => expect(screen.getByText("乙补跑完成")).toBeInTheDocument(), { timeout: 5000 });
+    await waitFor(() => expect(screen.getByText("新消息完成")).toBeInTheDocument(), { timeout: 5000 });
+  });
+
+  it("停止时排队行落 stopped，不再被下一条消息复活（review R-002 客户端侧）", async () => {
+    const user = userEvent.setup();
+    const s1 = { stream: gatedStream(RUN1_FINAL, RUN1_AFTER) };
+    // 排队后挂住（吐完 queued 帧停在闸门）：排队态稳定，直到停止干预
+    const s2 = { stream: gatedStream(RUN2_PREFIX, RUN2_AFTER) };
+    factories = [() => s1.stream, () => s2.stream];
+    render(<MemoryRouter initialEntries={["/"]}><Home /></MemoryRouter>);
+
+    const input = await screen.findByRole("textbox", {}, { timeout: 10000 });
+    await user.type(input, "第一轮：写第三章{Enter}");
+    await user.type(input, "排队消息：加个反转{Enter}");
+    await waitFor(() => expect(screen.getByText(/排队中/)).toBeInTheDocument(), { timeout: 5000 });
+
+    // 点停止：排队行立即落 stopped（不被断流兜底标成待补跑）
+    const stopButton = await screen.findByRole("button", { name: "停止" }, { timeout: 5000 });
+    await user.click(stopButton);
+    await waitFor(() => expect(screen.getByText(/已停止（排队中/)).toBeInTheDocument(), { timeout: 5000 });
+
+    // 下一条消息：不补跑被停掉的排队消息（只有本条自己的请求）
+    factories = [() => gatedStream(FINAL_ONLY("新消息完成"), [])];
+    await user.type(input, "新消息：下一章{Enter}");
+    await waitFor(() => expect(streamCalls.length).toBe(3), { timeout: 5000 });
+    expect((streamCalls[2]?.body as { prompt?: string }).prompt).toBe("新消息：下一章");
+    await waitFor(() => expect(screen.getByText("新消息完成")).toBeInTheDocument(), { timeout: 5000 });
   });
 });

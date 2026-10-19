@@ -551,9 +551,13 @@ async function resendPausedMessages(
 ) {
   // 每轮从最新 state 重取第一个待补跑对、按当轮索引移除（review R-001：
   // 预计算的索引快照在移除/并发提交后会错位删行），直至清空。
+  // R2-P3：本轮已试过的 id 跳过——补跑自身又断连生成的新待补跑对留给
+  // 下次用户提交，不在同一循环里自噬。
+  const attempted = new Set<string | undefined>();
   for (;;) {
-    const pair = collectPausedPairs(get().messages)[0];
+    const pair = collectPausedPairs(get().messages).find((p) => !attempted.has(p.messageId));
     if (!pair) return;
+    attempted.add(pair.messageId);
     set((state) => {
       const fresh = collectPausedPairs(state.messages);
       if (!fresh.length) return {};

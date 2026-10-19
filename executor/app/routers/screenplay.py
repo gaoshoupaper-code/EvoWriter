@@ -103,7 +103,7 @@ class StopRequest(BaseModel):
 
 
 @router.post("/screenplay/stop")
-def stop_screenplay(req: StopRequest, user: CurrentUser = Depends(current_user)):
+async def stop_screenplay(req: StopRequest, user: CurrentUser = Depends(current_user)):
     """标记用户请求停止某条 trace（D6 + D-停止真生效 + FR-006 清空队列）。
 
     三步：
@@ -115,14 +115,18 @@ def stop_screenplay(req: StopRequest, user: CurrentUser = Depends(current_user))
        清空队列）——取消串行门外等待的请求，并把台账里 queued/paused 的
        用户消息标 cancelled（不复活、不残留待发）。
 
+    async（review R-D/E）：task.cancel 必须在事件循环线程发起；先做归属校验
+    （thread 解析不到 = 非本人会话）再动会话门，别人的队列碰不得。
+
     第 2 步是关键补丁：原来"真停止"完全依赖前端 abort SSE 连接，浏览器刷新/关闭/
     cloudflared 掐断后 abortController 丢失，后台 trace 就停不掉。现在后端主动 kill，
     不依赖前端连接状态。幂等：trace 已结束/未登记返回 task_cancelled=False，不抛错。
     """
     recorder = get_trace_recorder()
+    thread = get_thread_store().get_thread(user.user_id, req.thread_id)
     recorder.request_user_stop(req.trace_id)
     cancelled = recorder.cancel_run_task(req.trace_id)
-    queue_cleared = _clear_conversation_queue(user.user_id, req.thread_id)
+    queue_cleared = _clear_conversation_queue(thread) if thread is not None else 0
     return {
         "status": "accepted",
         "trace_id": req.trace_id,
@@ -131,22 +135,23 @@ def stop_screenplay(req: StopRequest, user: CurrentUser = Depends(current_user))
     }
 
 
-def _clear_conversation_queue(user_id: str, thread_id: str) -> int:
-    """停止清队：取消门外等待者 + 台账 queued/paused 消息标 cancelled。best-effort。"""
+def _clear_conversation_queue(thread: ThreadSummary) -> int:
+    """停止清队：取消门外等待者 + 台账 queued/paused 消息标 cancelled。best-effort。
+
+    调用方已通过 get_thread(user_id, thread_id) 完成归属校验。
+    """
     from app.domains.writing.run_gate import get_conversation_gate
 
-    gate = get_conversation_gate(thread_id)
+    gate = get_conversation_gate(thread.thread_id)
     cancelled_waiters = gate.clear_for_stop()
-    thread = get_thread_store().get_thread(user_id, thread_id)
-    if thread is not None:
-        from pathlib import Path
+    from pathlib import Path
 
-        from app.domains.writing.conversation_log import ConversationLog
+    from app.domains.writing.conversation_log import ConversationLog
 
-        log = ConversationLog(Path(thread.workspace_path))
-        for message in log.read(thread_id):
-            if message.role == "user" and message.status in ("queued", "paused"):
-                log.mark_user(thread_id, message.id, "cancelled")
+    log = ConversationLog(Path(thread.workspace_path))
+    for message in log.read(thread.thread_id):
+        if message.role == "user" and message.status in ("queued", "paused"):
+            log.mark_user(thread.thread_id, message.id, "cancelled")
     return cancelled_waiters
 
 

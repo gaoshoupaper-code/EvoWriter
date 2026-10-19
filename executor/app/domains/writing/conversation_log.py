@@ -77,15 +77,21 @@ class ConversationLog:
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    def admit_user(self, conversation_id: str, content: str, *, message_id: str | None = None) -> str:
+    def admit_user(self, conversation_id: str, content: str, *, message_id: str | None = None) -> str | None:
         """用户消息先落档（ledger）。同一 message_id 重发（断连补跑）重新入队。
 
         落档失败抛 ConversationLogError——调用方必须拒绝该轮。
+        返回 None = 拒绝重入队：该 id 已被停止清队标 cancelled（FR-006：
+        停止=清空队列，被停掉的排队消息不得借重发复活）。
         """
         message_id = message_id or f"u-{uuid.uuid4().hex}"
-        existing = {m.id for m in self.read(conversation_id)}
+        folded = self.read(conversation_id)
+        user_ids = {m.id for m in folded if m.role == "user"}
         try:
-            if message_id in existing:
+            if message_id in user_ids:
+                current = next(m for m in folded if m.id == message_id)
+                if current.status == "cancelled":
+                    return None
                 self._append(conversation_id, {
                     "kind": "user_status", "id": message_id,
                     "status": "queued", "ts": _now_iso(),

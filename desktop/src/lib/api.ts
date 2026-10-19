@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { CharacterGenerateRequest, CharacterGenerateResponse, CheckpointState, InitResponse, Style, ThreadSummary, TraceDetail, TraceRunSummary, WorkspaceBootstrapResponse, WorkspaceCharacterContent, WorkspaceObjectContent, WorkspaceOutlineContent, WorkspaceStorylineContent, WorkspaceWorldviewContent, WorkspaceSummary } from "./types";
+import type { CharacterGenerateRequest, CharacterGenerateResponse, CheckpointState, InitResponse, Style, ThreadSummary, TraceDetail, TraceRunSummary, TraceStatus, WorkspaceBootstrapResponse, WorkspaceCharacterContent, WorkspaceObjectContent, WorkspaceOutlineContent, WorkspaceStorylineContent, WorkspaceWorldviewContent, WorkspaceSummary } from "./types";
 
 /**
  * 桌面端所有请求走 Rust 中继（设计文档 S4/S5）：
@@ -530,6 +530,30 @@ export async function fetchWorkspaceOutline(workspaceId: string) {
 export async function fetchThreadTraces(threadId: string) {
   const response = await apiFetch(`${API_BASE_URL}/api/threads/${threadId}/traces`);
   return parseJsonResponse<TraceRunSummary[]>(response);
+}
+
+// ── 恢复对账（D-对账）：断线后回查服务端 run 真相 ──────────
+
+export type RunStateOption = { label: string; description: string };
+
+export type ThreadRunState = {
+  /** 最新 run 的 trace_id；会话从未跑过时为 null（status="idle"） */
+  trace_id: string | null;
+  status: TraceStatus | "idle";
+  /** 仅 status="awaiting_input" 且服务端提问重建成功时非 null */
+  awaiting: {
+    kind: string;
+    question: string;
+    options: RunStateOption[] | null;
+    multi_select: boolean;
+    source?: string | null;
+    asked_at?: string | null;
+  } | null;
+};
+
+/** 恢复会话时查服务端最新 run 状态，纠正本地陈旧的「正在执行...」占位消息。 */
+export async function fetchThreadRunState(threadId: string): Promise<ThreadRunState> {
+  return apiJson<ThreadRunState>(`${API_BASE_URL}/api/threads/${threadId}/run-state`);
 }
 
 export async function fetchTraceDetail(threadId: string, traceId: string) {

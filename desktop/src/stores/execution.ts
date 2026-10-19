@@ -31,10 +31,13 @@ import {
   API_BASE_URL,
   apiFetch,
   createThread as createThreadRequest,
+  fetchThreadRunState,
   updateThread as updateThreadRequest,
   trackCopy,
   trackRegenerate,
+  type ThreadRunState,
 } from "@/lib/api";
+import { reconcileMessagesWithRunState } from "@/lib/run-reconcile";
 
 // ── 心跳超时（与原 home.tsx 一致）──
 const HEARTBEAT_TIMEOUT_MS = 45_000;
@@ -369,6 +372,9 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
       // 防止异步恢复的旧列表盖掉在途提交的消息（review P1 竞态修复）
       if (d.getActiveThreadId() !== threadId || get().loading) return;
       set({ messages: restored || [makeWelcomeMessage(!!d.getActiveWorkspaceId())] });
+      // D-对账：本地恢复后回查服务端 run 真相，纠正断线期间分叉的
+      // 「正在执行...」占位（interrupt 帧断连丢失，两端状态机各走各的）
+      if (restored) void reconcileRestoredRunState(set, get, threadId);
     });
   },
 
@@ -437,6 +443,38 @@ export function installExecutionPersist() {
 export function _resetExecutionPersistForTests() {
   uninstallExecutionPersist?.();
   uninstallExecutionPersist = null;
+}
+
+// ── 恢复对账（D-对账）──
+
+/**
+ * 本地恢复后回查服务端最新 run 状态，纠正断线期间分叉的陈旧占位消息。
+ *
+ * 时序：SSE interrupt 帧丢失 → 服务端保持 awaiting_input 等 resume、
+ * 客户端占位停在「正在执行...」→ 重启恢复时以此收敛到服务端真相
+ * （拍板卡重建 / 终态落定 / 无记录落 stopped）。
+ */
+async function reconcileRestoredRunState(
+  set: (partial: Partial<ExecutionState> | ((s: ExecutionState) => Partial<ExecutionState>)) => void,
+  get: () => ExecutionState,
+  threadId: string,
+) {
+  const d = requireDeps();
+  // 预检：尾部消息不陈旧（已有终态/卡点）就不发请求
+  const snapshot = get().messages;
+  const last = snapshot[snapshot.length - 1];
+  if (!last || last.role !== "assistant" || last.status || last.awaitingInput) return;
+  let runState: ThreadRunState;
+  try {
+    runState = await fetchThreadRunState(threadId);
+  } catch {
+    return; // 离线/接口异常：保持本地恢复形态，不比现状差
+  }
+  // 竞态保护：对账往返期间切换会话或开始新 run 则放弃（纯函数内部还会再校验尾部）
+  if (d.getActiveThreadId() !== threadId || get().loading) return;
+  const next = reconcileMessagesWithRunState(get().messages, runState);
+  if (!next) return;
+  set({ messages: next });
 }
 
 // ── 核心实现（从 home.tsx:1099-1586 迁移）──

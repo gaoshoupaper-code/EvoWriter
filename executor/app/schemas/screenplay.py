@@ -264,3 +264,37 @@ class WorkspaceBootstrapResponse(BaseModel):
     worldview: WorkspaceWorldviewContent | None = None
     objects: WorkspaceObjectContent | None = None
     outline: WorkspaceOutlineContent | None = None
+
+
+class RunStateOption(BaseModel):
+    """run-state 对账端点的选项（与 confirm_with_user 的 ConfirmOption 对齐）。"""
+
+    label: str
+    description: str = ""
+
+
+class AwaitingInputDetail(BaseModel):
+    """run-state 对账端点的等待输入详情（从 trace hitl/tool_start 事件重建）。
+
+    字段与 SSE interrupt 帧对齐（hitl.py DD4 协议），桌面端据此恢复拍板卡。
+    """
+
+    kind: str = "choice"
+    question: str = ""
+    options: list[RunStateOption] | None = None
+    multi_select: bool = False
+    source: str | None = None
+    # 卡点产生时间（hitl 事件时间戳）：客户端恢复卡片时作 askedAt 用。
+    asked_at: str | None = None
+
+
+class ThreadRunStateResponse(BaseModel):
+    """GET /api/threads/{id}/run-state — 桌面端恢复对账（D-对账）。
+
+    返回该会话最新 run 的服务端真相；无任何 run 时 status="idle"。
+    awaiting 仅在 status="awaiting_input" 且提问重建成功时非 None。
+    """
+
+    trace_id: str | None = None
+    status: str
+    awaiting: AwaitingInputDetail | None = None

@@ -549,10 +549,21 @@ async function resendPausedMessages(
   set: (partial: Partial<ExecutionState> | ((s: ExecutionState) => Partial<ExecutionState>)) => void,
   get: () => ExecutionState,
 ) {
-  for (const pair of collectPausedPairs(get().messages)) {
-    set((state) => ({
-      messages: state.messages.filter((_, idx) => idx !== pair.userIndex && idx !== pair.userIndex + 1),
-    }));
+  // 每轮从最新 state 重取第一个待补跑对、按当轮索引移除（review R-001：
+  // 预计算的索引快照在移除/并发提交后会错位删行），直至清空。
+  for (;;) {
+    const pair = collectPausedPairs(get().messages)[0];
+    if (!pair) return;
+    set((state) => {
+      const fresh = collectPausedPairs(state.messages);
+      if (!fresh.length) return {};
+      const current = fresh[0];
+      return {
+        messages: state.messages.filter(
+          (_, idx) => idx !== current.userIndex && idx !== current.userIndex + 1,
+        ),
+      };
+    });
     await performSubmit(set, get, pair.content, {
       messageId: pair.messageId,
       isResend: true,
@@ -1157,6 +1168,16 @@ function handleStopGeneration(set: any, get: () => ExecutionState) {
   const activeThreadId = d.getActiveThreadId();
   const liveTraceId = d.getLiveTraceId();
 
+  // FR-006 停止=清空队列（review R-002）：排队行先落 stopped，再取消流——
+  // 否则断流兜底会把它们标成「待补跑」，下一条消息时被复活，违背停止语义。
+  set((state: ExecutionState) => ({
+    messages: state.messages.map((m: ExecutionState["messages"][number]) =>
+      m.role === "assistant" && m.status === "queued"
+        ? { ...m, status: "stopped" as const, content: "已停止（排队中，未开始生成）。" }
+        : m,
+    ),
+  }));
+
   if (activeThreadId) {
     // FR-006 停止=清空队列：始终发 stop（无 live trace 时 trace_id 传空，
     // 服务端幂等——正主由 trace 级取消处理，门外排队者由清队分支收口）。
@@ -1167,8 +1188,8 @@ function handleStopGeneration(set: any, get: () => ExecutionState) {
     }).catch(() => {});
   }
   get().streamReader?.cancel().catch(() => {});
-  // 并发多流（排队）：本地全部取消，行内各自收口（排队行收到 cancelled 帧或
-  // 断流兜底落 stopped）
+  // 并发多流（排队）：本地全部取消，行内各自收口（排队行已终态 stopped，
+  // 断流兜底的 rowTerminal 守卫不会再覆盖）
   for (const r of Array.from(activeReaders)) {
     void r.cancel().catch(() => {});
   }

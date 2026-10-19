@@ -321,23 +321,23 @@ def test_validate_volume_final() -> None:
     assert any("卷末钩子" in e for e in errs)
 
 
-# ── WritingState（DEC-002 handoff override 载体）───────────────────
+# ── WritingState（人工段指针载体，REQ-20261019-232617 FR-002）──────
 
 
 def test_writing_state_roundtrip(tmp_path: Path) -> None:
     state = load_writing_state(tmp_path)
-    state.override_stage = STAGE_CHAPTER
+    state.confirmed_stage = STAGE_CHAPTER
     state.active_threads["author"] = "t1"
     save_writing_state(tmp_path, state)
     loaded = load_writing_state(tmp_path)
-    assert loaded.override_stage == STAGE_CHAPTER
+    assert loaded.confirmed_stage == STAGE_CHAPTER
     assert loaded.active_threads["author"] == "t1"
 
 
 def test_writing_state_corruption_tolerant(tmp_path: Path) -> None:
     _touch(tmp_path, ".writing/state.json", "{ 不是 json")
     state = load_writing_state(tmp_path)
-    assert state.override_stage is None  # 回默认，不阻塞主流程
+    assert state.confirmed_stage is None  # 回默认，不阻塞主流程
 
 
 # ── 阶段闸依据（FR-006 / AC-008）──────────────────────────────────
@@ -350,6 +350,92 @@ def test_stage_allowed_kinds() -> None:
     # 文风卡在章纲段起草（DEC-009）
     assert stage_allowed_kinds(STAGE_CHAPTER) == {KIND_CHAPTER, KIND_STYLE}
     assert stage_allowed_kinds(STAGE_TEXT) == {KIND_TEXT}
+
+
+# ── 阶段切换人工闸（REQ-20261019-232617 FR-001/002/005）────────────
+
+
+# 2026-10-19 线上事故样本（工作区 5b09…848 主题.md 节选）：小节标题齐全但
+# 正文全是占位、状态行「起草中（核心爽点已定稿）」——旧判定误判 theme_done
+INCIDENT_THEME_DRAFT = """# 主题 · 书名待定
+> 状态：起草中（核心爽点已定稿）｜会话 d70d052b
+
+## 一句话主题
+（待三件套齐后压成）
+
+## 约束级（定稿，下游必须遵守）
+
+### 核心爽点（已定稿）
+**【核心爽点 · 定稿卡片】**
+一句话：测试爽点
+
+### 核心矛盾
+（未定稿，待第 2 步）
+
+### 核心爽点剧情
+（未定稿，待第 3 步）
+"""
+
+
+def test_final_status_rejects_drafting_marker() -> None:
+    """DEC-003：状态行含「起草中/进行中」不算定稿——事故样本里
+    「起草中（核心爽点已定稿）」含「定稿」二字但整体是起草态。"""
+    from contracts.writing_artifacts import is_final_status
+
+    assert not is_final_status("> 状态：起草中（核心爽点已定稿）｜会话 d70d052b")
+    assert not is_final_status("> 状态：进行中｜2026-10-19")
+    assert is_final_status("> 状态：定稿｜2026-10-18")
+
+
+def test_theme_incident_draft_not_done(tmp_path: Path) -> None:
+    """AC-001 锚：事故占位草稿不得判 theme_done（不切段、不通知）。"""
+    _touch(tmp_path, "主题.md", INCIDENT_THEME_DRAFT)
+    prog = scan_writing_progress(tmp_path)
+    assert prog.theme_done is False
+    assert derive_stage(prog) == STAGE_THEME
+
+
+def test_final_rejects_placeholder_sections(tmp_path: Path) -> None:
+    """占位辅助检测（DEC-003）：必备小节正文是整行括号占位不算定稿。"""
+    draft = THEME_FINAL.replace("谁靠什么在什么拉扯里走什么路。", "（待三件套齐后压成）")
+    _touch(tmp_path, "主题.md", draft)
+    assert scan_writing_progress(tmp_path).theme_done is False
+    # 正常内容里的括号短句不误伤
+    _touch(tmp_path, "主题.md", THEME_FINAL.replace("谁靠什么在什么拉扯里走什么路。", "谁靠什么（见第 3 卷）走什么路。"))
+    assert scan_writing_progress(tmp_path).theme_done is True
+
+
+def test_theme_final_regression_still_done(tmp_path: Path) -> None:
+    """收紧回归：正常定稿照常 theme_done。"""
+    _touch(tmp_path, "主题.md", THEME_FINAL)
+    assert scan_writing_progress(tmp_path).theme_done is True
+
+
+def test_confirmed_stage_roundtrip(tmp_path: Path) -> None:
+    """人工段指针持久化（FR-002 切段唯一真相载体）。"""
+    from contracts.writing_artifacts import save_writing_state
+
+    state = load_writing_state(tmp_path)
+    state.confirmed_stage = STAGE_OUTLINE
+    save_writing_state(tmp_path, state)
+    assert load_writing_state(tmp_path).confirmed_stage == STAGE_OUTLINE
+
+
+def test_resolve_confirmed_stage_fallback_then_sticky(tmp_path: Path) -> None:
+    """指针解析：缺失→目录扫描兜底（FR-005 迁移）；已设→产物变化不动摇（DEC-006/AC-009）。"""
+    from contracts.writing_artifacts import resolve_confirmed_stage, save_writing_state
+
+    # 空工作区：无指针，扫描兜底 theme
+    assert resolve_confirmed_stage(tmp_path) == STAGE_THEME
+    # 题材定稿落盘（产物推进）但无人确认：仍按扫描兜底推进（迁移语义）
+    _touch(tmp_path, "主题.md", THEME_FINAL)
+    assert resolve_confirmed_stage(tmp_path) == STAGE_OUTLINE
+    # 人工确认进总纲后，题材被打回草稿：指针不动摇（AC-009）
+    state = load_writing_state(tmp_path)
+    state.confirmed_stage = STAGE_OUTLINE
+    save_writing_state(tmp_path, state)
+    _touch(tmp_path, "主题.md", INCIDENT_THEME_DRAFT)
+    assert resolve_confirmed_stage(tmp_path) == STAGE_OUTLINE
 
 
 def test_stage_labels() -> None:

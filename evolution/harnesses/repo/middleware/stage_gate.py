@@ -7,7 +7,9 @@
   - update_foreshadow_table / rewrite_rhythm_table：仅章纲段。
   - append_chapter_deviation：仅正文段（该章已人修定稿的前置由工具二道防线再校验）。
 
-读档（read_artifact）、拍板（confirm_with_user）、跳段（handoff）不受限。
+读档（read_artifact）与拍板（confirm_with_user）不受限。段间移动
+（前进/跳段/回退）只经界面人工确认（REQ-20261019-232617 FR-004：模型
+工具箱无跳段工具，只能文字建议作者在界面操作）。
 legacy 工作区（旧结构扫描不出五段进度 → 阶段停在题材且无对应产物可写）
 被本闸结构性挡住一切产物写入——只读语义由结构自然成立（DEC-010）。
 
@@ -28,8 +30,6 @@ from contracts.writing_artifacts import (
     STAGE_CHAPTER,
     STAGE_LABELS,
     STAGE_TEXT,
-    derive_stage,
-    scan_writing_progress,
     stage_allowed_kinds,
 )
 
@@ -95,7 +95,7 @@ class StageGateMiddleware(AgentMiddleware):
                         request,
                         f"当前是「{STAGE_LABELS.get(self.stage, self.stage)}」段，"
                         f"只允许写入产物种类 {sorted(allowed)}，收到 {kind!r}。"
-                        "要改上游产物：先请作者点名跳段（handoff）回对应段重走重确认；"
+                        "要改上游产物：先请作者在界面回退到对应段重走重确认；"
                         "本段产物按当前段流程推进。",
                     )
                 return None
@@ -146,25 +146,21 @@ class StageGateMiddleware(AgentMiddleware):
 
 
 def build(abc):
-    """架构清单挂载钩子：装配时冻结当前段（DEC-002）。
+    """架构清单挂载钩子：装配时冻结当前段（FR-002 人工段指针口径）。
 
-    段解析三来源与 executor 路由同口径（C3 修复）：点名跳段（handoff 写入
-    .writing/state.json 的 override_stage，装配发生在 commit 清除之前）>
-    目录扫描。legacy 工作区（旧五件套/七步/三步制）构造空段闸——一切写
-    入拦死（FR-012 只读，S1/C6 修复）。
+    段解析与 executor 路由同口径（contracts.resolve_confirmed_stage 唯一
+    实现）：人工段指针优先，缺失按目录扫描兜底（FR-005 存量迁移语义）。
+    legacy 工作区（旧五件套/七步/三步制）构造空段闸——一切写入拦死
+    （FR-012 只读，S1/C6 修复）。
     """
     from contracts.writing_artifacts import (
         classify_writing_workspace,
-        load_writing_state,
+        resolve_confirmed_stage,
     )
 
     if classify_writing_workspace(abc.workspace_path) == "legacy":
         return StageGateMiddleware(_LEGACY_STAGE)
-    override = load_writing_state(abc.workspace_path).override_stage
-    stage = override if override in STAGE_LABELS else derive_stage(
-        scan_writing_progress(abc.workspace_path)
-    )
-    return StageGateMiddleware(stage)
+    return StageGateMiddleware(resolve_confirmed_stage(abc.workspace_path))
 
 
 __all__ = ["StageGateMiddleware"]

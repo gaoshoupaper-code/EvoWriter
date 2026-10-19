@@ -6,7 +6,6 @@
   - read_artifact：缺产物指引、小节切片、读取登记。
   - stage_gate（AC-008）：越段写拦截、回写工具阶段限制。
   - append_chapter_deviation 前置（AC-007）：仅人修定稿后可用。
-  - handoff：override 落状态（DEC-002 点名跳段）。
   - 工具 schema 无路径参数（AC-005）。
 """
 from __future__ import annotations
@@ -24,7 +23,6 @@ from harness_current.middleware.stage_gate import StageGateMiddleware  # noqa: E
 from harness_current.tools.append_chapter_deviation import (  # noqa: E402
     build_append_deviation_tool,
 )
-from harness_current.tools.handoff import build_handoff_tool  # noqa: E402
 from harness_current.tools.read_artifact import build_read_artifact_tool  # noqa: E402
 from harness_current.tools.rewrite_rhythm_table import (  # noqa: E402
     build_rewrite_rhythm_tool,
@@ -419,11 +417,10 @@ def test_stage_gate_writeback_tool_stage_limits() -> None:
     assert chapter_gate2._maybe_block(_req("append_chapter_deviation", chapter=1)) is not None
 
 
-def test_stage_gate_passes_read_confirm_handoff() -> None:
+def test_stage_gate_passes_read_and_confirm() -> None:
     gate = StageGateMiddleware("theme")
     assert gate._maybe_block(_req("read_artifact", kind="outline")) is None
     assert gate._maybe_block(_req("confirm_with_user")) is None
-    assert gate._maybe_block(_req("handoff", target_stage="text")) is None
 
 
 def test_stage_gate_wrap_blocks_and_keeps_blocking() -> None:
@@ -465,8 +462,8 @@ def test_stage_gate_build_legacy_denies_all_writes(tmp_path: Path) -> None:
     assert gate._maybe_block(_req("read_artifact", kind="theme")) is None  # 读不拦
 
 
-def test_stage_gate_build_honors_override(tmp_path: Path) -> None:
-    """C3：点名跳段（override）同步切换闸门。"""
+def test_stage_gate_build_honors_pointer(tmp_path: Path) -> None:
+    """FR-002：人工段指针同步切换闸门（contracts.resolve_confirmed_stage 同口径）。"""
     import harness_current.middleware.stage_gate as sg_mod
     from contracts.writing_artifacts import (
         STAGE_CHAPTER,
@@ -480,16 +477,25 @@ def test_stage_gate_build_honors_override(tmp_path: Path) -> None:
     )
     (tmp_path / "主题.md").write_text(theme_final, encoding="utf-8")
     state = load_writing_state(tmp_path)
-    state.override_stage = STAGE_CHAPTER
+    state.confirmed_stage = STAGE_CHAPTER
     save_writing_state(tmp_path, state)
     abc = SimpleNamespace(workspace_path=tmp_path)
     gate = sg_mod.build(abc)
-    # 扫描段是 outline（总纲未落盘），但 override=chapter：章纲可写、总纲被拦
+    # 扫描段是 outline（总纲未落盘），但指针=chapter：章纲可写、总纲被拦
     assert gate._maybe_block(_req("save_artifact", kind="chapter_outline")) is None
     assert gate._maybe_block(_req("save_artifact", kind="outline")) is not None
 
 
 # ── append_chapter_deviation 前置（AC-007）────────────────────────
+
+
+def test_harness_has_no_handoff_tool() -> None:
+    """AC-005：模型工具箱无跳段工具——harness 包不装配 handoff（FR-004 收权）。"""
+    import harness_current.tools as tools_pkg
+
+    assert not hasattr(tools_pkg, "handoff")
+    assert not hasattr(tools_pkg, "build_handoff_tool")
+
 
 
 def _mk_chapter_ws(tmp_path: Path, *, finalized: bool) -> None:
@@ -547,62 +553,12 @@ def test_rhythm_table_section_replace(tmp_path: Path) -> None:
     assert "1-3" in updated and "旧表" not in updated and "保留" in updated
 
 
-# ── handoff（DEC-002；S3 修复：作者确认 interrupt）────────────────
-
-
-def _patch_interrupt(monkeypatch, answer: str) -> None:
-    import langgraph.types as lgt
-
-    monkeypatch.setattr(lgt, "interrupt", lambda payload: answer, raising=True)
-
-
-def test_handoff_confirmed_writes_override(tmp_path: Path, monkeypatch) -> None:
-    from contracts.writing_artifacts import load_writing_state
-
-    _patch_interrupt(monkeypatch, "确认，进卷纲")
-    tool = build_handoff_tool(tmp_path)
-    out = _call(tool, target_stage="volume")
-    assert "已确认跳段" in out
-    assert load_writing_state(tmp_path).override_stage == "volume"
-
-
-def test_handoff_declined_keeps_current(tmp_path: Path, monkeypatch) -> None:
-    from contracts.writing_artifacts import load_writing_state
-
-    _patch_interrupt(monkeypatch, "取消")
-    tool = build_handoff_tool(tmp_path)
-    out = _call(tool, target_stage="volume")
-    assert "未确认" in out
-    assert load_writing_state(tmp_path).override_stage is None
-
-
-def test_handoff_ambiguous_answer_defaults_to_stay(tmp_path: Path, monkeypatch) -> None:
-    """round2：模糊自由文本按未确认处理（白名单判定，安全默认不切段）。"""
-    from contracts.writing_artifacts import load_writing_state
-
-    for answer in ("再想想", "先别切", "", "嗯嗯"):
-        _patch_interrupt(monkeypatch, answer)
-        tool = build_handoff_tool(tmp_path)
-        out = _call(tool, target_stage="volume")
-        assert "未确认" in out, answer
-        assert load_writing_state(tmp_path).override_stage is None
-
-
-def test_handoff_invalid_stage_rejected(tmp_path: Path, monkeypatch) -> None:
-    from contracts.writing_artifacts import load_writing_state
-
-    _patch_interrupt(monkeypatch, "确认")
-    tool = build_handoff_tool(tmp_path)
-    out = _call(tool, target_stage="不存在的段")
-    assert "失败" in out
-    assert load_writing_state(tmp_path).override_stage is None
-
 
 # ── 工具 schema 无路径参数（AC-005）───────────────────────────────
 
 _ALLOWED_PROPS = {
     "kind", "volume", "chapter", "title", "mode", "anchor", "replacement",
-    "content", "section", "entries", "table", "note", "target_stage",
+    "content", "section", "entries", "table", "note",
     "question", "options", "multi_select",
 }
 
@@ -614,7 +570,6 @@ def test_tool_schemas_have_no_path_params(tmp_path: Path) -> None:
         build_update_foreshadow_tool(tmp_path),
         build_rewrite_rhythm_tool(tmp_path),
         build_append_deviation_tool(tmp_path),
-        build_handoff_tool(tmp_path),
     ]
     for tool in tools:
         schema = tool.args_schema.model_json_schema()

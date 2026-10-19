@@ -7,6 +7,8 @@ export type PipelineStatus = {
   kind: string; // five | legacy
   phase: string; // theme | outline | volume | chapter | text | legacy
   next_unit: string;
+  /** 段就绪信号（REQ-20261019-232617 FR-001）：产物齐全可请用户确认进下一段 */
+  ready?: { ready: boolean; next: string | null };
   awaiting: Record<string, string>;
   updated_at?: string;
   agent?: string | null;

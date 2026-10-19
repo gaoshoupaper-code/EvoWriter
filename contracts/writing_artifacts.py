@@ -285,15 +285,32 @@ def _status_line_value(text: str) -> str | None:
 
 
 def is_final_status(text: str) -> bool:
-    """段产物定稿判定：状态行含「定稿」且不含否定（未定稿/非定稿）。
+    """段产物定稿判定：状态行含「定稿」且不含否定（未定稿/非定稿/起草中/进行中）。
 
     严格口径（DEC-003）：无状态行不算定稿——忘写状态行的草稿只会
-    「该切没切」（handoff 可救），不得反向误切段。
+    「该切没切」（handoff 可救），不得反向误切段。「起草中/进行中」
+    否定词（REQ-20261019-232617 DEC-003）：2026-10-19 事故样本状态行
+    「起草中（核心爽点已定稿）」含「定稿」二字但整体是起草态。
     """
     value = _status_line_value(text) or ""
-    if "未定稿" in value or "非定稿" in value:
+    if any(w in value for w in ("未定稿", "非定稿", "起草中", "进行中")):
         return False
     return "定稿" in value
+
+
+# 占位小节检测（REQ-20261019-232617 DEC-003 辅助条件）：整行括号占位
+# （「（未定稿，待第 2 步）」「（待三件套齐后压成）」）不算真实内容。
+# 便宜启发式：只拦「整行括号且含未定稿/待字头」的正文，正常行内括号短句
+# （如「（见第 3 卷）」）不误伤；拦不住的占位变体由人工段指针闸兜底。
+_PLACEHOLDER_LINE = re.compile(r"^（[^）]{1,60}）$")
+
+
+def _placeholder_blocks_final(text: str) -> bool:
+    for ln in text.splitlines():
+        s = ln.strip()
+        if _PLACEHOLDER_LINE.match(s) and ("未定稿" in s or s[1] == "待"):
+            return True
+    return False
 
 
 def parse_manuscript_status(text: str) -> str:
@@ -340,7 +357,14 @@ def scan_writing_progress(workspace: Path) -> WritingProgress:
     prog = WritingProgress()
 
     theme_text = _read(workspace, THEME_FILENAME)
-    prog.theme_done = bool(theme_text) and validate_theme_final(theme_text) == []
+    # 定稿闸（REQ-20261019-232617 对齐总纲/卷纲 + 事故修复）：状态行「定稿」
+    # + 结构校验 + 非占位三硬条件——2026-10-19 事故是小节标题齐全但正文全是
+    # 占位的草稿被误判 theme_done 自动切段。
+    prog.theme_done = bool(theme_text) and (
+        is_final_status(theme_text)
+        and validate_theme_final(theme_text) == []
+        and not _placeholder_blocks_final(theme_text)
+    )
 
     master_text = _read(workspace, MASTER_FILENAME)
     # 定稿闸（FR-001）：状态行「定稿」＋结构校验双硬条件——草稿/无状态行
@@ -350,6 +374,7 @@ def scan_writing_progress(workspace: Path) -> WritingProgress:
             bool(master_text.strip())
             and is_final_status(master_text)
             and validate_master_final(master_text) == []
+            and not _placeholder_blocks_final(master_text)
         )
         prog.outline_volumes = _count_master_volumes(master_text)
 
@@ -366,7 +391,11 @@ def scan_writing_progress(workspace: Path) -> WritingProgress:
             text = _read(workspace, f.relative_to(workspace).as_posix())
             if text is None:
                 continue
-            if not (is_final_status(text) and validate_volume_final(text) == []):
+            if not (
+                is_final_status(text)
+                and validate_volume_final(text) == []
+                and not _placeholder_blocks_final(text)
+            ):
                 continue
             prog.volumes.append(int(m.group(1)))
         prog.volumes.sort()
@@ -420,7 +449,15 @@ def derive_stage(prog: WritingProgress) -> str:
 class WritingState(BaseModel):
     schema_version: int = WRITING_STATE_SCHEMA_VERSION
     stage: str = STAGE_THEME
-    override_stage: str | None = Field(default=None, description="用户点名跳段（handoff 写入，消费即清）")
+    confirmed_stage: str | None = Field(
+        default=None,
+        description="人工段指针（REQ-20261019-232617 FR-002）：当前段的唯一切段真相，"
+        "只由界面人工确认动作写入（前进/跳段/回退统一入口），模型不可写；"
+        "缺失时按目录扫描段兜底（FR-005 存量迁移语义）",
+    )
+    # 废弃兼容位（不再有写入方）：旧 harness stage_gate 读此字段切段。保留至
+    # 新 harness 发版对齐后可删；新路由/闸门一律走 confirmed_stage。
+    override_stage: str | None = Field(default=None)
     sessions: dict[str, int] = Field(default_factory=dict)
     active_threads: dict[str, str] = Field(default_factory=dict)
     active_traces: dict[str, str] = Field(default_factory=dict)
@@ -458,6 +495,20 @@ def save_writing_state(workspace_path: Path, state: WritingState) -> None:
         encoding="utf-8",
     )
     tmp.replace(path)
+
+
+def resolve_confirmed_stage(workspace_path: Path) -> str:
+    """人工段指针解析（REQ-20261019-232617 FR-002/005，唯一切段口径）。
+
+    executor 路由、段规程装配与 harness 阶段闸共用本函数（同口径）：
+    指针已设 → 指针说了算（DEC-006：产物变化不动摇，人工意志最高）；
+    指针缺失 → 目录扫描段兜底（FR-005 存量迁移：升级前的书停在原段）。
+    legacy 工作区由调用方先行 classify 拦截，不进本函数。
+    """
+    state = load_writing_state(workspace_path)
+    if state.confirmed_stage in STAGE_LABELS:
+        return state.confirmed_stage
+    return derive_stage(scan_writing_progress(workspace_path))
 
 
 __all__ = [
@@ -498,6 +549,7 @@ __all__ = [
     "derive_stage",
     "is_final_status",
     "load_writing_state",
+    "resolve_confirmed_stage",
     "parse_manuscript_status",
     "parse_relpath",
     "save_writing_state",

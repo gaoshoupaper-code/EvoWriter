@@ -40,6 +40,7 @@ vi.mock("@/lib/stream", () => ({
 }));
 
 const createThreadMock = vi.fn();
+const updateStageMock = vi.fn();
 vi.mock("@/lib/api", () => ({
   API_BASE_URL: "",
   fetchMeOrNull: vi.fn().mockResolvedValue({ user_id: "u1", username: "test", is_admin: false, has_api_key: true }),
@@ -57,6 +58,7 @@ vi.mock("@/lib/api", () => ({
   fetchThreadTraces: vi.fn().mockResolvedValue([]),
   fetchTraceDetail: vi.fn().mockResolvedValue(null),
   createThread: (...args: unknown[]) => createThreadMock(...args),
+  updateWritingStage: (...args: unknown[]) => updateStageMock(...args),
   updateThread: vi.fn().mockResolvedValue({ thread_id: "x", workspace_id: "ws-1", session_name: "n", workspace_path: "", created_at: "", updated_at: "" }),
   deleteThread: vi.fn().mockResolvedValue({}),
   createWorkspace: vi.fn(), deleteWorkspace: vi.fn(),
@@ -93,6 +95,11 @@ describe("阶段制会话主线", () => {
     vi.clearAllMocks();
     SSE_CHUNKS = [];
     createThreadMock.mockReset();
+    // 人工段指针写入默认按入参回显 pipeline_status（与真实 API 行为一致）
+    updateStageMock.mockReset();
+    updateStageMock.mockImplementation((_ws: string, stage: string) =>
+      Promise.resolve({ kind: "five", phase: stage, next_unit: "", awaiting: {}, ready: { ready: false, next: null } }),
+    );
     const { resetStoresWithOutline: resetStores } = await import("./helpers");
     await resetStores();
     useStageSessionStore.setState({ threadStageMeta: new Map(), pendingTransition: null, historyView: null });
@@ -127,21 +134,22 @@ describe("阶段制会话主线", () => {
     await bindActive("theme");
 
     SSE_CHUNKS = [
-      encoder.encode(sseEvent("pipeline", { kind: "five", phase: "outline", next_unit: "总纲", awaiting: {}, agent: "author" })),
-      encoder.encode(sseEvent("model_stream", { content: "总纲完成" })),
+      encoder.encode(sseEvent("pipeline", { kind: "five", phase: "theme", next_unit: "题材", awaiting: {}, agent: "author", ready: { ready: true, next: "outline" } })),
+      encoder.encode(sseEvent("model_stream", { content: "三件套已定稿" })),
       encoder.encode(finalEvent("thread-1")),
     ];
-    await user.type(input, "写总纲");
+    await user.type(input, "继续");
     await user.keyboard("{Enter}");
 
-    // DEC-013：SSE pipeline 事件即时更新相位
+    // 232617 FR-002：SSE pipeline 事件相位停在人工段指针（theme），不自动前移
     await waitFor(() => {
-      expect(useContentStore.getState().outlinePipeline?.phase).toBe("outline");
+      expect(useContentStore.getState().outlinePipeline?.phase).toBe("theme");
+      expect(useContentStore.getState().outlinePipeline?.ready).toEqual({ ready: true, next: "outline" });
     }, { timeout: 10000 });
 
-    // FR-004：完成卡片出现（主题完成 → 进入总纲）
+    // FR-001：就绪卡片出现（主题已齐全 → 等待界面确认进总纲）
     const card = await screen.findByTestId("stage-transition-card", {}, { timeout: 2000 });
-    expect(card).toHaveTextContent("主题完成");
+    expect(card).toHaveTextContent("主题已齐全");
     expect(card).toHaveTextContent("进入总纲");
 
     // 点击主按钮：归档旧会话、开新会话（FR-004 步骤 2）
@@ -176,35 +184,35 @@ describe("阶段制会话主线", () => {
     // 历史命名带来源标记（FR-006 显示名规则已在 stage-session.test 验证）
   });
 
-  it("AC-006：卡片挂起时直接发消息 = 隐式切换，消息进新会话", async () => {
+  it("AC-002（232617）：就绪卡片挂起时直接发消息 = 留在当前段，不隐式切换", async () => {
     const user = userEvent.setup();
     renderHome();
     const input = await screen.findByRole("textbox", {}, { timeout: 10000 });
     await bindActive("theme");
 
     act(() => {
-      useContentStore.getState().setOutlinePipeline({ kind: "five", phase: "outline", next_unit: "总纲", awaiting: {}, agent: "author" });
+      useContentStore.getState().setOutlinePipeline({ kind: "five", phase: "theme", next_unit: "题材", awaiting: {}, agent: "author", ready: { ready: true, next: "outline" } });
     });
     await screen.findByTestId("stage-transition-card", {}, { timeout: 10000 });
 
-    // 不点卡片，直接打字发送（DEC-012）
-    createThreadMock.mockResolvedValue({ thread_id: "thread-3", workspace_id: "ws-1", session_name: "n", workspace_path: "", created_at: "", updated_at: "" });
-    SSE_CHUNKS = [encoder.encode(finalEvent("thread-3"))];
+    // 不点卡片直接打字发送：消息发进当前会话（FR-002 打字不切段）
+    SSE_CHUNKS = [encoder.encode(finalEvent("thread-1"))];
     await user.type(input, "直接继续");
     await user.keyboard("{Enter}");
 
     const { streamRequest } = await import("@/lib/stream");
     await waitFor(() => {
-      // 先切换（新会话）再提交：消息发进新会话 thread-3
       expect(streamRequest).toHaveBeenCalledWith(
         expect.anything(),
         expect.objectContaining({
-          body: expect.objectContaining({ thread_id: "thread-3", prompt: "直接继续" }),
+          body: expect.objectContaining({ thread_id: "thread-1", prompt: "直接继续" }),
         }),
       );
     }, { timeout: 10000 });
-    expect(useWorkspaceStore.getState().activeThreadId).toBe("thread-3");
-    expect(useStageSessionStore.getState().threadStageMeta.get("thread-3")?.stage).toBe("outline");
+    expect(useWorkspaceStore.getState().activeThreadId).toBe("thread-1");
+    expect(createThreadMock).not.toHaveBeenCalled();
+    // 卡片仍在，等用户确认
+    expect(useStageSessionStore.getState().pendingTransition?.toStage).toBe("outline");
   });
 
   it("AC-011：等拍板时当前阶段显示「等你拍板」，拍板完成后消失", async () => {
@@ -257,30 +265,27 @@ describe("阶段制会话主线", () => {
     expect(useStageSessionStore.getState().threadStageMeta.get("fresh-1")?.stage).toBe("theme");
   });
 
-  it("AC-006 边界：隐式切换建会话失败时消息不发送、输入不丢（FR-005 失败语义）", async () => {
+  it("FR-004（232617）：确认切换时指针写入失败 → 留在当前会话、卡片不消失", async () => {
     const user = userEvent.setup();
     renderHome();
     const input = await screen.findByRole("textbox", {}, { timeout: 10000 });
     await bindActive("theme");
 
     act(() => {
-      useContentStore.getState().setOutlinePipeline({ kind: "five", phase: "outline", next_unit: "总纲", awaiting: {}, agent: "author" });
+      useContentStore.getState().setOutlinePipeline({ kind: "five", phase: "theme", next_unit: "题材", awaiting: {}, agent: "author", ready: { ready: true, next: "outline" } });
     });
     await screen.findByTestId("stage-transition-card", {}, { timeout: 10000 });
 
-    createThreadMock.mockRejectedValue(new Error("network down"));
-    await user.type(input, "直接继续");
-    await user.keyboard("{Enter}");
+    updateStageMock.mockRejectedValue(new Error("network down"));
+    await user.click(screen.getByRole("button", { name: "进入总纲" }));
 
-    const { streamRequest } = await import("@/lib/stream");
     await waitFor(() => {
-      expect(createThreadMock).toHaveBeenCalled();
+      expect(updateStageMock).toHaveBeenCalled();
     });
-    expect(streamRequest).not.toHaveBeenCalled();
-    // 输入保留在框里不丢
-    await waitFor(() => {
-      expect(input).toHaveValue("直接继续");
-    });
+    expect(useWorkspaceStore.getState().activeThreadId).toBe("thread-1");
+    expect(createThreadMock).not.toHaveBeenCalled();
+    // 失败语义：挂起不清，可重试
+    expect(useStageSessionStore.getState().pendingTransition?.toStage).toBe("outline");
   });
 
   it("FR-004：完成卡片次链接——查看产物切产物面板并选中、翻历史打开该阶段列表", async () => {

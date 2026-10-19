@@ -1,14 +1,17 @@
 /**
- * stageSessionStore —— 阶段制会话管理（REQ-20261018-175526）。
+ * stageSessionStore —— 阶段制会话管理（REQ-20261018-175526 + REQ-20261019-232617）。
  *
- * 用户心智里没有「会话」：对话由阶段自动开关。核心不变量：
- *   当前会话绑定阶段 ≠ 管线阶段（kind=five、非生成中）→ 挂起完成卡片，
- *   用户点卡片或直接发消息（隐式切换）才归档旧会话、开新会话。
+ * 段间切换人工闸（232617 FR-002）：切段只由本 store 的确认动作发起——
+ * confirmTransition/jumpToStage 先调服务端人工段指针 API，再归档旧会话、
+ * 开新会话；打字发送不再隐式切换（AC-002），产物落盘只亮「就绪卡片」。
  *
- * 该不变量统一驱动三种场景（DEC-003/006/013）：
- * - 自然推进（主题→总纲…）：后退不发生，无来源标注；
- * - 章纲↔正文往返 / 下游申请改上游（跳段后退）：卡片标注「应 X 阶段申请」；
- * - 重启/切书恢复：挂起卡片由不变量自动重建，无需独立持久化（FR-012）。
+ * 核心不变量：
+ *   当前段产物齐全（pipeline.ready）且会话绑定的段 = 当前段 → 挂就绪卡片
+ *   「X 已齐全，进入 Y」，用户点卡片才写指针、归档旧会话、开新会话；
+ *   会话绑定段 ≠ 管线段（跨窗口/恢复路径）→ 同一卡片作恢复入口。
+ *
+ * 就绪通知（FR-001/DEC-002）：ready 未就绪→就绪 的边沿触发一次系统通知
+ * （应用后台可见）；启动首见不算边沿（长就绪的书打开不弹）。
  *
  * 阶段信号源（DEC-013）：contentStore.outlinePipeline——SSE pipeline 事件即时写 +
  * outline 轮询兜底写，两个通道收敛到同一 state，本 store 只做对比。
@@ -21,7 +24,12 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import type { PipelineStatus, ThreadSummary } from "@/lib/types";
-import { createThread as createThreadRequest, fetchWorkspaceOutline } from "@/lib/api";
+import {
+  createThread as createThreadRequest,
+  fetchWorkspaceOutline,
+  updateWritingStage,
+} from "@/lib/api";
+import { notifyStageReady } from "@/lib/notify";
 import { PIPELINE_STEPS, stageLabel } from "@/lib/pipeline-steps";
 import {
   readStageMetas,
@@ -50,6 +58,20 @@ export interface StageHistoryView {
 
 function stageOrder(stage: string): number {
   return PIPELINE_STEPS.findIndex((s) => s.phase === stage);
+}
+
+/** 就绪边沿记录（FR-001 AC-004）：workspaceId → 上次信号的 ready 值。 */
+const readyEdge: Map<string, boolean> = new Map();
+
+/** 就绪边沿 → 系统通知一次；启动首见（undefined）不算边沿。 */
+function maybeNotifyReady(pipeline: PipelineStatus, workspaceId: string): void {
+  const now = pipeline.ready?.ready === true;
+  const prev = readyEdge.get(workspaceId);
+  readyEdge.set(workspaceId, now);
+  const next = pipeline.ready?.next ?? null;
+  if (now && prev === false && next) {
+    void notifyStageReady(stageLabel(pipeline.phase) ?? "当前段", stageLabel(next) ?? "下一段");
+  }
 }
 
 function pad2(n: number): string {
@@ -87,10 +109,12 @@ interface StageSessionState {
   ensureThreadStageBinding: (workspaceId: string, threadId: string) => Promise<void>;
   /** 存量竞态受害会话归位（REQ-20261019-232635 FR-003）：早于该书最早有标签会话的无标签会话补绑「主题」。 */
   remediateUnboundThreads: (pipeline: PipelineStatus | null) => void;
-  /** 不变量检测：管线阶段 vs 当前会话绑定阶段。由 home 的 effect 在信号变化时调。 */
+  /** 不变量检测：就绪信号 / 管线段 vs 会话绑定段。由 home 的 effect 在信号变化时调。 */
   syncWithPipeline: (pipeline: PipelineStatus | null) => void;
-  /** 完成卡片主按钮 / 隐式切换：归档旧会话、建新会话、清空对话区。 */
+  /** 就绪卡片主按钮：写人工段指针、归档旧会话、建新会话、清空对话区（FR-002）。 */
   confirmTransition: () => Promise<boolean>;
+  /** 阶段条跳段/回退：写人工段指针并开目标段新会话（FR-004 统一入口）。 */
+  jumpToStage: (stage: string) => Promise<void>;
   /** 重开逃生门：同阶段新会话（FR-007）。 */
   restartThread: () => Promise<void>;
   openStageHistory: (stage: string) => void;
@@ -106,8 +130,9 @@ export const useStageSessionStore = create<StageSessionState>((set, get) => ({
 
   hydrateForWorkspace: async (workspaceId) => {
     if (!workspaceId) return;
-    // 切书即换上下文：浏览态与挂起卡片不得跨书携带
+    // 切书即换上下文：浏览态与挂起卡片不得跨书携带；就绪边沿重置（换书首见不算边沿）
     set({ historyView: null, pendingTransition: null });
+    readyEdge.delete(workspaceId);
     const metas = await readStageMetas(workspaceId);
     set((state) => {
       const next = new Map(state.threadStageMeta);
@@ -184,6 +209,7 @@ export const useStageSessionStore = create<StageSessionState>((set, get) => ({
       if (get().pendingTransition) set({ pendingTransition: null });
       return;
     }
+    if (ws.activeWorkspaceId) maybeNotifyReady(pipeline, ws.activeWorkspaceId);
     // 存量归位（REQ-20261019-232635 FR-003）：首轮竞态漏绑的会话在此自动补绑。
     // 本函数是管线信号收敛点（hydrate 主动重算 + home 的 SSE/轮询 effect 都会
     // 到达），幂等可重入；放在 activeThreadId 早退之前，未选中会话也能归位
@@ -191,13 +217,21 @@ export const useStageSessionStore = create<StageSessionState>((set, get) => ({
     if (!activeThreadId) return;
     const meta = get().threadStageMeta.get(activeThreadId);
     if (meta && meta.stage === pipeline.phase) {
-      if (get().pendingTransition) set({ pendingTransition: null });
+      // 就绪卡片（FR-001）：当前段产物齐全 → 挂「X 已齐全，进入 Y」等确认。
+      // 就绪收回（产物改回草稿）时卡片同步消失，再次就绪重新挂起（AC-004）。
+      const readyNext = pipeline.ready?.ready === true ? pipeline.ready.next : null;
+      if (readyNext) {
+        set({ pendingTransition: { fromStage: pipeline.phase, toStage: readyNext } });
+      } else if (get().pendingTransition) {
+        set({ pendingTransition: null });
+      }
       return;
     }
     // run 进行中阶段闸冻结（后端保证 phase 不变）——防御性跳过，结束后信号会再触发
     if (useExecutionStore.getState().loading) return;
     if (meta) {
-      // 后退切换 = 跳段申请（章纲↔正文往返 / 下游申请改上游），卡片标注来源
+      // 绑定段 ≠ 管线段（恢复路径：跨窗口切换后打开 / 确认后建会话失败的兜底）
+      // → 同一卡片作恢复入口；后退标注来源
       const sourceStage = stageOrder(pipeline.phase) < stageOrder(meta.stage) ? meta.stage : undefined;
       set({ pendingTransition: { fromStage: meta.stage, toStage: pipeline.phase, sourceStage } });
       return;
@@ -219,6 +253,12 @@ export const useStageSessionStore = create<StageSessionState>((set, get) => ({
     // 防重（review P2）：createThread 网络往返期间连点/双回车不得并发建两个会话
     set({ transitioning: true });
     try {
+      // FR-002：先写人工段指针（服务端唯一切段通道），再开新会话。幂等——
+      // 指针已在目标段时重复写无副作用（恢复路径二次点击/跨窗口）。
+      const status = await updateWritingStage(workspaceId, pending.toStage);
+      // 拿 API 返回即时对齐相位，避免下一次 sync 在轮询信号到达前误挂恢复卡片
+      if (status) useContentStore.getState().setOutlinePipeline(status);
+      readyEdge.set(workspaceId, status?.ready?.ready === true);
       const thread = await createThreadRequest(workspaceId, newThreadName(pending.toStage));
       // sourceStage 一并落盘（FR-006）：跳段新会话的历史命名带「（正文申请）」
       get().bindThreadStage(workspaceId, thread.thread_id, pending.toStage, pending.sourceStage);
@@ -228,15 +268,40 @@ export const useStageSessionStore = create<StageSessionState>((set, get) => ({
         get().bindThreadStage(workspaceId, ws.activeThreadId, pending.fromStage);
       }
       // 同步完成消息换页（存旧 + 载新 + 落位），不依赖 React effect 时序
-      // （review P1 竞态修复：隐式切换「先建会话再发消息」从此是确定性顺序）
+      // （review P1 竞态修复：确认切换「先写指针再建会话」从此是确定性顺序）
       useExecutionStore.getState().switchThread(thread.thread_id);
       ws.setThreads((current) => [thread, ...current.filter((t) => t.thread_id !== thread.thread_id)]);
       set({ pendingTransition: null });
       return true;
     } catch (createError) {
-      // FR-004 失败语义：不清挂起、不清旧对话，提示重试
+      // FR-004 失败语义：不清挂起、不清旧对话，提示重试（指针已写时下一点击幂等补会话）
       toast.error(createError instanceof Error ? createError.message : "无法开启新阶段对话。");
       return false;
+    } finally {
+      set({ transitioning: false });
+    }
+  },
+
+  jumpToStage: async (stage) => {
+    const ws = useWorkspaceStore.getState();
+    const workspaceId = ws.activeWorkspaceId;
+    if (!workspaceId || useExecutionStore.getState().loading || get().transitioning) return;
+    const pipeline = useContentStore.getState().outlinePipeline;
+    if (pipeline?.kind === "five" && pipeline.phase === stage) return; // 已在该段
+    set({ transitioning: true });
+    try {
+      // FR-004：阶段条跳段/回退与确认切换同走人工段指针（唯一入口）
+      const status = await updateWritingStage(workspaceId, stage);
+      if (status) useContentStore.getState().setOutlinePipeline(status);
+      readyEdge.set(workspaceId, status?.ready?.ready === true);
+      const thread = await createThreadRequest(workspaceId, newThreadName(stage));
+      get().bindThreadStage(workspaceId, thread.thread_id, stage);
+      useExecutionStore.getState().switchThread(thread.thread_id);
+      ws.setThreads((current) => [thread, ...current.filter((t) => t.thread_id !== thread.thread_id)]);
+      set({ pendingTransition: null, historyView: null });
+    } catch (jumpError) {
+      // 失败语义：指针与旧会话保持当前状态，提示重试
+      toast.error(jumpError instanceof Error ? jumpError.message : "无法切换阶段。");
     } finally {
       set({ transitioning: false });
     }
@@ -283,6 +348,11 @@ export const useStageSessionStore = create<StageSessionState>((set, get) => ({
  * 阶段历史（排除，review P2——否则它排第一位且可删，删除后「当前」悬空）；
  * 无归属的归「早期」由调用方渲染。
  */
+/** 测试钩子：清就绪边沿记录（生产不调用）。 */
+export function _resetReadyEdgeForTests(): void {
+  readyEdge.clear();
+}
+
 export function threadsForStage(
   threads: ThreadSummary[],
   stage: string,

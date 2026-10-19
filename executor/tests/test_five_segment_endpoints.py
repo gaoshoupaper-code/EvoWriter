@@ -136,3 +136,37 @@ def test_watch_classify_five_tree(tmp_path: Path) -> None:
     assert cats == {"outline"}
     assert _classify_changes(_changes(".writing/state.json"), tmp_path) == set()
     assert _classify_changes(_changes("outline/总纲.md"), tmp_path) == {"outline"}
+
+
+# ── 人工段指针端点（REQ-20261019-232617 FR-002/004，AC-003/006）─────
+
+
+def test_stage_pointer_update_roundtrip(client: TestClient, tmp_path: Path) -> None:
+    """AC-003：点确认写指针，返回新 phase 与就绪信号。"""
+    from contracts.writing_artifacts import load_writing_state
+
+    (tmp_path / "主题.md").write_text(
+        "# 主题 · 书\n> 状态：定稿\n\n## 一句话主题\nx\n\n## 约束级\n"
+        "### 核心爽点\nx\n### 核心矛盾\nx\n### 核心爽点剧情\nx\n", encoding="utf-8",
+    )
+    resp = client.put("/workspaces/ws1/writing/stage", json={"stage": "outline"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["phase"] == "outline"
+    assert load_writing_state(tmp_path).confirmed_stage == "outline"
+    # 回退同样走同一入口（AC-006）
+    resp = client.put("/workspaces/ws1/writing/stage", json={"stage": "theme"})
+    assert resp.status_code == 200
+    assert resp.json()["phase"] == "theme"
+    assert load_writing_state(tmp_path).confirmed_stage == "theme"
+
+
+def test_stage_pointer_rejects_invalid_and_legacy(client: TestClient, tmp_path: Path) -> None:
+    resp = client.put("/workspaces/ws1/writing/stage", json={"stage": "不存在的段"})
+    assert resp.status_code == 422
+    # legacy 工作区只读：切段一律 409
+    (tmp_path / "storyline.md").write_text("旧五件套", encoding="utf-8")
+    resp = client.put("/workspaces/ws1/writing/stage", json={"stage": "theme"})
+    assert resp.status_code == 409
+    resp = client.put("/workspaces/ws2/writing/stage", json={"stage": "theme"})
+    assert resp.status_code == 404

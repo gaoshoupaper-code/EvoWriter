@@ -30,12 +30,14 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 
 const createThreadMock = vi.fn();
 const fetchOutlineMock = vi.fn();
+const updateStageMock = vi.fn();
 vi.mock("@/lib/api", () => ({
   createThread: (...args: unknown[]) => createThreadMock(...args),
   fetchWorkspaceOutline: (...args: unknown[]) => fetchOutlineMock(...args),
+  updateWritingStage: (...args: unknown[]) => updateStageMock(...args),
 }));
 
-import { useStageSessionStore, stageThreadDisplayName, threadsForStage } from "@/stores/stage-session";
+import { useStageSessionStore, stageThreadDisplayName, threadsForStage, _resetReadyEdgeForTests } from "@/stores/stage-session";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { setExecutionDeps, useExecutionStore } from "@/stores/execution";
 import { useContentStore } from "@/stores/content";
@@ -63,6 +65,13 @@ function resetStores() {
 beforeEach(() => {
   stores.clear();
   createThreadMock.mockReset();
+  _resetReadyEdgeForTests();
+  notifyStageReadyMock.mockClear();
+  // 人工段指针写入（232617 FR-002）：默认按入参回显 pipeline_status
+  updateStageMock.mockReset();
+  updateStageMock.mockImplementation((_ws: string, stage: string) =>
+    Promise.resolve({ kind: "five", phase: stage, next_unit: "", awaiting: {} }),
+  );
   _resetPersistForTests();
   initSessionPersist({ getUsername: () => "tester" });
   resetStores();
@@ -455,3 +464,73 @@ describe("remediateUnboundThreads 存量归位（REQ-20261019-232635 FR-003）",
     expect(useStageSessionStore.getState().threadStageMeta.get("t-victim")?.stage).toBe("theme");
   });
 });
+
+
+// ── 段间切换人工闸（REQ-20261019-232617 FR-001/002/004）────────────
+
+describe("jumpToStage（阶段条跳段/回退，FR-004 AC-006）", () => {
+  it("写人工段指针并开目标段新会话", async () => {
+    const s = useStageSessionStore.getState();
+    useWorkspaceStore.setState({ activeThreadId: "t-old" });
+    useContentStore.setState({
+      outlinePipeline: { kind: "five", phase: "outline", next_unit: "总纲", awaiting: {} },
+    });
+    createThreadMock.mockResolvedValue(thread("t-back"));
+    await s.jumpToStage("theme");
+    expect(updateStageMock).toHaveBeenCalledWith(WS, "theme");
+    expect(useWorkspaceStore.getState().activeThreadId).toBe("t-back");
+    expect(useStageSessionStore.getState().threadStageMeta.get("t-back")?.stage).toBe("theme");
+  });
+
+  it("已在目标段时 no-op（不建会话不写指针）", async () => {
+    const s = useStageSessionStore.getState();
+    useWorkspaceStore.setState({ activeThreadId: "t-old" });
+    useContentStore.setState({
+      outlinePipeline: { kind: "five", phase: "theme", next_unit: "题材", awaiting: {} },
+    });
+    await s.jumpToStage("theme");
+    expect(updateStageMock).not.toHaveBeenCalled();
+    expect(createThreadMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("就绪通知边沿（FR-001 AC-004）", () => {
+  it("未就绪→就绪触发一次系统通知；首见不算边沿；再就绪重新触发", async () => {
+    const s = useStageSessionStore.getState();
+    useWorkspaceStore.setState({ activeWorkspaceId: WS, activeThreadId: "t-1" });
+    const bind = s.bindThreadStage;
+    bind(WS, "t-1", "theme");
+
+    const mk = (ready: boolean) => ({
+      kind: "five" as const,
+      phase: "theme",
+      next_unit: "题材",
+      awaiting: {},
+      ready: { ready, next: ready ? "outline" : null },
+    });
+    // 首见就绪（启动场景）：不通知
+    s.syncWithPipeline(mk(true));
+    expect(notifyStageReadyMock).not.toHaveBeenCalled();
+    // 未就绪 → 就绪：通知一次
+    s.syncWithPipeline(mk(false));
+    s.syncWithPipeline(mk(true));
+    expect(notifyStageReadyMock).toHaveBeenCalledTimes(1);
+    // 重复就绪信号：不重复通知
+    s.syncWithPipeline(mk(true));
+    expect(notifyStageReadyMock).toHaveBeenCalledTimes(1);
+    // 收回后再就绪：再通知（卡片同步消失/重现）
+    s.syncWithPipeline(mk(false));
+    s.syncWithPipeline(mk(true));
+    expect(notifyStageReadyMock).toHaveBeenCalledTimes(2);
+    // 卡片随就绪挂起/收回
+    expect(useStageSessionStore.getState().pendingTransition?.toStage).toBe("outline");
+    s.syncWithPipeline(mk(false));
+    expect(useStageSessionStore.getState().pendingTransition).toBeNull();
+  });
+});
+
+// 就绪系统通知 mock（vi.hoisted：模块加载前就位）
+const notifyStageReadyMock = vi.hoisted(() => vi.fn());
+vi.mock("@/lib/notify", () => ({
+  notifyStageReady: (...args: unknown[]) => notifyStageReadyMock(...args),
+}));

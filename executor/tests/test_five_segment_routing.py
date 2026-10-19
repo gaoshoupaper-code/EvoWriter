@@ -119,36 +119,55 @@ def test_route_empty_workspace_starts_theme(tmp_path: Path) -> None:
 
 
 def test_route_stage_progression(tmp_path: Path) -> None:
+    """产物推进不再自动切段（FR-002 AC-002）：指针钉住后产物齐全仍留原段。"""
     (tmp_path / "主题.md").write_text(THEME_FINAL, encoding="utf-8")
-    assert _route(tmp_path).phase == "outline"
+    d = _route(tmp_path)  # 未迁移工作区：扫描兜底（FR-005 升级语义）
+    assert d.phase == "outline"
+    # 人工段指针钉在题材段：产物再齐全也不切段
+    state = load_writing_state(tmp_path)
+    state.confirmed_stage = STAGE_THEME
+    save_writing_state(tmp_path, state)
+    assert _route(tmp_path).phase == STAGE_THEME
     (tmp_path / "总纲.md").write_text(MASTER_FINAL, encoding="utf-8")
     d = _route(tmp_path)
-    assert d.phase == STAGE_VOLUME
-    assert "第 1 卷卷纲" in d.directive
+    assert d.phase == STAGE_THEME  # AC-002：打字发送留在原段
+    # 人工确认进总纲后才切段
+    state = load_writing_state(tmp_path)
+    state.confirmed_stage = "outline"
+    save_writing_state(tmp_path, state)
+    d = _route(tmp_path)
+    assert d.phase == "outline"
 
 
-def test_route_override_priority_and_consumption(tmp_path: Path) -> None:
-    """点名跳段优先于扫描；commit 消费即清；resume 不消费（AC-004）。"""
+def test_route_pointer_wins_and_persists(tmp_path: Path) -> None:
+    """人工段指针优先于扫描；run 生命周期不清指针（FR-002，AC-004 镜像）。"""
     (tmp_path / "主题.md").write_text(THEME_FINAL, encoding="utf-8")
     state = load_writing_state(tmp_path)
-    state.override_stage = STAGE_CHAPTER
+    state.confirmed_stage = STAGE_CHAPTER
     save_writing_state(tmp_path, state)
 
     d = _route(tmp_path)
-    assert d.phase == STAGE_CHAPTER and d.used_override is True
+    assert d.phase == STAGE_CHAPTER
     pipeline.commit_route(tmp_path, d, "trace-9")
-    assert load_writing_state(tmp_path).override_stage is None  # 消费即清
+    assert load_writing_state(tmp_path).confirmed_stage == STAGE_CHAPTER  # 不清
 
-    # resume：override 不被消费（同一轮的拍板答复）
+    # resume 同口径：指针段 + 原 会话线程
     state = load_writing_state(tmp_path)
-    state.override_stage = STAGE_VOLUME
     state.active_threads["author"] = "thread-1:author:1"
     state.active_traces["author"] = "trace-1"
     save_writing_state(tmp_path, state)
     d = _route(tmp_path, resume_trace="trace-1")
     assert d.new_session is False and d.thread_id == "thread-1:author:1"
-    assert d.used_override is False
-    assert load_writing_state(tmp_path).override_stage == STAGE_VOLUME
+    assert d.phase == STAGE_CHAPTER
+
+
+def test_commit_route_pins_pointer_migration(tmp_path: Path) -> None:
+    """FR-005 迁移：无指针工作区首 run 冻结当前扫描段（升级前在哪停哪）。"""
+    (tmp_path / "主题.md").write_text(THEME_FINAL, encoding="utf-8")
+    assert load_writing_state(tmp_path).confirmed_stage is None
+    d = _route(tmp_path)
+    pipeline.commit_route(tmp_path, d, "trace-1")
+    assert load_writing_state(tmp_path).confirmed_stage == "outline"
 
 
 def test_route_legacy_variants(tmp_path: Path) -> None:
@@ -218,11 +237,73 @@ def test_run_lifecycle_updates_state(tmp_path: Path) -> None:
     assert state.stage == STAGE_THEME
 
 
-def test_current_stage_honors_override(tmp_path: Path) -> None:
-    """C3：装配用段解析与 route 同口径——override 优先于扫描。"""
+def test_current_stage_honors_pointer(tmp_path: Path) -> None:
+    """装配用段解析与 route 同口径——人工段指针优先于扫描（FR-002）。"""
     (tmp_path / "主题.md").write_text(THEME_FINAL, encoding="utf-8")
-    assert pipeline.current_stage(tmp_path) == "outline"  # 扫描段
+    assert pipeline.current_stage(tmp_path) == "outline"  # 未迁移：扫描兜底
     state = load_writing_state(tmp_path)
-    state.override_stage = STAGE_CHAPTER
+    state.confirmed_stage = STAGE_CHAPTER
     save_writing_state(tmp_path, state)
     assert pipeline.current_stage(tmp_path) == STAGE_CHAPTER
+
+
+# ── 就绪判定与通知信号（REQ-20261019-232617 FR-001，AC-001/004/009）──
+
+INCIDENT_THEME_DRAFT = """# 主题 · 书名待定
+> 状态：起草中（核心爽点已定稿）｜会话 d70d052b
+
+## 一句话主题
+（待三件套齐后压成）
+
+## 约束级（定稿，下游必须遵守）
+
+### 核心爽点（已定稿）
+卡
+### 核心矛盾
+（未定稿，待第 2 步）
+### 核心爽点剧情
+（未定稿，待第 3 步）
+"""
+
+
+def _pin(ws: Path, stage: str) -> None:
+    state = load_writing_state(ws)
+    state.confirmed_stage = stage
+    save_writing_state(ws, state)
+
+
+def test_pipeline_status_ready_edges(tmp_path: Path) -> None:
+    # 题材定稿 + 指针题材 + 无未决拍板 → 就绪，下一站总纲
+    (tmp_path / "主题.md").write_text(THEME_FINAL, encoding="utf-8")
+    _pin(tmp_path, STAGE_THEME)
+    status = pipeline.pipeline_status(tmp_path)
+    assert status["ready"] == {"ready": True, "next": "outline"}
+
+    # 事故占位草稿：不就绪（AC-001）
+    (tmp_path / "主题.md").write_text(INCIDENT_THEME_DRAFT, encoding="utf-8")
+    status = pipeline.pipeline_status(tmp_path)
+    assert status["ready"]["ready"] is False and status["ready"]["next"] is None
+
+    # 有未决拍板（访谈没收尾）：产物齐全也不算就绪（FR-001 附加条件）
+    (tmp_path / "主题.md").write_text(THEME_FINAL, encoding="utf-8")
+    state = load_writing_state(tmp_path)
+    state.active_traces["author"] = "trace-pending"
+    save_writing_state(tmp_path, state)
+    status = pipeline.pipeline_status(tmp_path)
+    assert status["ready"]["ready"] is False
+
+    # 正文末段：无下一站
+    _pin(tmp_path, "text")
+    status = pipeline.pipeline_status(tmp_path)
+    assert status["ready"] == {"ready": False, "next": None}
+
+
+def test_pipeline_status_ready_no_fallback_behind_pointer(tmp_path: Path) -> None:
+    """AC-009：指针在总纲、题材被打回草稿 → 阶段不回落、不亮就绪。"""
+    (tmp_path / "主题.md").write_text(THEME_FINAL, encoding="utf-8")
+    (tmp_path / "总纲.md").write_text(MASTER_FINAL, encoding="utf-8")
+    _pin(tmp_path, "outline")
+    (tmp_path / "主题.md").write_text(INCIDENT_THEME_DRAFT, encoding="utf-8")
+    status = pipeline.pipeline_status(tmp_path)
+    assert status["phase"] == "outline"
+    assert status["ready"]["ready"] is False

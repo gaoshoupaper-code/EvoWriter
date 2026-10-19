@@ -23,6 +23,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // 初始化 app 级状态：读 server_url + 建 reqwest Client。
             // block_on 等 init 完成（init 内部用 spawn_blocking 读 Store，不卡 async 运行时）。

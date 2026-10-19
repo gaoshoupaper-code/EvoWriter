@@ -1,11 +1,13 @@
 /**
- * StageTransitionCard —— 阶段完成卡片（REQ-20261018-175526 FR-004/006，DEC-003/012）。
+ * StageTransitionCard —— 阶段就绪确认卡片（REQ-20261018-175526 FR-004/006 +
+ * REQ-20261019-232617 FR-001/002）。
  *
- * 挂起于旧对话末尾的缓冲：阶段已变、旧对话保持可读可滚，用户点主按钮
- * 「进入X」才归档旧会话、开新会话、清空页面（DEC-003）；直接打字发送 =
- * 隐式切换（DEC-012，发送前由 execution 侧先走 confirmTransition）。
+ * 当前段产物齐全（服务端 ready 信号）时挂起于对话末尾：用户点主按钮
+ * 「进入X」才写人工段指针、归档旧会话、开新会话、清空页面；直接打字发送
+ * 不再隐式切换（AC-002——消息留在当前段）。
  *
- * 跳段后退（章纲↔正文往返 / 下游申请改上游）时标注「应 X 阶段申请」（FR-006）。
+ * 恢复路径（绑定段 ≠ 管线段：跨窗口切换后打开 / 确认后半程失败兜底）挂同一
+ * 卡片；跳段后退时标注「应 X 阶段申请」（FR-006）。
  */
 import { useContentStore } from "@/stores/content";
 import { useWorkspaceStore } from "@/stores/workspace";
@@ -42,7 +44,7 @@ export function StageTransitionCard({ onOpenStageHistory }: { onOpenStageHistory
   const fromName = label(pending.fromStage);
   const headline = pending.sourceStage
     ? `应${label(pending.sourceStage)}申请，回到${toName}`
-    : `${fromName}完成`;
+    : `${fromName}已齐全，可进入${toName}`;
 
   return (
     <div className="stage-transition-card" role="status" data-testid="stage-transition-card">

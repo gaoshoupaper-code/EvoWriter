@@ -1,12 +1,13 @@
 """五段式管线编排层（REQ-20261018-115508 FR-002，DEC-001/002/010）。
 
 编排归 executor 代码：管「当前在哪一大段、装配哪份段规程、用哪个会话
-thread」。产物目录即进度真相源：五段产物树扫描定进度（contracts.
-writing_artifacts 唯一实现）；`.writing/state.json` 是可重建的加速层。
+thread」。切段唯一真相是人工段指针（REQ-20261019-232617 FR-002）：
+`.writing/state.json` 的 confirmed_stage 只由界面人工确认动作写入
+（前进/跳段/回退统一入口），模型不可写、产物落盘不可改；指针缺失按
+目录扫描段兜底（FR-005 存量迁移，commit_route 首轮冻结）。产物目录
+扫描降级为就绪信号（FR-001：齐了通知用户来确认，不切段）。
 
 五段制（DEC-001 单 agent 技能切换）：题材 → 总纲 → 卷纲 → 章纲 → 正文。
-路由三来源优先级：resume 续跑（回到原会话）> 点名跳段（handoff 写入的
-override_stage，消费即清）> 目录扫描自动判定（DEC-002）。
 
 legacy（DEC-010）：旧五件套（storyline.md）、旧七步（outline/00-06）、
 三步制（outline/世界观.md 等）一律只读——agent_name=None 装配首个 main，
@@ -32,6 +33,7 @@ from contracts.writing_artifacts import (
     classify_writing_workspace,
     derive_stage,
     load_writing_state,
+    resolve_confirmed_stage,
     save_writing_state,
     scan_writing_progress,
 )
@@ -41,6 +43,9 @@ MAIN_AGENT = "author"
 
 # legacy 会话键（与主管线会话键区分，互不串台）
 _LEGACY_AGENT_KEY = "legacy"
+
+# 段序（theme→outline→volume→chapter→text；就绪判定的推进方向）
+_STAGE_ORDER = list(STAGE_LABELS)
 
 # 注入禁令（2026-10-19 线上事故）：directive 只许携带运行时事实（当前段、
 # 进度摘要、下一单元目标），不拼任务说明或行为纪律——那些只住发版的段规程
@@ -56,7 +61,6 @@ class RouteDecision:
     directive: str                  # 运行时事实（当前段+进度，拼进 user prompt；禁止行为指令）
     phase: str                      # theme/outline/volume/chapter/text/legacy
     new_session: bool = False       # 本轮是否新开会话线程（首条消息或丢弃重开）
-    used_override: bool = False     # 本轮是否消费了点名跳段（commit 时清除）
     conversation_id: str = ""       # 客户端会话 id（base thread_id，粘性路由与日志的键）
     resume_degraded: bool = False   # resume trace 已失配：降级为普通消息续跑
 
@@ -77,13 +81,15 @@ def scan_stage(workspace: Path) -> str:
 
 
 def current_stage(workspace: Path) -> str:
-    """装配用段解析（C3 修复）：点名跳段（override_stage）优先于扫描——
-    与 route() 同口径，供 agent.py 段规程注入消费（stage_gate 自行读状态，
-    同一语义）。legacy 返回扫描段（legacy 装配走只读 directive）。"""
+    """装配用段解析：人工段指针唯一口径（FR-002），指针缺失扫描兜底（FR-005）。
+
+    executor 路由、段规程注入与 harness stage_gate 共用 contracts.
+    resolve_confirmed_stage（同一语义）。legacy 返回扫描段（legacy 装配
+    走只读 directive）。
+    """
     if classify_workspace(workspace) == "legacy":
         return scan_stage(workspace)
-    override = load_writing_state(workspace).override_stage
-    return override if override in STAGE_LABELS else scan_stage(workspace)
+    return resolve_confirmed_stage(workspace)
 
 
 def _status_line(workspace: Path, rel: str) -> str:
@@ -143,7 +149,7 @@ def next_unit_label(workspace: Path) -> str:
     """下一单元标签（阶段条高亮与任务书共用；五段标签之一或 legacy 文案）。"""
     if classify_workspace(workspace) == "legacy":
         return "旧版工作区（只读）"
-    return STAGE_LABELS.get(scan_stage(workspace), STAGE_LABELS[STAGE_THEME])
+    return STAGE_LABELS.get(resolve_confirmed_stage(workspace), STAGE_LABELS[STAGE_THEME])
 
 
 def _sticky_thread_id(base_thread_id: str, agent: str, fork_number: int) -> str:
@@ -206,15 +212,9 @@ def route(
         )
 
     agent = MAIN_AGENT
-    # ── 阶段三来源：resume > 点名跳段（消费即清，commit 时落）> 目录扫描 ──
-    used_override = False
-    if resume_trace:
-        stage = scan_stage(workspace)
-    elif state.override_stage:
-        stage = state.override_stage
-        used_override = True
-    else:
-        stage = scan_stage(workspace)
+    # ── 段唯一真相：人工段指针（FR-002）。产物落盘不改段；打字发送、resume
+    # 都路由到指针段。未迁移工作区按目录扫描兜底（FR-005，commit 冻结）。──
+    stage = resolve_confirmed_stage(workspace)
 
     label = STAGE_LABELS.get(stage, stage)
     prog = scan_writing_progress(workspace)
@@ -252,21 +252,23 @@ def route(
         )
     return RouteDecision(
         agent_name=agent, thread_id=thread_id, directive=directive,
-        phase=stage, new_session=new_session, used_override=used_override,
+        phase=stage, new_session=new_session,
         conversation_id=base_thread_id, resume_degraded=resume_degraded,
     )
 
 
 def commit_route(workspace: Path, decision: RouteDecision, trace_id: str) -> None:
-    """generate_stream 拿到 trace 后落状态（会话与 active trace 登记；消费跳段）。"""
+    """generate_stream 拿到 trace 后落状态（会话与 active trace 登记；迁移冻结）。"""
     state = load_writing_state(workspace)
     agent = decision.agent_name or _LEGACY_AGENT_KEY
     state.active_threads[agent] = decision.thread_id
     if decision.phase != STAGE_LEGACY:
         state.stage = decision.phase
+        # 迁移冻结（FR-005）：无指针的存量工作区首 run 把当前段钉进指针——
+        # 此后产物推进不再自动切段，只有界面人工确认能改。
+        if state.confirmed_stage is None:
+            state.confirmed_stage = decision.phase
     state.active_traces[agent] = trace_id
-    if decision.used_override:
-        state.override_stage = None  # 点名跳段消费即清（DEC-002）
     # 粘性派生号回写（FR-001）：从线程名尾段解析，只增不减。
     fork_tail = decision.thread_id.rsplit(":", 1)[-1]
     if decision.conversation_id and fork_tail.isdigit():
@@ -285,12 +287,10 @@ def on_interrupt(workspace: Path, agent_name: str | None, trace_id: str) -> None
 
 
 def on_run_complete(workspace: Path, agent_name: str | None) -> None:
-    """run 正常完成：清 active trace + 相位重扫。"""
+    """run 正常完成：清 active trace。指针不重扫（FR-002：run 不改段）。"""
     agent = agent_name or _LEGACY_AGENT_KEY
     state = load_writing_state(workspace)
     state.active_traces.pop(agent, None)
-    if classify_workspace(workspace) == "five":
-        state.stage = scan_stage(workspace)
     save_writing_state(workspace, state)
 
 
@@ -311,19 +311,40 @@ def pop_awaiting_trace(workspace: Path, agent_name: str | None) -> str | None:
     return trace
 
 
+def _advance_readiness(workspace: Path, state) -> dict:
+    """就绪判定（FR-001）：当前段产物齐了、可以请用户确认进下一段。
+
+    三条件：①目录扫描已推进到指针段之后（产物事实）②无未决拍板
+    （active_traces 空——访谈没收尾不算齐）③指针未到正文末段。
+    就绪只触发通知（FR-001），切段仍需人工确认（FR-002）。
+    """
+    pointer = state.confirmed_stage if state.confirmed_stage in STAGE_LABELS else (
+        resolve_confirmed_stage(workspace)
+    )
+    idx = _STAGE_ORDER.index(pointer)
+    if idx >= len(_STAGE_ORDER) - 1:
+        return {"ready": False, "next": None}
+    if any(state.active_traces.values()):
+        return {"ready": False, "next": None}
+    scan_next = derive_stage(scan_writing_progress(workspace))
+    if _STAGE_ORDER.index(scan_next) > idx:
+        return {"ready": True, "next": _STAGE_ORDER[idx + 1]}
+    return {"ready": False, "next": None}
+
+
 def pipeline_status(workspace: Path) -> dict:
-    """桌面端阶段条数据：kind / 相位 / 下一单元标签 / 未决拍板。"""
+    """桌面端阶段条数据：kind / 相位（人工段指针）/ 就绪信号 / 未决拍板。"""
     workspace = Path(workspace)
     state = load_writing_state(workspace)
     kind = classify_workspace(workspace)
-    # phase 活推导（REQ-20261019-183150）：state.stage 只是上次运行的快照，
-    # 部署修复/定稿规则变更后 stale 快照不得压过目录事实继续显示旧段
-    # （AC-007：定稿闸上线后卡在卷纲的书打开即回显总纲）。
+    # phase 口径（FR-002）：five = 人工段指针（指针缺失扫描兜底，迁移前
+    # 展示与升级前一致）；legacy = 快照。
     phase = current_stage(workspace) if kind == "five" else state.stage
     return {
         "kind": kind,
         "phase": phase,
         "next_unit": next_unit_label(workspace),
+        "ready": _advance_readiness(workspace, state) if kind == "five" else {"ready": False, "next": None},
         "awaiting": {
             agent: trace for agent, trace in state.active_traces.items() if trace
         },

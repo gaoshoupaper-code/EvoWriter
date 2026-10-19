@@ -6988,6 +6988,30 @@ html[data-theme="dark"] .admin-outline {
   background: var(--coral, #e2694f);
   border-color: var(--coral, #e2694f);
 }
+/* 段间切换人工闸（REQ-20261019-232617 DEC-008）：已完成段可点跳段/回退 */
+.pipeline-step.jumpable {
+  cursor: pointer;
+}
+.pipeline-step.armed {
+  color: var(--coral, #e2694f);
+  border-color: var(--coral, #e2694f);
+}
+.pipeline-step-jump {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  border: none;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: inherit;
+}
+.pipeline-ready {
+  font-weight: 700;
+  color: var(--teal, #2f9e8f);
+  white-space: nowrap;
+}
 .pipeline-step-n {
   font-size: 10px;
   font-weight: 700;

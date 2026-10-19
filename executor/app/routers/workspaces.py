@@ -40,6 +40,7 @@ from app.schemas.screenplay import (
     WorkspaceStorylineContent,
     WorkspaceSummary,
     WorkspaceWorldviewContent,
+    WritingStageUpdateRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -325,6 +326,38 @@ def get_workspace_outline(workspace_id: str, user: CurrentUser = Depends(current
     if workspace is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
     return _read_outline_content(Path(workspace.workspace_path))
+
+
+@router.put("/workspaces/{workspace_id}/writing/stage")
+def update_writing_stage(
+    workspace_id: str, payload: WritingStageUpdateRequest,
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """人工段指针写入（REQ-20261019-232617 FR-002/004）——前进/跳段/回退统一入口。
+
+    段间移动的唯一通道：只由界面人工确认动作调用（confirmed_stage 是模型
+    不可写的确认标记），产物落盘不经过本端点。写入幂等（同值重复写无副作用），
+    返回最新 pipeline_status（phase=新段 + 就绪信号）。
+    """
+    from app.domains.writing.pipeline import classify_workspace, pipeline_status
+    from contracts.writing_artifacts import (
+        STAGE_LABELS, load_writing_state, save_writing_state,
+    )
+
+    thread_store = get_thread_store()
+    workspace = thread_store.get_workspace(user.user_id, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace_path = Path(workspace.workspace_path)
+    if payload.stage not in STAGE_LABELS:
+        raise HTTPException(status_code=422, detail=f"stage 只能是 {'/'.join(STAGE_LABELS)}")
+    if classify_workspace(workspace_path) == "legacy":
+        raise HTTPException(status_code=409, detail="旧版工作区只读，不支持切段")
+    state = load_writing_state(workspace_path)
+    state.confirmed_stage = payload.stage
+    state.stage = payload.stage
+    save_writing_state(workspace_path, state)
+    return pipeline_status(workspace_path)
 
 
 def _find_manuscript(workspace_path: Path, chapter: int) -> Path | None:

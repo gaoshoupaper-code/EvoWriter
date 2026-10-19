@@ -80,7 +80,6 @@ _REQUIRED_FILES = [
     "tools/update_foreshadow_table.py",
     "tools/rewrite_rhythm_table.py",
     "tools/append_chapter_deviation.py",
-    "tools/handoff.py",
     "tools/confirm_with_user.py",
 ]
 # 记忆要素冻结保留：删除即失败

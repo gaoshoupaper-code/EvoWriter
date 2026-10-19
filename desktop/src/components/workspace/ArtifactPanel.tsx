@@ -12,6 +12,7 @@ import type { OutlineFileEntry, PipelineStatus } from "../../lib/types";
 import { PipelineStageBar } from "./PipelineStageBar";
 import { ManuscriptEditor } from "./ManuscriptEditor";
 import { useWorkspaceStore } from "@/stores/workspace";
+import { useStageSessionStore } from "@/stores/stage-session";
 
 type ArtifactPanelProps = {
   kind: string;
@@ -62,7 +63,11 @@ export function ArtifactPanel({
       </div>
 
       <div className="content-panel-body">
-        <PipelineStageBar pipeline={pipeline} fileRels={files.map((f) => f.rel)} />
+        <PipelineStageBar
+          pipeline={pipeline}
+          fileRels={files.map((f) => f.rel)}
+          onStageJump={(stage) => void useStageSessionStore.getState().jumpToStage(stage)}
+        />
 
         {kind === "legacy" && files.length === 0 ? (
           <p className="outline-state">旧版工作区：内容走旧面板数据，此处只读。</p>

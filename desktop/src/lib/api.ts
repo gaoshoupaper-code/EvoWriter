@@ -477,6 +477,21 @@ export async function createThread(workspaceId: string, sessionName?: string) {
   return parseJsonResponse<ThreadSummary>(response);
 }
 
+/**
+ * 人工段指针写入（REQ-20261019-232617 FR-002/004）——前进/跳段/回退统一入口。
+ * 只由界面人工确认动作调用；返回最新 pipeline_status（phase=新段 + 就绪信号）。
+ */
+export async function updateWritingStage(workspaceId: string, stage: string) {
+  return apiJson<import("./types").PipelineStatus>(
+    `${API_BASE_URL}/api/workspaces/${workspaceId}/writing/stage`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stage }),
+    },
+  );
+}
+
 export async function updateThread(threadId: string, sessionName: string) {
   const response = await apiFetch(`${API_BASE_URL}/api/threads/${threadId}`, {
     method: "PATCH",

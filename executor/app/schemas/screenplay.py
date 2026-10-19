@@ -201,6 +201,16 @@ class ManuscriptSaveRequest(BaseModel):
     finalize: bool = Field(default=False, description="true = 本次保存后人修定稿（状态行改写）")
 
 
+class WritingStageUpdateRequest(BaseModel):
+    """人工段指针写入请求（REQ-20261019-232617 FR-002/004）。
+
+    前进/跳段/回退统一入口：只由界面人工确认动作调用（服务端写
+    confirmed_stage，模型工具箱无此通道）。
+    """
+
+    stage: str = Field(description="目标大段：theme/outline/volume/chapter/text")
+
+
 class ScreenplayGenerateRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 

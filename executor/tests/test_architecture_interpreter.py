@@ -92,9 +92,9 @@ def test_manifest_shape_single_agent():
     assert main.write_permissions == []
     assert set(main.tools) == {
         "read_artifact", "save_artifact", "update_foreshadow_table",
-        "rewrite_rhythm_table", "append_chapter_deviation", "handoff",
+        "rewrite_rhythm_table", "append_chapter_deviation",
         "confirm_with_user",
-    }
+    }  # handoff 已移除（REQ-20261019-232617 FR-004：跳段权收归界面）
 
 
 def test_stage_prompt_files_complete():

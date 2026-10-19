@@ -42,21 +42,18 @@ MAIN_AGENT = "author"
 # legacy 会话键（与主管线会话键区分，互不串台）
 _LEGACY_AGENT_KEY = "legacy"
 
-# 各段任务书说明（拼进 directive；段内细流程在 harness 段规程提示词里）
-_STAGE_DETAIL = {
-    STAGE_THEME: "定主题三件套（核心爽点 → 核心矛盾 → 核心爽点剧情），逐项确认后落盘。",
-    "outline": "五步把主题抻成核心纲（主线 → 小目标 → 地图 → 角色 → 节点）。",
-    "volume": "逐卷把核心纲一行抻成卷纲（卷末大爽点 → 拆阶段 → 排节奏 → 质检）。",
-    STAGE_CHAPTER: "摊区间 → 批次出卡 → 批次总检 → 落盘回写（伏笔表/节奏表）。",
-    "text": "照章纲起草正文（读档 → 起草 → 自检报告 → 交作者人修）。",
-}
+# 注入禁令（2026-10-19 线上事故）：directive 只许携带运行时事实（当前段、
+# 进度摘要、下一单元目标），不拼任务说明或行为纪律——那些只住发版的段规程
+# 提示词。曾在 _STAGE_DETAIL 里硬编码各段任务书摘要 + 「一轮最多问 1-2 个
+# 问题」纪律句，发版改了提示词后这些代码副本仍每轮注入，已删（见
+# agent._build_user_prompt 的注入禁令注释）。
 
 
 @dataclass
 class RouteDecision:
     agent_name: str | None          # None = manifest 首个 main（legacy 只读模式）
     thread_id: str                  # langgraph thread（会话派生）
-    directive: str                  # 任务书（拼进 user prompt 头部）
+    directive: str                  # 运行时事实（当前段+进度，拼进 user prompt；禁止行为指令）
     phase: str                      # theme/outline/volume/chapter/text/legacy
     new_session: bool = False       # 本轮是否新会话（fresh 丢弃重开标记）
     used_override: bool = False     # 本轮是否消费了点名跳段（commit 时清除）
@@ -121,21 +118,23 @@ def _progress_summary(workspace: Path, prog: WritingProgress) -> str:
 
 
 def _unit_detail(workspace: Path, stage: str) -> str:
+    """当前段附带的运行时事实（下一卷/章目标、细纲库存）。
+
+    只报磁盘事实，不带任务说明与提醒阈值——那些住发版的段规程提示词。
+    """
     prog = scan_writing_progress(workspace)
-    detail = _STAGE_DETAIL.get(stage, "")
-    extra = ""
     if stage == "volume":
         nxt = (prog.volumes[-1] if prog.volumes else 0) + 1
-        extra = f"当前目标：第 {nxt} 卷卷纲。"
-    elif stage == STAGE_CHAPTER:
+        return f"当前目标：第 {nxt} 卷卷纲。"
+    if stage == STAGE_CHAPTER:
         stock = len(prog.chapter_outlines) - len(prog.chapter_texts)
-        extra = f"细纲库存 {stock} 章（低于 3 章提醒补纲）。"
-    elif stage == "text":
+        return f"细纲库存 {stock} 章。"
+    if stage == "text":
         outlined = set(prog.chapter_outlines)
         written = set(prog.chapter_texts)
         nxt = min(outlined - written) if outlined - written else None
-        extra = f"当前目标：第 {nxt} 章正文。" if nxt else ""
-    return f"{detail}{extra}"
+        return f"当前目标：第 {nxt} 章正文。" if nxt else ""
+    return ""
 
 
 def next_unit_label(workspace: Path) -> str:
@@ -176,6 +175,8 @@ def route(
             agent_name=None,
             thread_id=thread_id,
             phase=STAGE_LEGACY,
+            # 只读护栏是注入禁令的唯一例外：不是创作行为指令，是防止 agent
+            # 往旧结构工作区写新格式产物、毁掉旧作数据的安全边界。
             directive=(
                 "【旧版工作区·只读】本 workspace 是旧版结构（五件套、旧七步或三步制），"
                 "不支持在新流程续写修订。可以查看、总结、答疑；"
@@ -199,7 +200,6 @@ def route(
     prog = scan_writing_progress(workspace)
     directive = (
         f"【五段管线】当前段：{label}（{stage}）。{_unit_detail(workspace, stage)}\n"
-        "段内流程见系统提示词附带的当前段规程；一轮最多问 1-2 个问题，回复后必停。\n"
         f"【进度摘要】\n{_progress_summary(workspace, prog)}"
     )
 

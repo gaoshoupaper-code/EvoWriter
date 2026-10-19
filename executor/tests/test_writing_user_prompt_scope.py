@@ -1,13 +1,15 @@
-"""创作委托文本范围测试（线上「还在做细纲」事故的防回归）。
+"""创作委托文本范围测试（线上「还在做细纲」事故 + 「一直问第 0 步」事故的防回归）。
 
-事故：agent._build_user_prompt 残留 v8 多阶段流水线指令
+事故一：agent._build_user_prompt 残留 v8 多阶段流水线指令
 （detail-outline → writing、chapter-XX/state_log 产物要求），
 v9 切单故事专家后未清理——storybuilding 接到指令后自行写细纲与章节正文。
-本测试锁定：委托文本只描述大纲阶段，不出现任何细纲/正文/章节指令。
 
-REQ-20260930-163019 扩展：outline.md / evaluation.md 链路退休后，
-委托文本与收尾检查同样不得再引用这两个产物；收尾唯一锚点是 storyline.md
-（FR-005/006/007）——旧代码强制检查两文件曾致全新任务收尾必炸。
+事故二（2026-10-19）：_build_user_prompt 硬编码「新书首轮（硬性）第 0 步
+开场」+ 管线说明 + 产物要求，发版提示词删掉第 0 步后线上仍每轮问书名/类型
+——代码里的行为指令作者改不到、发版盖不掉。
+
+本测试锁定（注入禁令）：user prompt 只含信封+运行时数据+作者消息，
+一切行为指令（开场话术/流程介绍/产物要求/问法模板）只住发版提示词。
 """
 
 from __future__ import annotations
@@ -31,9 +33,25 @@ _FORBIDDEN_FRAGMENTS = (
     "写入 state_log",
     "skeleton skill",
     "expand skill",
-    # FR-005/006：产物链路退休后委托文本不得再要求维护 outline/evaluation
+    # FR-005/006：产物链路退休后委托文本不得再引用 outline/evaluation
     "outline.md",
     "evaluation",
+)
+
+# 行为指令特征（注入禁令，2026-10-19）：user prompt 出现任何一条都算回归。
+# 这些内容的唯一居所是发版提示词（author_base.md 常驻骨架 + 段规程）。
+_BEHAVIORAL_FRAGMENTS = (
+    "新书首轮",
+    "第 0 步",
+    "硬性",
+    "暂定名",
+    "管线说明",
+    "产物要求",
+    "五段式访谈创作管线",
+    "严禁自动连跑",
+    "必停",
+    "confirm_with_user",
+    "落盘",
 )
 
 
@@ -54,14 +72,14 @@ def test_user_prompt_has_no_pipeline_remnants() -> None:
         assert fragment not in prompt, f"委托文本残留 v8 流水线指令: {fragment}"
 
 
-def test_user_prompt_states_single_expert_scope() -> None:
+def test_user_prompt_carries_no_behavioral_instructions() -> None:
+    """注入禁令：user prompt 零行为指令——行为纪律住发版提示词，不住代码。"""
     prompt = _build_prompt()
-    # 五段制（REQ-20261018-115508 FR-001）：单 agent 技能切换 + 五段 + 语义工具 + 必停
-    assert "五段式访谈创作管线" in prompt
-    for stage in ("题材", "总纲", "卷纲", "章纲", "正文"):
-        assert stage in prompt
-    assert "语义" in prompt and "confirm_with_user" in prompt
-    assert "必停" in prompt and "严禁自动连跑" in prompt
+    for fragment in _BEHAVIORAL_FRAGMENTS:
+        assert fragment not in prompt, f"user prompt 注入了行为指令: {fragment}"
+    # 信封与作者消息仍在（这是 user prompt 的本职：运载数据，不运载指令）
+    assert "作者消息：" in prompt and "写一部玄幻长篇" in prompt
+    assert "回复请使用自然语言纯文本" in prompt
 
 
 def _thread_with_workspace(tmp_path: Path):
@@ -80,22 +98,19 @@ def _service() -> MetaAgentService:
     return MetaAgentService.__new__(MetaAgentService)
 
 
-def test_first_build_injects_clarify_gate(tmp_path: Path) -> None:
-    """AC-001（REQ-20261018-115508）：五段产物全空时，委托文本注入新书首轮
-    指令——题材段第 0 步摸底（流程介绍 + 书名/类型两问）。
-    """
+def test_first_build_injects_nothing_behavioral(tmp_path: Path) -> None:
+    """空工作区（五段产物全空）也不得注入新书起步指令——开场话术由发版的
+    题材段规程决定，executor 不替提示词做主（2026-10-19 事故防回归）。"""
     payload = ScreenplayGenerateRequest(prompt="写一部玄幻长篇", thread_id="t-test")
     prompt = _service()._build_user_prompt(payload, _thread_with_workspace(tmp_path))  # type: ignore[arg-type]
 
-    for fragment in (
-        "新书首轮", "第 0 步", "暂定名", "严禁自动连跑",
-    ):
-        assert fragment in prompt, f"首发委托文本缺新书起步指令: {fragment}"
+    for fragment in ("新书首轮", "第 0 步", "硬性", "暂定名", "这本书叫什么"):
+        assert fragment not in prompt, f"空工作区注入了行为指令: {fragment}"
     assert "ask_user" not in prompt, "委托文本不得引用种子线工具"
 
 
 def test_revision_after_outline_has_no_clarify_gate(tmp_path: Path) -> None:
-    """主题.md 已存在（推进/修订轮）时不得注入新书首轮指令，避免干扰访谈。"""
+    """主题.md 已存在（推进/修订轮）时同样零注入。"""
     (tmp_path / "主题.md").write_text("# 主题 · 书\n> 状态：第 1 步\n", encoding="utf-8")
     payload = ScreenplayGenerateRequest(prompt="主角动机再改改", thread_id="t-test")
     prompt = _service()._build_user_prompt(payload, _thread_with_workspace(tmp_path))  # type: ignore[arg-type]

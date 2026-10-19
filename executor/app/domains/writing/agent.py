@@ -1017,6 +1017,21 @@ class MetaAgentService(BaseAgentService):
         *,
         directive: str | None = None,
     ) -> str:
+        """组装本轮 user prompt——只许「信封 + 运行时数据」，禁止行为指令。
+
+        【注入禁令（2026-10-19 线上事故）】user prompt 里不得出现任何指导模型
+        「怎么开场、怎么提问、产出什么、遵守什么纪律」的行为指令（含流程介绍、
+        产物要求、问法模板、段任务书）。行为指令的唯一居所是发版提示词——
+        常驻骨架 author_base.md + 段规程 stage_*.md，经 harness 包发版热切换。
+        在代码里硬编码的行为指令作者改不到、发版盖不掉，会直接顶掉发版效果
+        （事故：此处曾硬编码「新书首轮（硬性）第 0 步开场」，发版删掉第 0 步
+        后线上仍每轮问书名/类型）。新增注入前先自问：这段话是不是行为指令？
+        是 → 写进提示词发版，不写代码。
+
+        本函数允许的内容：会话信封（目录/session/输出格式）、管线 directive
+        （当前段+进度等磁盘事实，见 pipeline.route）、旧客户端表单内容透传、
+        作者消息与结构化字段。
+        """
         context_lines = [
             f"{key}: {value}"
             for key, value in payload.loose_context().items()
@@ -1026,28 +1041,12 @@ class MetaAgentService(BaseAgentService):
         context = "\n".join(context_lines) or "作者没有提供结构化字段。"
         request_text = free_text or "请按当前段规程继续推进。"
 
-        # 首轮构建（五段产物全空）注入题材段起步说明（AC-001：纯对话开场，
-        # 走题材第 0 步摸底：流程介绍 + 书名/类型两问）；后续轮不注入。
-        workspace_path = getattr(thread, "workspace_path", "") or ""
-        first_build = bool(workspace_path) and not (
-            (Path(workspace_path) / "主题.md").exists()
-            or (Path(workspace_path) / "storyline.md").exists()
-            or (Path(workspace_path) / "outline").is_dir()
-        )
-        first_section = (
-            "## 新书首轮（硬性）\n\n"
-            "这是一本全新的书：按题材段第 0 步开场——先用三四行向作者说清五段流程"
-            "（题材→总纲→卷纲→章纲→正文、逐项确认、逐步落盘），再问两个问题："
-            "「这本书叫什么？暂定名也行。你想写什么类型？有没有一个模糊的点子？」"
-            "拿到书名后进入第 1 步定核心爽点。\n\n"
-            if first_build
-            else ""
-        )
         directive_section = f"{directive}\n\n" if directive else ""
 
         # 旧客户端兼容垫片（A1 修复）：已发布桌面端的表单仍会发 demand_md——
         # 表单入口已砍（DEC-003），但其内容作为摸底素材并入本轮消息，走访谈
-        # 流程消化（题材段照常逐项确认），不静默丢弃。
+        # 流程消化（题材段照常逐项确认），不静默丢弃。这是作者自己提交的数据
+        # 透传，不是行为指令注入。
         demand_md = getattr(payload, "demand_md", None)
         demand_section = (
             "## 旧版客户端表单内容（摸底素材）\n\n"
@@ -1063,18 +1062,7 @@ class MetaAgentService(BaseAgentService):
             "当前工作目录：/\n"
             f"当前 session：{thread.thread_id}\n\n"
             f"{directive_section}"
-            f"{first_section}"
             f"{demand_section}"
-            "## 管线说明\n\n"
-            "当前系统为五段式访谈创作管线（REQ-20261018-115508）：题材 → 总纲 →"
-            " 卷纲 → 章纲 → 正文，单 agent 技能切换，目录即进度。产物读写只经语义"
-            "工具（read_artifact/save_artifact 等），不接触文件路径；拍板一律"
-            " confirm_with_user 出决策卡；每轮回复后必停，严禁自动连跑。\n\n"
-            "## 产物要求\n\n"
-            "- 落盘产物：主题、总纲（含伏笔登记表）、文风卡、卷纲（逐卷）、"
-            "章纲（逐章指令卡）、正文（逐章，初稿+自检报告）。\n"
-            "- 文件头两行：标题行 + 状态日期行；约束级/参考级分区泾渭分明。\n"
-            "- 每有一个点被作者确认，立即落盘一次（校验编辑优先，新建用全量）。\n\n"
             "作者消息：\n"
             f"{request_text}\n\n"
             "可用上下文（字段可能不完整，也可能包含额外信息）：\n"

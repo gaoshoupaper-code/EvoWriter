@@ -138,4 +138,28 @@ describe("T0d: 切会话消息保留", () => {
       expect(screen.getByText("会话A的正文")).toBeInTheDocument();
     }, { timeout: 5000 });
   });
+
+  it("switchThread（阶段切换路径）后旧会话内存槽位不被欢迎语污染", async () => {
+    const user = userEvent.setup();
+    const { useWorkspaceStore } = await import("@/stores/workspace");
+    const { useExecutionStore } = await import("@/stores/execution");
+    render(<MemoryRouter initialEntries={["/"]}><Home /></MemoryRouter>);
+
+    const input = await screen.findByRole("textbox", {}, { timeout: 10000 });
+    await user.type(input, "在会话A写的消息");
+    await user.keyboard("{Enter}");
+    await waitFor(() => {
+      expect(screen.getByText("会话A的正文")).toBeInTheDocument();
+    }, { timeout: 10000 });
+
+    // 阶段切换真实路径：switchThread（内部先摘指针后换消息）
+    act(() => useExecutionStore.getState().switchThread("thread-2"));
+
+    // 指针变化的同步瞬间已捕获旧会话消息；effect 不得再用切换后的消息回写。
+    // 污染特征 = 槽位被替换成孤立欢迎语（丢失A的真实消息），A 自己的首条
+    // 欢迎语合法保留在完整消息列表里
+    const cached = useExecutionStore.getState().threadMessages.get("thread-1");
+    expect(cached?.some((m) => m.content === "会话A的正文")).toBe(true);
+    expect((cached?.length ?? 0)).toBeGreaterThan(1);
+  });
 });

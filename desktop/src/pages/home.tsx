@@ -13,7 +13,7 @@ import { usePanelPolling } from "@/lib/usePanelPolling";
 import { projectStageFlow } from "@/lib/stage";
 import type { StageFlow } from "@/lib/stage";
 import type { WorkspacePanel } from "@/lib/types";
-import { useExecutionStore, setExecutionDeps, installExecutionPersist } from "@/stores/execution";
+import { useExecutionStore, setExecutionDeps, installExecutionPersist, hasSubstantiveMessages } from "@/stores/execution";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useTraceStore } from "@/stores/trace";
 import { useContentStore } from "@/stores/content";
@@ -123,6 +123,21 @@ export default function Home() {
     installExecutionPersist();
   }, []);
 
+  // FR-001（REQ-20261020-193647 review #1/#2）：在指针变化的同步瞬间捕获旧会话
+  // 消息——post-render 捕获拿到的是切换后的消息，会把旧会话内存槽位污染成
+  // 欢迎语。卸载必须退订：重置/重挂载后残留订阅会把欢迎语写进旧会话槽位。
+  // 孤立欢迎语不入槽（与持久化守卫同口径）：槽位消费者不过滤，
+  // 欢迎语入槽会遮住完好的磁盘记录。
+  useEffect(() => {
+    return useWorkspaceStore.subscribe((state, prev) => {
+      if (state.activeThreadId === prev.activeThreadId) return;
+      if (!prev.activeThreadId) return;
+      const exec = useExecutionStore.getState();
+      if (!hasSubstantiveMessages(exec.messages)) return;
+      exec.threadMessages.set(prev.activeThreadId, exec.messages);
+    });
+  }, []);
+
   // ── 主题 ──
   useEffect(() => { useWorkspaceStore.getState().initTheme(); }, []);
   // ── 界面字号(DESIGN-UI.md):启动恢复上次选择 ──
@@ -186,23 +201,14 @@ export default function Home() {
     return () => { ignore = true; };
   }, [activeWorkspaceId]);
 
-  // ── 会话切换：存取消息 ──
+  // ── 会话切换：加载新会话 ──
+  // 旧会话消息的保存不在 effect 里做（post-render 拿到的可能已是切换后的
+  // 消息，会污染旧会话内存槽位——REQ-20261020-193647 FR-001 review #1/#2），
+  // 由 deps 注入处的指针订阅在指针变化的同步瞬间完成
   const prevThreadIdRef = useRef(activeThreadId);
   useEffect(() => {
-    const prevId = prevThreadIdRef.current;
-    if (prevId && prevId !== activeWorkspaceId) {
-      useExecutionStore.getState().threadMessages.set(prevId, useExecutionStore.getState().messages);
-    }
-  }, [activeWorkspaceId]);
-
-  useEffect(() => {
-    const prevId = prevThreadIdRef.current;
-    if (prevId === activeThreadId) return;
-    // 保存旧 thread 消息
-    const exec = useExecutionStore.getState();
-    if (prevId) exec.threadMessages.set(prevId, exec.messages);
-    // 加载新 thread 消息
-    exec.loadThreadMessages(activeThreadId);
+    if (prevThreadIdRef.current === activeThreadId) return;
+    useExecutionStore.getState().loadThreadMessages(activeThreadId);
     prevThreadIdRef.current = activeThreadId;
   }, [activeThreadId]);
 
@@ -353,9 +359,9 @@ export default function Home() {
 
   async function handleCreateWorkspace() {
     skipNextBootstrap.current = true;
-    // 清空执行消息
-    useExecutionStore.getState().resetMessages();
-    useExecutionStore.getState().clearThreadMessages();
+    // 「摘指针→重置→清缓存」原子有序（REQ-20261020-193647 FR-001）：
+    // 指针未先摘，持久化订阅会把欢迎语写进旧工作区当前会话的 key 覆盖其记录
+    useExecutionStore.getState().beginNewWorkspace();
     useContentStore.getState().clearContent();
     await useWorkspaceStore.getState().handleCreateWorkspace();
   }

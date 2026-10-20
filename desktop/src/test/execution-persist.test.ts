@@ -12,6 +12,7 @@ const persistMock = {
   scheduleThreadPersist: vi.fn(),
   flushThreadPersist: vi.fn((_messages?: unknown, _workspaceId?: string, _threadId?: string) => Promise.resolve()),
   restoreThreadMessages: vi.fn(),
+  saveLastPosition: vi.fn().mockResolvedValue(undefined),
 };
 
 vi.mock("@/lib/session-persist", () => persistMock);
@@ -74,6 +75,68 @@ describe("loadThreadMessages 本地恢复（FR-002）", () => {
 
     // 旧会话内容被丢弃：仍是清空态（th2 的加载不在本测试范围）
     expect(useExecutionStore.getState().messages).toHaveLength(0);
+  });
+});
+
+describe("持久化会话归属（REQ-20261020-193647 FR-001）", () => {
+  it("switchThread 切换后，欢迎语不落任何 key（孤立欢迎语拦在唯一写入口）", () => {
+    installExecutionPersist();
+    useWorkspaceStore.setState({ activeThreadId: "thA", activeWorkspaceId: "ws1" });
+    // 旧会话终态已落盘
+    useExecutionStore.getState().setMessages([msg({ status: "completed", content: "A 的完整对话" })]);
+    persistMock.flushThreadPersist.mockClear();
+
+    useExecutionStore.getState().switchThread("thB");
+
+    // 加固语义：欢迎语单条不持久化——旧 key 不被覆盖，新 key 也无需欢迎语记录
+    expect(persistMock.flushThreadPersist).not.toHaveBeenCalled();
+    expect(persistMock.scheduleThreadPersist).not.toHaveBeenCalled();
+    // 内存槽位：switchThread 自身保存的仍是旧会话真实消息
+    const cached = useExecutionStore.getState().threadMessages.get("thA");
+    expect(cached?.[0].content).toBe("A 的完整对话");
+  });
+
+  it("孤立欢迎语数组不持久化（覆盖 bug 的破坏载荷永不具备覆盖力）", () => {
+    installExecutionPersist();
+    useWorkspaceStore.setState({ activeThreadId: "thA", activeWorkspaceId: "ws1" });
+    useExecutionStore.getState().setMessages([{ role: "assistant", content: "我们开始新的故事吧～" }]);
+    expect(persistMock.flushThreadPersist).not.toHaveBeenCalled();
+    expect(persistMock.scheduleThreadPersist).not.toHaveBeenCalled();
+  });
+
+  it("beginNewWorkspace：摘指针→重置→清缓存，欢迎语不落旧工作区会话 key（AC-001 建区入口）", () => {
+    installExecutionPersist();
+    useWorkspaceStore.setState({ activeThreadId: "thA", activeWorkspaceId: "ws1" });
+    useExecutionStore.getState().setMessages([msg({ status: "completed", content: "A 的完整对话" })]);
+    persistMock.flushThreadPersist.mockClear();
+
+    useExecutionStore.getState().beginNewWorkspace();
+
+    expect(useWorkspaceStore.getState().activeThreadId).toBe("");
+    expect(useExecutionStore.getState().messages[0].content).toBe("我们开始新的故事吧～");
+    expect(useExecutionStore.getState().threadMessages.size).toBe(0);
+    expect(persistMock.flushThreadPersist).not.toHaveBeenCalled();
+    expect(persistMock.scheduleThreadPersist).not.toHaveBeenCalled();
+  });
+
+  it("欢迎语集合与 makeWelcomeMessage 输出一致（判据不随文案漂移）", async () => {
+    const { WELCOME_MESSAGE_CONTENTS, makeWelcomeMessage } = await import("@/stores/execution");
+    expect(WELCOME_MESSAGE_CONTENTS.has(makeWelcomeMessage(true).content)).toBe(true);
+    expect(WELCOME_MESSAGE_CONTENTS.has(makeWelcomeMessage(false).content)).toBe(true);
+    expect(WELCOME_MESSAGE_CONTENTS.size).toBe(2);
+  });
+
+  it("无活跃会话时消息变化不持久化（清指针后欢迎语不落旧 key）", () => {
+    installExecutionPersist();
+    useWorkspaceStore.setState({ activeThreadId: "thA", activeWorkspaceId: "ws1" });
+    useExecutionStore.getState().setMessages([msg({ content: "A 的完整对话" })]);
+    persistMock.flushThreadPersist.mockClear();
+
+    useWorkspaceStore.getState().setActiveThreadId("");
+    useExecutionStore.getState().resetMessages();
+
+    expect(persistMock.flushThreadPersist).not.toHaveBeenCalled();
+    expect(persistMock.scheduleThreadPersist).not.toHaveBeenCalled();
   });
 });
 

@@ -1,10 +1,11 @@
 /**
- * StageHistoryPanel 单测（REQ-20261018-175526 FR-008/009）。
+ * StageHistoryPanel 单测（REQ-20260118-175526 FR-008/009；REQ-20261020-193647 FR-002/003）。
  * 覆盖：归组列表与倒序、折叠「更早」、只读查看（无输入框+禁续写提示）、
- * 单条删除二次确认、记录缺失占位。
+ * 服务器优先链路（污染绕过/断网回退/诚实占位）、未答拍板提问可见、
+ * 单条删除二次确认。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const stores = new Map<string, Map<string, unknown>>();
@@ -26,9 +27,11 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 }));
 
 const deleteThreadMock = vi.fn().mockResolvedValue({});
+const fetchConversationMock = vi.fn().mockResolvedValue([]);
 vi.mock("@/lib/api", () => ({
   API_BASE_URL: "",
   deleteThread: (...args: unknown[]) => deleteThreadMock(...args),
+  fetchThreadConversation: (...args: unknown[]) => fetchConversationMock(...args),
 }));
 
 vi.mock("@/components/workspace/ConfirmDialog", () => ({
@@ -44,6 +47,7 @@ vi.mock("@/components/workspace/ConfirmDialog", () => ({
 
 import { StageHistoryPanel } from "@/components/workspace/StageHistoryPanel";
 import { useStageSessionStore, type StageThreadMeta } from "@/stores/stage-session";
+import { useExecutionStore } from "@/stores/execution";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { initSessionPersist, _resetPersistForTests } from "@/lib/session-persist";
 
@@ -62,9 +66,11 @@ function openHistory(stage: string) {
 beforeEach(() => {
   stores.clear();
   deleteThreadMock.mockClear();
+  fetchConversationMock.mockReset().mockResolvedValue([]);
   _resetPersistForTests();
   initSessionPersist({ getUsername: () => "tester" });
   useStageSessionStore.setState({ threadStageMeta: new Map(), pendingTransition: null, historyView: null });
+  useExecutionStore.getState().clearThreadMessages();
   useWorkspaceStore.setState({
     activeWorkspaceId: "ws-1", activeThreadId: "", threads: [], deleting: false,
   });
@@ -110,7 +116,7 @@ describe("列表态（FR-008/DEC-004）", () => {
   });
 });
 
-describe("查看态（FR-008 只读）", () => {
+describe("查看态（FR-008 只读；FR-002 服务器优先链路 REQ-20261020-193647）", () => {
   it("只读浏览本地消息，无输入框，显示禁续写提示", async () => {
     useWorkspaceStore.setState({ threads: [thread("t1")] });
     useStageSessionStore.setState({
@@ -133,17 +139,245 @@ describe("查看态（FR-008 只读）", () => {
     expect(screen.getByText("主题 · 10-18 09:00")).toBeInTheDocument();
   });
 
-  it("记录缺失显示占位不消失（FR-008 失败语义）", async () => {
-    useWorkspaceStore.setState({ threads: [thread("t-gone")] });
+  it("服务器优先：本地记录被欢迎语污染时，显示服务端全量（AC-002）", async () => {
+    useWorkspaceStore.setState({ threads: [thread("t1")] });
     useStageSessionStore.setState({
-      threadStageMeta: new Map([["t-gone", meta("theme", "2026-10-18T09:00:00")]]),
-      historyView: { stage: "theme", threadId: "t-gone" },
+      threadStageMeta: new Map([["t1", meta("theme", "2026-10-18T09:00:00")]]),
+      historyView: { stage: "theme", threadId: "t1" },
     });
+    const { persistThreadMessages } = await import("@/lib/session-persist");
+    await persistThreadMessages("ws-1", "t1", [
+      { role: "assistant", content: "我们开始新的故事吧～" }, // 覆盖 bug 受害形态
+    ]);
+    fetchConversationMock.mockResolvedValue([
+      { id: "m1", role: "user", content: "帮我设计世界观", status: "completed" },
+      { id: "m2", role: "assistant", content: "好的，先确定基调。", status: "completed" },
+    ]);
 
     renderPanel();
     await waitFor(() => {
-      expect(screen.getByText(/本地记录缺失/)).toBeInTheDocument();
+      expect(screen.getByText("帮我设计世界观")).toBeInTheDocument();
     });
+    expect(screen.getByText("好的，先确定基调。")).toBeInTheDocument();
+    expect(screen.queryByText("我们开始新的故事吧～")).not.toBeInTheDocument();
+  });
+
+  it("服务端不可达 → 回退本地完好记录（AC-003）", async () => {
+    useWorkspaceStore.setState({ threads: [thread("t1")] });
+    useStageSessionStore.setState({
+      threadStageMeta: new Map([["t1", meta("theme", "2026-10-18T09:00:00")]]),
+      historyView: { stage: "theme", threadId: "t1" },
+    });
+    const { persistThreadMessages } = await import("@/lib/session-persist");
+    await persistThreadMessages("ws-1", "t1", [
+      { role: "user", content: "离线也看得到" },
+      { role: "assistant", content: "本地兜底正文" },
+    ]);
+    fetchConversationMock.mockRejectedValue(new Error("offline"));
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByText("本地兜底正文")).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/正在载入对话记录/)).not.toBeInTheDocument();
+  });
+
+  it("内存缓存被欢迎语污染、服务端不可达 → 越过缓存读本地文件（FR-002 链路边界）", async () => {
+    useWorkspaceStore.setState({ threads: [thread("t1")] });
+    useStageSessionStore.setState({
+      threadStageMeta: new Map([["t1", meta("theme", "2026-10-18T09:00:00")]]),
+      historyView: { stage: "theme", threadId: "t1" },
+    });
+    const { persistThreadMessages } = await import("@/lib/session-persist");
+    await persistThreadMessages("ws-1", "t1", [
+      { role: "user", content: "磁盘上的真实记录" },
+    ]);
+    useExecutionStore.getState().threadMessages.set("t1", [
+      { role: "assistant", content: "我们开始新的故事吧～" }, // 切换时被污染的缓存
+    ]);
+    fetchConversationMock.mockRejectedValue(new Error("offline"));
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByText("磁盘上的真实记录")).toBeInTheDocument();
+    });
+  });
+
+  it("两边都无实质记录 → 诚实占位（AC-004，本地缺失/只剩欢迎语两形态）", async () => {
+    useWorkspaceStore.setState({ threads: [thread("t-gone"), thread("t-welcome")] });
+    useStageSessionStore.setState({
+      threadStageMeta: new Map([
+        ["t-gone", meta("theme", "2026-10-18T09:00:00")],
+        ["t-welcome", meta("theme", "2026-10-18T10:00:00")],
+      ]),
+      historyView: { stage: "theme", threadId: "t-gone" },
+    });
+    const { persistThreadMessages } = await import("@/lib/session-persist");
+    await persistThreadMessages("ws-1", "t-welcome", [
+      { role: "assistant", content: "我们开始新的故事吧～" },
+    ]);
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByText(/记录无法恢复/)).toBeInTheDocument();
+    });
+
+    useStageSessionStore.setState({ historyView: { stage: "theme", threadId: "t-welcome" } });
+    await waitFor(() => {
+      expect(screen.getByText("主题 · 10-18 10:00")).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/记录无法恢复/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/本地记录缺失/)).not.toBeInTheDocument();
+  });
+
+  it("未答拍板提问可见：服务端 awaiting 腿正文即提问（AC-005 服务端路径）", async () => {
+    useWorkspaceStore.setState({ threads: [thread("t1")] });
+    useStageSessionStore.setState({
+      threadStageMeta: new Map([["t1", meta("theme", "2026-10-18T09:00:00")]]),
+      historyView: { stage: "theme", threadId: "t1" },
+    });
+    fetchConversationMock.mockResolvedValue([
+      { id: "m1", role: "user", content: "走访谈流程", status: "completed" },
+      { id: "m2", role: "assistant", content: "故事发生在什么时代？", status: "awaiting" },
+    ]);
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByText("故事发生在什么时代？")).toBeInTheDocument();
+    });
+  });
+
+  it("未答拍板提问可见：本地记录带 awaitingInput，占位正文不显示（AC-005 本地路径）", async () => {
+    useWorkspaceStore.setState({ threads: [thread("t1")] });
+    useStageSessionStore.setState({
+      threadStageMeta: new Map([["t1", meta("theme", "2026-10-18T09:00:00")]]),
+      historyView: { stage: "theme", threadId: "t1" },
+    });
+    const { persistThreadMessages } = await import("@/lib/session-persist");
+    await persistThreadMessages("ws-1", "t1", [
+      { role: "user", content: "走访谈流程" },
+      {
+        role: "assistant",
+        content: "正在生成...",
+        // 恢复管线按 2h 阈值剥 awaitingInput（REQ-20260101-170627 FR-005）：
+        // 本地路径提问可见的窗口 = 卡点发生后 2h 内；更早的提问走服务端腿
+        awaitingInput: { kind: "choice", question: "主角的职业是什么？", options: [], askedAt: new Date().toISOString() },
+      },
+    ]);
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByText("主角的职业是什么？")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("正在生成...")).not.toBeInTheDocument();
+  });
+
+  it("提问与正文同文（旧管线把提问写进 content）→ 只显示提问块不重复", async () => {
+    useWorkspaceStore.setState({ threads: [thread("t1")] });
+    useStageSessionStore.setState({
+      threadStageMeta: new Map([["t1", meta("theme", "2026-10-18T09:00:00")]]),
+      historyView: { stage: "theme", threadId: "t1" },
+    });
+    const { persistThreadMessages } = await import("@/lib/session-persist");
+    await persistThreadMessages("ws-1", "t1", [
+      { role: "user", content: "走访谈流程" },
+      {
+        role: "assistant",
+        content: "主角的职业是什么？",
+        awaitingInput: { kind: "choice", question: "主角的职业是什么？", options: [], askedAt: new Date().toISOString() },
+      },
+    ]);
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.queryAllByText(/主角的职业是什么/)).toHaveLength(1);
+    });
+  });
+
+  it("双源均有实质内容 → 服务器优先（DEC-001 顺序钉死）", async () => {
+    useWorkspaceStore.setState({ threads: [thread("t1")] });
+    useStageSessionStore.setState({
+      threadStageMeta: new Map([["t1", meta("theme", "2026-10-18T09:00:00")]]),
+      historyView: { stage: "theme", threadId: "t1" },
+    });
+    const { persistThreadMessages } = await import("@/lib/session-persist");
+    await persistThreadMessages("ws-1", "t1", [
+      { role: "user", content: "本地独有内容" },
+      { role: "assistant", content: "本地版本正文" },
+    ]);
+    fetchConversationMock.mockResolvedValue([
+      { id: "m1", role: "user", content: "服务端版本的消息", status: "completed" },
+    ]);
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByText("服务端版本的消息")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("本地独有内容")).not.toBeInTheDocument();
+    expect(screen.queryByText("本地版本正文")).not.toBeInTheDocument();
+  });
+
+  it("服务端挂起 → 查看态预算内回退本地（AC-003 超时形态）", async () => {
+    useWorkspaceStore.setState({ threads: [thread("t1")] });
+    useStageSessionStore.setState({
+      threadStageMeta: new Map([["t1", meta("theme", "2026-10-18T09:00:00")]]),
+      historyView: { stage: "theme", threadId: "t1" },
+    });
+    const { persistThreadMessages } = await import("@/lib/session-persist");
+    await persistThreadMessages("ws-1", "t1", [
+      { role: "user", content: "离线也看得到" },
+      { role: "assistant", content: "本地兜底正文" },
+    ]);
+    fetchConversationMock.mockReturnValue(new Promise(() => {})); // 永不 resolve
+
+    vi.useFakeTimers();
+    renderPanel();
+    expect(screen.getByText(/正在载入对话记录/)).toBeInTheDocument();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8000);
+    });
+    vi.useRealTimers();
+    await waitFor(() => {
+      expect(screen.getByText("本地兜底正文")).toBeInTheDocument();
+    });
+  });
+
+  it("readOnly 中断腿：带内容 → 「内容保存至此」且不出现「可以重试」", async () => {
+    useWorkspaceStore.setState({ threads: [thread("t1")] });
+    useStageSessionStore.setState({
+      threadStageMeta: new Map([["t1", meta("theme", "2026-10-18T09:00:00")]]),
+      historyView: { stage: "theme", threadId: "t1" },
+    });
+    fetchConversationMock.mockResolvedValue([
+      { id: "m1", role: "user", content: "继续写", status: "completed" },
+      { id: "m2", role: "assistant", content: "写到一半的正文", status: "interrupted" },
+    ]);
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByText(/内容保存至此/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/写到一半的正文/)).toBeInTheDocument();
+    expect(screen.queryByText(/可以重试/)).not.toBeInTheDocument();
+  });
+
+  it("readOnly 中断腿：空内容 → 「未收到完成信号」形态", async () => {
+    useWorkspaceStore.setState({ threads: [thread("t1")] });
+    useStageSessionStore.setState({
+      threadStageMeta: new Map([["t1", meta("theme", "2026-10-18T09:00:00")]]),
+      historyView: { stage: "theme", threadId: "t1" },
+    });
+    fetchConversationMock.mockResolvedValue([
+      { id: "m1", role: "assistant", content: "", status: "interrupted" },
+    ]);
+
+    renderPanel();
+    await waitFor(() => {
+      expect(screen.getByText(/未收到完成信号/)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/可以重试/)).not.toBeInTheDocument();
   });
 });
 

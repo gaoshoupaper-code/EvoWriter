@@ -69,18 +69,39 @@ function genMessageId(): string {
   return `u-${Date.now()}-${messageIdSeq}`;
 }
 
+// 欢迎语正文单源（REQ-20261020-193647 FR-002）：初始消息、makeWelcomeMessage
+// 与「实质内容」判据集合共用同一对常量——改文案不会让判据集合静默失配
+const WELCOME_WITH_WORKSPACE = "我们开始新的故事吧～";
+const WELCOME_NO_WORKSPACE = "先选择一个工作目录，再开启或恢复创作会话。";
+
 const initialAssistantMessage: ChatMessage = {
   role: "assistant",
-  content: "先选择一个工作目录，再开启或恢复创作会话。",
+  content: WELCOME_NO_WORKSPACE,
 };
 
 // 欢迎消息按工作区状态二选一（DEC-007）：有工作区 → 邀约式新文案；无工作区 → 保留选目录指引。
 // 模块加载时 deps 未注入，store 初始值固定用 initialAssistantMessage；运行中注入/切换走本函数。
-function makeWelcomeMessage(hasWorkspace: boolean): ChatMessage {
+export function makeWelcomeMessage(hasWorkspace: boolean): ChatMessage {
   return {
     role: "assistant",
-    content: hasWorkspace ? "我们开始新的故事吧～" : "先选择一个工作目录，再开启或恢复创作会话。",
+    content: hasWorkspace ? WELCOME_WITH_WORKSPACE : WELCOME_NO_WORKSPACE,
   };
+}
+
+/** 欢迎语正文集合（REQ-20261020-193647 FR-002）：历史查看据此判「实质内容」——
+ *  被 FR-001 欢迎语覆盖 bug 波及的本地记录只剩开场白，视为无实质内容。 */
+export const WELCOME_MESSAGE_CONTENTS: ReadonlySet<string> = new Set([
+  WELCOME_WITH_WORKSPACE,
+  WELCOME_NO_WORKSPACE,
+]);
+
+/** 历史查看「实质内容」判据（REQ-20261020-193647 FR-002）：至少一条 user 消息，
+ *  或一条正文非欢迎语的 assistant 消息。只剩欢迎语 = 覆盖受害会话或从未聊过。 */
+export function hasSubstantiveMessages(messages: ChatMessage[] | null | undefined): boolean {
+  if (!messages?.length) return false;
+  return messages.some(
+    (m) => m.role === "user" || (m.role === "assistant" && !WELCOME_MESSAGE_CONTENTS.has(m.content)),
+  );
 }
 
 // ── SSE 事件字段提取（从 home.tsx:86-133 迁移）──
@@ -343,6 +364,8 @@ interface ExecutionState {
   loadThreadMessages: (threadId: string) => void;
   resetMessages: () => void;
   clearThreadMessages: () => void;
+  /** 新建工作区前置（REQ-20261020-193647 FR-001）：摘指针→重置→清缓存，原子有序。 */
+  beginNewWorkspace: () => void;
   submit: (promptText: string) => Promise<void>;
   resume: (resumeText: string) => Promise<void>;
   stop: () => void;
@@ -375,16 +398,24 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
     if (prevId && prevId !== threadId) {
       threadMessages.set(prevId, messages);
     }
+    // 持久化订阅同步读活跃会话指针（REQ-20261020-193647 FR-001）：必须先切指针
+    // 再换消息，否则新会话欢迎语会以旧会话 key 落盘，覆盖旧会话的完整本地记录
+    d.setActiveThreadId(threadId);
     // 加载新 thread 的消息
     const saved = threadMessages.get(threadId);
     set({ messages: saved || [makeWelcomeMessage(!!d.getActiveWorkspaceId())] });
-    d.setActiveThreadId(threadId);
   },
 
   loadThreadMessages: (threadId) => {
+    const d = requireDeps();
+    // 空指针过渡态（建工作区清指针/删除当前会话）：不发无效恢复请求，
+    // 直接回到欢迎语——与「无记录回退欢迎语」同一终态
+    if (!threadId) {
+      set({ messages: [makeWelcomeMessage(!!d.getActiveWorkspaceId())] });
+      return;
+    }
     const { threadMessages } = get();
     const saved = threadMessages.get(threadId);
-    const d = requireDeps();
     if (saved) {
       set({ messages: saved });
       return;
@@ -422,6 +453,16 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
 
   clearThreadMessages: () => {
     get().threadMessages.clear();
+  },
+
+  /** 新建工作区前置（REQ-20261020-193647 FR-001）：原子完成「摘指针→重置消息→
+   *  清内存缓存」。指针必须先摘——持久化订阅按活跃指针落 key，顺序颠倒会把
+   *  欢迎语写进旧工作区当前会话的记录并覆盖它。 */
+  beginNewWorkspace: () => {
+    const d = requireDeps();
+    d.setActiveThreadId("");
+    get().resetMessages();
+    get().clearThreadMessages();
   },
 
   submit: async (promptText) => {
@@ -465,6 +506,10 @@ export function installExecutionPersist() {
     const streamEnded = prev.loading && !state.loading;
     if (!messagesChanged && !streamEnded) return;
     if (!state.messages.length) return;
+    // FR-001 加固（REQ-20261020-193647）：孤立欢迎语不落盘——它不承载对话
+    // 内容（缺失时可即时再生），却是覆盖 bug 的破坏载荷；拦在唯一写入口，
+    // 任何残留时序缺陷都不再具备覆盖记录的能力
+    if (!hasSubstantiveMessages(state.messages)) return;
     const threadId = d.getActiveThreadId();
     const workspaceId = d.getActiveWorkspaceId();
     if (!threadId || !workspaceId) return;
@@ -576,8 +621,15 @@ async function resendPausedMessages(
   }
 }
 
-/** FR-005：本地缓存缺失时从服务端会话消息日志恢复界面历史。 */
-async function restoreFromServerConversation(threadId: string): Promise<ChatMessage[] | null> {
+/**
+ * FR-005：本地缓存缺失时从服务端会话消息日志恢复界面历史。
+ * readOnly=true 供历史查看复用（REQ-20261020-193647 FR-002）：中断腿不注入
+ * 「可以重试」提示——历史只读，没有重试入口。
+ */
+export async function restoreFromServerConversation(
+  threadId: string,
+  opts: { readOnly?: boolean } = {},
+): Promise<ChatMessage[] | null> {
   try {
     const entries = await fetchThreadConversation(threadId);
     if (!entries.length) return null;
@@ -591,15 +643,17 @@ async function restoreFromServerConversation(threadId: string): Promise<ChatMess
         traceId: entry.trace_id ?? undefined,
       };
       if (entry.status === "interrupted") {
-        // DEC-004：半截内容显示保留 + 标注中断（FailedView 自带重试入口）
+        // DEC-004：半截内容显示保留 + 标注中断（当前会话场景 FailedView 自带重试入口）
         message.status = "failed";
+        const tail = opts.readOnly ? "内容保存至此。" : "已生成的内容已保存，可以重试。";
         message.content = entry.content
-          ? `${entry.content}\n\n⚠️ 连接中断，已生成的内容已保存，可以重试。`
-          : "⚠️ 连接中断（未收到完成信号），可以重试。";
+          ? `${entry.content}\n\n⚠️ 连接中断，${tail}`
+          : `⚠️ 连接中断（未收到完成信号）${opts.readOnly ? "。" : "，可以重试。"}`;
       } else if (entry.status === "completed" || entry.status === "failed" || entry.status === "stopped") {
         message.status = entry.status;
       }
-      // running / queued / awaiting 不落终态：交给恢复对账按服务端 run 真相收敛
+      // running / queued / awaiting 不落终态：当前会话交给恢复对账按服务端 run
+      // 真相收敛；历史查看（readOnly）中 awaiting 的 content 即提问文本，正文显示
       return message;
     });
   } catch {

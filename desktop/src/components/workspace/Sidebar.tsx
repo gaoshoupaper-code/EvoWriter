@@ -7,6 +7,19 @@
  * 旧「作品资料」分组（大纲/人物/物品/世界观）随旧机制退役。
  */
 import type { ReactNode } from "react";
+import {
+  BookOpen,
+  Compass,
+  Feather,
+  Image as ImageIcon,
+  Layers,
+  ListTree,
+  MessageCircle,
+  Plus,
+  ScrollText,
+  Trash2,
+  type LucideIcon,
+} from "lucide-react";
 import type { OutlineFileEntry, WorkspacePanel, WorkspaceSummary } from "../../lib/types";
 
 type SidebarProps = {
@@ -58,6 +71,29 @@ const GROUP_DIR: Record<string, string | null> = {
   volume: "卷纲", chapter: "章纲", text: "正文",
 };
 
+/** 产物树分组锚点图标（REQ-20261020-200710 DEC-007）：组级小图标，条目保持纯文字 */
+const GROUP_ICON: Record<string, LucideIcon> = {
+  theme: Compass,
+  master: ScrollText,
+  style: Feather,
+  volume: Layers,
+  chapter: ListTree,
+  text: BookOpen,
+};
+
+/**
+ * 书脊取色（REQ-20261020-200710 FR-001/DEC-001）：FNV-1a 哈希书名 → 6 档色板索引。
+ * 同一本书永远同色、不同书名尽量散开；色板对应 CSS .t0-.t5（全部来自既有 accent token）。
+ */
+export function spineTone(title: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < title.length; i++) {
+    h ^= title.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return Math.abs(h) % 6;
+}
+
 export function Sidebar({
   activePanel,
   onPanelChange,
@@ -82,11 +118,14 @@ export function Sidebar({
         <div className="sidebar-group">
           <span className="sidebar-group-label">创作</span>
           <button
-            className={`sidebar-item ${activePanel === "chat" ? "active" : ""} transition-all duration-150`}
+            className={`sidebar-item ${activePanel === "chat" ? "active" : ""}`}
             type="button"
             onClick={() => onPanelChange("chat")}
           >
-            <span>对话</span>
+            <span className="sidebar-item-title-row">
+              <MessageCircle size={15} aria-hidden="true" />
+              <span>对话</span>
+            </span>
             <small>和陪练一起推进这本书</small>
           </button>
         </div>
@@ -103,7 +142,12 @@ export function Sidebar({
               aria-label="新建作品"
               title="新建作品"
             >
-              {creatingWorkspace ? "创建中" : "＋ 新书"}
+              {creatingWorkspace ? "创建中" : (
+                <>
+                  <Plus size={12} aria-hidden="true" />
+                  新书
+                </>
+              )}
             </button>
           </div>
           {workspaces.length === 0 ? (
@@ -118,21 +162,25 @@ export function Sidebar({
                     onClick={() => onSelectWorkspace(w.workspace_id)}
                     title={w.title}
                   >
-                    <span className="sidebar-book-icon">{w.domain === "image" ? "🎨" : "📕"}</span>
+                    <span className={`sidebar-book-spine t${spineTone(w.title)}`} aria-hidden="true">
+                      {w.domain === "image" ? (
+                        <ImageIcon size={9} className="sidebar-book-badge" aria-hidden="true" />
+                      ) : null}
+                    </span>
                     <span className="sidebar-book-title">{w.title}</span>
                   </button>
-                  {w.workspace_id === activeWorkspaceId ? (
-                    <button
-                      type="button"
-                      className="sidebar-book-delete"
-                      onClick={() => onDeleteWorkspace(w.workspace_id)}
-                      disabled={deletingWorkspace || creatingWorkspace}
-                      aria-label={`删除 ${w.title}`}
-                      title={`删除 ${w.title}`}
-                    >
-                      删除
-                    </button>
-                  ) : null}
+                  {/* 删除入口：每行常驻 DOM，悬停/键盘聚焦浮现（FR-003/AC-004），
+                      aria-label 语义与既有测试/无障碍约定保持一致 */}
+                  <button
+                    type="button"
+                    className="sidebar-book-delete"
+                    onClick={() => onDeleteWorkspace(w.workspace_id)}
+                    disabled={deletingWorkspace || creatingWorkspace}
+                    aria-label={`删除 ${w.title}`}
+                    title={`删除 ${w.title}`}
+                  >
+                    <Trash2 size={13} aria-hidden="true" />
+                  </button>
                 </li>
               ))}
             </ul>
@@ -145,9 +193,14 @@ export function Sidebar({
           {groups.length === 0 ? (
             <p className="sidebar-empty">开始对话后，产物会在这里出现。</p>
           ) : (
-            groups.map((g) => (
+            groups.map((g) => {
+              const Icon = GROUP_ICON[g.id];
+              return (
               <div className="sidebar-tree-group" key={g.id}>
-                <span className="sidebar-tree-group-label">{g.label}</span>
+                <span className="sidebar-tree-group-label">
+                  {Icon ? <Icon size={12} aria-hidden="true" /> : null}
+                  {g.label}
+                </span>
                 <ul>
                   {g.rels.map((label) => {
                     const rel = relOfLabel(GROUP_DIR[g.id], label);
@@ -166,7 +219,8 @@ export function Sidebar({
                   })}
                 </ul>
               </div>
-            ))
+              );
+            })
           )}
         </div>
       </nav>

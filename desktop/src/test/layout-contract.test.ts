@@ -162,9 +162,10 @@ describe("视觉升级（REQ-20261018-202005）", () => {
     expect(block(".conversation-panel")).not.toContain("77px");
   });
 
-  it("侧栏三标题默认15px，条目默认13px", () => {
-    expect(block(".sidebar-group-label")).toContain("font-size: var(--text-ui-lg)");
-    expect(block(".sidebar-group-label")).toContain("font-weight: 600");
+  it("侧栏三标题为小号淡色标签，条目默认13px（REQ-20261020-200710 DEC-005）", () => {
+    expect(block(".sidebar-group-label")).toContain("font-size: var(--text-ui-xs)");
+    expect(block(".sidebar-group-label")).toContain("font-weight: 800");
+    expect(block(".sidebar-group-label")).toContain("letter-spacing: 0.06em");
     expect(block(".sidebar-book-title")).toContain("font-size: var(--text-ui-base)");
     expect(block(".sidebar-tree-item")).toContain("font-size: var(--text-ui-base)");
   });

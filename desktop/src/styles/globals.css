@@ -309,42 +309,78 @@ a {
   margin-top: 14px;
 }
 
+/* 分组标题（REQ-20261020-200710 DEC-005）：降为小号淡色标签，视觉重量让给内容，
+   与产物树内分组标签同一种语言 */
 .sidebar-group-label {
-  padding: 0 10px;
-  color: var(--ink);
-  font-size: var(--text-ui-lg);
-  font-weight: 600;
-  line-height: 28px;
+  padding: 0 8px;
+  color: var(--muted);
+  font-size: var(--text-ui-xs);
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  line-height: 24px;
 }
 
 .sidebar-item {
   width: 100%;
   display: grid;
-  gap: 4px;
+  gap: 2px;
   border: 1px solid transparent;
   border-radius: var(--radius-lg);
-  padding: 13px 14px;
+  padding: 12px 12px;
   background: transparent;
   cursor: pointer;
   text-align: left;
-  transition: background var(--motion-duration) ease,
-    border-color var(--motion-duration) ease,
-    box-shadow var(--motion-duration) ease;
+  transition:
+    background-color var(--motion-duration) var(--motion-ease),
+    border-color var(--motion-duration) var(--motion-ease),
+    color var(--motion-duration) var(--motion-ease);
 }
 
-.sidebar-item:hover,
-.sidebar-item.active {
-  border-color: rgba(34, 166, 153, 0.22);
-  background: var(--panel-soft);
+/* 选中/hover 层次（REQ-20261020-200710 FR-002/DEC-002）：
+   hover=轻背景；选中=teal 实色胶囊 + panel-solid 圆角指示条（::before，避开阴影 lint），
+   全部条目 140ms 过渡，明暗主题随 token 自动适配 */
+.sidebar-item {
+  position: relative;
+  transition:
+    background-color var(--motion-duration) var(--motion-ease),
+    border-color var(--motion-duration) var(--motion-ease),
+    color var(--motion-duration) var(--motion-ease);
+}
+
+.sidebar-item:hover {
+  background: var(--hover);
 }
 
 .sidebar-item.active {
-  box-shadow: inset 3px 0 0 var(--teal); /* design-lint:allow 侧栏激活指示条 */
+  border-color: transparent;
+  background: var(--teal);
+  color: var(--panel-solid);
+}
+
+.sidebar-item.active small {
+  color: color-mix(in srgb, var(--panel-solid) 80%, transparent);
+}
+
+.sidebar-item.active::before {
+  content: "";
+  position: absolute;
+  left: 6px;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-solid);
+}
+
+.sidebar-item-title-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
 }
 
 .sidebar-item span {
   font-size: var(--text-ui-base);
-  font-weight: 900;
+  font-weight: 700;
   letter-spacing: -0.01em;
 }
 
@@ -3799,9 +3835,8 @@ html[data-theme="dark"] .dashboard-main {
   background: rgba(255, 255, 255, 0.022);
 }
 
+/* 侧栏 hover/选中态由 FR-002 规则（teal 胶囊 + --hover）用 token 双主题自适应，不在此列 */
 html[data-theme="dark"] :is(
-  .sidebar-item:hover,
-  .sidebar-item.active,
   .workspace-menu-trigger,
   .workspace-menu-popover,
   .message.user,
@@ -7475,6 +7510,9 @@ html[data-theme="dark"] .admin-outline {
 }
 
 .sidebar-new-book {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border: 1px solid rgba(34, 166, 153, 0.35);
   border-radius: var(--radius-md);
   background: var(--panel-soft);
@@ -7500,10 +7538,11 @@ html[data-theme="dark"] .admin-outline {
   list-style: none;
   display: grid;
   gap: 2px;
-  padding: 0 8px;
+  padding: 0;
 }
 
 .sidebar-books li {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -7512,30 +7551,79 @@ html[data-theme="dark"] .admin-outline {
 .sidebar-book {
   flex: 1;
   min-width: 0;
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
   border: 1px solid transparent;
   border-radius: var(--radius-lg);
-  padding: 8px 10px;
+  /* 右侧常量留白给悬停浮现的删除入口——图标绝对定位覆盖，书名宽度恒定零跳动 */
+  padding: 8px 26px 8px 10px;
   background: transparent;
   cursor: pointer;
   text-align: left;
+  transition:
+    background-color var(--motion-duration) var(--motion-ease),
+    border-color var(--motion-duration) var(--motion-ease),
+    color var(--motion-duration) var(--motion-ease);
 }
 
-.sidebar-book:hover,
+.sidebar-book:hover {
+  background: var(--hover);
+}
+
 .sidebar-book.active {
-  border-color: rgba(34, 166, 153, 0.22);
-  background: var(--panel-soft);
+  border-color: transparent;
+  background: var(--teal);
+  color: var(--panel-solid);
 }
 
-.sidebar-book.active {
-  box-shadow: inset 3px 0 0 var(--teal); /* design-lint:allow 侧栏激活指示条 */
+.sidebar-book.active::before {
+  content: "";
+  position: absolute;
+  left: 3px;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-solid);
 }
 
-.sidebar-book-icon {
+/* 书脊（REQ-20261020-200710 FR-001/DEC-001）：按书名稳定取色的小圆角色块，
+   色板 t0-t5 全部来自既有 accent token，明暗主题自动适配 */
+.sidebar-book-spine {
+  position: relative;
   flex-shrink: 0;
-  font-size: var(--text-ui-sm);
+  width: 12px;
+  height: 18px;
+  border-radius: var(--radius-sm);
+}
+
+/* 书脊装饰线：一条浅色竖纹，做出"书脊棱"的细节 */
+.sidebar-book-spine::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  bottom: 3px;
+  left: 5px;
+  width: 2px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--panel-solid) 45%, transparent);
+}
+
+.sidebar-book-spine.t0 { background: var(--teal); }
+.sidebar-book-spine.t1 { background: var(--coral); }
+.sidebar-book-spine.t2 { background: var(--gold); }
+.sidebar-book-spine.t3 { background: var(--blue); }
+.sidebar-book-spine.t4 { background: var(--violet); }
+.sidebar-book-spine.t5 { background: var(--ink); }
+
+/* 图文书角标（domain=image 区分小说） */
+.sidebar-book-badge {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  color: var(--panel-solid);
 }
 
 .sidebar-book-title {
@@ -7543,23 +7631,60 @@ html[data-theme="dark"] .admin-outline {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: var(--text-ui-base);
-  font-weight: 400;
+  font-weight: 500;
 }
 
+/* 删除入口（FR-003/DEC-004）：每行常驻 DOM，悬停行或键盘聚焦时浮现；
+   绝对定位不参与布局，书名不受挤压 */
 .sidebar-book-delete {
-  flex-shrink: 0;
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  translate: 0 -50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
   border: none;
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--muted);
-  font-size: var(--text-ui-xs);
   cursor: pointer;
-  padding: 4px 6px;
-  border-radius: var(--radius-md);
+  padding: 0;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity var(--motion-duration) var(--motion-ease),
+    visibility var(--motion-duration) var(--motion-ease),
+    color var(--motion-duration) var(--motion-ease),
+    background-color var(--motion-duration) var(--motion-ease);
 }
 
-.sidebar-book-delete:hover {
-  color: #dc2626;
-  background: rgba(220, 38, 38, 0.08);
+.sidebar-books li:hover .sidebar-book-delete,
+.sidebar-books li:focus-within .sidebar-book-delete,
+.sidebar-book-delete:focus-visible {
+  opacity: 1;
+  visibility: visible;
+}
+
+.sidebar-book-delete:hover:not(:disabled) {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+}
+
+/* 选中书行是 teal 胶囊，删除图标换浅色保证对比度 */
+.sidebar-book.active + .sidebar-book-delete {
+  color: color-mix(in srgb, var(--panel-solid) 85%, transparent);
+}
+
+.sidebar-book.active + .sidebar-book-delete:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--panel-solid) 85%, transparent);
+  color: var(--danger);
+}
+
+.sidebar-book-delete:disabled {
+  cursor: default;
 }
 
 .sidebar-tree {
@@ -7569,7 +7694,7 @@ html[data-theme="dark"] .admin-outline {
 .sidebar-tree-group {
   display: grid;
   gap: 2px;
-  padding: 0 8px;
+  padding: 0;
 }
 
 .sidebar-tree-group + .sidebar-tree-group {
@@ -7577,7 +7702,10 @@ html[data-theme="dark"] .admin-outline {
 }
 
 .sidebar-tree-group-label {
-  padding: 2px 6px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
   color: var(--muted);
   font-size: var(--text-ui-xs);
   font-weight: 800;
@@ -7592,6 +7720,7 @@ html[data-theme="dark"] .admin-outline {
 
 .sidebar-tree-item {
   width: 100%;
+  position: relative;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -7601,14 +7730,31 @@ html[data-theme="dark"] .admin-outline {
   color: inherit;
   font-size: var(--text-ui-base);
   text-align: left;
-  padding: 5px 6px 5px 16px;
+  padding: 5px 6px 5px 18px;
   cursor: pointer;
+  transition:
+    background-color var(--motion-duration) var(--motion-ease),
+    color var(--motion-duration) var(--motion-ease);
 }
 
-.sidebar-tree-item:hover,
+.sidebar-tree-item:hover {
+  background: var(--hover);
+}
+
 .sidebar-tree-item.active {
-  background: var(--panel-soft);
-  color: var(--teal);
+  background: var(--teal);
+  color: var(--panel-solid);
+}
+
+.sidebar-tree-item.active::before {
+  content: "";
+  position: absolute;
+  left: 5px;
+  top: 5px;
+  bottom: 5px;
+  width: 3px;
+  border-radius: var(--radius-sm);
+  background: var(--panel-solid);
 }
 
 /* ── 正文人修编辑器（REQ-20261018-115508 FR-009，DEC-004）── */

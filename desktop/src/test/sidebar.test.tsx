@@ -5,7 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Sidebar } from "@/components/workspace/Sidebar";
+import { Sidebar, spineTone } from "@/components/workspace/Sidebar";
 import type { WorkspaceSummary } from "@/lib/types";
 
 const BOOKS: WorkspaceSummary[] = [
@@ -89,7 +89,8 @@ describe("作品侧栏（FR-011）", () => {
     render(<Sidebar {...props} />);
     expect(screen.getByText("行走的经验包")).toBeInTheDocument();
     expect(screen.getByText("以敌为粮")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: /以敌为粮/ }));
+    // 删除入口现在每行都有（aria 名含书名），书行按钮必须精确匹配
+    await userEvent.click(screen.getByRole("button", { name: "以敌为粮" }));
     expect(props.onSelectWorkspace).toHaveBeenCalledWith("ws-2");
     expect(document.querySelector(".sidebar-book.active")?.textContent).toContain("行走的经验包");
   });
@@ -103,6 +104,15 @@ describe("作品侧栏（FR-011）", () => {
     expect(props.onDeleteWorkspace).toHaveBeenCalledWith("ws-1");
   });
 
+  it("每本书都有删除入口（悬停浮现），非选中书可删（REQ-20261020-200710 AC-004）", async () => {
+    const props = baseProps();
+    render(<Sidebar {...props} />);
+    const deletes = document.querySelectorAll(".sidebar-book-delete");
+    expect(deletes).toHaveLength(2);
+    await userEvent.click(screen.getByRole("button", { name: "删除 以敌为粮" }));
+    expect(props.onDeleteWorkspace).toHaveBeenCalledWith("ws-2");
+  });
+
   it("五段产物树分组渲染；点条目回调 rel（AC-013）", async () => {
     const props = baseProps();
     render(<Sidebar {...props} />);
@@ -111,6 +121,10 @@ describe("作品侧栏（FR-011）", () => {
     for (const label of ["主题", "总纲", "文风", "卷纲", "章纲", "正文"]) {
       expect(within(tree).getAllByText(label).length).toBeGreaterThanOrEqual(1);
     }
+    // 每个分组标签都带锚点图标（REQ-20261020-200710 DEC-007）
+    document
+      .querySelectorAll(".sidebar-tree-group-label")
+      .forEach((label) => expect(label.querySelector("svg")).not.toBeNull());
     await userEvent.click(within(tree).getByText("第001章开局"));
     expect(props.onSelectArtifact).toHaveBeenCalledWith("正文/第001章开局.md");
   });
@@ -133,5 +147,53 @@ describe("作品侧栏（FR-011）", () => {
     expect(props.onPanelChange).toHaveBeenCalledWith("chat");
     rerender(<Sidebar {...baseProps({ activePanel: "artifacts" })} />);
     expect(document.querySelector(".sidebar-item.active")).toBeNull();
+  });
+});
+
+describe("书脊色派生（REQ-20261020-200710 FR-001）", () => {
+  it("同名同色，色值落在 6 色色板内（AC-001）", () => {
+    for (const title of ["行走的经验包", "以敌为粮", "", "📕 纯 emoji 书名", "A".repeat(200)]) {
+      const tone = spineTone(title);
+      expect(tone).toBe(spineTone(title));
+      expect(tone).toBeGreaterThanOrEqual(0);
+      expect(tone).toBeLessThan(6);
+    }
+  });
+
+  it("不同书名分布到多个色，避免一排同色（AC-001）", () => {
+    const titles = Array.from({ length: 12 }, (_, i) => `书名样本第${i}号·类型${i % 3}`);
+    const tones = new Set(titles.map(spineTone));
+    expect(tones.size).toBeGreaterThanOrEqual(4);
+  });
+});
+
+describe("书脊渲染（REQ-20261020-200710 FR-001）", () => {
+  const IMAGE_BOOK = {
+    workspace_id: "ws-img",
+    title: "图文混排示范",
+    domain: "image",
+    created_at: "",
+    session_count: 0,
+    thread_count: 0,
+  } as unknown as WorkspaceSummary;
+
+  it("每本书渲染书脊块；图文书带角标、小说不带（AC-001）", () => {
+    render(<Sidebar {...baseProps({ workspaces: [...BOOKS, IMAGE_BOOK] })} />);
+    const spines = document.querySelectorAll(".sidebar-book-spine");
+    expect(spines).toHaveLength(3);
+    expect(spines[0].getAttribute("aria-hidden")).toBe("true");
+    // 渲染级绑定：书脊色类名必须等于该书名经 spineTone 派生的档位
+    const books = [...BOOKS, IMAGE_BOOK];
+    spines.forEach((spine, i) => {
+      expect(spine.className).toContain(`t${spineTone(books[i].title)}`);
+    });
+    const bookRows = document.querySelectorAll(".sidebar-books li");
+    expect(bookRows[0].querySelector(".sidebar-book-badge")).toBeNull();
+    expect(bookRows[2].querySelector(".sidebar-book-badge")).not.toBeNull();
+  });
+
+  it("书脊纯装饰不进书名文本，active 书行文字仍可断言（回归）", () => {
+    render(<Sidebar {...baseProps()} />);
+    expect(document.querySelector(".sidebar-book.active")?.textContent).toContain("行走的经验包");
   });
 });

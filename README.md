@@ -1,6 +1,6 @@
 # EvoWriter
 
-**自进化大纲创作 Agent 平台** · Self-Evolving Outline-Writing Agent Platform
+**自进化长篇创作 Agent 平台** · Self-Evolving Novel-Writing Agent Platform
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Layering CI](https://github.com/gaoshoupaper-code/EvoWriter/actions/workflows/layering.yml/badge.svg)](https://github.com/gaoshoupaper-code/EvoWriter/actions/workflows/layering.yml)
@@ -32,7 +32,7 @@ Agent 应用的瓶颈不在"能不能跑",而在"能不能持续变好"。Prompt
 
 EvoWriter 的答案是:把进化做成一条**每级只消费上级封存制品的单向加工链**,评估与创作异源(判评分离)、进化改动逐条人工拍板、发版经真实装配门禁验证。人握住方向与发布两个决策点,其余交给飞轮。
 
-为什么选长篇小说做首个垂直领域:它是上下文工程的极限场景(数十万字的状态追踪、跨章节的信息差与伏笔),有可结构化评估的产物(契约矩阵 + 多维评分都能落地),且改进效果真实可感——**能在最难的领域验证过的机制,迁移到其他垂直领域只会更容易**。
+为什么选长篇小说创作:它是上下文工程的极限场景(数十万字的状态追踪、跨章节的信息差与伏笔),有可结构化评估的产物(契约矩阵 + 多维评分都能落地),且改进效果真实可感——**在最难的创作任务上验证过的机制,支撑从大纲到正文的全流程只会更稳**。
 
 ## 自进化闭环
 

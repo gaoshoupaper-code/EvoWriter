@@ -192,6 +192,17 @@ describe("工作台铺满窗口 + 字号基准（对齐 ZCode）", () => {
     // 未显式设 token 的文字（聊天正文/Markdown 段落）经 body 兜底继承基准，不回落 16px
     expect(css).toMatch(/body\s*\{[^}]*font-size:\s*var\(--text-ui-base\)/s);
   });
+
+  // REQ-20261021-100317 FR-001/DEC-001/DEC-005：正文全路径字号统一为基准 +1px。
+  // 拍板后续跑走行消息路径（yan-text-row），此前用 sm 与 message-content 的 lg
+  // 相差 4px——拍板前后正文忽大忽小。统一档位 --text-ui-md，跟随设置联动。
+  it("正文全路径统一基准 +1px（--text-ui-md）：消息正文/大纲/行消息正文/提问文案", () => {
+    expect(css).toMatch(/--text-ui-md:\s*calc\(var\(--ui-font-size\)\s*\+\s*1px\)/);
+    // 成对跨行选择器（block() 锚定不了换行），直接对文本断言
+    expect(css).toMatch(/\.message-content,\s*\.outline-markdown\s*\{[^}]*font-size:\s*var\(--text-ui-md\)/);
+    expect(block(".yan-text-row")).toContain("font-size: var(--text-ui-md)");
+    expect(block(".interview-question")).toContain("font-size: var(--text-ui-md)");
+  });
 });
 
 describe("极窄断点（≤920px）", () => {

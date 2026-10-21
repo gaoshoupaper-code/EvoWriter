@@ -40,6 +40,7 @@
   --text-ui-display: calc(var(--ui-font-size) + 8px);
   --text-ui-xl: calc(var(--ui-font-size) + 4px);
   --text-ui-lg: calc(var(--ui-font-size) + 2px);
+  --text-ui-md: calc(var(--ui-font-size) + 1px); /* 正文统一档（REQ-20261021-100317 DEC-001） */
   --text-ui-base: var(--ui-font-size);
   --text-ui-caption: calc(var(--ui-font-size) - 1px);
   --text-ui-sm: calc(var(--ui-font-size) - 2px);
@@ -2988,7 +2989,7 @@ a {
 
 .message-content,
 .outline-markdown {
-  font-size: var(--text-ui-lg);
+  font-size: var(--text-ui-md);
   line-height: 1.86;
 }
 
@@ -3000,55 +3001,65 @@ a {
 }
 
 .message-content :where(p, ul, ol, pre, blockquote),
-.outline-markdown :where(p, ul, ol, pre, blockquote) {
+.outline-markdown :where(p, ul, ol, pre, blockquote),
+.yan-thought-markdown :where(p, ul, ol, pre, blockquote) {
   margin: 0 0 13px;
 }
 
 .message-content :where(p, ul, ol, pre, blockquote):last-child,
-.outline-markdown :where(p, ul, ol, pre, blockquote):last-child {
+.outline-markdown :where(p, ul, ol, pre, blockquote):last-child,
+.yan-thought-markdown :where(p, ul, ol, pre, blockquote):last-child {
   margin-bottom: 0;
 }
 
 .message-content :where(h1, h2, h3),
-.outline-markdown :where(h1, h2, h3) {
+.outline-markdown :where(h1, h2, h3),
+.yan-thought-markdown :where(h1, h2, h3) {
   margin: 18px 0 10px;
   line-height: 1.25;
   letter-spacing: -0.02em;
 }
 
 .message-content :where(h1, h2, h3):first-child,
-.outline-markdown :where(h1, h2, h3):first-child {
+.outline-markdown :where(h1, h2, h3):first-child,
+.yan-thought-markdown :where(h1, h2, h3):first-child {
   margin-top: 0;
 }
 
 .message-content h1,
-.outline-markdown h1 {
+.outline-markdown h1,
+.yan-thought-markdown h1 {
   /* design-lint:allow Markdown 内容排版例外区(DESIGN-UI.md) */
   font-size: 24px;
 }
 
 .message-content h2,
-.outline-markdown h2 {
+.outline-markdown h2,
+.yan-thought-markdown h2 {
   font-size: var(--text-ui-xl);
 }
 
 .message-content h3,
-.outline-markdown h3 {
+.outline-markdown h3,
+.yan-thought-markdown h3 {
   font-size: var(--text-ui-lg);
 }
 
 .message-content :where(ul, ol),
-.outline-markdown :where(ul, ol) {
+.outline-markdown :where(ul, ol),
+.yan-thought-markdown :where(ul, ol) {
   padding-left: 21px;
 }
 
 .message-content li + li,
-.outline-markdown li + li {
+.outline-markdown li + li,
+.yan-thought-markdown li + li {
   margin-top: 5px;
 }
 
 .message-content code,
-.outline-markdown code {
+.outline-markdown code,
+.yan-thought-markdown code {
   border-radius: var(--radius-sm);
   padding: 2px 5px;
   background: rgba(87, 76, 150, 0.1);
@@ -3058,7 +3069,8 @@ a {
 }
 
 .message-content pre,
-.outline-markdown pre {
+.outline-markdown pre,
+.yan-thought-markdown pre {
   overflow-x: auto;
   border: 1px solid rgba(116, 103, 196, 0.16);
   border-radius: var(--radius-md);
@@ -3067,7 +3079,8 @@ a {
 }
 
 .message-content pre code,
-.outline-markdown pre code {
+.outline-markdown pre code,
+.yan-thought-markdown pre code {
   padding: 0;
   background: transparent;
 }
@@ -3079,7 +3092,8 @@ a {
    wrapper 由 markdown-components.tsx 注入）；表头吸顶与横向滚动
    容器互斥，按 FR-001 失败语义降级为普通表头。 */
 .message-content :where(.md-table-wrap),
-.outline-markdown :where(.md-table-wrap) {
+.outline-markdown :where(.md-table-wrap),
+.yan-thought-markdown :where(.md-table-wrap) {
   max-width: 100%;
   overflow-x: auto;
   margin: 18px 0;
@@ -3088,7 +3102,8 @@ a {
 }
 
 .message-content :where(table),
-.outline-markdown :where(table) {
+.outline-markdown :where(table),
+.yan-thought-markdown :where(table) {
   width: max-content;
   max-width: 100%;
   font-size: var(--text-ui-caption);
@@ -3096,7 +3111,8 @@ a {
 }
 
 .message-content :where(th, td),
-.outline-markdown :where(th, td) {
+.outline-markdown :where(th, td),
+.yan-thought-markdown :where(th, td) {
   padding: 7px 11px;
   text-align: left;
   vertical-align: top;
@@ -3104,13 +3120,15 @@ a {
 }
 
 .message-content :where(td),
-.outline-markdown :where(td) {
+.outline-markdown :where(td),
+.yan-thought-markdown :where(td) {
   min-width: 6em;
   border-bottom: 1px solid var(--line);
 }
 
 .message-content :where(th),
-.outline-markdown :where(th) {
+.outline-markdown :where(th),
+.yan-thought-markdown :where(th) {
   white-space: nowrap;
   font-weight: 800;
   color: var(--muted);
@@ -3119,12 +3137,14 @@ a {
 }
 
 .message-content tbody tr:last-child td,
-.outline-markdown tbody tr:last-child td {
+.outline-markdown tbody tr:last-child td,
+.yan-thought-markdown tbody tr:last-child td {
   border-bottom: none;
 }
 
 .message-content tbody tr:hover td,
-.outline-markdown tbody tr:hover td {
+.outline-markdown tbody tr:hover td,
+.yan-thought-markdown tbody tr:hover td {
   background: color-mix(in srgb, var(--teal) 8%, transparent);
 }
 
@@ -5030,7 +5050,7 @@ html[data-theme="dark"] .panel-heading {
   color: var(--muted);
   flex: none;
 }
-/* 展开态：一句一段（DEC-002），纯文本（FR-007），吸底跟随（FR-004） */
+/* 展开态容器：streaming 一句一段纯文本；终态整块 Markdown（REQ-20261021-100317 FR-002，推翻原 FR-007），吸底跟随（FR-004） */
 .yan-thought-text {
   margin: 4px 0 4px 20px;
   padding: 8px 12px;
@@ -5049,6 +5069,16 @@ html[data-theme="dark"] .panel-heading {
   line-height: 1.7;
   word-break: break-word;
   white-space: pre-wrap;
+}
+/* 终态思考 Markdown（REQ-20261021-100317 FR-002）：视觉与 yan-thought-para 同口径
+   （小一号 + 弱化，思考是辅助信息）；排版规则与正文 markdown 共用作用域（上方扩展） */
+.yan-thought-markdown {
+  font-size: var(--text-ui-sm);
+  color: var(--ink);
+  opacity: 0.75;
+  line-height: 1.7;
+  word-break: break-word;
+  min-width: 0;
 }
 /* 兜底行（DEC-004）：无思考流时显示真实进度 */
 .yan-thought-fallback {
@@ -5101,7 +5131,7 @@ html[data-theme="dark"] .panel-heading {
 /* 正文块：markdown 常驻展开，按行序位置渲染（中间正文不垫底） */
 .yan-text-row {
   margin: 6px 0 6px 20px;
-  font-size: var(--text-ui-sm);
+  font-size: var(--text-ui-md);
   color: var(--ink);
   line-height: 1.7;
   word-break: break-word;
@@ -5152,7 +5182,7 @@ html[data-theme="dark"] .panel-heading {
    提问是完整 markdown 文档：字号对齐正文（message-content），粗细交给语义标记 */
 .interview-question {
   margin: 10px 0 6px;
-  font-size: var(--text-ui-lg);
+  font-size: var(--text-ui-md);
   color: var(--ink);
 }
 

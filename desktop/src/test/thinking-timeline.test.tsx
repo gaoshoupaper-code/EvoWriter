@@ -3,7 +3,7 @@
  * REQ-20261010-182114：
  * - FR-002/AC-001：streaming 段折叠行「正在思考 + 最新一行」
  * - FR-003/AC-002：思考段与工具行按时间交替；段带子任务名
- * - FR-004/AC-004：展开态按自然换行一句一段（纯文本）
+ * - FR-004/AC-004：展开态终态走 Markdown 渲染（REQ-20261021-100317 FR-002 取代纯文本）；streaming 仍纯文本整行
  * - FR-005/AC-005：中断段标「思考中断」；完成段「思考 · N 秒」
  * - FR-002 兜底/AC-003：无思考流时显示工具名 + 已耗时
  */
@@ -106,14 +106,17 @@ describe("FR-002/AC-001：streaming 态逐行显示（按行 flush）", () => {
     expect(document.querySelector(".yan-thought-done-title")?.textContent).toContain("8 秒");
 
     await user.click(document.querySelector(".yan-thought-trigger")!);
-    const paras = document.querySelectorAll(".yan-thought-para");
-    expect(paras.length).toBe(2);
-    expect(paras[1].textContent).toBe("second line");
+    // 终态走 Markdown（REQ-20261021-100317 FR-002）：单换行经 remark-breaks 成段内 <br>
+    const paras = document.querySelectorAll(".yan-thought-markdown p");
+    expect(paras.length).toBe(1);
+    expect(paras[0].textContent).toContain("first line");
+    expect(paras[0].textContent).toContain("second line");
+    expect(paras[0].querySelectorAll("br").length).toBe(1);
   });
 });
 
-describe("FR-004/AC-004：展开态一句一段", () => {
-  it("点开段落后按自然换行分段渲染，空行跳过", async () => {
+describe("FR-004/AC-004：展开态分段（终态 Markdown，REQ-20261021-100317 FR-002）", () => {
+  it("点开完成后按 Markdown 渲染：空行分段为 <p>", async () => {
     const user = userEvent.setup();
     const m = message({
       thoughts: [thought({
@@ -124,10 +127,45 @@ describe("FR-004/AC-004：展开态一句一段", () => {
     render(<ThinkingTimeline message={m} loading={false} />);
 
     await user.click(document.querySelector(".yan-thought-trigger")!);
-    const paras = document.querySelectorAll(".yan-thought-para");
+    const md = document.querySelector(".yan-thought-markdown")!;
+    expect(md).not.toBeNull();
+    const paras = md.querySelectorAll("p");
     expect(paras.length).toBe(2);
     expect(paras[0].textContent).toBe("First idea about the hero.");
     expect(paras[1].textContent).toBe("Second idea about the villain.");
+  });
+
+  it("终态思考含 GFM 表格：渲染为 <table>，不再裸管道符（AC-002）", async () => {
+    const user = userEvent.setup();
+    const m = message({
+      thoughts: [thought({
+        text: "梳理一下设定：\n\n| 维度 | 取值 |\n| --- | --- |\n| 体裁 | 玄幻 |\n| 基调 | 热血 |",
+        status: "done", endedAt: NOW + 8000,
+      })],
+    });
+    render(<ThinkingTimeline message={m} loading={false} />);
+
+    await user.click(document.querySelector(".yan-thought-trigger")!);
+    const table = document.querySelector(".yan-thought-markdown table");
+    expect(table).not.toBeNull();
+    expect(table!.querySelectorAll("th").length).toBe(2);
+    expect(table!.textContent).toContain("玄幻");
+  });
+
+  it("中断段同样渲染 Markdown：截断表格降级为文本不崩溃（DEC-004）", async () => {
+    const user = userEvent.setup();
+    const m = message({
+      thoughts: [thought({
+        text: "想了一半：\n\n| 维度 |\n| ---",
+        status: "interrupted", endedAt: NOW + 5000,
+      })],
+    });
+    render(<ThinkingTimeline message={m} loading={false} />);
+
+    await user.click(document.querySelector(".yan-thought-trigger")!);
+    const md = document.querySelector(".yan-thought-markdown");
+    expect(md).not.toBeNull();
+    expect(md!.textContent).toContain("维度");
   });
 
   it("完成段折叠行显示「思考 · N 秒」", () => {
@@ -163,7 +201,8 @@ describe("FR-005/AC-005：中断标记", () => {
     expect(titles[1]?.textContent).toBe("思考中断");
 
     await user.click(document.querySelector('[data-testid="yan-thought-trigger-2"]')!);
-    expect(document.querySelectorAll(".yan-thought-para")[0]?.textContent).toBe("断在这里");
+    // interrupted 也是终态，走 Markdown（DEC-004）
+    expect(document.querySelector(".yan-thought-markdown")?.textContent).toBe("断在这里");
   });
 });
 

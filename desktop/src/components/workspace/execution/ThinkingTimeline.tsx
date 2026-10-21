@@ -6,13 +6,18 @@
  * - streaming 段：折叠行「正在思考 + 最新一行」实时滚动（FR-002，DEC-001/008）
  * - done 段：折叠为「思考 · N 秒」，点开回看（DEC-003）
  * - interrupted 段：「思考中断」，保留到中断点（DEC-007）
- * - 展开态：保留模型自然换行、一句一段（DEC-002），纯文本不走 Markdown（FR-007）；
- *   流式追加自动吸底，用户上滚后暂停跟随，滚回底部恢复（FR-004）
+ * - 展开态：streaming 纯文本整行流（保留 FR-002 的防闪动口径）；终态（done/
+ *   interrupted）整块 Markdown 渲染，表格/列表/代码可读（REQ-20261021-100317
+ *   FR-002，推翻原 FR-007 纯文本限定）；流式追加自动吸底，用户上滚后暂停跟随，滚回底部恢复（FR-004）
  * - 无思考流兜底：「正在思考 + 工具名 + 已耗时」（DEC-004）
  *
  * 图片生成域不进本组件（DEC-006，见 ThinkingView）。
  */
 import { useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import remarkBreaks from "remark-breaks";
+import { markdownTableComponents } from "@/lib/markdown-components";
 import type { ChatMessage, ThoughtSegment, ToolStatus } from "@/lib/types";
 import { currentTaskLabel } from "@/lib/thoughts";
 import { TOOL_DISPLAY_NAMES } from "@/lib/yan-copy";
@@ -131,13 +136,13 @@ function ThoughtRow({ seg }: { seg: ThoughtSegment }) {
         )}
         <span className="yan-thought-caret">{expanded ? "▴" : "▾"}</span>
       </button>
-      {expanded ? <ThoughtText text={live ? completedLines(seg.text) : seg.text} /> : null}
+      {expanded ? <ThoughtText text={live ? completedLines(seg.text) : seg.text} live={live} /> : null}
     </div>
   );
 }
 
-/** 展开态思考正文：自然换行切段（DEC-002 一句一段），吸底跟随（FR-004）。 */
-function ThoughtText({ text }: { text: string }) {
+/** 展开态思考正文：streaming 纯文本整行流；终态整块 Markdown（吸底跟随 FR-004）。 */
+function ThoughtText({ text, live }: { text: string; live: boolean }) {
   const boxRef = useRef<HTMLDivElement>(null);
   // 用户是否贴着底部：贴底才跟随新内容；上滚暂停，滚回底部恢复
   const followRef = useRef(true);
@@ -157,9 +162,17 @@ function ThoughtText({ text }: { text: string }) {
 
   return (
     <div ref={boxRef} className="yan-thought-text" data-testid="yan-thought-text" onScroll={handleScroll}>
-      {lines.map((line, i) => (
-        <p key={i} className="yan-thought-para">{line}</p>
-      ))}
+      {live ? (
+        lines.map((line, i) => (
+          <p key={i} className="yan-thought-para">{line}</p>
+        ))
+      ) : (
+        <div className="yan-thought-markdown">
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>
+            {text}
+          </ReactMarkdown>
+        </div>
+      )}
     </div>
   );
 }

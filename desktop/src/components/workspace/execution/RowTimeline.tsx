@@ -2,7 +2,8 @@
  * RowTimeline —— 行级交错时间线（REQ-20261018-235653，FR-003/FR-005/FR-008）。
  *
  * 行事件（FR-001）落成的 message.rows 按行序号渲染，四种形态：
- * - 思考块：streaming 展开实时看行流，终态折叠「思考 · N 秒」可回看（对齐 ThinkingTimeline）
+ * - 思考块：streaming 纯文本整行流，终态折叠「思考 · N 秒」点开整块 Markdown 回看
+ *   （对齐 ThinkingTimeline，REQ-20261021-100317 FR-002）
  * - 正文块：markdown 常驻展开——中间正文按发生位置可见，不垫底（FR-003）
  * - 工具行：紧凑单行（人话名 + 状态/耗时）
  * - 子代理行：单行聚合（名称/轮次/状态/耗时），展开只看摘要（FR-005，DEC-002）
@@ -84,13 +85,13 @@ function ReasoningRowView({ row }: { row: TimelineRow }) {
         )}
         <span className="yan-thought-caret">{expanded ? "▴" : "▾"}</span>
       </button>
-      {expanded ? <ThoughtText text={live ? completedLines(row.text ?? "") : row.text ?? ""} /> : null}
+      {expanded ? <ThoughtText text={live ? completedLines(row.text ?? "") : row.text ?? ""} live={live} /> : null}
     </div>
   );
 }
 
-/** 展开态思考正文：一句一段 + 流式吸底跟随（与 ThinkingTimeline 同口径）。 */
-function ThoughtText({ text }: { text: string }) {
+/** 展开态思考正文：streaming 纯文本整行流；终态整块 Markdown（与 ThinkingTimeline 同口径）。 */
+function ThoughtText({ text, live }: { text: string; live: boolean }) {
   const boxRef = useRef<HTMLDivElement>(null);
   const followRef = useRef(true);
 
@@ -109,9 +110,17 @@ function ThoughtText({ text }: { text: string }) {
 
   return (
     <div ref={boxRef} className="yan-thought-text" data-testid="row-thought-text" onScroll={handleScroll}>
-      {lines.map((line, i) => (
-        <p key={i} className="yan-thought-para">{line}</p>
-      ))}
+      {live ? (
+        lines.map((line, i) => (
+          <p key={i} className="yan-thought-para">{line}</p>
+        ))
+      ) : (
+        <div className="yan-thought-markdown">
+          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>
+            {text}
+          </ReactMarkdown>
+        </div>
+      )}
     </div>
   );
 }

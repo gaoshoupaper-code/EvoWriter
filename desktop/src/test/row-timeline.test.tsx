@@ -87,6 +87,28 @@ describe("RowTimeline 交错渲染（AC-001 渲染侧）", () => {
     expect(screen.getByTestId("row-thought-text").textContent).toContain("思考第一段");
   });
 
+  // REQ-20261021-100317 FR-002/DEC-002：终态思考整块 Markdown，流式纯文本
+  it("终态思考含 GFM 表格：点开渲染 <table>（AC-002/AC-004 行消息路径）", async () => {
+    const rows: TimelineRow[] = [
+      { seq: 1, id: "rt1", kind: "reasoning", text: "对比：\n\n| 选项 | 优劣 |\n| --- | --- |\n| A | 稳 |", status: "complete", startedAt: T0, endedAt: T0 + 1000 },
+    ];
+    render(<RowTimeline rows={rows} />);
+    await userEvent.click(screen.getByTestId("row-thought-trigger-rt1"));
+    const table = screen.getByTestId("row-thought-text").querySelector("table");
+    expect(table).not.toBeNull();
+    expect(table!.textContent).toContain("选项");
+  });
+
+  it("streaming 思考行：只显示已完成行，未换行尾行不出现（FR-003/AC-003）", () => {
+    const rows: TimelineRow[] = [
+      { seq: 1, id: "rs1", kind: "reasoning", text: "第一行\n第二行\n没写完的尾", status: "streaming", startedAt: T0 },
+    ];
+    render(<RowTimeline rows={rows} />);
+    const paras = screen.getByTestId("row-thought-text").querySelectorAll(".yan-thought-para");
+    expect(paras.length).toBe(2);
+    expect(screen.getByTestId("row-thought-text").textContent).not.toContain("没写完");
+  });
+
   it("子代理聚合行：默认只见单行，展开才见摘要（FR-005 渲染侧）", async () => {
     render(<RowTimeline rows={mixedRows()} />);
     const trigger = screen.getByTestId("row-subagent-t1");

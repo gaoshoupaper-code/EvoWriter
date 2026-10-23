@@ -12,6 +12,7 @@ import { StageBar } from "./StageBar";
 import { StageGuide } from "./StageGuide";
 import { StageTransitionCard } from "./StageTransitionCard";
 import { StageHistoryPanel } from "./StageHistoryPanel";
+import { WritingSkillsPopover } from "./WritingSkillsPopover";
 import { ArrowUp, Square, Maximize2, Minimize2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useContentStore } from "@/stores/content";
@@ -289,6 +290,8 @@ export function ChatPanel({
             </button>
           ) : null}
           <div className="composer-actions">
+            {/* 用户写作技能入口：仅正文段渲染（REQ-20261023-000000 FR-004/DEC-004） */}
+            {pipeline?.phase === "text" && hasActiveWorkspace ? <WritingSkillsPopover /> : null}
             {loading ? (
               <button className="stop-button" type="button" onClick={onStop} aria-label="停止" title="停止">
                 <Square size={14} fill="currentColor" aria-hidden="true" />

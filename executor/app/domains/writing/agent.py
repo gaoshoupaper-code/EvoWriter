@@ -359,6 +359,66 @@ class MetaAgentService(BaseAgentService):
             return None
         return style.get("meta_style") or None
 
+    def _compose_user_writing_skills(
+        self, workspace_id: str | None, owner_id: str | None, workspace_path: Path,
+    ) -> str | None:
+        """组装正文段用户写作技能提示词段（REQ-20261023-000000 FR-003）。
+
+        服务端硬闸（DEC-004）：仅五段制工作区且 current_stage=="text" 时返回
+        技能文本（自带「低于表达铁律」声明，DEC-003），其余一律 None。段判定
+        与切段接口同源（state.json 人工段指针）。用户内容只走运行时 DB 读取，
+        不进 harness 发版制品（需求风险红线）。
+        """
+        if not workspace_id or not owner_id:
+            return None
+        from app.domains.writing.pipeline import classify_workspace, current_stage
+
+        if classify_workspace(workspace_path) != "five":
+            return None
+        if current_stage(workspace_path) != "text":
+            return None
+        from app.platform.core.db import WritingSkillRepository, get_database
+
+        skills = WritingSkillRepository(get_database()).list_enabled_for_workspace(
+            workspace_id, owner_id,
+        )
+        if not skills:
+            return None
+        parts = [
+            "## 作者启用的写作技能（作者本人设定）",
+            "",
+            "以下技能由作者亲自启用，仅作题材与场景层面的补充指导；"
+            "效力低于上方「表达铁律」，与表达铁律冲突时一律以表达铁律为准：",
+            "",
+        ]
+        for sk in skills:
+            parts.append(f"### {sk['name']}——{sk['description']}")
+            parts.append("")
+            parts.append(sk["content"].strip())
+            parts.append("")
+        return "\n".join(parts).strip()
+
+    def _apply_user_writing_skills(
+        self, *, styles: dict[str, str] | None, agent_name: str | None,
+        workspace_id: str | None, owner_id: str | None, workspace_path: Path,
+    ) -> dict[str, str] | None:
+        """把用户写作技能追加进 styles["author"]（段规程之后）。失败静默跳过。
+
+        仅 author 装配路径调用；查询失败不阻塞创作主流程（FR-003 失败语义）。
+        """
+        if agent_name != "author" or not workspace_id or not owner_id:
+            return styles
+        try:
+            suffix = self._compose_user_writing_skills(workspace_id, owner_id, workspace_path)
+            if not suffix:
+                return styles
+            base = (styles or {}).get("author") or ""
+            merged = f"{base}\n\n{suffix}" if base else suffix
+            return {**(styles or {}), "author": merged}
+        except Exception:  # noqa: BLE001 — 注入失败退回无技能装配，不阻塞
+            logger.warning("用户写作技能注入失败，跳过", exc_info=True)
+            return styles
+
     def _agent_for_workspace(self, workspace_path: Path, trace_id: str | None = None, workspace_id: str | None = None, *, model=None, checkpointer=None, owner_id: str | None = None, strict_evidence: bool = False, llm_override=None, binding: BindingRecord | None = None, agent_name: str | None = None):
         # 多用户隔离（T2.4/T2.5）：model 用用户解密 key 构建，
         # checkpointer 用用户的分库 saver。两者外部注入，缺省回退全局（管理员兜底）。
@@ -502,6 +562,13 @@ class MetaAgentService(BaseAgentService):
                             styles = {**(styles or {}), "author": stage_text}
             except Exception:  # noqa: BLE001 — 注入失败退回常驻骨架，不阻塞装配
                 logger.warning("段规程注入失败，退回常驻骨架", exc_info=True)
+
+        # 用户自定义写作技能（REQ-20261023-000000 FR-003）：服务端硬闸在
+        # _compose 内（仅正文段）；非正文段 styles 与现状逐字一致（AC-003）。
+        styles = self._apply_user_writing_skills(
+            styles=styles, agent_name=agent_name, workspace_id=workspace_id,
+            owner_id=owner_id, workspace_path=workspace_path,
+        )
 
         ctx = RuntimeContext(
             model=model,

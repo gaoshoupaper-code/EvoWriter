@@ -159,6 +159,27 @@ CREATE TABLE IF NOT EXISTS skills (
     updated_at      TEXT NOT NULL
 );
 
+-- 用户自定义写作技能（REQ-20261023-000000：三字段卡片，仅正文段注入）
+CREATE TABLE IF NOT EXISTS writing_skills (
+    skill_id     TEXT PRIMARY KEY,
+    owner_id     TEXT NOT NULL REFERENCES users(user_id),
+    name         TEXT NOT NULL,
+    description  TEXT NOT NULL DEFAULT '',
+    content      TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+-- 书 → 写作技能启用绑定（REQ-20261023-000000 DEC-002/006：每书 ≤5 条）
+CREATE TABLE IF NOT EXISTS workspace_writing_skills (
+    workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
+    skill_id     TEXT NOT NULL REFERENCES writing_skills(skill_id),
+    owner_id     TEXT NOT NULL REFERENCES users(user_id),
+    position     INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, skill_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_workspaces_owner ON workspaces(owner_id);
 CREATE INDEX IF NOT EXISTS idx_threads_owner ON threads(owner_id);
 CREATE INDEX IF NOT EXISTS idx_threads_workspace ON threads(workspace_id);
@@ -172,6 +193,9 @@ CREATE INDEX IF NOT EXISTS idx_images_round ON images(workspace_id, round);
 CREATE INDEX IF NOT EXISTS idx_images_final ON images(workspace_id, is_final);
 CREATE INDEX IF NOT EXISTS idx_images_owner ON images(owner_id);
 CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id);
+CREATE INDEX IF NOT EXISTS idx_writing_skills_owner ON writing_skills(owner_id);
+CREATE INDEX IF NOT EXISTS idx_workspace_writing_skills_skill
+    ON workspace_writing_skills(skill_id);
 CREATE INDEX IF NOT EXISTS idx_provider_configs_active ON provider_configs(owner_id, is_active);
 
 -- ══ 积分制（D1-D28）═══════════════════════════════════════════════
@@ -1428,6 +1452,120 @@ class SkillRepository:
 # 其余代码通过 get_database() 取用，避免在模块导入期读 .env。
 
 _database: Database | None = None
+
+
+class WritingSkillRepository:
+    """用户自定义写作技能访问层（REQ-20261023-000000）。完全私有，所有读写带
+    owner_id；书级启用绑定同库维护（每书 ≤ MAX_PER_WORKSPACE 条）。"""
+
+    MAX_PER_WORKSPACE = 5
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    def create(
+        self, *, owner_id: str, name: str, description: str, content: str,
+    ) -> dict:
+        skill_id = uuid4().hex
+        now = _now()
+        with self.db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO writing_skills (skill_id, owner_id, name, "
+                "description, content, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (skill_id, owner_id, name, description, content, now, now),
+            )
+        return self.get(skill_id, owner_id)  # type: ignore[return-value]
+
+    def get(self, skill_id: str, owner_id: str) -> dict | None:
+        row = self.db.conn.execute(
+            "SELECT * FROM writing_skills WHERE skill_id = ? AND owner_id = ?",
+            (skill_id, owner_id),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def list_by_owner(self, owner_id: str) -> list[dict]:
+        rows = self.db.conn.execute(
+            "SELECT * FROM writing_skills WHERE owner_id = ? ORDER BY created_at DESC",
+            (owner_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def update(
+        self, skill_id: str, owner_id: str, *,
+        name: str | None = None, description: str | None = None,
+        content: str | None = None,
+    ) -> dict | None:
+        sets, vals = [], []
+        for k, v in (("name", name), ("description", description), ("content", content)):
+            if v is not None:
+                sets.append(f"{k} = ?")
+                vals.append(v)
+        if not sets:
+            return self.get(skill_id, owner_id)
+        with self.db.transaction() as conn:
+            cur = conn.execute(
+                f"UPDATE writing_skills SET {', '.join(sets)}, updated_at = ? "
+                "WHERE skill_id = ? AND owner_id = ?",
+                (*vals, _now(), skill_id, owner_id),
+            )
+            if cur.rowcount == 0:
+                return None
+        return self.get(skill_id, owner_id)
+
+    def delete(self, skill_id: str, owner_id: str) -> bool:
+        """删除技能并联动清除所有书的启用绑定（FR-005，无孤儿行）。"""
+        with self.db.transaction() as conn:
+            conn.execute(
+                "DELETE FROM workspace_writing_skills WHERE skill_id = ? AND owner_id = ?",
+                (skill_id, owner_id),
+            )
+            cur = conn.execute(
+                "DELETE FROM writing_skills WHERE skill_id = ? AND owner_id = ?",
+                (skill_id, owner_id),
+            )
+            return cur.rowcount > 0
+
+    def set_enabled(
+        self, workspace_id: str, owner_id: str, skill_ids: list[str],
+    ) -> None:
+        """整书替换启用列表（勾选即保存）。校验失败抛 ValueError，绑定不变。"""
+        if len(set(skill_ids)) != len(skill_ids):
+            raise ValueError("duplicate skill ids")
+        if len(skill_ids) > self.MAX_PER_WORKSPACE:
+            raise ValueError(
+                f"每本书最多同时启用 {self.MAX_PER_WORKSPACE} 条写作技能"
+            )
+        for sid in skill_ids:
+            if self.get(sid, owner_id) is None:
+                raise ValueError(f"skill not found: {sid}")
+        now = _now()
+        with self.db.transaction() as conn:
+            conn.execute(
+                "DELETE FROM workspace_writing_skills "
+                "WHERE workspace_id = ? AND owner_id = ?",
+                (workspace_id, owner_id),
+            )
+            for pos, sid in enumerate(skill_ids):
+                conn.execute(
+                    "INSERT INTO workspace_writing_skills "
+                    "(workspace_id, skill_id, owner_id, position, created_at) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (workspace_id, sid, owner_id, pos, now),
+                )
+
+    def list_enabled_for_workspace(
+        self, workspace_id: str, owner_id: str,
+    ) -> list[dict]:
+        rows = self.db.conn.execute(
+            "SELECT ws.* FROM writing_skills AS ws "
+            "JOIN workspace_writing_skills AS b "
+            "ON ws.skill_id = b.skill_id "
+            "WHERE b.workspace_id = ? AND b.owner_id = ? "
+            "ORDER BY b.position",
+            (workspace_id, owner_id),
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 def init_database(db: Database) -> None:

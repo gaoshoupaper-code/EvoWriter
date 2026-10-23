@@ -181,6 +181,9 @@ from app.routers.threads import router as threads_router
 from app.routers.internal import router as internal_router
 app.include_router(workspaces_router, prefix="/api")
 app.include_router(threads_router, prefix="/api")
+# 用户自定义写作技能（REQ-20261023-000000：库 CRUD + 按书启用）
+from app.routers.writing_skills import router as writing_skills_router
+app.include_router(writing_skills_router, prefix="/api")
 app.include_router(internal_router)  # /internal 前缀已在 router 内定义，供 evolution 轮询
 
 

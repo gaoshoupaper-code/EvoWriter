@@ -714,3 +714,59 @@ export function trackRegenerate(traceId: string, contentPreview = ""): void {
     body: JSON.stringify({ trace_id: traceId, content_preview: contentPreview.slice(0, 200) }),
   }).catch(() => { /* fire-and-forget */ });
 }
+
+// ── 用户自定义写作技能（REQ-20261023-000000：库 CRUD + 按书启用）──────
+
+export interface WritingSkill {
+  skill_id: string;
+  owner_id: string;
+  name: string;
+  description: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function listWritingSkills() {
+  return apiJson<WritingSkill[]>(`${API_BASE_URL}/api/writing-skills`);
+}
+
+export async function createWritingSkill(data: { name: string; description: string; content: string }) {
+  return apiJson<WritingSkill>(`${API_BASE_URL}/api/writing-skills`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function updateWritingSkill(
+  skillId: string,
+  data: { name: string; description: string; content: string },
+) {
+  return apiJson<WritingSkill>(`${API_BASE_URL}/api/writing-skills/${skillId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+export async function deleteWritingSkill(skillId: string) {
+  return apiJson<{ status: string; deleted: string }>(`${API_BASE_URL}/api/writing-skills/${skillId}`, {
+    method: "DELETE",
+  });
+}
+
+export async function listEnabledWritingSkills(workspaceId: string) {
+  return apiJson<WritingSkill[]>(`${API_BASE_URL}/api/workspaces/${workspaceId}/writing-skills`);
+}
+
+export async function setEnabledWritingSkills(workspaceId: string, skillIds: string[]) {
+  return apiJson<{ status: string; enabled: string[] }>(
+    `${API_BASE_URL}/api/workspaces/${workspaceId}/writing-skills`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ skill_ids: skillIds }),
+    },
+  );
+}

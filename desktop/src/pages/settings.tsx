@@ -15,6 +15,7 @@ import {
   type ProviderConfig,
 } from "@/lib/api";
 import { UiFontSizeControl } from "@/components/ui/UiFontSizeControl";
+import { WritingSkillsCard } from "@/components/settings/WritingSkillsCard";
 
 type FormMode =
   | { kind: "new" }
@@ -358,6 +359,9 @@ export default function SettingsPage() {
             </div>
           </div>
         </section>
+
+        {/* 写作技能：用户自定义技能库（REQ-20261023-000000） */}
+        <WritingSkillsCard />
 
         {/* 通用：服务器地址（只读）+ 应用更新 + 界面字号 */}
         <section className="settings-card">

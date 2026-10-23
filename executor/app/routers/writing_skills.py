@@ -18,11 +18,11 @@ router = APIRouter()
 
 
 class WritingSkillPayload(BaseModel):
-    """三字段卡片（DEC-001）；三字段必填，指令正文 ≤3000 字（DEC-006）。"""
+    """三字段卡片（DEC-001）；三字段必填，指令正文 ≤20000 字（DEC-006 修订）。"""
 
     name: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    content: str = Field(min_length=1, max_length=3000)
+    content: str = Field(min_length=1, max_length=20000)
 
     @field_validator("name", "description", "content")
     @classmethod

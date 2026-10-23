@@ -11,7 +11,7 @@ import { createWritingSkill, updateWritingSkill } from "@/lib/api";
 import { useWritingSkillsStore } from "@/stores/writingSkills";
 import type { WritingSkill } from "@/lib/api";
 
-const MAX_CONTENT = 3000;
+const MAX_CONTENT = 20000;
 
 type FormMode = { kind: "new" } | { kind: "edit"; skill: WritingSkill };
 

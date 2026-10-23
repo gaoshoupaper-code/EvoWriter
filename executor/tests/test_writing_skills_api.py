@@ -100,19 +100,19 @@ class TestFieldValidation:
         resp = client.post("/api/writing-skills", json=_payload(**{field: "   "}))
         assert resp.status_code == 422
 
-    def test_content_exactly_3000_chars_ok(self, client):
-        skill = _create_skill(client, content="字" * 3000)
-        assert len(skill["content"]) == 3000
+    def test_content_exactly_20000_chars_ok(self, client):
+        skill = _create_skill(client, content="字" * 20000)
+        assert len(skill["content"]) == 20000
 
-    def test_content_3001_chars_rejected(self, client):
-        resp = client.post("/api/writing-skills", json=_payload(content="字" * 3001))
+    def test_content_20001_chars_rejected(self, client):
+        resp = client.post("/api/writing-skills", json=_payload(content="字" * 20001))
         assert resp.status_code == 422
 
     def test_update_content_boundary_too(self, client):
         skill = _create_skill(client)
         resp = client.put(
             f"/api/writing-skills/{skill['skill_id']}",
-            json=_payload(content="字" * 3001),
+            json=_payload(content="字" * 20001),
         )
         assert resp.status_code == 422
 

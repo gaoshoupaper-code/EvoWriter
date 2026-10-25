@@ -1,16 +1,17 @@
 /**
- * 侧栏「技能」分组（REQ-20261025-205943 FR-004；DEC-006/010/011；
- * 2026-10-25 修订：管理入口从设置页整体迁入，DEC-007/009 同步修订）。
+ * 产物树内「技能」可折叠节点（REQ-20261025-205943 FR-004/DEC-006；
+ * 2026-10-26 修订：从独立分组迁入产物树，位于主题上方，点击展开）。
  *
- * 四段各一行＋角标（该段已启用条数，0 不显示数字）；点行弹该段技能浮层。
- * 浮层经 createPortal 挂 body＋fixed 定位——侧栏 nav 是滚动容器（overflow
- * 裁剪），行内 absolute 浮层会被剪成不可见（线上 bug 修正）。浮层承担全部
- * 管理：勾选启用＋新建/编辑/删除（弹窗表单）；任何当前阶段下都可操作任意
- * 段（DEC-010）。保存的启用列表始终是全书合集（服务端整书替换契约）。
+ * 头行「技能」默认收起（角标＝全书已启用总数）；展开后是四段行＋角标
+ * （该段已启用条数，0 不显示数字），点段行弹该段技能浮层。浮层经
+ * createPortal 挂 body＋fixed 定位——侧栏 nav 是滚动容器（overflow
+ * 裁剪），行内 absolute 浮层会被剪成不可见。浮层承担全部管理：勾选启用
+ * ＋新建/编辑/删除（弹窗表单）；任何当前阶段下都可操作任意段（DEC-010）。
+ * 保存的启用列表始终是全书合集（服务端整书替换契约）。
  */
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { BookOpen, Layers, ListTree, Pencil, Plus, ScrollText, Trash2, X, type LucideIcon } from "lucide-react";
+import { BookOpen, ChevronRight, Layers, ListTree, Pencil, Plus, ScrollText, Sparkles, Trash2, X, type LucideIcon } from "lucide-react";
 import { toast } from "sonner";
 import {
   createWritingSkill,
@@ -172,6 +173,7 @@ export function SidebarSkills() {
   const saveEnabled = useWritingSkillsStore((s) => s.saveEnabled);
   const removeSkill = useWritingSkillsStore((s) => s.removeSkill);
 
+  const [expanded, setExpanded] = useState(false);
   const [openStage, setOpenStage] = useState<WritingStage | null>(null);
   const [dialog, setDialog] = useState<DialogMode | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -187,11 +189,11 @@ export function SidebarSkills() {
     });
   }, [workspaceId, enabledWs, loadEnabled]);
 
-  // 浮层打开时拉最新库列表（勾选与管理面要看到最新技能）
+  // 展开时拉最新库列表（勾选与管理面要看到最新技能）
   useEffect(() => {
-    if (!openStage) return;
+    if (!expanded) return;
     loadSkills().catch(() => toast.error("写作技能加载失败。"));
-  }, [openStage, loadSkills]);
+  }, [expanded, loadSkills]);
 
   // 浮层定位：按触发按钮视口坐标 fixed 定位（portal 挂 body，不受侧栏
   // 滚动容器裁剪），并夹在视口内
@@ -249,31 +251,45 @@ export function SidebarSkills() {
   }
 
   return (
-    <div className="sidebar-group sidebar-skills" ref={rootRef}>
-      <span className="sidebar-group-label">技能</span>
-      {SKILL_STAGES.map(({ phase, label }) => {
-        const Icon = STAGE_ICON[phase];
-        const stageEnabled = enabled.filter((sk) => sk.stage === phase);
-        const stageSkills = skills.filter((sk) => sk.stage === phase);
-        const open = openStage === phase;
-        return (
-          <div className="sidebar-skill-row" key={phase}>
-            <button
-              ref={open ? triggerRef : null}
-              type="button"
-              className={`sidebar-skill-item${open ? " active" : ""}`}
-              aria-expanded={open}
-              onClick={() => setOpenStage(open ? null : phase)}
-            >
-              <Icon size={12} aria-hidden="true" />
-              <span>{label}</span>
-              {stageEnabled.length > 0 ? (
-                <span className="sidebar-skill-badge">{stageEnabled.length}</span>
-              ) : null}
-            </button>
-          </div>
-        );
-      })}
+    <div className="sidebar-skills" ref={rootRef}>
+      {/* 头行：可折叠「技能」节点（2026-10-26 修订——产物树内、主题上方） */}
+      <button
+        type="button"
+        className={`sidebar-skill-toggle${expanded ? " open" : ""}`}
+        aria-expanded={expanded}
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <ChevronRight size={12} className="sidebar-skill-chevron" aria-hidden="true" />
+        <Sparkles size={13} className="sidebar-tree-icon" aria-hidden="true" />
+        <span>技能</span>
+        {enabled.length > 0 ? (
+          <span className="sidebar-skill-badge">{enabled.length}</span>
+        ) : null}
+      </button>
+      {expanded
+        ? SKILL_STAGES.map(({ phase, label }) => {
+            const Icon = STAGE_ICON[phase];
+            const stageEnabled = enabled.filter((sk) => sk.stage === phase);
+            const open = openStage === phase;
+            return (
+              <div className="sidebar-skill-row" key={phase}>
+                <button
+                  ref={open ? triggerRef : null}
+                  type="button"
+                  className={`sidebar-skill-item${open ? " active" : ""}`}
+                  aria-expanded={open}
+                  onClick={() => setOpenStage(open ? null : phase)}
+                >
+                  <Icon size={12} aria-hidden="true" />
+                  <span>{label}</span>
+                  {stageEnabled.length > 0 ? (
+                    <span className="sidebar-skill-badge">{stageEnabled.length}</span>
+                  ) : null}
+                </button>
+              </div>
+            );
+          })
+        : null}
       {openStage && popStyle
         ? createPortal(
             <div

@@ -7886,20 +7886,54 @@ html[data-theme="dark"] .admin-outline {
   font-size: var(--text-ui-xs);
 }
 
-/* ── 侧栏「技能」分组（REQ-20261025-205943 FR-004/DEC-006；
-   2026-10-25 修订：浮层 portal+fixed 定位并承载管理）── */
+/* ── 产物树内「技能」可折叠节点（REQ-20261025-205943 FR-004/DEC-006；
+   2026-10-26 修订：迁入产物树、主题上方；规格对齐树条目）── */
+
+.sidebar-skill-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 6px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--text-ui-base);
+  text-align: left;
+  cursor: pointer;
+}
+
+.sidebar-skill-toggle:hover {
+  background: var(--hover);
+}
+
+.sidebar-skill-toggle:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+
+.sidebar-skill-chevron {
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: transform var(--motion-duration) var(--motion-ease);
+}
+
+.sidebar-skill-toggle.open .sidebar-skill-chevron {
+  transform: rotate(90deg);
+}
 
 .sidebar-skill-item {
   display: flex;
   align-items: center;
   gap: 6px;
   width: 100%;
-  padding: 4px 6px;
+  padding: 5px 6px 5px 20px;
   border: 0;
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   background: transparent;
   color: var(--ink);
-  font-size: var(--text-ui-sm);
+  font-size: var(--text-ui-base);
   cursor: pointer;
 }
 

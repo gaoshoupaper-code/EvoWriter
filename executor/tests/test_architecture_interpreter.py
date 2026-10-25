@@ -76,15 +76,15 @@ def test_assemble_from_manifest_produces_graph(build_ctx):
 
 
 def test_manifest_shape_single_agent():
-    """清单形态 = 单 agent（REQ-20261018-115508 DEC-001）：无委托、无子代理。"""
+    """清单形态 = 单 main（author）+ review 审稿子代理（REQ-20261025-230811 FR-001）。"""
     from contracts.architecture_manifest import load_architecture_manifest
 
     manifest = load_architecture_manifest(HARNESS_PKG)
-    assert [a.name for a in manifest.agents] == ["author"]
+    assert [a.name for a in manifest.agents] == ["author", "review"]
     main = manifest.agent("author")
     assert main.role == "main"
-    assert main.delegates == []
-    assert manifest.sub_agents == []
+    assert main.delegates == ["review"]
+    assert [a.name for a in manifest.sub_agents] == ["review"]
     # 阶段闸（L1 硬闸）是唯一 domain middleware
     assert main.middleware == ["stage_gate"]
     assert main.skills == []
@@ -95,6 +95,13 @@ def test_manifest_shape_single_agent():
         "rewrite_rhythm_table", "append_chapter_deviation",
         "confirm_with_user",
     }  # handoff 已移除（REQ-20261019-232617 FR-004：跳段权收归界面）
+    review = manifest.agent("review")
+    assert review.role == "sub"
+    assert review.delegated_by == "author"
+    assert review.tools == ["read_artifact"]  # 只读审稿：仅读档，无写工具
+    assert review.write_permissions == []
+    assert review.disable_file_tools is True
+    assert main.max_revisions == 1  # 一轮修订无复审（DEC-003）
 
 
 def test_stage_prompt_files_complete():

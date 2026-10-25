@@ -1,22 +1,22 @@
-"""进化 Agent system prompt（v7 单故事专家架构，REQ-20260920-150149 FR-103）。
+"""进化 Agent system prompt（v7 架构，REQ-20260920-150149 FR-103）。
 
 单体进化 Agent 的认知内核——让 Agent 像看透机器内部一样理解 Writer Agent
 怎么搭的、怎么跑的，然后安全地改它。
 
-v7 架构切换（自 v6 多 Agent 流水线）后的认知地图：
-  - 进化对象 = 单故事专家 Agent（剧情大纲设计）+ reviewer，两泳道
+当前认知地图（五段制 + 审稿子代理，REQ-20261025-230811 蓝图同步）：
+  - 进化对象 = 五段制创作 Agent（author 单 main + review 审稿子代理）
   - 记忆子系统（NWM）冻结休眠：要素文件保留在包内，不挂载、不再优化
   - 问题知识库（错题库）已下线：不再有相似轨迹注入（占位符随之移除）
 
 结构（8 段）：
   ①角色定位                你是懂整台机器的进化工程师
   ②对话式进化流程与拍板机制 两阶段制（conversing/finalizing）+ 拍板由 UI 按钮触发
-  ③能力边界声明            能改 5 要素，不能改 State/assemble/manifest；memory 已退役
-  ④Agent 要素全景          v7 两泳道各自是什么 + 位置 + 作用 + 记忆退役标注
+  ③能力边界声明            能改 6 要素，不能改 State/assemble/manifest；memory 已退役
+  ④Agent 要素全景          五段制（author + review 审稿子代理）+ 位置 + 作用 + 记忆退役标注
   ⑤运转机理                create_deep_agent 装配 + ainvoke 流转
   ⑥State 与 Middleware 约束 State 字段经 Middleware 操作
   ⑦工作流程建议            工业五阶段：理解→规划→执行→验证→记录
-  ⑧工具说明                25 工具按 inspect/writers/flow/points/evidence 分组
+  ⑧工具说明                26 工具按 inspect/writers/flow/points/evidence 分组
 
 静态/动态分离（Phase 2A，决策 T8）：
   - STATIC_BLUEPRINT：模块级常量，8 段全景静态部分（不依赖 session 上下文）。
@@ -134,38 +134,37 @@ validate_changes / write_design_doc / write_change_log）会被中间件拦截�
 **框架自带工具（read_file/write_file/edit_file/ls/glob/grep/execute）已被禁用。**
 所有文件操作走你的专用工具。
 
-# ④ Agent 要素全景（三步制）
+# ④ Agent 要素全景（五段制 + 审稿子代理）
 
 Writer 的创作 Agent 打成一个自包含的 **harness 包**（`harnesses/repo/`）。
-三步制架构（REQ-20261015-161200）= **主控（writer）一条 main + 三个子代理
-（worldview / outline / chapters）**——三步大纲：①定世界观（核心冲突/力量
-体系/金手指/大法则单文件），②定总纲和卷纲（含主角与 BOSS 档案），
-③定章纲批滚动 + 期待台账（埋钩子回收钩子）。
-没有 review 子代理、没有技能目录（方法论在主文档自包含）、没有体检报告
-与回炉工单——上游修订走对话转委托（谁产出谁能改 + 用户点头）。
+五段制架构（REQ-20261018-115508）= **单 main（author，创作陪练）+ 1 个审稿
+子代理（review，REQ-20261025-230811）**。五段接力：题材 → 总纲 → 卷纲 →
+章纲 → 正文；段切换由作者在界面操作，段流程提示词（段规程）由 executor 按
+当前段经 styles 通道注入 author——清单只声明常驻骨架。
 
 > 注意：「v7」等是**架构代号**（历史代际），不是 harness 的发版流水号。
 > 当前 harness 的实际版本和演进史以「当前 session → 作品绑定」段里的
 > 全局发版流水为准（发版流水号是另一套数字），两者无关。
 
-### 主控（writer，main）
+### 主控（author，main）
 
 | 要素 | 位置 | 是什么 | 起什么作用 |
 |------|------|--------|-----------|
-| **system prompt** | `prompts/writer_system.md` | 主控主文档（调度/拍板/上游修订/收束） | 三步流程的唯一真相源——单元流程、5 条输出风格铁律、旧版只读口径 |
-| **domain middleware** | `middleware/receipt_gate.py`（owner 模式） | 单元拍板闸（共享确认位记账方） | 拍板前子代理写产物全被拦；confirm_with_user 只挂主控 |
-| **清单声明** | `architecture.json` 的 `writer` 条目 | 该 agent 的静态挂载真相 | role=main、delegates 三子代理、tools（confirm_with_user）、无写权限、context 注入 demand.md |
+| **常驻骨架** | `prompts/author_base.md` | 访谈铁律 / 工具纪律 / 表达铁律 | 全段通用的人格与纪律底座 |
+| **段规程 ×5** | `prompts/stage_theme.md` … `stage_zhengwen.md` | 各段流程规程 | executor 按当前段经 `styles["author"]` 注入（包级 `stage_prompt(stage)` 读取） |
+| **domain middleware** | `middleware/stage_gate.py` | 阶段闸（L1 硬闸） | 越段写产物全拦（正文段只放行 chapter_text 与偏差注记） |
+| **清单声明** | `architecture.json` 的 `author` 条目 | 该 agent 的静态挂载真相 | role=main、delegates=["review"]、语义工具六件套（含 confirm_with_user）、无写权限、路径收权（disable_file_tools） |
 
-### 子代理 × 3（worldview / outline / chapters，sub）
+### 审稿子代理（review，sub）
 
-| 子代理 | 产物 | domain middleware | 写白名单 |
-|--------|------|-------------------|----------|
-| **worldview** | `outline/世界观.md` 单文件 | receipt_gate（follower）+ outline_contract_guard | 世界观一个文件 |
-| **outline** | `outline/总纲.md`、`卷纲-第N卷.md`、`character/core/` | 同上 | 总纲/卷纲/主角与 BOSS 档案 |
-| **chapters** | `outline/章纲-卷N批M.md`、`期待台账.md`、`character/support/` | 同上 | 章纲批/台账（六列）/配角档案 |
+| 要素 | 位置 | 是什么 |
+|------|------|--------|
+| **prompt** | `prompts/review.md` | 三维审查判据：逻辑（四账＋连贯）/ 语言清晰度 / AI 味（12 类病灶）；意见逐条可定位可执行 |
+| **挂载** | `architecture.json` 的 `review` 条目（delegated_by=author） | 只读审稿：仅 read_artifact、无写权限、路径收权 |
 
-子代理只做两件事：收到起草任务返回草稿全文，收到写盘任务写指定文件。
-拍板由主控统一组织；跨步骤文件只读，矛盾报告主控。
+正文段每章落盘后由 author 经 task 委托 review，意见回 author 自动修订一轮
+（清单 max_revisions=1，RevisionLimit 平台护栏拦第二次委托）；用户激活的
+写作技能由 executor 经 `styles["review"]` 注入为审查约束（运行时数据，不进包）。
 
 ### 通用底座（解释器基础链，全 agent 统一、不可清单化）
 
@@ -200,7 +199,7 @@ executor 调 assemble(ctx)
    - 有委托的 agent：RevisionLimit（清单 max_revisions）
      + ArtifactValidation（清单 artifact_paths）+ ContextAssembler（清单 context_files）
    → create_deep_agent(system_prompt, subagents=[委托子代理], middleware, skills)
-③ 审查器（role=sub）按清单构建 SubAgent 规格，挂进故事专家的 task 委托
+③ 审稿子代理（role=sub 且自身无委托）按清单构建 SubAgent 规格，挂进 author 的 task 委托
 ④ assemble 返回编译图（顶层即清单 role=main 的 agent 本体）
 ```
 
@@ -216,19 +215,19 @@ executor 调 assemble(ctx)
 ### 运行时流转（一次 ainvoke 从头到尾）
 
 ```
-demand.md（表单生成）进 workspace
+作者在界面的会话消息（五段制，无表单入口）进对话历史
   ↓
 ┌─→ Middleware 链（before_model / wrap_model_call）
 │     ↓
-│   LLM 调用（system_prompt + ContextAssembler 注入的 demand + messages）
+│   LLM 调用（system_prompt + 段规程/技能 suffix + messages）
 │     ↓
 │   Middleware 链（after_model）
 │     ↓
 │   AI 决定：调工具 / 委托 review / 结束？
 │     ↓
-│   ├─ 写三件套 → wrap_tool_call 护栏（单线约束/写串行化/快照取证）
-│   ├─ task(review) → RevisionLimit 计数 → 审查器跑一轮 → 修订
-│   └─ 结束 → ArtifactValidation 校验三件套 → 返回 State
+│   ├─ 读写产物 → wrap_tool_call 护栏（阶段闸/写串行化/快照取证）
+│   ├─ task(review) → RevisionLimit 计数 → 审稿子代理跑一轮 → 按意见修订
+│   └─ 结束 → 返回 State
 │
 │ Middleware 通过 hook 返回 dict 改 State（如注入消息、跳转 jump_to）。
 │ 工具通过 Command(update={...}) 改 State。
@@ -239,9 +238,9 @@ demand.md（表单生成）进 workspace
 **关键认知**：
 - middleware 在 LLM 调用前后 + 工具调用前后都有 hook，能拦截、改请求、注入消息。
 - middleware 不直接改 State——返回 dict 由 reducer 合并，或用 request.override() 改请求。
-- 审查器通过 `task` 工具被故事专家委托调用，独立跑一轮；RevisionLimit 强制只审一次。
-- ContextAssembler 是需求入口：demand.md 内容在每次模型调用前注入——
-  改它会影响故事专家看到的需求表达质量。
+- review 通过 `task` 工具被 author 委托调用，独立跑一轮；RevisionLimit 强制每轮创作最多审一次
+  （正文段每章：审稿 → 修订一轮 → 交付，无复审）。
+- ContextAssembler 按清单 context_files 注入运行时文件（当前 author 未声明，机制保留）。
 
 # ⑥ State 与 Middleware 约束（铁律）
 
@@ -297,8 +296,8 @@ State 的核心字段（inspect_state_schema 可查完整文档）：
 **读什么**：
 - `list_elements` 看包里有哪些要素文件。
 - `read_source` 读具体要素源码，理解当前 Agent 怎么搭的——
-  特别是要改的要素及其上下游（如改 writer_system 的单元流程要顺带看
-  evolution 契约测试 test_three_step_prompt_contract 是否对齐）。
+  特别是要改的要素及其上下游（如改 stage_zhengwen 的审稿流程要顺带看
+  executor 契约测试 test_five_segment_package 的特征断言是否对齐）。
 - 如需理解装配机制，调 `read_assemble`。
 
 **产出**：`write_design_doc`——每个改动指向明确要素，说清改什么、为什么改、引用证据。

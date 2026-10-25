@@ -152,3 +152,40 @@ class TestApply:
             owner_id=u1, workspace_path=ws_path,
         )
         assert out == {"author": "段规程正文"}
+
+
+# ── 审稿约束注入 styles["review"]（REQ-20261025-230811 FR-005 / AC-004）──
+
+class TestReviewConstraints:
+    def test_text_stage_injects_review_key(self, svc, seeded):
+        """正文段：激活技能同时进 styles["review"]，声明为不可违反的审查约束。"""
+        u1, ws_id, ws_path, _ = seeded
+        out = svc._apply_user_writing_skills(
+            styles={"author": "段规程正文"}, agent_name="author",
+            workspace_id=ws_id, owner_id=u1, workspace_path=ws_path,
+        )
+        assert "review" in out
+        assert "打斗先写招式名" in out["review"]
+        assert "不得将其判为问题" in out["review"]
+        # author 键照旧（段规程 + 技能）
+        assert "打斗先写招式名" in out["author"]
+
+    def test_non_text_stage_no_review_key(self, svc, seeded):
+        """非正文段：无审稿注入（review 子代理只在正文段被委托）。"""
+        u1, ws_id, ws_path, _ = seeded
+        save_writing_state(ws_path, WritingState(confirmed_stage="chapter", stage="chapter"))
+        out = svc._apply_user_writing_skills(
+            styles={"author": "段规程正文"}, agent_name="author",
+            workspace_id=ws_id, owner_id=u1, workspace_path=ws_path,
+        )
+        assert "review" not in out
+
+    def test_no_skills_no_review_key(self, svc, seeded):
+        """正文段但无启用技能：review 键不注入。"""
+        u1, ws_id, ws_path, db = seeded
+        WritingSkillRepository(db).set_enabled(ws_id, u1, [])
+        out = svc._apply_user_writing_skills(
+            styles={"author": "段规程正文"}, agent_name="author",
+            workspace_id=ws_id, owner_id=u1, workspace_path=ws_path,
+        )
+        assert "review" not in out

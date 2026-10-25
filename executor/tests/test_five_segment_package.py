@@ -74,6 +74,7 @@ _REQUIRED_FILES = [
     "prompts/stage_juangang.md",
     "prompts/stage_zhanggang.md",
     "prompts/stage_zhengwen.md",
+    "prompts/review.md",
     "middleware/stage_gate.py",
     "tools/read_artifact.py",
     "tools/save_artifact.py",
@@ -109,27 +110,75 @@ class TestFiveSegmentPackageContent(unittest.TestCase):
         for rel in _KEPT_MEMORY_FILES:
             self.assertTrue((_HARNESS_DIR / rel).exists(), f"记忆要素冻结保留: {rel}")
 
-    def test_manifest_declares_single_agent(self):
+    def test_manifest_declares_author_and_review(self):
+        """五段制单 main（author）+ review 审稿子代理（REQ-20261025-230811 FR-001）。"""
         from contracts.architecture_manifest import load_and_validate
 
         manifest, result = load_and_validate(_HARNESS_DIR)
         self.assertTrue(result.ok, result.errors)
         mains = [a.name for a in manifest.main_agents]
         self.assertEqual(mains, ["author"])
-        self.assertEqual(manifest.sub_agents, [])
+        self.assertEqual([a.name for a in manifest.sub_agents], ["review"])
         main = manifest.agent("author")
-        # 语义工具七件套 + confirm；无委托；路径收权
+        # 语义工具六件套（含 confirm）；委托审稿；路径收权；修订上限 1（一轮修订无复审）
         self.assertIn("save_artifact", main.tools)
         self.assertIn("confirm_with_user", main.tools)
-        self.assertEqual(main.delegates, [])
+        self.assertEqual(main.delegates, ["review"])
         self.assertEqual(main.write_permissions, [])
         self.assertTrue(main.disable_file_tools)
+        self.assertEqual(main.max_revisions, 1)
+        # 审稿子代理：只读（无写权限、无语义写工具）、路径收权、被 author 委托
+        review = manifest.agent("review")
+        self.assertEqual(review.role, "sub")
+        self.assertEqual(review.delegated_by, "author")
+        self.assertEqual(review.delegates, [])
+        self.assertIn("read_artifact", review.tools)
+        self.assertNotIn("save_artifact", review.tools)
+        self.assertEqual(review.write_permissions, [])
+        self.assertTrue(review.disable_file_tools)
 
     def test_base_prompt_carries_interview_discipline(self):
         """常驻骨架含访谈纪律与工具纪律（FR-001：一轮 1-2 问、必停、确认分级）。"""
         text = (_HARNESS_DIR / "prompts" / "author_base.md").read_text(encoding="utf-8")
         for marker in ("一轮只聊一两个问题", "停下", "confirm_with_user", "问询协议", "约束级"):
             self.assertIn(marker, text, f"author_base 缺纪律特征「{marker}」")
+
+    def test_review_prompt_carries_review_dimensions(self):
+        """审稿提示词含三维判据与 12 类病灶全集（REQ-20261025-230811 FR-002）。"""
+        text = (_HARNESS_DIR / "prompts" / "review.md").read_text(encoding="utf-8")
+        for marker in (
+            "逻辑四账", "清晰度", "AI 味",
+            # 12 类病灶全集（eval_agent 判据基线，一项不落）
+            "完整闭环", "副词堆砌", "千人一面", "辩论式对话", "情绪贴标签",
+            "信息均匀分布", "安全着陆", "展示后解释", "说明书式对话",
+            "句式同构", "四字套语堆叠", "情绪三连",
+            "不得判为问题",                 # 用户技能审查约束承接（FR-005）
+            "只审不改",                     # 职责边界
+        ):
+            self.assertIn(marker, text, f"review.md 缺审查特征「{marker}」")
+
+    def test_zhengwen_stage_carries_review_loop(self):
+        """正文段规程含审稿委托与一轮修订流程（REQ-20261025-230811 FR-001/003/006）。"""
+        text = (_HARNESS_DIR / "prompts" / "stage_zhengwen.md").read_text(encoding="utf-8")
+        for marker in (
+            "审稿", "review",                # 委托环节
+            "最小改动",                      # 修订纪律（无复审风险的处置约束）
+            "不重写",
+            "自检报告",                      # 修订后对终稿自检（现有流程保留）
+            "审稿环节失败已跳过",            # FR-006 失败降级声明
+            "不重试",                        # FR-006 失败不阻塞交付
+        ):
+            self.assertIn(marker, text, f"stage_zhengwen.md 缺审稿闭环特征「{marker}」")
+
+    def test_other_stages_carry_no_review_delegation(self):
+        """题材/总纲/卷纲/章纲四段规程零审稿委托（FR-001：仅正文段委托 review）。"""
+        for filename in (
+            "stage_theme.md", "stage_zonggang.md",
+            "stage_juangang.md", "stage_zhanggang.md",
+        ):
+            text = (_HARNESS_DIR / "prompts" / filename).read_text(encoding="utf-8")
+            self.assertNotIn("审稿", text, f"{filename} 不应含审稿委托")
+            self.assertNotIn("review", text, f"{filename} 不应含 review 委托")
 
     def test_registry_mirror_sanity(self):
         registry = json.loads((_HARNESS_DIR / "registry.json").read_text(encoding="utf-8"))
@@ -144,7 +193,7 @@ class TestFiveSegmentAssemble(unittest.TestCase):
 
         return load_package(_HARNESS_DIR)
 
-    def _make_ctx(self, tmpdir: str, recorder, checkpointer=None):
+    def _make_ctx(self, tmpdir: str, recorder, checkpointer=None, styles=None):
         from contracts.runtime_context import RuntimeContext
 
         return RuntimeContext(
@@ -155,6 +204,7 @@ class TestFiveSegmentAssemble(unittest.TestCase):
             trace_id="trace-five-segment-test",
             trace_recorder=recorder,
             trace_middleware_cls=None,
+            styles=styles,
         )
 
     def test_assemble_default_and_named_main(self):
@@ -214,6 +264,55 @@ class TestFiveSegmentAssemble(unittest.TestCase):
         perms = captured.get("permissions")
         self.assertTrue(perms, "disable_file_tools 应产生 permissions")
         self.assertEqual(perms[0].mode, "deny")
+
+    def test_review_subagent_mounted_with_styles_suffix(self):
+        """审稿子代理挂进 author 的 task 委托；styles["review"] 进其 system prompt
+        （REQ-20261025-230811 FR-001/FR-005 装配链：技能约束 → 解释器 → 子代理）。"""
+        from app.platform.agent.architecture import SubAgent  # noqa: F401 — 类型参考
+
+        pkg = self._load_pkg()
+        captured: dict[str, Any] = {}
+
+        import app.platform.agent.architecture as arch_mod
+
+        original = arch_mod.create_deep_agent
+        try:
+
+            def _capture(**kwargs):
+                captured.update(kwargs)
+                return original(**kwargs)
+
+            arch_mod.create_deep_agent = _capture
+            recorder = _StubRecorder()
+            with tempfile.TemporaryDirectory() as tmp:
+                # 模拟 executor 装配层（U2）注入的审稿约束 suffix
+                ctx = self._make_ctx(
+                    tmp, recorder, styles={"review": "审查约束：不得将其判为问题"}
+                )
+                pkg.assemble(ctx)
+        finally:
+            arch_mod.create_deep_agent = original
+
+        subs = captured.get("subagents") or []
+
+        def _field(spec: Any, key: str) -> Any:
+            return spec[key] if isinstance(spec, dict) else getattr(spec, key)
+
+        names = [_field(s, "name") for s in subs]
+        self.assertIn("review", names, f"review 应挂进 task 委托（实际: {names}）")
+        review = next(s for s in subs if _field(s, "name") == "review")
+        self.assertIn("逻辑四账", _field(review, "system_prompt"))          # review.md 常驻判据
+        self.assertIn("不得将其判为问题", _field(review, "system_prompt"))  # styles suffix 已拼接
+        # 只读审稿：写权限全拒 + 工具面恰好一个读档工具（不继承父级写工具，
+        # REQ-20261025-230811 review P1：解释器须显式传 tools，缺省即继承）
+        perm_modes = [(p.operations, p.mode) for p in _field(review, "permissions")]
+        self.assertIn((["write"], "deny"), perm_modes, f"review 应无写权限（实际: {perm_modes}）")
+        tools = _field(review, "tools") or []
+        tool_names = sorted(
+            t.name if hasattr(t, "name") else str(t.get("name", t)) if isinstance(t, dict) else str(t)
+            for t in tools
+        )
+        self.assertEqual(tool_names, ["read_artifact"], f"review 工具面应恰为 read_artifact（实际: {tool_names}）")
 
 
 if __name__ == "__main__":

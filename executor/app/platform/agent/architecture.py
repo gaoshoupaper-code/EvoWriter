@@ -209,11 +209,17 @@ def _build_permissions(agent: AgentSpec) -> list[FilesystemPermission]:
 
 
 def _build_subagent_spec(abc: AgentBuildCtx) -> SubAgent:
-    """无委托的 agent → SubAgent 规格（挂在父 agent 的 task 委托下）。"""
+    """无委托的 agent → SubAgent 规格（挂在父 agent 的 task 委托下）。
+
+    tools 必须显式传入：deepagents 对规格里缺 tools 键的子代理回退为
+    继承父 agent 全部工具——清单声明的 tools 是子代理工具面唯一真相源
+    （REQ-20261025-230811 FR-001：审稿子代理只读，写工具不得渗入）。
+    """
     return SubAgent(
         name=abc.agent.runtime_name or abc.agent.name,
         description=abc.agent.description,
         system_prompt=_system_prompt(abc),
+        tools=_build_tools(abc),
         permissions=_build_permissions(abc.agent),
         middleware=_build_base_chain(abc) + _build_domain_middleware(abc),
     )

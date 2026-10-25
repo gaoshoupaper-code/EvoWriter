@@ -3,7 +3,8 @@
 跑法（evolution 目录）：python -m pytest tests/test_v7_evolution_sync.py -v
 
 覆盖：
-  - STATIC_BLUEPRINT 为单 Agent 认知地图：无多 Agent 表述、含两泳道与记忆退役标注
+  - STATIC_BLUEPRINT 为五段制认知地图（author + review 审稿子代理，
+    REQ-20261025-230811 蓝图同步）：无多 Agent 表述、无旧三步制词、含记忆退役标注
   - 要素视图常量：2 泳道（故事专家 + 审查器）、唯一委托关系
   - dossier 阶段词表与交付映射：storybuilding 单阶段、三件套交付
   - 错题库下线：进化链路三文件零 problem_kb 依赖、无轨迹注入
@@ -17,6 +18,7 @@ from pathlib import Path
 from app.evolve.agent import prompt as evolve_prompt
 
 # 蓝图中不允许出现的多 Agent 表述（用户可见面术语清理，DEC-007）
+# + 旧三步制架构词（REQ-20261025-230811 蓝图同步后防倒退）
 _FORBIDDEN_BLUEPRINT_TERMS = [
     "interview",
     "detail_outline",
@@ -25,16 +27,21 @@ _FORBIDDEN_BLUEPRINT_TERMS = [
     "九个要素",
     "meta 层 5 个",
     "subagents 列表（GP",
-]
-# 蓝图中必须出现的三步制表述（REQ-20261015-161200 FR-013 同步）
-_REQUIRED_BLUEPRINT_TERMS = [
     "三步制架构",
-    "writer",
     "worldview",
     "chapters",
-    "谁产出谁能改",
+    "writer_system",
+    "receipt_gate",
+    "demand.md",
+]
+# 蓝图中必须出现的五段制表述（REQ-20261025-230811 DEC-010 蓝图同步）
+_REQUIRED_BLUEPRINT_TERMS = [
+    "五段制",
+    "author",
+    "review",
+    "stage_gate",
     "已冻结休眠",        # 记忆退役标注（DEC-003）
-    "demand.md",          # 表单直入（DEC-009）
+    "审稿",              # review 子代理职责（FR-002 三维审查）
 ]
 
 

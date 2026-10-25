@@ -359,25 +359,24 @@ class MetaAgentService(BaseAgentService):
             return None
         return style.get("meta_style") or None
 
-    def _compose_user_writing_skills(
+    def _list_enabled_stage_skills(
         self, workspace_id: str | None, owner_id: str | None, workspace_path: Path,
-    ) -> str | None:
-        """组装当前段用户写作技能提示词段（REQ-20261025-205943 FR-003）。
+    ) -> list[dict] | None:
+        """当前段归属的启用技能列表（五段制 + 四段开放硬闸，None = 不注入场景）。
 
-        服务端硬闸：仅五段制工作区且当前段 ∈ {outline, volume, chapter,
-        text}（DEC-001 四段开放）时，注入「归属该段」的启用技能（DEC-002
-        单一阶段归属——他段技能即使已启用也不注入）；题材段/legacy 一律
-        None。注入文本自带两条声明（DEC-008）：效力低于「表达铁律」＋
-        不得突破产物结构约定。段判定与切段接口同源（state.json 人工段
-        指针）。用户内容只走运行时 DB 读取，不进 harness 发版制品。
+        REQ-20261025-205943 FR-003 的查询核：仅五段制工作区且当前段 ∈
+        STAGE_VALUES 时，取「归属该段」的启用技能（DEC-002 单一阶段归属——
+        他段技能即使已启用也不注入）；题材段/legacy/空列表一律 None。
         """
         if not workspace_id or not owner_id:
             return None
-        from app.domains.writing.pipeline import classify_workspace, current_stage
+        from app.domains.writing.pipeline import classify_workspace
 
         if classify_workspace(workspace_path) != "five":
             return None
         from app.platform.core.db import WritingSkillRepository, get_database
+
+        from app.domains.writing.pipeline import current_stage
 
         stage = current_stage(workspace_path)
         if stage not in WritingSkillRepository.STAGE_VALUES:
@@ -387,6 +386,18 @@ class MetaAgentService(BaseAgentService):
             .list_enabled_for_workspace(workspace_id, owner_id)
             if sk["stage"] == stage
         ]
+        return skills or None
+
+    def _compose_user_writing_skills(
+        self, workspace_id: str | None, owner_id: str | None, workspace_path: Path,
+    ) -> str | None:
+        """组装当前段用户写作技能提示词段（REQ-20261025-205943 FR-003）。
+
+        注入文本自带两条声明（DEC-008）：效力低于「表达铁律」＋不得突破
+        产物结构约定。段判定与切段接口同源（state.json 人工段指针）。
+        用户内容只走运行时 DB 读取，不进 harness 发版制品。
+        """
+        skills = self._list_enabled_stage_skills(workspace_id, owner_id, workspace_path)
         if not skills:
             return None
         parts = [
@@ -404,23 +415,63 @@ class MetaAgentService(BaseAgentService):
             parts.append("")
         return "\n".join(parts).strip()
 
+    def _compose_review_constraints(
+        self, workspace_id: str | None, owner_id: str | None, workspace_path: Path,
+    ) -> str | None:
+        """组装审稿子代理的技能约束段（REQ-20261025-230811 FR-005）。
+
+        仅正文段（stage=text）且有归属正文段的启用技能时返回：声明技能为
+        作者既定要求，审稿不得判为问题、不得建议删除或稀释（防审稿把用户
+        要求当毛病改掉，如「对话毒舌」被判「辩论式对话」病灶）。review
+        子代理只在正文段被委托，其余段不注入。styles["review"] 经解释器
+        _system_prompt 既有通道成为审稿 system prompt 的 suffix——运行时
+        数据走 styles 通道，不违注入禁令。
+        """
+        from app.domains.writing.pipeline import current_stage
+
+        from contracts.writing_artifacts import STAGE_TEXT
+
+        if current_stage(workspace_path) != STAGE_TEXT:
+            return None
+        skills = self._list_enabled_stage_skills(workspace_id, owner_id, workspace_path)
+        if not skills:
+            return None
+        parts = [
+            "## 作者启用的写作技能（作者本人设定——审查约束）",
+            "",
+            "以下技能由作者亲自启用，是本章写作的既定要求；审查时不得将其判为问题，"
+            "也不得建议删除或稀释这些要求"
+            "（例如作者要求对话毒舌，不得按「辩论式对话」病灶处理）：",
+            "",
+        ]
+        for sk in skills:
+            parts.append(f"### {sk['name']}——{sk['description']}")
+            parts.append("")
+            parts.append(sk["content"].strip())
+            parts.append("")
+        return "\n".join(parts).strip()
+
     def _apply_user_writing_skills(
         self, *, styles: dict[str, str] | None, agent_name: str | None,
         workspace_id: str | None, owner_id: str | None, workspace_path: Path,
     ) -> dict[str, str] | None:
-        """把用户写作技能追加进 styles["author"]（段规程之后）。失败静默跳过。
-
-        仅 author 装配路径调用；查询失败不阻塞创作主流程（FR-003 失败语义）。
+        """把用户写作技能追加进 styles["author"]（段规程之后）；正文段同时以
+        审查约束口径注入 styles["review"]（REQ-20261025-230811 FR-005）。
+        失败静默跳过。仅 author 装配路径调用；查询失败不阻塞创作主流程
+        （FR-003 失败语义）。
         """
         if agent_name != "author" or not workspace_id or not owner_id:
             return styles
         try:
+            merged = dict(styles or {})
             suffix = self._compose_user_writing_skills(workspace_id, owner_id, workspace_path)
-            if not suffix:
-                return styles
-            base = (styles or {}).get("author") or ""
-            merged = f"{base}\n\n{suffix}" if base else suffix
-            return {**(styles or {}), "author": merged}
+            if suffix:
+                base = merged.get("author") or ""
+                merged["author"] = f"{base}\n\n{suffix}" if base else suffix
+            review_suffix = self._compose_review_constraints(workspace_id, owner_id, workspace_path)
+            if review_suffix:
+                merged["review"] = review_suffix
+            return merged
         except Exception:  # noqa: BLE001 — 注入失败退回无技能装配，不阻塞
             logger.warning("用户写作技能注入失败，跳过", exc_info=True)
             return styles

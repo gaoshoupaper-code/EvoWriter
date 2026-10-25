@@ -20,6 +20,7 @@ const FILES = [
   { rel: "卷纲/第01卷.md", markdown: "" },
   { rel: "章纲/第001章.md", markdown: "" },
   { rel: "正文/第001章开局.md", markdown: "" },
+  { rel: "正文/第002章相遇.md", markdown: "" },
 ];
 
 function baseProps(over: Partial<Parameters<typeof Sidebar>[0]> = {}) {
@@ -143,15 +144,27 @@ describe("作品侧栏（FR-011）", () => {
     expect(props.onDeleteWorkspace).toHaveBeenCalledWith("ws-2");
   });
 
-  it("五段产物树分组渲染；点条目回调 rel（AC-013）", async () => {
+  it("单条目组组头折叠进条目，多条目组保留组标签；点条目回调 rel（AC-013/AC-005）", async () => {
     const props = baseProps();
     render(<Sidebar {...props} />);
     const tree = document.querySelector(".sidebar-tree") as HTMLElement;
-    // 组标签（主题/总纲/文风/卷纲/章纲/正文）——「总纲」同时是组名与条目名，用 getAllByText
-    for (const label of ["主题", "总纲", "文风", "卷纲", "章纲", "正文"]) {
-      expect(within(tree).getAllByText(label).length).toBeGreaterThanOrEqual(1);
+    // 单条目组（主题/总纲/文风/卷纲/章纲各一份文档，REQ-20261025-210512 FR-005）：
+    // 不渲染组标签行，条目带 solo 类与组锚点图标，文档名直接可点
+    const soloItems = document.querySelectorAll(".sidebar-tree-item.solo");
+    expect(soloItems).toHaveLength(5);
+    const soloNames = Array.from(soloItems, (item) => item.textContent);
+    for (const name of ["主题", "总纲", "文风", "第01卷", "第001章"]) {
+      expect(soloNames).toContain(name);
     }
-    // 每个分组标签都带锚点图标（REQ-20261020-200710 DEC-007）
+    soloItems.forEach((item) => {
+      expect(item.querySelector(".sidebar-tree-icon")).not.toBeNull();
+    });
+    // 多条目组（正文 2 条）保留组标签并带锚点图标
+    const labels = Array.from(
+      document.querySelectorAll(".sidebar-tree-group-label"),
+      (el) => el.textContent,
+    );
+    expect(labels).toEqual(["正文"]);
     document
       .querySelectorAll(".sidebar-tree-group-label")
       .forEach((label) => expect(label.querySelector("svg")).not.toBeNull());

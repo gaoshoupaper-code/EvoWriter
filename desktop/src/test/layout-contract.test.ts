@@ -171,6 +171,12 @@ describe("视觉升级（REQ-20261018-202005）", () => {
     expect(block(".sidebar-tree-item")).toContain("font-size: var(--text-ui-base)");
   });
 
+  it("单条目组组头折叠进条目：solo 布局与选中金图标（REQ-20261025-210512 FR-005）", () => {
+    expect(block(".sidebar-tree-item.solo")).toContain("display: flex");
+    expect(block(".sidebar-tree-item.solo")).toContain("padding-left: 8px");
+    expect(block(".sidebar-tree-item.active .sidebar-tree-icon")).toContain("color: var(--gold)");
+  });
+
   it("三处选中态统一浅金底+金字+金指示条（REQ-20261025-210512 FR-004/DEC-004）", () => {
     for (const sel of [".sidebar-item.active", ".sidebar-book.active", ".sidebar-tree-item.active"]) {
       expect(block(sel)).toContain("background: color-mix(in srgb, var(--gold) 20%, transparent)");

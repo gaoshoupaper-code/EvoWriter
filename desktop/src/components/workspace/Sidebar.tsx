@@ -219,12 +219,17 @@ export function Sidebar({
           ) : (
             groups.map((g) => {
               const Icon = GROUP_ICON[g.id];
+              /* 单条目组（REQ-20261025-210512 FR-005）：组头折叠进条目——
+                 主题/总纲/文风各只有一份文档，组标签+同名条目是冗余的两层 */
+              const solo = g.rels.length === 1;
               return (
               <div className="sidebar-tree-group" key={g.id}>
-                <span className="sidebar-tree-group-label">
-                  {Icon ? <Icon size={13} aria-hidden="true" /> : null}
-                  {g.label}
-                </span>
+                {!solo && (
+                  <span className="sidebar-tree-group-label">
+                    {Icon ? <Icon size={13} aria-hidden="true" /> : null}
+                    {g.label}
+                  </span>
+                )}
                 <ul>
                   {g.rels.map((label) => {
                     const rel = relOfLabel(GROUP_DIR[g.id], label);
@@ -232,10 +237,11 @@ export function Sidebar({
                       <li key={rel}>
                         <button
                           type="button"
-                          className={`sidebar-tree-item${rel === activeRel && activePanel === "artifacts" ? " active" : ""}`}
+                          className={`sidebar-tree-item${solo ? " solo" : ""}${rel === activeRel && activePanel === "artifacts" ? " active" : ""}`}
                           onClick={() => onSelectArtifact(rel)}
                           title={label}
                         >
+                          {solo && Icon ? <Icon size={13} className="sidebar-tree-icon" aria-hidden="true" /> : null}
                           {label}
                         </button>
                       </li>

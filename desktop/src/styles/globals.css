@@ -310,8 +310,7 @@ a {
   margin-top: 14px;
 }
 
-/* 分组标题（REQ-20261025-210512 FR-001/DEC-001）：与选项同字号，靠淡色+加粗分层；
-   产物树内子分组标签仍是小号，形成两级层级 */
+/* 分组标题（REQ-20261025-210512 FR-001/DEC-001）：与选项同字号，靠淡色+加粗分层 */
 .sidebar-group-label {
   padding: 0 8px;
   color: var(--muted);
@@ -7728,13 +7727,15 @@ html[data-theme="dark"] .admin-outline {
   margin-top: 8px;
 }
 
+/* 树子分组标签（REQ-20261025-210512 FR-001 修订）：与条目同字号（用户反馈 xs 过小），
+   靠粗体+淡色+锚点图标区分层级；模块标题与子分组同级字号，靠缩进区分从属 */
 .sidebar-tree-group-label {
   display: flex;
   align-items: center;
   gap: 5px;
   padding: 2px 8px;
   color: var(--muted);
-  font-size: var(--text-ui-xs);
+  font-size: var(--text-ui-base);
   font-weight: 800;
   letter-spacing: 0.06em;
 }

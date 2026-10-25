@@ -215,7 +215,7 @@ export function Sidebar({
               return (
               <div className="sidebar-tree-group" key={g.id}>
                 <span className="sidebar-tree-group-label">
-                  {Icon ? <Icon size={12} aria-hidden="true" /> : null}
+                  {Icon ? <Icon size={13} aria-hidden="true" /> : null}
                   {g.label}
                 </span>
                 <ul>

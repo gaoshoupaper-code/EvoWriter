@@ -715,7 +715,11 @@ export function trackRegenerate(traceId: string, contentPreview = ""): void {
   }).catch(() => { /* fire-and-forget */ });
 }
 
-// ── 用户自定义写作技能（REQ-20261023-000000：库 CRUD + 按书启用）──────
+// ── 用户自定义写作技能（REQ-20261023-000000 / REQ-20261025-205943：
+//    库 CRUD + 按书启用；技能带阶段归属，每段 ≤5 条）──────────────
+
+/** 技能阶段归属（四选一；题材段不开放——REQ-20261025-205943 DEC-001） */
+export type WritingStage = "outline" | "volume" | "chapter" | "text";
 
 export interface WritingSkill {
   skill_id: string;
@@ -723,6 +727,7 @@ export interface WritingSkill {
   name: string;
   description: string;
   content: string;
+  stage: WritingStage;
   created_at: string;
   updated_at: string;
 }
@@ -731,7 +736,9 @@ export async function listWritingSkills() {
   return apiJson<WritingSkill[]>(`${API_BASE_URL}/api/writing-skills`);
 }
 
-export async function createWritingSkill(data: { name: string; description: string; content: string }) {
+export async function createWritingSkill(data: {
+  name: string; description: string; content: string; stage: WritingStage;
+}) {
   return apiJson<WritingSkill>(`${API_BASE_URL}/api/writing-skills`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -741,7 +748,7 @@ export async function createWritingSkill(data: { name: string; description: stri
 
 export async function updateWritingSkill(
   skillId: string,
-  data: { name: string; description: string; content: string },
+  data: { name: string; description: string; content: string; stage: WritingStage },
 ) {
   return apiJson<WritingSkill>(`${API_BASE_URL}/api/writing-skills/${skillId}`, {
     method: "PUT",
@@ -761,7 +768,7 @@ export async function listEnabledWritingSkills(workspaceId: string) {
 }
 
 export async function setEnabledWritingSkills(workspaceId: string, skillIds: string[]) {
-  return apiJson<{ status: string; enabled: string[] }>(
+  return apiJson<{ status: string; enabled: string[]; skills: WritingSkill[] }>(
     `${API_BASE_URL}/api/workspaces/${workspaceId}/writing-skills`,
     {
       method: "PUT",

@@ -176,3 +176,103 @@ class TestDeleteCascade:
     def test_delete_missing_returns_false(self, repo, two_users):
         u1, _ = two_users
         assert repo.delete("nonexistent", u1) is False
+
+
+# ── 阶段归属（REQ-20261025-205943 FR-001 / AC-001/002）───────
+
+class TestStageField:
+    def test_create_with_stage_roundtrip(self, repo, two_users):
+        u1, _ = two_users
+        sk = repo.create(
+            owner_id=u1, name="伏笔编织", description="总纲段用",
+            content="埋线要记回收位置。", stage="outline",
+        )
+        assert sk["stage"] == "outline"
+        assert repo.get(sk["skill_id"], u1)["stage"] == "outline"
+
+    def test_create_defaults_to_text(self, repo, two_users):
+        u1, _ = two_users
+        sk = _make_skill(repo, u1)
+        assert sk["stage"] == "text"
+
+    def test_stage_survives_enable_binding(self, repo, thread_store, two_users):
+        u1, _ = two_users
+        ws = thread_store.create_workspace(u1, "仙侠")
+        sk = repo.create(
+            owner_id=u1, name="卷节奏", description="卷纲段用",
+            content="三幕推进。", stage="volume",
+        )
+        repo.set_enabled(ws.workspace_id, u1, [sk["skill_id"]])
+        enabled = repo.list_enabled_for_workspace(ws.workspace_id, u1)
+        assert enabled[0]["stage"] == "volume"
+
+    def test_update_stage(self, repo, two_users):
+        u1, _ = two_users
+        sk = _make_skill(repo, u1)
+        updated = repo.update(sk["skill_id"], u1, stage="chapter")
+        assert updated["stage"] == "chapter"
+
+
+# ── 旧库迁移：存量技能归正文段（REQ-20261025-205943 DEC-004 / AC-002）──
+
+class TestStageMigration:
+    def test_legacy_rows_default_to_text(self, tmp_path):
+        """模拟无 stage 列的旧库：重开后自动补列，存量行归 'text'（DEC-004）。"""
+        from app.platform.core.security import generate_master_key, load_master_key
+
+        key = load_master_key(generate_master_key())
+        db_path = tmp_path / "legacy.db"
+        d1 = Database(db_path, key)
+        owner = UserRepository(d1).create(username="alice", password="pw123456")
+        # 旧库没有 stage 列：手工剥掉后插一行「升级前」的数据
+        d1.conn.execute("ALTER TABLE writing_skills DROP COLUMN stage")
+        d1.conn.execute(
+            "INSERT INTO writing_skills (skill_id, owner_id, name, description, "
+            "content, created_at, updated_at) VALUES "
+            "('legacy1', ?, '旧技能', 'x', 'y', '2026-01-01', '2026-01-01')",
+            (owner["user_id"],),
+        )
+        d1.conn.close()
+
+        d2 = Database(db_path, key)  # _migrate 补列，DEFAULT 'text' 回填旧行
+        row = d2.conn.execute(
+            "SELECT stage FROM writing_skills WHERE skill_id = 'legacy1'"
+        ).fetchone()
+        assert row["stage"] == "text"
+        d2.conn.close()
+
+
+# ── 每段启用上限（REQ-20261025-205943 FR-002 / DEC-005 / AC-003）──
+
+class TestPerStageLimit:
+    def _make(self, repo, owner, name, stage):
+        return repo.create(
+            owner_id=owner, name=name, description="d", content="c", stage=stage,
+        )["skill_id"]
+
+    def test_six_same_stage_rejected_five_ok(self, repo, thread_store, two_users):
+        u1, _ = two_users
+        ws = thread_store.create_workspace(u1, "仙侠")
+        ids = [self._make(repo, u1, f"总纲技{i}", "outline") for i in range(6)]
+        with pytest.raises(ValueError):
+            repo.set_enabled(ws.workspace_id, u1, ids)
+        repo.set_enabled(ws.workspace_id, u1, ids[:5])  # 恰好 5 条合法
+        assert len(repo.list_enabled_for_workspace(ws.workspace_id, u1)) == 5
+
+    def test_mixed_stages_beyond_five_total_ok(self, repo, thread_store, two_users):
+        """旧「全书 ≤5」口径已废（DEC-005）：跨段合计 6 条合法。"""
+        u1, _ = two_users
+        ws = thread_store.create_workspace(u1, "仙侠")
+        ids = [self._make(repo, u1, f"总纲技{i}", "outline") for i in range(3)]
+        ids += [self._make(repo, u1, f"正文技{i}", "text") for i in range(3)]
+        repo.set_enabled(ws.workspace_id, u1, ids)
+        assert len(repo.list_enabled_for_workspace(ws.workspace_id, u1)) == 6
+
+    def test_twenty_across_four_stages_ok(self, repo, thread_store, two_users):
+        u1, _ = two_users
+        ws = thread_store.create_workspace(u1, "仙侠")
+        ids = []
+        for stage in ("outline", "volume", "chapter", "text"):
+            ids += [self._make(repo, u1, f"{stage}{i}", stage) for i in range(5)]
+        repo.set_enabled(ws.workspace_id, u1, ids)
+        assert len(repo.list_enabled_for_workspace(ws.workspace_id, u1)) == 20

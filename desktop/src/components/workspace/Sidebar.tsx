@@ -22,6 +22,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { OutlineFileEntry, WorkspacePanel, WorkspaceSummary } from "../../lib/types";
+import { SidebarSkills } from "./SidebarSkills";
 
 type SidebarProps = {
   activePanel: WorkspacePanel;
@@ -36,6 +37,8 @@ type SidebarProps = {
   files: OutlineFileEntry[];
   activeRel: string;
   onSelectArtifact: (rel: string) => void;
+  /** 技能分组可见性（REQ-20261025-205943 DEC-011）：仅五段制写作书显示 */
+  showSkills?: boolean;
   footer?: ReactNode;
 };
 
@@ -98,6 +101,7 @@ export function Sidebar({
   files,
   activeRel,
   onSelectArtifact,
+  showSkills = true,
   footer,
 }: SidebarProps) {
   const groups = treeGroups(files);
@@ -203,6 +207,9 @@ export function Sidebar({
             </>
           )}
         </div>
+
+        {/* ── 阶段技能（REQ-20261025-205943 FR-004）：四段勾选入口，仅五段制写作书 ── */}
+        {showSkills ? <SidebarSkills /> : null}
 
         {/* ── 五段产物树：点条目进产物面板查看 ── */}
         <div className="sidebar-group sidebar-tree">

@@ -1,15 +1,16 @@
 /**
- * 设置页「写作技能」板块（REQ-20261023-000000 FR-001/004，DEC-001/005/006）。
+ * 设置页「写作技能」板块（REQ-20261023-000000 建库；REQ-20261025-205943
+ * FR-001/005：技能带阶段归属，列表按阶段分组）。
  *
- * 个人技能库 CRUD：左列表 + 右表单（复用模型服务板块的 provider-layout 布局）。
- * 三字段均必填（空白视为空），指令正文 ≤3000 字（前端先拦，服务端双保险）。
- * 勾选启用在写作页浮层（WritingSkillsPopover），本板块只管库。
+ * 个人技能库 CRUD：左列表（按阶段分组）+ 右表单（复用模型服务板块的
+ * provider-layout 布局）。四字段均必填（空白视为空），指令正文 ≤20000 字
+ * （前端先拦，服务端双保险）。勾选启用在作品侧栏技能模块，本板块只管库。
  */
 import { FormEvent, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { createWritingSkill, updateWritingSkill } from "@/lib/api";
+import { createWritingSkill, updateWritingSkill, type WritingSkill, type WritingStage } from "@/lib/api";
+import { SKILL_STAGES } from "@/lib/pipeline-steps";
 import { useWritingSkillsStore } from "@/stores/writingSkills";
-import type { WritingSkill } from "@/lib/api";
 
 const MAX_CONTENT = 20000;
 
@@ -19,12 +20,14 @@ export function WritingSkillsCard() {
   const skills = useWritingSkillsStore((s) => s.skills);
   const skillsLoading = useWritingSkillsStore((s) => s.skillsLoading);
   const loadSkills = useWritingSkillsStore((s) => s.loadSkills);
+  const loadEnabled = useWritingSkillsStore((s) => s.loadEnabled);
   const removeSkill = useWritingSkillsStore((s) => s.removeSkill);
 
   const [mode, setMode] = useState<FormMode>({ kind: "new" });
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [content, setContent] = useState("");
+  const [stage, setStage] = useState<WritingStage>("text");
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -36,6 +39,7 @@ export function WritingSkillsCard() {
     setName("");
     setDescription("");
     setContent("");
+    setStage("text");
   }
 
   function startEdit(sk: WritingSkill) {
@@ -43,6 +47,7 @@ export function WritingSkillsCard() {
     setName(sk.name);
     setDescription(sk.description);
     setContent(sk.content);
+    setStage(sk.stage);
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -58,13 +63,20 @@ export function WritingSkillsCard() {
     }
     setSubmitting(true);
     try {
-      const data = { name: name.trim(), description: description.trim(), content: content.trim() };
+      const data = {
+        name: name.trim(), description: description.trim(),
+        content: content.trim(), stage,
+      };
       if (mode.kind === "new") {
         await createWritingSkill(data);
         toast.success("技能已创建。");
       } else {
         await updateWritingSkill(mode.skill.skill_id, data);
-        toast.success("技能已更新，下一条正文消息即用新内容。");
+        const label = SKILL_STAGES.find((s) => s.phase === stage)?.label ?? "该段";
+        toast.success(`技能已更新，下一条${label}消息即用新内容。`);
+        // 编辑可能改了阶段：刷新当前书启用列表，侧栏角标即时准确
+        const wsId = useWritingSkillsStore.getState().enabledWorkspaceId;
+        if (wsId) await loadEnabled(wsId).catch(() => {});
       }
       resetForm();
       await loadSkills();
@@ -98,7 +110,7 @@ export function WritingSkillsCard() {
       <header className="settings-card-head">
         <div className="settings-card-title">
           <h2>写作技能</h2>
-          <p>自建题材/场景写作技能（如「武侠打斗描写」），写作页正文段勾选启用，每本书最多 5 条。</p>
+          <p>自建各阶段写作技能（如「武侠打斗描写」「伏笔编织」），在作品侧栏按段勾选启用，每个阶段最多 5 条。</p>
         </div>
         <span className="settings-status ok">
           <span className="settings-status-text">共 {skills.length} 条</span>
@@ -116,32 +128,54 @@ export function WritingSkillsCard() {
           ) : skills.length === 0 ? (
             <p className="provider-empty">还没有技能，点「新建」添加。</p>
           ) : (
-            skills.map((sk) => (
-              <div
-                key={sk.skill_id}
-                className={`provider-item ${mode.kind === "edit" && mode.skill.skill_id === sk.skill_id ? "editing" : ""}`}
-              >
-                <div className="provider-item-main" onClick={() => startEdit(sk)}>
-                  <div className="provider-item-name">{sk.name}</div>
-                  <div className="provider-item-meta" title={sk.description}>{sk.description}</div>
+            SKILL_STAGES.map(({ phase, label }) => {
+              const group = skills.filter((sk) => sk.stage === phase);
+              if (group.length === 0) return null;
+              return (
+                <div key={phase} className="wskill-stage-group">
+                  <span className="wskill-stage-label">{label}</span>
+                  {group.map((sk) => (
+                    <div
+                      key={sk.skill_id}
+                      className={`provider-item ${mode.kind === "edit" && mode.skill.skill_id === sk.skill_id ? "editing" : ""}`}
+                    >
+                      <div className="provider-item-main" onClick={() => startEdit(sk)}>
+                        <div className="provider-item-name">{sk.name}</div>
+                        <div className="provider-item-meta" title={sk.description}>{sk.description}</div>
+                      </div>
+                      <div className="provider-item-actions">
+                        <button
+                          type="button"
+                          className="provider-action danger"
+                          onClick={() => void handleDelete(sk)}
+                        >
+                          删除
+                        </button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <div className="provider-item-actions">
-                  <button
-                    type="button"
-                    className="provider-action danger"
-                    onClick={() => void handleDelete(sk)}
-                  >
-                    删除
-                  </button>
-                </div>
-              </div>
-            ))
+              );
+            })
           )}
         </aside>
 
         <div className="provider-form">
           <h3>{mode.kind === "new" ? "新建技能" : `编辑「${mode.skill.name}」`}</h3>
           <form className="auth-form" onSubmit={handleSubmit}>
+            <label className="auth-field">
+              <span>适用阶段</span>
+              <select
+                className="auth-input"
+                value={stage}
+                onChange={(e) => setStage(e.target.value as WritingStage)}
+                disabled={submitting}
+              >
+                {SKILL_STAGES.map(({ phase, label }) => (
+                  <option key={phase} value={phase}>{label}</option>
+                ))}
+              </select>
+            </label>
             <label className="auth-field">
               <span>名称</span>
               <input
@@ -172,7 +206,7 @@ export function WritingSkillsCard() {
                 disabled={submitting}
               />
               <p className={`wskill-form-tip${contentOver ? " error-copy" : ""}`}>
-                {contentLen}/{MAX_CONTENT} 字 · 仅正文写作生效，与表达铁律冲突时以铁律为准
+                {contentLen}/{MAX_CONTENT} 字 · 仅在「{SKILL_STAGES.find((s) => s.phase === stage)?.label}」阶段生效，与表达铁律冲突时以铁律为准
               </p>
             </label>
             <div className="settings-form-actions">

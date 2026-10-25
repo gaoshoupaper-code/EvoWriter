@@ -1,8 +1,9 @@
-"""用户自定义写作技能：正文段注入（REQ-20261023-000000 FR-003，AC-003）。
+"""用户自定义写作技能：多段注入（REQ-20261025-205943 FR-003，AC-004）。
 
-锁定服务端硬闸：仅五段制工作区且当前段=text 时把启用技能拼进
-styles["author"]（附「低于表达铁律」声明）；其他段/legacy/未启用/异常
-一律原样不动。最终 system prompt 的 suffix 拼接链路由
+锁定服务端硬闸：仅五段制工作区且当前段 ∈ {outline, volume, chapter,
+text} 时，把归属该段的启用技能拼进 styles["author"]（附两条声明：低于
+表达铁律＋不突破产物结构约定，DEC-008）；题材段/legacy/他段技能/
+未启用/异常一律不注入。最终 system prompt 的 suffix 拼接链路由
 architecture._system_prompt 既有逻辑保证。
 """
 
@@ -65,22 +66,41 @@ def _compose(svc, seeded):
     return svc._compose_user_writing_skills(ws_id, u1, ws_path)
 
 
-# ── 仅正文段注入（FR-003 / AC-003）─────────────────────────
+# ── 多段注入（FR-003 / AC-004）──────────────────────────────
 
 class TestCompose:
-    def test_text_stage_injects_with_priority_statement(self, svc, seeded):
+    def test_text_stage_injects_with_both_statements(self, svc, seeded):
         text = _compose(svc, seeded)
         assert text is not None
         assert "打斗先写招式名" in text
         assert "每三章安排一个期待感钩子" in text
-        # DEC-003：必须自带低于表达铁律的声明
+        # DEC-008：两条声明——低于表达铁律＋不突破产物结构约定
         assert "表达铁律" in text
+        assert "产物结构" in text
 
-    @pytest.mark.parametrize("stage", ["theme", "outline", "volume", "chapter"])
-    def test_non_text_stages_inject_nothing(self, svc, seeded, stage):
+    def test_theme_stage_injects_nothing(self, svc, seeded):
+        """题材段零注入（AC-004 防绕过：启用列表非空也拦）。"""
         u1, ws_id, ws_path, _ = seeded
-        save_writing_state(ws_path, WritingState(confirmed_stage=stage, stage=stage))
+        save_writing_state(ws_path, WritingState(confirmed_stage="theme", stage="theme"))
         assert svc._compose_user_writing_skills(ws_id, u1, ws_path) is None
+
+    @pytest.mark.parametrize("stage", ["outline", "volume", "chapter", "text"])
+    def test_stage_injects_only_own_stage_skills(self, svc, seeded, db, stage):
+        """当前段只注入归属该段的技能；他段技能即使已启用也不进提示词。"""
+        u1, ws_id, ws_path, _ = seeded
+        repo = WritingSkillRepository(db)
+        own = repo.create(
+            owner_id=u1, name=f"{stage}技", description="本段专属",
+            content=f"【{stage}专属指令】", stage=stage,
+        )["skill_id"]
+        enabled = [s["skill_id"] for s in repo.list_enabled_for_workspace(ws_id, u1)]
+        repo.set_enabled(ws_id, u1, enabled + [own])
+        save_writing_state(ws_path, WritingState(confirmed_stage=stage, stage=stage))
+        text = svc._compose_user_writing_skills(ws_id, u1, ws_path)
+        assert text is not None
+        assert f"【{stage}专属指令】" in text
+        if stage != "text":
+            assert "打斗先写招式名" not in text  # text 段技能不在大纲段注入
 
     def test_no_enabled_skills_returns_none(self, svc, seeded):
         u1, ws_id, ws_path, db = seeded

@@ -36,6 +36,9 @@ function baseProps(over: Partial<Parameters<typeof Sidebar>[0]> = {}) {
     files: FILES,
     activeRel: "",
     onSelectArtifact: vi.fn(),
+    // 技能分组（REQ-20261025-205943）在 sidebarSkills.test.tsx 单测；此处
+    // 关闭以保持书架/产物树断言聚焦
+    showSkills: false,
     ...over,
   };
 }

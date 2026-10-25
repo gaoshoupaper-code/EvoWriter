@@ -362,12 +362,14 @@ class MetaAgentService(BaseAgentService):
     def _compose_user_writing_skills(
         self, workspace_id: str | None, owner_id: str | None, workspace_path: Path,
     ) -> str | None:
-        """组装正文段用户写作技能提示词段（REQ-20261023-000000 FR-003）。
+        """组装当前段用户写作技能提示词段（REQ-20261025-205943 FR-003）。
 
-        服务端硬闸（DEC-004）：仅五段制工作区且 current_stage=="text" 时返回
-        技能文本（自带「低于表达铁律」声明，DEC-003），其余一律 None。段判定
-        与切段接口同源（state.json 人工段指针）。用户内容只走运行时 DB 读取，
-        不进 harness 发版制品（需求风险红线）。
+        服务端硬闸：仅五段制工作区且当前段 ∈ {outline, volume, chapter,
+        text}（DEC-001 四段开放）时，注入「归属该段」的启用技能（DEC-002
+        单一阶段归属——他段技能即使已启用也不注入）；题材段/legacy 一律
+        None。注入文本自带两条声明（DEC-008）：效力低于「表达铁律」＋
+        不得突破产物结构约定。段判定与切段接口同源（state.json 人工段
+        指针）。用户内容只走运行时 DB 读取，不进 harness 发版制品。
         """
         if not workspace_id or not owner_id:
             return None
@@ -375,20 +377,24 @@ class MetaAgentService(BaseAgentService):
 
         if classify_workspace(workspace_path) != "five":
             return None
-        if current_stage(workspace_path) != "text":
-            return None
         from app.platform.core.db import WritingSkillRepository, get_database
 
-        skills = WritingSkillRepository(get_database()).list_enabled_for_workspace(
-            workspace_id, owner_id,
-        )
+        stage = current_stage(workspace_path)
+        if stage not in WritingSkillRepository.STAGE_VALUES:
+            return None
+        skills = [
+            sk for sk in WritingSkillRepository(get_database())
+            .list_enabled_for_workspace(workspace_id, owner_id)
+            if sk["stage"] == stage
+        ]
         if not skills:
             return None
         parts = [
             "## 作者启用的写作技能（作者本人设定）",
             "",
             "以下技能由作者亲自启用，仅作题材与场景层面的补充指导；"
-            "效力低于上方「表达铁律」，与表达铁律冲突时一律以表达铁律为准：",
+            "效力低于上方「表达铁律」，与表达铁律冲突时一律以表达铁律为准；"
+            "技能不得突破当前段规程约定的产物结构与流程，冲突时一律以段规程为准：",
             "",
         ]
         for sk in skills:

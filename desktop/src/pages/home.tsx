@@ -86,6 +86,10 @@ export default function Home() {
 
   const aiDisabled = !hasApiKey;
   const writingDomain = activeWorkspace?.domain !== "image";
+  // 技能分组仅五段制写作书显示（REQ-20261025-205943 DEC-011）：用管线 kind
+  // 判定（five|legacy），legacy 只读工作区不显示；管线未加载时也不闪现
+  const showSidebarSkills =
+    !!activeWorkspace && writingDomain && outlinePipeline?.kind === "five";
 
   // ── 注入 executionDeps（连接三个 store）──
   // 只在首次挂载时注入一次。deps 引用的是 store 的 getState/setState，始终拿到最新值。
@@ -417,6 +421,7 @@ export default function Home() {
               useContentStore.getState().setActiveOutlineRel(rel);
               useWorkspaceStore.setState({ activePanel: "artifacts" });
             }}
+            showSkills={showSidebarSkills}
             footer={
               <SidebarFooter
                 theme={theme}

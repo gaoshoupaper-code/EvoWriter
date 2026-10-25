@@ -159,13 +159,15 @@ CREATE TABLE IF NOT EXISTS skills (
     updated_at      TEXT NOT NULL
 );
 
--- 用户自定义写作技能（REQ-20261023-000000：三字段卡片，仅正文段注入）
+-- 用户自定义写作技能（REQ-20261023-000000：三字段卡片；阶段归属见
+-- REQ-20261025-205943——stage 四选一，存量默认 'text'）
 CREATE TABLE IF NOT EXISTS writing_skills (
     skill_id     TEXT PRIMARY KEY,
     owner_id     TEXT NOT NULL REFERENCES users(user_id),
     name         TEXT NOT NULL,
     description  TEXT NOT NULL DEFAULT '',
     content      TEXT NOT NULL,
+    stage        TEXT NOT NULL DEFAULT 'text',
     created_at   TEXT NOT NULL,
     updated_at   TEXT NOT NULL
 );
@@ -316,6 +318,14 @@ class Database:
         if "granted_credits" not in invite_cols:
             self._conn.execute(
                 "ALTER TABLE invite_codes ADD COLUMN granted_credits INTEGER NOT NULL DEFAULT 0"
+            )
+
+        # 写作技能阶段归属（REQ-20261025-205943）：旧库补列，存量默认
+        # 'text'（DEC-004 存量迁移——存量技能均为正文场景创建）
+        wsk_cols = {row["name"] for row in self._conn.execute("PRAGMA table_info(writing_skills)")}
+        if "stage" not in wsk_cols:
+            self._conn.execute(
+                "ALTER TABLE writing_skills ADD COLUMN stage TEXT NOT NULL DEFAULT 'text'"
             )
 
         # 积分暗调参数初始播种（AD11：首次启动写入默认值，之后管理页在线改）
@@ -1455,25 +1465,31 @@ _database: Database | None = None
 
 
 class WritingSkillRepository:
-    """用户自定义写作技能访问层（REQ-20261023-000000）。完全私有，所有读写带
-    owner_id；书级启用绑定同库维护（每书 ≤ MAX_PER_WORKSPACE 条）。"""
+    """用户自定义写作技能访问层（REQ-20261023-000000 / REQ-20261025-205943）。
 
-    MAX_PER_WORKSPACE = 5
+    完全私有，所有读写带 owner_id；书级启用绑定同库维护。阶段归属
+    stage ∈ STAGE_VALUES（四选一），启用上限按段计数（DEC-005：每段
+    ≤ MAX_PER_STAGE 条，跨段不挤占，全书最多 4×5=20 条）。
+    """
+
+    STAGE_VALUES = ("outline", "volume", "chapter", "text")
+    MAX_PER_STAGE = 5
 
     def __init__(self, db: Database) -> None:
         self.db = db
 
     def create(
         self, *, owner_id: str, name: str, description: str, content: str,
+        stage: str = "text",
     ) -> dict:
         skill_id = uuid4().hex
         now = _now()
         with self.db.transaction() as conn:
             conn.execute(
                 "INSERT INTO writing_skills (skill_id, owner_id, name, "
-                "description, content, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (skill_id, owner_id, name, description, content, now, now),
+                "description, content, stage, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (skill_id, owner_id, name, description, content, stage, now, now),
             )
         return self.get(skill_id, owner_id)  # type: ignore[return-value]
 
@@ -1494,10 +1510,13 @@ class WritingSkillRepository:
     def update(
         self, skill_id: str, owner_id: str, *,
         name: str | None = None, description: str | None = None,
-        content: str | None = None,
+        content: str | None = None, stage: str | None = None,
     ) -> dict | None:
         sets, vals = [], []
-        for k, v in (("name", name), ("description", description), ("content", content)):
+        for k, v in (
+            ("name", name), ("description", description),
+            ("content", content), ("stage", stage),
+        ):
             if v is not None:
                 sets.append(f"{k} = ?")
                 vals.append(v)
@@ -1526,19 +1545,47 @@ class WritingSkillRepository:
             )
             return cur.rowcount > 0
 
+    def stage_change_overflow(
+        self, skill_id: str, owner_id: str, new_stage: str,
+    ) -> list[str]:
+        """改阶段前置检查（FR-002 不变量）：该技能已启用的书里，目标段
+        （不含本技能）已启用数 ≥ MAX_PER_STAGE 的书列表——改过去即超限。
+        """
+        rows = self.db.conn.execute(
+            "SELECT b.workspace_id, COUNT(*) AS n FROM workspace_writing_skills AS b "
+            "JOIN writing_skills AS ws ON ws.skill_id = b.skill_id "
+            "WHERE b.skill_id != ? AND b.owner_id = ? AND ws.stage = ? "
+            "AND b.workspace_id IN ("
+            "  SELECT workspace_id FROM workspace_writing_skills "
+            "  WHERE skill_id = ? AND owner_id = ?"
+            ") GROUP BY b.workspace_id HAVING n >= ?",
+            (skill_id, owner_id, new_stage, skill_id, owner_id,
+             self.MAX_PER_STAGE),
+        ).fetchall()
+        return [r["workspace_id"] for r in rows]
+
     def set_enabled(
         self, workspace_id: str, owner_id: str, skill_ids: list[str],
     ) -> None:
-        """整书替换启用列表（勾选即保存）。校验失败抛 ValueError，绑定不变。"""
+        """整书替换启用列表（勾选即保存）。校验失败抛 ValueError，绑定不变。
+
+        上限按段计数（REQ-20261025-205943 DEC-005）：同一阶段的技能
+        ≤ MAX_PER_STAGE 条；跨段互不挤占。
+        """
         if len(set(skill_ids)) != len(skill_ids):
             raise ValueError("duplicate skill ids")
-        if len(skill_ids) > self.MAX_PER_WORKSPACE:
-            raise ValueError(
-                f"每本书最多同时启用 {self.MAX_PER_WORKSPACE} 条写作技能"
-            )
+        stage_counts: dict[str, int] = {}
         for sid in skill_ids:
-            if self.get(sid, owner_id) is None:
+            sk = self.get(sid, owner_id)
+            if sk is None:
                 raise ValueError(f"skill not found: {sid}")
+            stage_counts[sk["stage"]] = stage_counts.get(sk["stage"], 0) + 1
+        over = [s for s, n in stage_counts.items() if n > self.MAX_PER_STAGE]
+        if over:
+            raise ValueError(
+                f"每个阶段最多同时启用 {self.MAX_PER_STAGE} 条写作技能"
+                f"（超限阶段：{', '.join(over)}）"
+            )
         now = _now()
         with self.db.transaction() as conn:
             conn.execute(

@@ -76,6 +76,7 @@ def _payload(**over) -> dict:
         "name": "武侠打斗",
         "description": "侧重招式细节与节奏",
         "content": "打斗时先写招式名，再写身体反应。",
+        "stage": "text",
     }
     base.update(over)
     return base
@@ -136,6 +137,9 @@ class TestEnableEndpoints:
         ids = [_create_skill(client, name=f"技能{i}")["skill_id"] for i in range(2)]
         resp = client.put(f"/api/workspaces/{ws1}/writing-skills", json={"skill_ids": ids})
         assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # 响应自带权威启用列表（含 stage），客户端免二次回拉
+        assert [s["name"] for s in body["skills"]] == ["技能0", "技能1"]
         got = client.get(f"/api/workspaces/{ws1}/writing-skills").json()
         assert [s["name"] for s in got] == ["技能0", "技能1"]
 
@@ -188,3 +192,100 @@ class TestOwnerIsolation:
             f"/api/workspaces/{ws1}/writing-skills", json={"skill_ids": [skill["skill_id"]]},
         )
         assert resp.status_code == 404
+
+
+# ── 阶段字段校验（REQ-20261025-205943 FR-001 / AC-001）───────
+
+class TestStageValidation:
+    def test_missing_stage_defaults_to_text(self, client):
+        """旧桌面端不带 stage 字段（需求风险节兼容口径）：按正文段创建。"""
+        payload = _payload()
+        del payload["stage"]
+        resp = client.post("/api/writing-skills", json=payload)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["stage"] == "text"
+
+    @pytest.mark.parametrize("bad", ["theme", "legacy", "foo", ""])
+    def test_invalid_stage_rejected(self, client, bad):
+        resp = client.post("/api/writing-skills", json=_payload(stage=bad))
+        assert resp.status_code == 422
+
+    @pytest.mark.parametrize("stage", ["outline", "volume", "chapter", "text"])
+    def test_four_stages_roundtrip(self, client, stage):
+        skill = _create_skill(client, stage=stage)
+        assert skill["stage"] == stage
+
+    def test_update_stage(self, client):
+        skill = _create_skill(client, stage="text")
+        resp = client.put(
+            f"/api/writing-skills/{skill['skill_id']}", json=_payload(stage="volume"),
+        )
+        assert resp.status_code == 200 and resp.json()["stage"] == "volume"
+
+    def test_update_invalid_stage_rejected(self, client):
+        skill = _create_skill(client)
+        resp = client.put(
+            f"/api/writing-skills/{skill['skill_id']}", json=_payload(stage="theme"),
+        )
+        assert resp.status_code == 422
+
+    def test_update_without_stage_preserves_stage(self, client):
+        """旧客户端编辑不带 stage（需求风险节兼容）：阶段保持不变。"""
+        skill = _create_skill(client, stage="outline")
+        payload = _payload(name="改名")
+        del payload["stage"]
+        resp = client.put(f"/api/writing-skills/{skill['skill_id']}", json=payload)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["stage"] == "outline"
+        assert resp.json()["name"] == "改名"
+
+
+# ── 每段启用上限（REQ-20261025-205943 FR-002 / DEC-005 / AC-003）──
+
+class TestPerStageEnableLimit:
+    def test_six_same_stage_rejected(self, client, ws1):
+        ids = [
+            _create_skill(client, name=f"总纲技{i}", stage="outline")["skill_id"]
+            for i in range(6)
+        ]
+        resp = client.put(f"/api/workspaces/{ws1}/writing-skills", json={"skill_ids": ids})
+        assert resp.status_code == 422
+
+    def test_five_per_stage_across_stages_ok(self, client, ws1):
+        """跨段不挤占：总纲 5 + 正文 5 = 10 条合法（旧全书 ≤5 口径已废）。"""
+        ids = [
+            _create_skill(client, name=f"总纲技{i}", stage="outline")["skill_id"]
+            for i in range(5)
+        ]
+        ids += [
+            _create_skill(client, name=f"正文技{i}", stage="text")["skill_id"]
+            for i in range(5)
+        ]
+        resp = client.put(f"/api/workspaces/{ws1}/writing-skills", json={"skill_ids": ids})
+        assert resp.status_code == 200, resp.text
+        assert len(client.get(f"/api/workspaces/{ws1}/writing-skills").json()) == 10
+
+    def test_stage_change_rejects_when_book_overflows(self, client, ws1):
+        """改阶段不得绕过每段上限：书已启用 5 条总纲，把已启用的正文技能
+        改成总纲 → 422；未启用的技能改阶段不受影响。"""
+        outline_ids = [
+            _create_skill(client, name=f"总纲技{i}", stage="outline")["skill_id"]
+            for i in range(5)
+        ]
+        enabled_text = _create_skill(client, name="正文技", stage="text")["skill_id"]
+        idle_text = _create_skill(client, name="未启用正文技", stage="text")["skill_id"]
+        resp = client.put(
+            f"/api/workspaces/{ws1}/writing-skills",
+            json={"skill_ids": outline_ids + [enabled_text]},
+        )
+        assert resp.status_code == 200, resp.text
+        # 已启用：改成总纲会让该书总纲段到 6 条 → 拒
+        reject = client.put(
+            f"/api/writing-skills/{enabled_text}", json=_payload(stage="outline"),
+        )
+        assert reject.status_code == 422
+        # 未启用：该书没有它的绑定，改阶段不超限 → 过
+        ok = client.put(
+            f"/api/writing-skills/{idle_text}", json=_payload(stage="outline"),
+        )
+        assert ok.status_code == 200 and ok.json()["stage"] == "outline"

@@ -21,6 +21,14 @@ export const PIPELINE_STEPS = [
 
 export type StagePhase = (typeof PIPELINE_STEPS)[number]["phase"];
 
+/** 写作技能开放阶段（REQ-20261025-205943 DEC-001）：总纲/卷纲/章纲/正文，题材段不开放 */
+export const SKILL_STAGES: readonly { phase: "outline" | "volume" | "chapter" | "text"; label: string }[] = [
+  { phase: "outline", label: "总纲" },
+  { phase: "volume", label: "卷纲" },
+  { phase: "chapter", label: "章纲" },
+  { phase: "text", label: "正文" },
+];
+
 /** 步骤完成判定：目录即进度 */
 export function isStepDone(n: number, fileRels: Iterable<string>): boolean {
   const rels = new Set(fileRels);

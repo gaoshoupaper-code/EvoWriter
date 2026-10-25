@@ -226,6 +226,24 @@ a {
   scrollbar-width: thin;
 }
 
+/* 侧栏滚动条（Chromium/Tauri）：细圆条、透明轨道、悬停加深 */
+.sidebar-nav::-webkit-scrollbar {
+  width: 5px;
+}
+
+.sidebar-nav::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: var(--line);
+}
+
+.sidebar-nav::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
 .sidebar-footer {
   display: flex;
   align-items: center;
@@ -7785,6 +7803,24 @@ html[data-theme="dark"] .admin-outline {
   background: var(--gold);
 }
 
+/* 单条目组（REQ-20261025-210512 FR-005）：组头折叠进条目——
+   图标+条目名与组标签同级对齐，不再有冗余的组标签行 */
+.sidebar-tree-item.solo {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-left: 8px;
+}
+
+.sidebar-tree-icon {
+  flex-shrink: 0;
+  color: var(--muted);
+}
+
+.sidebar-tree-item.active .sidebar-tree-icon {
+  color: var(--gold);
+}
+
 /* ── 正文人修编辑器（REQ-20261018-115508 FR-009，DEC-004）── */
 
 .manuscript-state {
@@ -7850,12 +7886,8 @@ html[data-theme="dark"] .admin-outline {
   font-size: var(--text-ui-xs);
 }
 
-/* ── 侧栏「技能」分组（REQ-20261025-205943 FR-004/DEC-006）：
-   四段行＋角标＋行右弹勾选浮层 ── */
-
-.sidebar-skill-row {
-  position: relative;
-}
+/* ── 侧栏「技能」分组（REQ-20261025-205943 FR-004/DEC-006；
+   2026-10-25 修订：浮层 portal+fixed 定位并承载管理）── */
 
 .sidebar-skill-item {
   display: flex;
@@ -7899,10 +7931,9 @@ html[data-theme="dark"] .admin-outline {
   text-align: center;
 }
 
+/* 浮层经 createPortal 挂 body，定位由内联 fixed 坐标给出（侧栏滚动容器
+   会裁剪行内 absolute 元素——线上点击无反应的根因） */
 .sidebar-skill-popover {
-  position: absolute;
-  top: 0;
-  left: calc(100% + 8px);
   z-index: 40;
   width: 300px;
   max-height: 60dvh;
@@ -7914,11 +7945,68 @@ html[data-theme="dark"] .admin-outline {
   box-shadow: var(--shadow);
 }
 
-.sidebar-skill-manage {
+.sidebar-skill-entry {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.sidebar-skill-entry .writing-skills-item {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 行内管理操作：悬停/聚焦浮现（同书删除入口的交互约定） */
+.sidebar-skill-entry-actions {
+  display: inline-flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity var(--motion-duration) var(--motion-ease);
+}
+
+.sidebar-skill-entry:hover .sidebar-skill-entry-actions,
+.sidebar-skill-entry:focus-within .sidebar-skill-entry-actions {
+  opacity: 1;
+}
+
+.sidebar-skill-entry-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.sidebar-skill-entry-btn:hover {
+  color: var(--ink);
+  background: var(--hover);
+}
+
+.sidebar-skill-entry-btn.danger:hover {
+  color: var(--danger, #c0392b);
+}
+
+.sidebar-skill-entry-btn:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 1px;
+}
+
+.sidebar-skill-popover-foot {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.sidebar-skill-new {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  margin-top: 8px;
   padding: 0;
   border: 0;
   background: transparent;
@@ -7927,8 +8015,49 @@ html[data-theme="dark"] .admin-outline {
   cursor: pointer;
 }
 
-.sidebar-skill-manage:hover {
+.sidebar-skill-new:hover {
   color: var(--teal);
+}
+
+/* 新建/编辑弹窗（管理入口迁入侧栏，2026-10-25 修订） */
+.skill-dialog {
+  width: min(480px, 92vw);
+}
+
+.skill-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.skill-dialog-head .modal-title {
+  margin: 0;
+}
+
+.skill-dialog-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  padding: 0;
+  color: var(--muted);
+  background: transparent;
+  cursor: pointer;
+}
+
+.skill-dialog-close:hover {
+  color: var(--ink);
+  background: var(--hover);
+}
+
+.skill-dialog-form {
+  display: grid;
+  gap: 4px;
+  margin: 12px 0;
 }
 
 /* ── 写作技能勾选浮层内件（侧栏技能浮层复用；REQ-20261025-205943）── */
@@ -7999,25 +8128,12 @@ html[data-theme="dark"] .admin-outline {
   line-height: 1.5;
 }
 
-/* ── 设置页「写作技能」板块（REQ-20261023-000000 FR-001/004；
-   阶段分组 REQ-20261025-205943 FR-005）── */
+/* ── 写作技能弹窗表单（管理入口迁入侧栏，2026-10-25 修订）── */
 
 .wskill-content {
   width: 100%;
   min-height: 9em;
   resize: vertical;
-}
-
-.wskill-stage-group {
-  margin-bottom: 4px;
-}
-
-.wskill-stage-label {
-  display: block;
-  margin: 8px 0 2px;
-  color: var(--muted);
-  font-size: var(--text-ui-xs);
-  font-weight: 600;
 }
 
 .wskill-form-tip {

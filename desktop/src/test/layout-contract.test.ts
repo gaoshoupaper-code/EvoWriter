@@ -162,12 +162,24 @@ describe("视觉升级（REQ-20261018-202005）", () => {
     expect(block(".conversation-panel")).not.toContain("77px");
   });
 
-  it("侧栏三标题为小号淡色标签，条目默认13px（REQ-20261020-200710 DEC-005）", () => {
-    expect(block(".sidebar-group-label")).toContain("font-size: var(--text-ui-xs)");
+  it("侧栏模块标题与选项同字号，树内子分组保持小号（REQ-20261025-210512 FR-001/DEC-001）", () => {
+    expect(block(".sidebar-group-label")).toContain("font-size: var(--text-ui-base)");
     expect(block(".sidebar-group-label")).toContain("font-weight: 800");
     expect(block(".sidebar-group-label")).toContain("letter-spacing: 0.06em");
+    expect(block(".sidebar-tree-group-label")).toContain("font-size: var(--text-ui-xs)");
     expect(block(".sidebar-book-title")).toContain("font-size: var(--text-ui-base)");
     expect(block(".sidebar-tree-item")).toContain("font-size: var(--text-ui-base)");
+  });
+
+  it("三处选中态统一浅金底+金字+金指示条（REQ-20261025-210512 FR-004/DEC-004）", () => {
+    for (const sel of [".sidebar-item.active", ".sidebar-book.active", ".sidebar-tree-item.active"]) {
+      expect(block(sel)).toContain("background: color-mix(in srgb, var(--gold) 20%, transparent)");
+      expect(block(sel)).toContain("color: var(--gold)");
+    }
+    for (const sel of [".sidebar-item.active::before", ".sidebar-book.active::before", ".sidebar-tree-item.active::before"]) {
+      expect(block(sel)).toContain("background: var(--gold)");
+    }
+    expect(block(".sidebar-book.active .sidebar-book-icon")).toContain("color: var(--gold)");
   });
 
   it("输入气泡包裹操作，文本框无独立边框", () => {

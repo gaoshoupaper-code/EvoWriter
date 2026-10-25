@@ -5,7 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { Sidebar, spineTone } from "@/components/workspace/Sidebar";
+import { Sidebar } from "@/components/workspace/Sidebar";
 import type { WorkspaceSummary } from "@/lib/types";
 
 const BOOKS: WorkspaceSummary[] = [
@@ -51,7 +51,7 @@ describe("作品侧栏（FR-011）", () => {
     expect(screen.getByText("还没有作品，点「新书」开一本。")).toBeInTheDocument();
   });
 
-  it("50 本作品和 100 条产物保留全名与末项回调（AC-001/002/006）", async () => {
+  it("书超过 5 本默认折叠，展开后全量可点，再收起（AC-002）", async () => {
     const longTitle = "长书名测试".repeat(8);
     const books = Array.from({ length: 50 }, (_, index) => ({
       ...BOOKS[0], workspace_id: `book-${index}`, title: index === 49 ? longTitle : `作品 ${index}`,
@@ -62,17 +62,44 @@ describe("作品侧栏（FR-011）", () => {
     const props = baseProps({ workspaces: books, activeWorkspaceId: "book-0", files });
     render(<Sidebar {...props} />);
     const sidebar = screen.getByRole("complementary", { name: "作品侧栏" });
+    // 默认收起：只有前 5 本可见（选中书在前 5 内）
+    expect(sidebar.querySelectorAll(".sidebar-book")).toHaveLength(5);
+    const toggle = within(sidebar).getByRole("button", { name: "展开其余 45 本" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    // 展开：50 本全量 + 按钮变「收起」
+    await userEvent.click(toggle);
     expect(sidebar.querySelectorAll(".sidebar-book")).toHaveLength(50);
-    expect(sidebar.querySelectorAll(".sidebar-tree-item")).toHaveLength(100);
+    const collapse = within(sidebar).getByRole("button", { name: "收起" });
+    expect(collapse.getAttribute("aria-expanded")).toBe("true");
     const book = within(sidebar).getByTitle(longTitle);
     const artifact = within(sidebar).getByTitle(`第100章${longTitle}`);
     await userEvent.click(book);
     await userEvent.click(artifact);
     expect(props.onSelectWorkspace).toHaveBeenCalledWith("book-49");
     expect(props.onSelectArtifact).toHaveBeenCalledWith(files[99].rel);
+    // 收起：回到前 5 本
+    await userEvent.click(collapse);
+    expect(sidebar.querySelectorAll(".sidebar-book")).toHaveLength(5);
     expect(books[49].title).toBe(longTitle);
     expect(Array.from(sidebar.querySelectorAll(".sidebar-group-label"), (label) => label.textContent))
       .toEqual(["创作", "作品", "产物"]);
+  });
+
+  it("折叠时选中的书不在前 5，强制追加可见（AC-002）", () => {
+    const books = Array.from({ length: 8 }, (_, index) => ({
+      ...BOOKS[0], workspace_id: `book-${index}`, title: `作品 ${index}`,
+    }));
+    render(<Sidebar {...baseProps({ workspaces: books, activeWorkspaceId: "book-6" })} />);
+    const sidebar = screen.getByRole("complementary", { name: "作品侧栏" });
+    expect(sidebar.querySelectorAll(".sidebar-book")).toHaveLength(6);
+    expect(document.querySelector(".sidebar-book.active")?.textContent).toContain("作品 6");
+    expect(within(sidebar).getByRole("button", { name: "展开其余 2 本" })).toBeInTheDocument();
+  });
+
+  it("书不超过 5 本不出现折叠按钮（AC-002 边界）", () => {
+    render(<Sidebar {...baseProps()} />);
+    expect(screen.queryByRole("button", { name: /展开其余/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "收起" })).not.toBeInTheDocument();
   });
 
   it("创建或删除进行中仍禁止重复操作（AC-006）", () => {
@@ -150,24 +177,7 @@ describe("作品侧栏（FR-011）", () => {
   });
 });
 
-describe("书脊色派生（REQ-20261020-200710 FR-001）", () => {
-  it("同名同色，色值落在 6 色色板内（AC-001）", () => {
-    for (const title of ["行走的经验包", "以敌为粮", "", "📕 纯 emoji 书名", "A".repeat(200)]) {
-      const tone = spineTone(title);
-      expect(tone).toBe(spineTone(title));
-      expect(tone).toBeGreaterThanOrEqual(0);
-      expect(tone).toBeLessThan(6);
-    }
-  });
-
-  it("不同书名分布到多个色，避免一排同色（AC-001）", () => {
-    const titles = Array.from({ length: 12 }, (_, i) => `书名样本第${i}号·类型${i % 3}`);
-    const tones = new Set(titles.map(spineTone));
-    expect(tones.size).toBeGreaterThanOrEqual(4);
-  });
-});
-
-describe("书脊渲染（REQ-20261020-200710 FR-001）", () => {
+describe("书图标（REQ-20261025-210512 FR-003/DEC-003）", () => {
   const IMAGE_BOOK = {
     workspace_id: "ws-img",
     title: "图文混排示范",
@@ -177,22 +187,22 @@ describe("书脊渲染（REQ-20261020-200710 FR-001）", () => {
     thread_count: 0,
   } as unknown as WorkspaceSummary;
 
-  it("每本书渲染书脊块；图文书带角标、小说不带（AC-001）", () => {
+  it("所有书统一书本图标、无随机色块；图文书用图片图标（AC-003）", () => {
     render(<Sidebar {...baseProps({ workspaces: [...BOOKS, IMAGE_BOOK] })} />);
-    const spines = document.querySelectorAll(".sidebar-book-spine");
-    expect(spines).toHaveLength(3);
-    expect(spines[0].getAttribute("aria-hidden")).toBe("true");
-    // 渲染级绑定：书脊色类名必须等于该书名经 spineTone 派生的档位
-    const books = [...BOOKS, IMAGE_BOOK];
-    spines.forEach((spine, i) => {
-      expect(spine.className).toContain(`t${spineTone(books[i].title)}`);
-    });
-    const bookRows = document.querySelectorAll(".sidebar-books li");
-    expect(bookRows[0].querySelector(".sidebar-book-badge")).toBeNull();
-    expect(bookRows[2].querySelector(".sidebar-book-badge")).not.toBeNull();
+    const rows = document.querySelectorAll(".sidebar-books li");
+    expect(rows).toHaveLength(3);
+    // 小说行：统一书本图标；图文书行：图片图标
+    expect(rows[0].querySelector(".sidebar-book-icon")).not.toBeNull();
+    expect(rows[1].querySelector(".sidebar-book-icon")).not.toBeNull();
+    expect(rows[2].querySelector(".sidebar-book-icon--image")).not.toBeNull();
+    // 随机取色书脊机制整体退役：色块、色档类名、首字母都不再渲染
+    expect(document.querySelectorAll(".sidebar-book-spine")).toHaveLength(0);
+    expect(document.querySelectorAll(".sidebar-spine-letter")).toHaveLength(0);
+    expect(Array.from(document.querySelectorAll<HTMLElement>(".sidebar-books [class]"))
+      .every((el) => !/\bt[0-5]\b/.test(el.className))).toBe(true);
   });
 
-  it("书脊纯装饰不进书名文本，active 书行文字仍可断言（回归）", () => {
+  it("图标纯装饰不进书名文本，active 书行文字仍可断言（回归）", () => {
     render(<Sidebar {...baseProps()} />);
     expect(document.querySelector(".sidebar-book.active")?.textContent).toContain("行走的经验包");
   });

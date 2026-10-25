@@ -310,12 +310,12 @@ a {
   margin-top: 14px;
 }
 
-/* 分组标题（REQ-20261020-200710 DEC-005）：降为小号淡色标签，视觉重量让给内容，
-   与产物树内分组标签同一种语言 */
+/* 分组标题（REQ-20261025-210512 FR-001/DEC-001）：与选项同字号，靠淡色+加粗分层；
+   产物树内子分组标签仍是小号，形成两级层级 */
 .sidebar-group-label {
   padding: 0 8px;
   color: var(--muted);
-  font-size: var(--text-ui-xs);
+  font-size: var(--text-ui-base);
   font-weight: 800;
   letter-spacing: 0.06em;
   line-height: 24px;
@@ -337,9 +337,9 @@ a {
     color var(--motion-duration) var(--motion-ease);
 }
 
-/* 选中/hover 层次（REQ-20261020-200710 FR-002/DEC-002）：
-   hover=轻背景；选中=teal 实色胶囊 + panel-solid 圆角指示条（::before，避开阴影 lint），
-   全部条目 140ms 过渡，明暗主题随 token 自动适配 */
+/* 选中/hover 层次（REQ-20261025-210512 FR-004/DEC-004）：
+   hover=轻背景；选中=浅金底 + 金字 + gold 圆角指示条（::before，避开阴影 lint），
+   三层信号与 hover 拉开区分，明暗主题随 gold token 自动适配 */
 .sidebar-item {
   position: relative;
   transition:
@@ -354,12 +354,12 @@ a {
 
 .sidebar-item.active {
   border-color: transparent;
-  background: var(--teal);
-  color: var(--panel-solid);
+  background: color-mix(in srgb, var(--gold) 20%, transparent);
+  color: var(--gold);
 }
 
 .sidebar-item.active small {
-  color: color-mix(in srgb, var(--panel-solid) 80%, transparent);
+  color: color-mix(in srgb, var(--gold) 78%, transparent);
 }
 
 .sidebar-item.active::before {
@@ -370,7 +370,7 @@ a {
   bottom: 6px;
   width: 3px;
   border-radius: var(--radius-sm);
-  background: var(--panel-solid);
+  background: var(--gold);
 }
 
 .sidebar-item-title-row {
@@ -7578,6 +7578,28 @@ html[data-theme="dark"] .admin-outline {
   gap: 4px;
 }
 
+/* 折叠开关（REQ-20261025-210512 FR-002/DEC-002）：弱化为小号文字行动点，
+   不与标题行的「新书」按钮争视觉层级 */
+.sidebar-books-toggle {
+  justify-self: start;
+  margin: 2px 0 0 10px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-ui-xs);
+  font-weight: 700;
+  padding: 3px 6px;
+  cursor: pointer;
+  transition: color var(--motion-duration) var(--motion-ease),
+    background-color var(--motion-duration) var(--motion-ease);
+}
+
+.sidebar-books-toggle:hover {
+  color: var(--ink);
+  background: var(--hover);
+}
+
 .sidebar-book {
   flex: 1;
   min-width: 0;
@@ -7602,10 +7624,11 @@ html[data-theme="dark"] .admin-outline {
   background: var(--hover);
 }
 
+/* 选中书行（REQ-20261025-210512 FR-004/DEC-004）：浅金底+金字+金指示条，与对话条目同语言 */
 .sidebar-book.active {
   border-color: transparent;
-  background: var(--teal);
-  color: var(--panel-solid);
+  background: color-mix(in srgb, var(--gold) 20%, transparent);
+  color: var(--gold);
 }
 
 .sidebar-book.active::before {
@@ -7616,44 +7639,18 @@ html[data-theme="dark"] .admin-outline {
   bottom: 6px;
   width: 3px;
   border-radius: var(--radius-sm);
-  background: var(--panel-solid);
+  background: var(--gold);
 }
 
-/* 书脊（REQ-20261020-200710 FR-001/DEC-001）：按书名稳定取色的小圆角色块，
-   色板 t0-t5 全部来自既有 accent token，明暗主题自动适配 */
-.sidebar-book-spine {
-  position: relative;
+.sidebar-book.active .sidebar-book-icon {
+  color: var(--gold);
+}
+
+/* 书行图标（REQ-20261025-210512 FR-003/DEC-003）：统一书本图标、统一 muted 色；
+   随机取色书脊（哈希色块/首字母/角标）随旧机制整体退役 */
+.sidebar-book-icon {
   flex-shrink: 0;
-  width: 12px;
-  height: 18px;
-  border-radius: var(--radius-sm);
-}
-
-/* 书脊装饰线：一条浅色竖纹，做出"书脊棱"的细节 */
-.sidebar-book-spine::after {
-  content: "";
-  position: absolute;
-  top: 3px;
-  bottom: 3px;
-  left: 5px;
-  width: 2px;
-  border-radius: var(--radius-sm);
-  background: color-mix(in srgb, var(--panel-solid) 45%, transparent);
-}
-
-.sidebar-book-spine.t0 { background: var(--teal); }
-.sidebar-book-spine.t1 { background: var(--coral); }
-.sidebar-book-spine.t2 { background: var(--gold); }
-.sidebar-book-spine.t3 { background: var(--blue); }
-.sidebar-book-spine.t4 { background: var(--violet); }
-.sidebar-book-spine.t5 { background: var(--ink); }
-
-/* 图文书角标（domain=image 区分小说） */
-.sidebar-book-badge {
-  position: absolute;
-  right: -4px;
-  bottom: -4px;
-  color: var(--panel-solid);
+  color: var(--muted);
 }
 
 .sidebar-book-title {
@@ -7703,13 +7700,13 @@ html[data-theme="dark"] .admin-outline {
   background: color-mix(in srgb, var(--danger) 12%, transparent);
 }
 
-/* 选中书行是 teal 胶囊，删除图标换浅色保证对比度 */
+/* 选中书行的删除图标换金色保证对比度（REQ-20261025-210512 FR-004） */
 .sidebar-book.active + .sidebar-book-delete {
-  color: color-mix(in srgb, var(--panel-solid) 85%, transparent);
+  color: color-mix(in srgb, var(--gold) 85%, transparent);
 }
 
 .sidebar-book.active + .sidebar-book-delete:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--panel-solid) 85%, transparent);
+  background: color-mix(in srgb, var(--gold) 12%, transparent);
   color: var(--danger);
 }
 
@@ -7772,8 +7769,8 @@ html[data-theme="dark"] .admin-outline {
 }
 
 .sidebar-tree-item.active {
-  background: var(--teal);
-  color: var(--panel-solid);
+  background: color-mix(in srgb, var(--gold) 20%, transparent);
+  color: var(--gold);
 }
 
 .sidebar-tree-item.active::before {
@@ -7784,7 +7781,7 @@ html[data-theme="dark"] .admin-outline {
   bottom: 5px;
   width: 3px;
   border-radius: var(--radius-sm);
-  background: var(--panel-solid);
+  background: var(--gold);
 }
 
 /* ── 正文人修编辑器（REQ-20261018-115508 FR-009，DEC-004）── */

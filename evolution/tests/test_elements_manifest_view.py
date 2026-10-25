@@ -60,36 +60,38 @@ def test_manifest_view_from_bare(bare):
 
     assert view["layout"] == "manifest"
     agents = {a["name"]: a for a in view["agents"]}
-    assert set(agents) == {"storybuilding", "storybuilding_review"}
-    assert agents["storybuilding"]["role"] == "main"
-    assert agents["storybuilding"]["display_name"] == "故事专家"
-    assert agents["storybuilding_review"]["role"] == "sub"
-    assert agents["storybuilding_review"]["runtime_name"] == "review"
+    # 本地嵌套 harness git 的 HEAD = 三步制（REQ-20261015-161200）：
+    # 单主控 writer + worldview/outline/chapters 三子代理。
+    # 本测试验证「从 git 历史读清单构建视图」机制，形态以该历史版本为准。
+    assert set(agents) == {"writer", "worldview", "outline", "chapters"}
+    assert agents["writer"]["role"] == "main"
+    assert agents["writer"]["display_name"] == "主控"
+    assert agents["worldview"]["role"] == "sub"
 
-    # 委托关系（AC-002/009 数据面）
+    # 委托关系（AC-002/009 数据面；role = 子代理 display_name）
     assert view["subagent_relations"] == [
-        {"from": "storybuilding", "to": "storybuilding_review", "role": "故事审查"}
+        {"from": "writer", "to": "worldview", "role": "世界观"},
+        {"from": "writer", "to": "outline", "role": "总纲卷纲"},
+        {"from": "writer", "to": "chapters", "role": "章纲"},
     ]
 
     # middleware 栈：数据源 = 清单（AC-002）
-    story_classes = [m["class_name"] for m in agents["storybuilding"]["middlewares"]]
-    review_classes = [m["class_name"] for m in agents["storybuilding_review"]["middlewares"]]
-    assert "QuotaConvergenceMiddleware" in story_classes
-    assert "ObjectContractGuardMiddleware" in story_classes
-    assert "QuotaConvergenceMiddleware" not in review_classes
-    assert "ErrorRecoveryMiddleware" in review_classes  # 基础链全 agent 统一
-    assert "RevisionLimitMiddleware" in story_classes   # 审查闭环（有委托）
-    assert "RevisionLimitMiddleware" not in review_classes
+    writer_classes = [m["class_name"] for m in agents["writer"]["middlewares"]]
+    sub_classes = [m["class_name"] for m in agents["worldview"]["middlewares"]]
+    assert "ReceiptGateMiddleware" in writer_classes
+    assert "OutlineContractGuardMiddleware" in sub_classes
+    assert "OutlineContractGuardMiddleware" not in writer_classes  # 只挂子代理
+    assert "ErrorRecoveryMiddleware" in sub_classes  # 基础链全 agent 统一
+    assert "RevisionLimitMiddleware" in writer_classes   # 审查闭环（有委托）
+    assert "RevisionLimitMiddleware" not in sub_classes
 
     # 未挂载报告（DEC-005 诚实呈现）：遗留闲置模块可见
     assert "file_write_guard" in view["unmounted"]["middleware"]
     assert "memory_recall_middleware" in view["unmounted"]["middleware"]
     assert "prompts/memory_extraction_guide.md" in view["unmounted"]["prompts"]
 
-    # skills 归属：两技能挂故事专家
-    skill_paths = [s["path"] for s in agents["storybuilding"]["skills"]]
-    assert any("storybuilding-initial" in p for p in skill_paths)
-    assert agents["storybuilding_review"]["skills"] == []
+    # skills：三步制历史无技能目录
+    assert agents["writer"]["skills"] == []
 
 
 def test_legacy_commit_falls_back_to_v7(bare):
@@ -119,15 +121,12 @@ def test_manifest_stack_order_matches_declaration(bare):
 
     manifest = _manifest_at_commit(head)
     view = _build_manifest_elements_view(0, head, manifest)
-    story = next(a for a in view["agents"] if a["name"] == "storybuilding")
-    declared = manifest.agent("storybuilding").middleware
+    sub = next(a for a in view["agents"] if a["name"] == "worldview")
+    declared = manifest.agent("worldview").middleware
     class_by_module = {
-        "storyline_single_line_limit": "StorylineSingleLineLimitMiddleware",
-        "storyline_integrity": "StorylineIntegrityMiddleware",
-        "storyline_contract_guard": "StorylineContractGuardMiddleware",
-        "object_contract_guard": "ObjectContractGuardMiddleware",
-        "quota_convergence": "QuotaConvergenceMiddleware",
+        "receipt_gate": "ReceiptGateMiddleware",
+        "outline_contract_guard": "OutlineContractGuardMiddleware",
     }
-    story_classes = [m["class_name"] for m in story["middlewares"]]
-    positions = [story_classes.index(class_by_module[m]) for m in declared]
+    sub_classes = [m["class_name"] for m in sub["middlewares"]]
+    positions = [sub_classes.index(class_by_module[m]) for m in declared]
     assert positions == sorted(positions)

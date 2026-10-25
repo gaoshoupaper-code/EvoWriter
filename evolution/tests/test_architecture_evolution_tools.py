@@ -68,27 +68,26 @@ def _invoke(tool, ctx, **kw):
 def test_delete_file_removes_middleware_and_cleans_manifest(pkg_copy):
     """删 domain middleware：文件删除 + 清单列表引用清理（AC-005 前置）。"""
     tools, ctx = _make_writers(pkg_copy)
-    result = _invoke(tools["delete_file"], ctx, file_path="middleware/outline_contract_guard.py")
+    result = _invoke(tools["delete_file"], ctx, file_path="middleware/stage_gate.py")
     assert "已删除" in result, result
-    assert not (pkg_copy / "middleware" / "outline_contract_guard.py").exists()
+    assert not (pkg_copy / "middleware" / "stage_gate.py").exists()
     manifest = json.loads((pkg_copy / "architecture.json").read_text(encoding="utf-8"))
-    # 三步制（DEC-003）：outline_contract_guard 挂在三个子代理
-    for name in ("worldview", "outline", "chapters"):
-        sub = next(a for a in manifest["agents"] if a["name"] == name)
-        assert "outline_contract_guard" not in sub["middleware"]
+    # 五段制：stage_gate 是 author 唯一 domain middleware，删除后清单引用同步清理
+    author = next(a for a in manifest["agents"] if a["name"] == "author")
+    assert "stage_gate" not in author["middleware"]
     assert ctx.code_mutations_since_validate == 1
 
 
 def test_delete_prompt_removes_agent_and_edges(pkg_copy):
     """删子代理 prompt：整条 agent 移除 + 主控 delegates 边清理。"""
     tools, ctx = _make_writers(pkg_copy)
-    result = _invoke(tools["delete_file"], ctx, file_path="prompts/worldview_system.md")
+    result = _invoke(tools["delete_file"], ctx, file_path="prompts/review.md")
     assert "已删除" in result, result
     manifest = json.loads((pkg_copy / "architecture.json").read_text(encoding="utf-8"))
     names = [a["name"] for a in manifest["agents"]]
-    assert "worldview" not in names
-    writer = next(a for a in manifest["agents"] if a["name"] == "writer")
-    assert "worldview" not in writer["delegates"]
+    assert "review" not in names
+    author = next(a for a in manifest["agents"] if a["name"] == "author")
+    assert "review" not in author["delegates"]
 
 
 def test_delete_file_refuses_manifest_and_contracts(pkg_copy):

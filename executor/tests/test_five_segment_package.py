@@ -138,9 +138,9 @@ class TestFiveSegmentPackageContent(unittest.TestCase):
         self.assertTrue(review.disable_file_tools)
 
     def test_base_prompt_carries_interview_discipline(self):
-        """常驻骨架含访谈纪律与工具纪律（FR-001：一轮 1-2 问、必停、确认分级）。"""
+        """常驻骨架含访谈纪律与工具纪律（FR-001：批次推进、必停、确认出口、表达铁律）。"""
         text = (_HARNESS_DIR / "prompts" / "author_base.md").read_text(encoding="utf-8")
-        for marker in ("一轮只聊一两个问题", "停下", "confirm_with_user", "问询协议", "约束级"):
+        for marker in ("一轮推进一个批次", "停下", "confirm_with_user", "表达铁律", "约束级"):
             self.assertIn(marker, text, f"author_base 缺纪律特征「{marker}」")
 
     def test_review_prompt_carries_review_dimensions(self):

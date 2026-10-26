@@ -229,7 +229,7 @@ class TestFiveSegmentAssemble(unittest.TestCase):
         pkg = self._load_pkg()
         self.assertIn("## 一句话主题", pkg.stage_prompt("theme") or "")
         self.assertIn("核心纲", pkg.stage_prompt("outline") or "")
-        self.assertIn("卷末大爽点", pkg.stage_prompt("volume") or "")
+        self.assertIn("卷末超大爽点", pkg.stage_prompt("volume") or "")
         self.assertIn("指令卡", pkg.stage_prompt("chapter") or "")
         self.assertIn("章纲是宪法", pkg.stage_prompt("text") or "")
         self.assertIsNone(pkg.stage_prompt("不存在"))

@@ -14,7 +14,7 @@ import type { PipelineStatus } from "./types";
 export const PIPELINE_STEPS = [
   { n: 0, phase: "theme", label: "主题", match: "题材", hint: "核心爽点、核心矛盾、爽点剧情" },
   { n: 1, phase: "outline", label: "总纲", match: "总纲", hint: "核心纲一张表、主角与各卷 BOSS" },
-  { n: 2, phase: "volume", label: "卷纲", match: "卷纲", hint: "卷末大爽点、发展阶段、爽点节奏" },
+  { n: 2, phase: "volume", label: "卷纲", match: "卷纲", hint: "卷末超大爽点、爽点节奏与压抑账本" },
   { n: 3, phase: "chapter", label: "章纲", match: "章纲", hint: "逐章指令卡、伏笔登记" },
   { n: 4, phase: "text", label: "正文", match: "正文", hint: "逐章起草、自检、人修定稿" },
 ] as const;

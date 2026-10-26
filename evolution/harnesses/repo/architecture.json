@@ -17,7 +17,8 @@
     "update_foreshadow_table",
     "rewrite_rhythm_table",
     "append_chapter_deviation",
-    "confirm_with_user"
+    "confirm_with_user",
+    "request_review"
    ],
    "delegates": [
     "review"

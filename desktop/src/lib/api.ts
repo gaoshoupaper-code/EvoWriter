@@ -492,6 +492,40 @@ export async function updateWritingStage(workspaceId: string, stage: string) {
   );
 }
 
+/** 段级创作模式快照（REQ-20261026-191719 FR-008/FR-011）。 */
+export type WritingModeInfo = {
+  stage_modes: Record<string, string>;
+  auto_eligible: string[];
+  batch_size: number;
+};
+
+/** 读段级创作模式（缺省全部 interactive，DEC-013 存量迁移）。 */
+export async function fetchWritingMode(workspaceId: string) {
+  return apiJson<WritingModeInfo>(
+    `${API_BASE_URL}/api/workspaces/${workspaceId}/writing/mode`,
+  );
+}
+
+/**
+ * 段级创作模式写入（REQ-20261026-191719 FR-005/FR-008）——模式开关唯一通道。
+ * 切换在下一停等边界生效（DEC-016）；batch_size 随 text 段一并回写（DEC-007）。
+ */
+export async function updateWritingMode(
+  workspaceId: string,
+  stage: string,
+  mode: "interactive" | "auto",
+  batchSize?: number,
+) {
+  return apiJson<WritingModeInfo>(
+    `${API_BASE_URL}/api/workspaces/${workspaceId}/writing/mode`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stage, mode, ...(batchSize != null ? { batch_size: batchSize } : {}) }),
+    },
+  );
+}
+
 export async function updateThread(threadId: string, sessionName: string) {
   const response = await apiFetch(`${API_BASE_URL}/api/threads/${threadId}`, {
     method: "PATCH",

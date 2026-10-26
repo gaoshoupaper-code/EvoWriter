@@ -202,13 +202,27 @@ class ManuscriptSaveRequest(BaseModel):
 
 
 class WritingStageUpdateRequest(BaseModel):
-    """人工段指针写入请求（REQ-20261019-232617 FR-002/004）。
+    """人工段指针写入请求（REQ-20260919-232617 FR-002/004）。
 
     前进/跳段/回退统一入口：只由界面人工确认动作调用（服务端写
     confirmed_stage，模型工具箱无此通道）。
     """
 
     stage: str = Field(description="目标大段：theme/outline/volume/chapter/text")
+
+
+class WritingModeUpdateRequest(BaseModel):
+    """段级创作模式写入请求（REQ-20261026-191719 FR-008）。
+
+    只由界面模式开关调用（模型不可写）；题材/总纲段服务端拒绝 auto。
+    text 段可同时携带批次章数（批次审查卡现场指定，DEC-007）。
+    """
+
+    stage: str = Field(description="目标大段：volume/chapter/text")
+    mode: str = Field(description="interactive|auto")
+    batch_size: int | None = Field(
+        default=None, ge=1, le=100, description="正文批次章数（仅 text 段生效）"
+    )
 
 
 class ScreenplayGenerateRequest(BaseModel):

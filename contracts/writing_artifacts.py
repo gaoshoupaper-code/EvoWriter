@@ -443,6 +443,56 @@ def derive_stage(prog: WritingProgress) -> str:
     return STAGE_CHAPTER
 
 
+# ── 创作双模式（REQ-20261026-191719 DEC-001/002/013）────────────────
+MODE_INTERACTIVE = "interactive"   # 逐步确认（现状行为）
+MODE_AUTO = "auto"                 # 自动完成（段内不提问，只在停等点停）
+WRITING_MODES = (MODE_INTERACTIVE, MODE_AUTO)
+
+# 自动模式适用段（DEC-002）：题材/总纲锁死逐步——全书根基段人工把关
+AUTO_ELIGIBLE_STAGES = frozenset({STAGE_VOLUME, STAGE_CHAPTER, STAGE_TEXT})
+
+# 正文批次默认章数（FR-003 / DEC-007：首批默认，后续沿用用户现场指定值）
+DEFAULT_TEXT_BATCH_SIZE = 5
+
+
+def stage_mode(workspace_path: Path, stage: str | None = None) -> str:
+    """解析段的创作模式（FR-001/FR-011）。
+
+    缺省与未设置段一律 interactive（DEC-013 存量迁移语义：升级后无任何段
+    自动进入自动模式）；题材/总纲段锁死 interactive（DEC-002）。
+    stage 缺省读人工段指针（无指针按目录扫描兜底，与 current_stage 同口径）。
+    """
+    from pathlib import Path as _P
+    workspace_path = _P(workspace_path)
+    target = stage if stage is not None else resolve_confirmed_stage(workspace_path)
+    if target not in AUTO_ELIGIBLE_STAGES:
+        return MODE_INTERACTIVE
+    state = load_writing_state(workspace_path)
+    mode = state.stage_modes.get(target, MODE_INTERACTIVE)
+    return mode if mode in WRITING_MODES else MODE_INTERACTIVE
+
+
+def set_stage_mode(workspace_path: Path, stage: str, mode: str) -> None:
+    """写入段级模式（FR-008 唯一写入口；界面动作调用，模型不可写）。
+
+    题材/总纲段与非法定值直接拒绝（fail-fast，不落盘）。
+    """
+    if stage not in AUTO_ELIGIBLE_STAGES:
+        raise ValueError(f"段 {stage!r} 不支持自动模式（题材/总纲锁死逐步确认）")
+    if mode not in WRITING_MODES:
+        raise ValueError(f"mode 只能是 {'/'.join(WRITING_MODES)}，收到 {mode!r}")
+    state = load_writing_state(Path(workspace_path))
+    state.stage_modes[stage] = mode
+    save_writing_state(Path(workspace_path), state)
+
+
+def text_batch_size(workspace_path: Path) -> int:
+    """正文批次大小（FR-003）：用户现场指定值优先，缺省 5。"""
+    state = load_writing_state(Path(workspace_path))
+    size = state.text_batch_size
+    return size if isinstance(size, int) and size >= 1 else DEFAULT_TEXT_BATCH_SIZE
+
+
 # ── 路由状态（DEC-002 handoff override 载体；可重建加速层）────────
 
 
@@ -463,8 +513,18 @@ class WritingState(BaseModel):
     active_traces: dict[str, str] = Field(default_factory=dict)
     conversation_forks: dict[str, int] = Field(
         default_factory=dict,
-        description="会话粘性派生号（REQ-20261019-222403 FR-001）：客户端会话 id → 丢弃重开计数，"
+        description="会话粘性派生号（REQ-20260919-222403 FR-001）：客户端会话 id → 丢弃重开计数，"
         "同一会话全程复用同一 langgraph 线程；旧 sessions seq 制已停用",
+    )
+    stage_modes: dict[str, str] = Field(
+        default_factory=dict,
+        description="段级创作模式（REQ-20261026-191719 FR-008）：{stage: auto|interactive}，"
+        "只由界面动作经 set_stage_mode 写入，模型不可写；缺省段=interactive"
+        "（DEC-013 存量迁移：升级后无段自动进入 auto）",
+    )
+    text_batch_size: int = Field(
+        default=DEFAULT_TEXT_BATCH_SIZE,
+        description="正文批次章数（FR-003/DEC-007）：批次审查卡现场指定后回写，首批缺省 5",
     )
     updated_at: str = ""
 
@@ -512,6 +572,11 @@ def resolve_confirmed_stage(workspace_path: Path) -> str:
 
 
 __all__ = [
+    "AUTO_ELIGIBLE_STAGES",
+    "DEFAULT_TEXT_BATCH_SIZE",
+    "MODE_AUTO",
+    "MODE_INTERACTIVE",
+    "WRITING_MODES",
     "CHAPTER_OUTLINE_DIR",
     "CHAPTER_OUTLINE_PATTERN",
     "KIND_CHAPTER",
@@ -554,7 +619,10 @@ __all__ = [
     "parse_relpath",
     "save_writing_state",
     "scan_writing_progress",
+    "set_stage_mode",
     "stage_allowed_kinds",
+    "stage_mode",
+    "text_batch_size",
     "validate_master_final",
     "validate_theme_final",
     "validate_volume_final",

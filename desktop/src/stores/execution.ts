@@ -854,6 +854,8 @@ async function performSubmit(
     let buffer = "";
     let streamedText = "";
     let hasModelOutput = false;
+    // 本轮 run 累计 token（REQ-20261026-191719 FR-003/DEC-014：批次审查卡显示上一批实际消耗）
+    let runUsageTokens = 0;
     // FR-001（REQ-20261009-002227）：收到过 interrupt 后流关闭是服务端正常关流
     // （提问后 return，等用户选方案再 resume），断流兜底不得误报——见循环后分支。
     let gotInterrupt = false;
@@ -918,6 +920,9 @@ async function performSubmit(
             rowsDirty = true;
           } else if (event.type === "trace_event") {
             const traceEvent = event.data as TraceLogEvent;
+            if (traceEvent.type === "llm_end" && traceEvent.usage?.total_tokens) {
+              runUsageTokens += traceEvent.usage.total_tokens;
+            }
             if (traceEvent.type === "run_start") {
               set((state) => ({
                 messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, traceId: traceEvent.trace_id })),
@@ -1041,20 +1046,44 @@ async function performSubmit(
                 /* 观测事件不阻断流 */
               }
             }
+          } else if (event.type === "auto_answer") {
+            // 自动模式违纪代答（REQ-20261026-191719 FR-007）：不挂起，灰条入消息流
+            const aa = event.data as { question?: string; answer?: string };
+            set((state) => ({
+              messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
+                ...message,
+                autoAnswers: [
+                  ...(message.autoAnswers ?? []),
+                  {
+                    question: String(aa.question ?? ""),
+                    answer: String(aa.answer ?? "由你自行决定"),
+                    at: new Date().toISOString(),
+                  },
+                ],
+              })),
+            }));
           } else if (event.type === "interrupt") {
             const iv = event.data as {
               kind?: string; question?: string; options?: AskUserOption[] | null; multi_select?: boolean; source?: string;
+              review_kind?: "batch" | "style" | "stage";
               round?: number; versions?: unknown[];
             };
             gotInterrupt = true;
             const interruptKind = iv.kind ?? "choice";
+            // 批次停等点落一次上批消耗（DEC-014 事后可见）
+            if (interruptKind === "review") {
+              const { useStageSessionStore } = await import("./stage-session");
+              useStageSessionStore.setState((s) => ({
+                lastBatchUsage: { chapters: s.batchSize, totalTokens: runUsageTokens },
+              }));
+            }
             // DEC-007：提问中断——末段思考标 interrupted（时间线保留到中断点）
             closeThoughts("interrupted");
             closeRows("interrupted");
             set((state) => ({
               messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
                 ...message,
-                // FR-004（REQ-20261018-235653）：行模式下正文不被提问覆盖——
+                // FR-004（REQ-20260918-235653）：行模式下正文不被提问覆盖——
                 // 已输出行原样保留，提问由 HITL 卡展示；旧管线维持提问写正文的既有行为。
                 content: rowMode
                   ? message.content
@@ -1066,6 +1095,7 @@ async function performSubmit(
                 awaitingInput: {
                   kind: interruptKind, question: iv.question || "", options: iv.options ?? null,
                   multi_select: iv.multi_select ?? false, source: iv.source, round: iv.round, versions: iv.versions,
+                  ...(interruptKind === "review" ? { review_kind: iv.review_kind ?? "stage" } : {}),
                   askedAt: new Date().toISOString(),
                 },
               })),

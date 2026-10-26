@@ -27,7 +27,9 @@ import type { PipelineStatus, ThreadSummary } from "@/lib/types";
 import {
   createThread as createThreadRequest,
   fetchWorkspaceOutline,
+  fetchWritingMode,
   updateWritingStage,
+  updateWritingMode,
 } from "@/lib/api";
 import { notifyStageReady } from "@/lib/notify";
 import { PIPELINE_STEPS, stageLabel } from "@/lib/pipeline-steps";
@@ -102,6 +104,20 @@ interface StageSessionState {
   transitioning: boolean;
   historyView: StageHistoryView | null;
 
+  // ── 创作双模式（REQ-20261026-191719 FR-008）──────────────────────
+  /** 段级模式快照（服务端真相；null=未加载，一律按 interactive 处理） */
+  stageModes: Record<string, string> | null;
+  /** 可开自动的段（volume/chapter/text；题材/总纲锁死逐步） */
+  autoEligibleStages: string[];
+  /** 正文批次章数（DEC-007：审查卡现场指定后回写） */
+  batchSize: number;
+  /** 上一批正文实际消耗（FR-003/DEC-014：批次审查卡显示；null=占位） */
+  lastBatchUsage: { chapters: number; totalTokens: number } | null;
+  /** 读模式快照（切书/管线载入时调；失败静默按 interactive） */
+  hydrateModes: (workspaceId: string) => Promise<void>;
+  /** 模式开关（唯一写通道）：写服务端并本地对齐；失败 toast 不改本地 */
+  toggleStageMode: (workspaceId: string, stage: string) => Promise<void>;
+
   /** 启动/切书时恢复该工作区全部会话的阶段归属（FR-012）。 */
   hydrateForWorkspace: (workspaceId: string) => Promise<void>;
   bindThreadStage: (workspaceId: string, threadId: string, stage: string, sourceStage?: string) => void;
@@ -127,12 +143,47 @@ export const useStageSessionStore = create<StageSessionState>((set, get) => ({
   pendingTransition: null,
   transitioning: false,
   historyView: null,
+  stageModes: null,
+  autoEligibleStages: [],
+  batchSize: 5,
+  lastBatchUsage: null,
+
+  hydrateModes: async (workspaceId) => {
+    if (!workspaceId) return;
+    try {
+      const info = await fetchWritingMode(workspaceId);
+      set({
+        stageModes: info.stage_modes,
+        autoEligibleStages: info.auto_eligible ?? [],
+        batchSize: info.batch_size ?? 5,
+      });
+    } catch {
+      // 失败语义（FR-008）：模式不可知时一律按 interactive 呈现，不阻塞创作
+      set({ stageModes: null });
+    }
+  },
+
+  toggleStageMode: async (workspaceId, stage) => {
+    const current = get().stageModes?.[stage] ?? "interactive";
+    const next = current === "auto" ? "interactive" : "auto";
+    try {
+      const info = await updateWritingMode(workspaceId, stage, next);
+      set({
+        stageModes: info.stage_modes,
+        autoEligibleStages: info.auto_eligible ?? [],
+        ...(stage === "text" ? { batchSize: info.batch_size ?? get().batchSize } : {}),
+      });
+    } catch (toggleError) {
+      toast.error(toggleError instanceof Error ? toggleError.message : "模式切换失败，请重试。");
+    }
+  },
 
   hydrateForWorkspace: async (workspaceId) => {
     if (!workspaceId) return;
     // 切书即换上下文：浏览态与挂起卡片不得跨书携带；就绪边沿重置（换书首见不算边沿）
-    set({ historyView: null, pendingTransition: null });
+    set({ historyView: null, pendingTransition: null, stageModes: null, lastBatchUsage: null });
     readyEdge.delete(workspaceId);
+    void get().hydrateModes(workspaceId);
     const metas = await readStageMetas(workspaceId);
     set((state) => {
       const next = new Map(state.threadStageMeta);

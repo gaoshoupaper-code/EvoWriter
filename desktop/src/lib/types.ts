@@ -162,7 +162,7 @@ export type WorkspaceObjectContent = {
 };
 
 export type StreamEvent = {
-  type: "model_output" | "tool_call" | "tool_output" | "tool_error" | "model_stream" | "reasoning_stream" | "final" | "trace_event" | "trace_snapshot" | "interrupt" | "credit_exhausted" | "pipeline" | "row" | "status";
+  type: "model_output" | "tool_call" | "tool_output" | "tool_error" | "model_stream" | "reasoning_stream" | "final" | "trace_event" | "trace_snapshot" | "interrupt" | "auto_answer" | "credit_exhausted" | "pipeline" | "row" | "status";
   data: Record<string, unknown>;
 };
 
@@ -409,17 +409,22 @@ export type ChatMessage = {
   // HITL: 子代理 ask_user 中断，等待用户回答（resume 提交后清除）
   // DD4: kind 区分反馈类型（choice=访谈 / image_review=图像评审）
   awaitingInput?: {
-    kind?: string; // "choice" | "image_review"，缺省视为 choice（向后兼容）
+    kind?: string; // "choice" | "image_review" | "review"，缺省视为 choice（向后兼容）
     question: string;
     options?: AskUserOption[] | null;
     multi_select?: boolean;
     source?: string;
+    // review 停等点（REQ-20261026-191719 TD-003）：batch=正文批次 / style=文风卡 / stage=段产物审
+    review_kind?: "batch" | "style" | "stage";
     // image_review 透传（DD4）
     round?: number;
     versions?: unknown[];
-    // 卡点产生时间（ISO）：本地持久化恢复时按 2h 阈值降级只读（REQ-20261001-170627 FR-005）
+    // 卡点产生时间（ISO）：本地持久化恢复时按 2h 阈值降级只读（REQ-20260927-170627 FR-005）
     askedAt?: string;
   };
+  // 自动模式违纪代答记录（REQ-20261026-191719 FR-007）：SSE auto_answer 帧
+  // 逐条累积，消息流内渲染灰条（事后可回查）
+  autoAnswers?: { question: string; answer: string; at: string }[];
 };
 
 export type CheckpointToolCall = {

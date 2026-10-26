@@ -41,6 +41,7 @@ from app.schemas.screenplay import (
     WorkspaceSummary,
     WorkspaceWorldviewContent,
     WritingStageUpdateRequest,
+    WritingModeUpdateRequest,
 )
 
 logger = logging.getLogger(__name__)
@@ -358,6 +359,66 @@ def update_writing_stage(
     state.stage = payload.stage
     save_writing_state(workspace_path, state)
     return pipeline_status(workspace_path)
+
+
+@router.get("/workspaces/{workspace_id}/writing/mode")
+def get_writing_mode(workspace_id: str, user: CurrentUser = Depends(current_user)) -> dict:
+    """段级创作模式读取（REQ-20261026-191719 FR-008/FR-011）。
+
+    返回全部五段的模式快照（题材/总纲恒 interactive，DEC-002）与正文批次
+    大小；缺省段=interactive（DEC-013：存量书升级后行为零变化）。
+    """
+    from contracts.writing_artifacts import (
+        AUTO_ELIGIBLE_STAGES, STAGE_LABELS,
+        load_writing_state, stage_mode, text_batch_size,
+    )
+
+    thread_store = get_thread_store()
+    workspace = thread_store.get_workspace(user.user_id, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace_path = Path(workspace.workspace_path)
+    return {
+        "stage_modes": {stage: stage_mode(workspace_path, stage) for stage in STAGE_LABELS},
+        "auto_eligible": sorted(AUTO_ELIGIBLE_STAGES),
+        "batch_size": text_batch_size(workspace_path),
+    }
+
+
+@router.put("/workspaces/{workspace_id}/writing/mode")
+def update_writing_mode(
+    workspace_id: str, payload: WritingModeUpdateRequest,
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """段级创作模式写入（REQ-20261026-191719 FR-005/FR-008）——模式开关唯一通道。
+
+    只由界面动作调用（模型不可写）；题材/总纲段与非法值 422。批次章数随
+    text 段一并回写（DEC-007：审查卡现场指定）。写入在下一停等边界生效
+    （DEC-016：正在跑的 run 不被打断，下一轮装配读到新值）。
+    """
+    from contracts.writing_artifacts import (
+        save_writing_state, set_stage_mode, text_batch_size,
+    )
+
+    thread_store = get_thread_store()
+    workspace = thread_store.get_workspace(user.user_id, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace_path = Path(workspace.workspace_path)
+    try:
+        set_stage_mode(workspace_path, payload.stage, payload.mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if payload.batch_size is not None and payload.stage == "text":
+        state = load_writing_state(workspace_path)
+        state.text_batch_size = payload.batch_size
+        save_writing_state(workspace_path, state)
+    from contracts.writing_artifacts import AUTO_ELIGIBLE_STAGES, STAGE_LABELS, stage_mode
+    return {
+        "stage_modes": {stage: stage_mode(workspace_path, stage) for stage in STAGE_LABELS},
+        "auto_eligible": sorted(AUTO_ELIGIBLE_STAGES),
+        "batch_size": text_batch_size(workspace_path),
+    }
 
 
 def _find_manuscript(workspace_path: Path, chapter: int) -> Path | None:

@@ -61,6 +61,23 @@ def stage_prompt(stage: str) -> str | None:
         return None
 
 
+# 自动模式纪律（REQ-20261026-191711 DEC-004：软纪律由 executor 在 auto 段追加）
+AUTO_MODE_PROMPT_FILE = "auto_mode.md"
+
+
+def auto_mode_prompt() -> str | None:
+    """读自动模式纪律文本（executor 在段模式为 auto 时追加到段规程后）。
+
+    文件缺失返回 None（调用方不注入——兼容旧发版，fail-safe 不阻塞装配）。
+    """
+    path = PACKAGE_DIR / "prompts" / AUTO_MODE_PROMPT_FILE
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        logger.warning("自动模式纪律读取失败: %s", path)
+        return None
+
+
 def assemble(ctx: RuntimeContext, agent_name: str | None = None):
     """清单驱动装配：薄委托架构清单解释器（读 architecture.json 实例化）。
 
@@ -72,4 +89,4 @@ def assemble(ctx: RuntimeContext, agent_name: str | None = None):
     return assemble_from_manifest(ctx, package=__package__, agent_name=agent_name)
 
 
-__all__ = ["PACKAGE_DIR", "STAGE_PROMPT_FILES", "assemble", "stage_prompt"]
+__all__ = ["PACKAGE_DIR", "STAGE_PROMPT_FILES", "assemble", "auto_mode_prompt", "stage_prompt"]

@@ -7,6 +7,8 @@ import type { ChatMessage } from "../../lib/types";
 import type { StageFlow } from "../../lib/stage";
 import { InterviewOptions } from "./InterviewOptions";
 import { ImageReviewCard } from "./ImageReviewCard";
+import { ReviewCard } from "./ReviewCard";
+import { ModeToggle } from "./ModeToggle";
 import { ExecutionView } from "./ExecutionView";
 import { StageBar } from "./StageBar";
 import { StageGuide } from "./StageGuide";
@@ -63,7 +65,9 @@ export function ChatPanel({
   // 带选项时，禁用底部 composer（提交改走拍板卡；卡内补充框是唯一塞料通道）
   const lastMessage = messages[messages.length - 1];
   const awaitingWithOptions =
-    lastMessage?.role === "assistant" && !!lastMessage?.awaitingInput?.options?.length;
+    lastMessage?.role === "assistant" &&
+    (!!lastMessage?.awaitingInput?.options?.length ||
+      lastMessage?.awaitingInput?.kind === "review");
 
   useEffect(() => {
     const input = inputRef.current;
@@ -199,12 +203,13 @@ export function ChatPanel({
               {/* HITL：按 awaitingInput.kind 路由渲染（DD4）。
                   choice → InterviewOptions（写作访谈）
                   image_review → ImageReviewCard（文生图评审）
+                  review → ReviewCard（审查停等点，REQ-20261026-191719）
                   D3 防御：仅最后一条 assistant 渲染，历史 HITL 残留不渲染。*/}
               {message.role === "assistant" &&
                 index === messages.length - 1 &&
                 message.awaitingInput ? (
                   <>
-                    {/* FR-004（REQ-20261018-235653）：行模式下提问文案随 HITL 卡展示
+                    {/* FR-004（REQ-20260918-235653）：行模式下提问文案随 HITL 卡展示
                         （正文不被提问覆盖，旧管线提问仍写在 content 里，不重复渲染） */}
                     {message.rows?.length &&
                     message.awaitingInput.kind !== "image_review" &&
@@ -229,6 +234,12 @@ export function ChatPanel({
                         onSubmit={onImageReviewSubmit}
                         disabled={loading}
                       />
+                    ) : message.awaitingInput.kind === "review" ? (
+                      <ReviewCard
+                        reviewKind={message.awaitingInput.review_kind ?? "stage"}
+                        onSubmit={onResumeSubmit}
+                        disabled={loading}
+                      />
                     ) : message.awaitingInput.options?.length ? (
                       <InterviewOptions
                         options={message.awaitingInput.options}
@@ -239,6 +250,17 @@ export function ChatPanel({
                     ) : null}
                   </>
                 ) : null}
+              {/* 自动模式违纪代答灰条（REQ-20261026-191719 FR-007）：事后可回查 */}
+              {message.role === "assistant" && message.autoAnswers?.length ? (
+                <div className="auto-answer-list" data-testid="auto-answer-list">
+                  {message.autoAnswers.map((aa, i) => (
+                    <div key={i} className="auto-answer-row">
+                      自动拍板：{aa.question ? `${aa.question.slice(0, 80)}${aa.question.length > 80 ? "…" : ""} — ` : ""}
+                      {aa.answer}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
               {/* shimmer 兜底：最后一条 assistant + loading + 无 ExecutionView 内容时
                   （FR-002：思考行到达后 shimmer 退场，时间线本身即执行反馈） */}
               {isLastAssistant && loading && !message.content && !message.tools?.length && !message.thoughts?.length ? (
@@ -261,6 +283,7 @@ export function ChatPanel({
           完成卡片挂起时输入框保持可用——直接发送即隐式切换（DEC-012） */}
       <form className="chat-composer" onSubmit={onSubmit}>
         <div className={`chat-input-wrap${expanded ? " expanded" : ""}`}>
+          <ModeToggle />
           <textarea
             ref={inputRef}
             className="chat-input"

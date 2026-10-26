@@ -8175,3 +8175,131 @@ html[data-theme="dark"] .admin-outline {
   color: var(--muted);
   font-size: var(--text-ui-sm);
 }
+
+/* ── 创作双模式（REQ-20261026-191719）：模式开关 / 审查卡 / 代答灰条 ── */
+
+.mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0 8px 8px 0;
+  padding: 3px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--panel-solid);
+  color: var(--ink-2, inherit);
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.mode-toggle.auto {
+  border-color: var(--teal);
+  color: var(--teal);
+}
+
+.mode-toggle.locked {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.review-card {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--panel-solid);
+}
+
+.review-card-title {
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.review-usage {
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.review-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.review-batch-input {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.review-batch-input input {
+  width: 56px;
+  padding: 4px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--panel-solid);
+  text-align: center;
+}
+
+.review-primary,
+.review-secondary {
+  padding: 6px 14px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.review-primary {
+  border: none;
+  background: var(--teal);
+  color: #fff;
+}
+
+.review-primary.danger {
+  background: var(--danger, #c2410c);
+}
+
+.review-primary:disabled,
+.review-secondary:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.review-secondary {
+  border: 1px solid var(--line-strong);
+  background: transparent;
+}
+
+.review-reject {
+  display: grid;
+  gap: 8px;
+}
+
+.review-reject textarea {
+  width: 100%;
+  padding: 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--panel-solid);
+  font-size: 13px;
+  resize: vertical;
+}
+
+.auto-answer-list {
+  display: grid;
+  gap: 4px;
+  margin-top: 6px;
+}
+
+.auto-answer-row {
+  padding: 4px 10px;
+  border-left: 2px solid var(--line-strong);
+  font-size: 12px;
+  opacity: 0.65;
+}

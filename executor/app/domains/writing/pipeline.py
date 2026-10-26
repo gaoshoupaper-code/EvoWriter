@@ -22,9 +22,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from contracts.writing_artifacts import (
+    MODE_AUTO,
     STAGE_CHAPTER,
     STAGE_LABELS,
     STAGE_LEGACY,
+    STAGE_TEXT,
     STAGE_THEME,
     MASTER_FILENAME,
     STYLE_FILENAME,
@@ -36,6 +38,8 @@ from contracts.writing_artifacts import (
     resolve_confirmed_stage,
     save_writing_state,
     scan_writing_progress,
+    stage_mode,
+    text_batch_size,
 )
 
 # 单 agent 架构名（architecture.json 唯一 main）
@@ -218,9 +222,18 @@ def route(
 
     label = STAGE_LABELS.get(stage, stage)
     prog = scan_writing_progress(workspace)
+    # 双模式事实行（REQ-20261026-191719 FR-002/003）：auto 段在 directive 里
+    # 只报「当前为自动模式 + 批次大小」的状态事实；「不提问」的行为纪律由
+    # 装配层追加 auto_mode.md（注入禁令：directive 不带行为指令）。
+    mode_facts = ""
+    if stage_mode(workspace, stage) == MODE_AUTO:
+        facts = ["本段当前为自动模式。"]
+        if stage == STAGE_TEXT:
+            facts.append(f"正文批次大小：{text_batch_size(workspace)} 章。")
+        mode_facts = f"【创作模式】{''.join(facts)}\n"
     directive = (
         f"【五段管线】当前段：{label}（{stage}）。{_unit_detail(workspace, stage)}\n"
-        f"【进度摘要】\n{_progress_summary(workspace, prog)}"
+        f"{mode_facts}【进度摘要】\n{_progress_summary(workspace, prog)}"
     )
 
     # ── 会话定位（REQ-20261019-222403 FR-001 粘性）：resume 沿未决拍板回原
@@ -276,6 +289,19 @@ def commit_route(workspace: Path, decision: RouteDecision, trace_id: str) -> Non
             state.conversation_forks.get(decision.conversation_id, 0), int(fork_tail)
         )
     save_writing_state(workspace, state)
+
+
+def should_auto_answer(iv: object, workspace: Path, stage: str) -> bool:
+    """违纪提问代答判定（REQ-20261026-191719 FR-007 / DEC-010）。
+
+    kind="review"（request_review 设计内停等点）永 False——两种模式都必须
+    停给用户；其余 interrupt（confirm_with_user 的 choice）在段为 auto 时
+    True（系统代答续跑）。每次挂起判定实时读段模式：用户已切回逐步 →
+    False（下一停等边界生效，DEC-016）。
+    """
+    if isinstance(iv, dict) and iv.get("kind") == "review":
+        return False
+    return stage_mode(Path(workspace), stage) == MODE_AUTO
 
 
 def on_interrupt(workspace: Path, agent_name: str | None, trace_id: str) -> None:
@@ -368,4 +394,5 @@ __all__ = [
     "route",
     "scan_progress",
     "scan_stage",
+    "should_auto_answer",
 ]

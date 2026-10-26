@@ -610,11 +610,21 @@ class MetaAgentService(BaseAgentService):
         if agent_name == "author":
             try:
                 from app.domains.writing.pipeline import classify_workspace, current_stage
+                from contracts.writing_artifacts import MODE_AUTO, stage_mode
 
                 if classify_workspace(workspace_path) == "five":
+                    stage = current_stage(workspace_path)
                     stage_prompt_fn = getattr(pkg, "stage_prompt", None)
                     if callable(stage_prompt_fn):
-                        stage_text = stage_prompt_fn(current_stage(workspace_path))
+                        stage_text = stage_prompt_fn(stage)
+                        # 自动模式纪律追加（REQ-20261026-191719 DEC-004）：auto 段
+                        # 在段规程后追加 auto_mode.md——「不提问」纪律 + 设计内
+                        # 停等口（request_review）说明。文件缺失（旧发版）跳过。
+                        if stage_text and stage_mode(workspace_path, stage) == MODE_AUTO:
+                            auto_fn = getattr(pkg, "auto_mode_prompt", None)
+                            auto_text = auto_fn() if callable(auto_fn) else None
+                            if auto_text:
+                                stage_text = f"{stage_text}\n\n{auto_text}"
                         if stage_text:
                             styles = {**(styles or {}), "author": stage_text}
             except Exception:  # noqa: BLE001 — 注入失败退回常驻骨架，不阻塞装配
@@ -1276,149 +1286,179 @@ class MetaAgentService(BaseAgentService):
                 update = finished.result()
                 return asyncio.create_task(_next_trace_update(trace_queue)), [update] if update else []
 
-            trace_extra = ExtraTask(
-                task=asyncio.create_task(_next_trace_update(trace_queue)),
-                on_done=_on_trace_done,
-            )
+            def _fresh_trace_extra() -> ExtraTask:
+                # 每轮 run_agent_stream 的 extras 在流 finally 里被取消——
+                # 代答续跑每轮重建 pump 任务。
+                return ExtraTask(
+                    task=asyncio.create_task(_next_trace_update(trace_queue)),
+                    on_done=_on_trace_done,
+                )
 
             # 领域事件分发：章节号/字数/task 派发等 writing 专属逻辑封装在 WritingEventSink（M4 抽离）
             # FR-002：传入 trace_recorder + trace_id，供 sink 构造章节抽取入库埋点回调（写 trace run_meta）。
             sink = WritingEventSink(thread, self.trace_recorder, trace.trace_id)
 
-            sse_iter, result = await run_agent_stream(
-                agent, agent_input, config,
-                sink=sink,
-                extra_tasks=[trace_extra],
-            )
+            # 自动模式代答循环（REQ-20261026-191719 FR-007 / DEC-010 / DEC-016）：
+            # auto 段内 agent 违纪调 confirm_with_user（kind=choice）不挂起——系统
+            # 代答「由你自行决定」并 Command(resume) 续跑；review 停等点（批次/
+            # 文风/段审）与非 auto 段照常挂起。代答前实时读段模式：用户已切回
+            # 逐步 → 不再代答，提问照常弹给用户（下一停等边界生效）。
+            from app.domains.writing.pipeline import should_auto_answer as _should_auto_answer
+            auto_answer_text = "由你自行决定（自动模式：作者不在场，请自行拍板并在进度行说明，继续推进）。"
 
             try:
-                async for frame in sse_iter:
-                    _sniff_frame(frame)
-                    yield frame
+                while True:
+                    sse_iter, result = await run_agent_stream(
+                        agent, agent_input, config,
+                        sink=sink,
+                        extra_tasks=[_fresh_trace_extra()],
+                    )
 
-                # ── 流结束：trace drain + interrupt 检测 + final ──────────────────────
-                for trace_update in self._trace_updates(trace_queue):
-                    yield trace_update
-
-                # T6.2：正常完成时结算预扣（多退少补 + 落流水 D23）
-                self._settle_credits_if_any(thread.thread_id, force_stopped=False)
-
-                if result.pending_interrupt is not None:
-                    iv = result.pending_interrupt
-                    # HITL：interrupt 命中 → 标记 trace awaiting_input 并落盘（D1）。
-                    # domain 层决定调用时机；recorder 写 run_awaiting + 更新 index +
-                    # notify evolution（不清内存，等 Command(resume) 续接）。
-                    self.trace_recorder.await_input_run(thread, trace.trace_id)
                     try:
-                        writing_pipeline.on_interrupt(workspace_path, agent_name, trace.trace_id)
-                    except OSError:
-                        logger.warning("on_interrupt 状态写失败（best-effort）", exc_info=True)
-                    interrupt_payload: dict[str, Any] = {
-                        "thread_id": thread.thread_id,
-                        "source": "interview",
-                    }
-                    if isinstance(iv, dict):
-                        # DD4（hitl.py 协议）：优先转发 payload 自带 kind/source——
-                        # 如回执轮 confirm_with_user 的 kind="choice" +
-                        # source="storybuilding-receipt"；缺省回退访谈旧口径
-                        # （source=interview / 前端 kind 默认 choice），向后兼容。
-                        if isinstance(iv.get("kind"), str):
-                            interrupt_payload["kind"] = iv["kind"]
-                        if isinstance(iv.get("source"), str):
-                            interrupt_payload["source"] = iv["source"]
-                        interrupt_payload["question"] = iv.get("question", "")
-                        interrupt_payload["options"] = iv.get("options")
-                        interrupt_payload["multi_select"] = iv.get("multi_select", False)
-                    # FR-005：提问腿收 awaiting（答案腿 resume 时开新助手记录）。
-                    _close_assistant("awaiting", str(interrupt_payload.get("question", "")))
-                    yield _sse("interrupt", interrupt_payload)
-                    return
+                        async for frame in sse_iter:
+                            _sniff_frame(frame)
+                            yield frame
 
-                if result.full_result is None:
-                    raise ValueError("Agent stream ended without a LangGraph final output.")
-                content = self._extract_text(result.full_result)
-                response = self._response_from_workspace_artifacts(payload, content, thread)
-                self.trace_recorder.complete_run(thread, trace.trace_id)
-                # FR-005：助手记录收尾（completed + 全文）。
-                _close_assistant("completed", content)
-                try:
-                    writing_pipeline.on_run_complete(workspace_path, agent_name)
-                except OSError:
-                    logger.warning("on_run_complete 状态写失败（best-effort）", exc_info=True)
-                # 相位推进即时广播（如主题完成→总纲）：on_run_complete 重扫后的相位
-                # 直接送桌面端挂完成卡片，不再依赖停前补拉/轮询的时序兜底。
-                try:
-                    yield _sse("pipeline", {
-                        **pipeline_status(workspace_path),
-                        "agent": agent_name,
-                    })
-                except Exception:  # noqa: BLE001 — 观测事件不得阻塞主流程
-                    pass
-                for trace_update in self._trace_updates(trace_queue):
-                    yield trace_update
-                snapshot = self.trace_recorder.read_run_snapshot(thread, trace.trace_id)
-                if snapshot is None:
-                    raise RuntimeError(f"Trace snapshot was not found: {trace.trace_id}")
-                yield _sse("trace_snapshot", snapshot.model_dump(mode="json"))
-                yield _sse("final", response.model_dump())
-            except GraphRecursionError:
-                # FR-004（REQ-20261002-125538）：撞步数保险丝 → 部分成功收尾，不裸抛。
-                # 保险丝（1000）远离软着陆预算（60 次调用 × ≈7.1 超步 ≈ 426），
-                # 走到这里说明软着陆同时失效的极端场景——已写内容对用户仍有价值。
-                self.trace_recorder.step_limit_run(thread, trace.trace_id)
-                step_response = self._step_limit_response(payload, thread)
-                _close_assistant("completed", getattr(step_response, "content", "") or "")
-                # 已消耗的 token 不退（与 user_stop 同口径结算）
-                self._settle_credits_if_any(thread.thread_id, force_stopped=False)
-                for trace_update in self._trace_updates(trace_queue):
-                    yield trace_update
-                yield _sse("final", step_response.model_dump())
-                return
-            except asyncio.CancelledError:
-                # D4/D5/D6 + FR-002（REQ-20261019-222403）：CancelledError 分流。
-                # trace 未建（排队/早期取消）时无账可收，直接上抛。
-                if trace is None:
-                    raise
-                # - user_stop：用户点了停止按钮（_user_stop_requested 标记命中）→ cancelled
-                # - awaiting_input：interrupt 期间连接断开 → 保持 awaiting_input 不收尾（可 resume）
-                # - 否则：running 期间连接断开 → interrupted（会话可续：本轮作废、
-                #   重试按原话重发；区别于用户作废的 cancelled 终态）
-                if self.trace_recorder.is_user_stop_requested(trace.trace_id):
-                    _close_assistant("stopped", _partial_content())
-                    self.trace_recorder.cancel_run(thread, trace.trace_id, reason="user_stop")
-                    try:
-                        writing_pipeline.on_run_abandoned(workspace_path, agent_name)
-                    except OSError:
-                        logger.warning("on_run_abandoned 状态写失败（best-effort）", exc_info=True)
-                    # 用户停止也要结算预扣（已消耗的 token 不退）
-                    self._settle_credits_if_any(thread.thread_id, force_stopped=False)
-                elif self.trace_recorder.is_awaiting_input(trace.trace_id):
-                    _close_assistant("awaiting", _partial_content())
-                    pass  # interrupt 期间断连：保持 awaiting_input，等用户 resume
-                else:
-                    _close_assistant("interrupted", _partial_content())
-                    self.trace_recorder.interrupt_run(thread, trace.trace_id)
-                    self._settle_credits_if_any(thread.thread_id, force_stopped=False)
-                    # FR-002 修复：断连分支此前漏调 on_run_abandoned，state.json 残留
-                    # 僵尸 active_traces（resume 误配根因之一）——补齐清理。
-                    try:
-                        writing_pipeline.on_run_abandoned(workspace_path, agent_name)
-                    except OSError:
-                        logger.warning("on_run_abandoned 状态写失败（best-effort）", exc_info=True)
-                raise
-            except Exception as exc:
-                # FR-007：credit_exhausted 强停分流已随免计费移除（原 T6.1/T6.3）
-                from app.platform.agent.middleware.artifact_capture import EvidenceCaptureError
+                        # ── 流结束：trace drain + interrupt 检测 + final ──────────────────────
+                        for trace_update in self._trace_updates(trace_queue):
+                            yield trace_update
 
-                if trace is not None:
-                    _close_assistant("failed", _partial_content())
-                    if isinstance(exc, EvidenceCaptureError) and run_purpose != "user_generation":
-                        self.trace_recorder.fail_evidence_capture_run(thread, trace.trace_id, exc)
-                    else:
-                        self.trace_recorder.fail_run(thread, trace.trace_id, exc)
-                    for trace_update in self._trace_updates(trace_queue):
-                        yield trace_update
-                raise
+                        if result.pending_interrupt is not None:
+                            iv = result.pending_interrupt
+                            if _should_auto_answer(iv, workspace_path, pipe_decision.phase):
+                                # FR-007 违纪代答：不挂起，广播 auto_answer 后续跑。
+                                question = str(iv.get("question", "")) if isinstance(iv, dict) else ""
+                                yield _sse("auto_answer", {
+                                    "thread_id": thread.thread_id,
+                                    "stage": pipe_decision.phase,
+                                    "question": question[:200],
+                                    "answer": auto_answer_text,
+                                })
+                                agent_input = Command(resume=auto_answer_text)
+                                continue
+
+                            # 挂起：review 停等点（自动模式也停）或普通访谈提问。
+                            # T6.2：正常完成时结算预扣（多退少补 + 落流水 D23）
+                            self._settle_credits_if_any(thread.thread_id, force_stopped=False)
+                            # HITL：interrupt 命中 → 标记 trace awaiting_input 并落盘（D1）。
+                            # domain 层决定调用时机；recorder 写 run_awaiting + 更新 index +
+                            # notify evolution（不清内存，等 Command(resume) 续接）。
+                            self.trace_recorder.await_input_run(thread, trace.trace_id)
+                            try:
+                                writing_pipeline.on_interrupt(workspace_path, agent_name, trace.trace_id)
+                            except OSError:
+                                logger.warning("on_interrupt 状态写失败（best-effort）", exc_info=True)
+                            interrupt_payload: dict[str, Any] = {
+                                "thread_id": thread.thread_id,
+                                "source": "interview",
+                            }
+                            if isinstance(iv, dict):
+                                # DD4（hitl.py 协议）：优先转发 payload 自带 kind/source——
+                                # 如回执轮 confirm_with_user 的 kind="choice" +
+                                # source="storybuilding-receipt"；缺省回退访谈旧口径
+                                # （source=interview / 前端 kind 默认 choice），向后兼容。
+                                if isinstance(iv.get("kind"), str):
+                                    interrupt_payload["kind"] = iv["kind"]
+                                if isinstance(iv.get("source"), str):
+                                    interrupt_payload["source"] = iv["source"]
+                                if isinstance(iv.get("review_kind"), str):
+                                    interrupt_payload["review_kind"] = iv["review_kind"]
+                                interrupt_payload["question"] = iv.get("question", "")
+                                interrupt_payload["options"] = iv.get("options")
+                                interrupt_payload["multi_select"] = iv.get("multi_select", False)
+                            # FR-005：提问腿收 awaiting（答案腿 resume 时开新助手记录）。
+                            _close_assistant("awaiting", str(interrupt_payload.get("question", "")))
+                            yield _sse("interrupt", interrupt_payload)
+                            return
+
+                        if result.full_result is None:
+                            raise ValueError("Agent stream ended without a LangGraph final output.")
+                        content = self._extract_text(result.full_result)
+                        response = self._response_from_workspace_artifacts(payload, content, thread)
+                        self.trace_recorder.complete_run(thread, trace.trace_id)
+                        # FR-005：助手记录收尾（completed + 全文）。
+                        _close_assistant("completed", content)
+                        try:
+                            writing_pipeline.on_run_complete(workspace_path, agent_name)
+                        except OSError:
+                            logger.warning("on_run_complete 状态写失败（best-effort）", exc_info=True)
+                        # 相位推进即时广播（如主题完成→总纲）：on_run_complete 重扫后的相位
+                        # 直接送桌面端挂完成卡片，不再依赖停前补拉/轮询的时序兜底。
+                        try:
+                            yield _sse("pipeline", {
+                                **pipeline_status(workspace_path),
+                                "agent": agent_name,
+                            })
+                        except Exception:  # noqa: BLE001 — 观测事件不得阻塞主流程
+                            pass
+                        # T6.2：正常完成时结算预扣（代答循环的最后一次也走这里）
+                        self._settle_credits_if_any(thread.thread_id, force_stopped=False)
+                        for trace_update in self._trace_updates(trace_queue):
+                            yield trace_update
+                        snapshot = self.trace_recorder.read_run_snapshot(thread, trace.trace_id)
+                        if snapshot is None:
+                            raise RuntimeError(f"Trace snapshot was not found: {trace.trace_id}")
+                        yield _sse("trace_snapshot", snapshot.model_dump(mode="json"))
+                        yield _sse("final", response.model_dump())
+                        return
+                    except GraphRecursionError:
+                        # FR-004（REQ-20261002-125538）：撞步数保险丝 → 部分成功收尾，不裸抛。
+                        # 保险丝（1000）远离软着陆预算（60 次调用 × ≈7.1 超步 ≈ 426），
+                        # 走到这里说明软着陆同时失效的极端场景——已写内容对用户仍有价值。
+                        self.trace_recorder.step_limit_run(thread, trace.trace_id)
+                        step_response = self._step_limit_response(payload, thread)
+                        _close_assistant("completed", getattr(step_response, "content", "") or "")
+                        # 已消耗的 token 不退（与 user_stop 同口径结算）
+                        self._settle_credits_if_any(thread.thread_id, force_stopped=False)
+                        for trace_update in self._trace_updates(trace_queue):
+                            yield trace_update
+                        yield _sse("final", step_response.model_dump())
+                        return
+                    except asyncio.CancelledError:
+                        # D4/D5/D6 + FR-002（REQ-20260919-222403）：CancelledError 分流。
+                        # trace 未建（排队/早期取消）时无账可收，直接上抛。
+                        if trace is None:
+                            raise
+                        # - user_stop：用户点了停止按钮（_user_stop_requested 标记命中）→ cancelled
+                        # - awaiting_input：interrupt 期间连接断开 → 保持 awaiting_input 不收尾（可 resume）
+                        # - 否则：running 期间连接断开 → interrupted（会话可续：本轮作废、
+                        #   重试按原话重发；区别于用户作废的 cancelled 终态）
+                        if self.trace_recorder.is_user_stop_requested(trace.trace_id):
+                            _close_assistant("stopped", _partial_content())
+                            self.trace_recorder.cancel_run(thread, trace.trace_id, reason="user_stop")
+                            try:
+                                writing_pipeline.on_run_abandoned(workspace_path, agent_name)
+                            except OSError:
+                                logger.warning("on_run_abandoned 状态写失败（best-effort）", exc_info=True)
+                            # 用户停止也要结算预扣（已消耗的 token 不退）
+                            self._settle_credits_if_any(thread.thread_id, force_stopped=False)
+                        elif self.trace_recorder.is_awaiting_input(trace.trace_id):
+                            _close_assistant("awaiting", _partial_content())
+                            pass  # interrupt 期间断连：保持 awaiting_input，等用户 resume
+                        else:
+                            _close_assistant("interrupted", _partial_content())
+                            self.trace_recorder.interrupt_run(thread, trace.trace_id)
+                            self._settle_credits_if_any(thread.thread_id, force_stopped=False)
+                            # FR-002 修复：断连分支此前漏调 on_run_abandoned，state.json 残留
+                            # 僵尸 active_traces（resume 误配根因之一）——补齐清理。
+                            try:
+                                writing_pipeline.on_run_abandoned(workspace_path, agent_name)
+                            except OSError:
+                                logger.warning("on_run_abandoned 状态写失败（best-effort）", exc_info=True)
+                        raise
+                    except Exception as exc:
+                        # FR-007：credit_exhausted 强停分流已随免计费移除（原 T6.1/T6.3）
+                        from app.platform.agent.middleware.artifact_capture import EvidenceCaptureError
+
+                        if trace is not None:
+                            _close_assistant("failed", _partial_content())
+                            if isinstance(exc, EvidenceCaptureError) and run_purpose != "user_generation":
+                                self.trace_recorder.fail_evidence_capture_run(thread, trace.trace_id, exc)
+                            else:
+                                self.trace_recorder.fail_run(thread, trace.trace_id, exc)
+                            for trace_update in self._trace_updates(trace_queue):
+                                yield trace_update
+                        raise
             finally:
                 # 兜底清理 task 注册（正常/异常/CancelledError 三路都走到）。
                 # _cleanup_run_state 也会兜底，但这里更早执行避免泄漏窗口。

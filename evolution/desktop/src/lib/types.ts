@@ -235,6 +235,8 @@ export type TraceListItem = {
   skill_activation_count: number;
   middleware_intervention_count: number;
   hitl_count: number;
+  /** 该 trace 全部节点 token 合计；null=无 usage 数据（显示「—」，REQ-20261027-012631） */
+  token_total: number | null;
 };
 
 /** trace 列表分页响应（含 total 供分页器计算页码） */
@@ -243,6 +245,28 @@ export type TraceListResponse = {
   total: number;
   limit: number;
   offset: number;
+};
+
+/** 用户层用量行（/usage/users，REQ-20261027-012631 FR-002） */
+export type UserUsageRow = {
+  user_id: string;
+  username: string;
+  running: boolean;
+  last_created_at: string | null;
+  total_tokens: number;
+};
+
+/** 作品状态（DEC-005 trace 活动派生四种） */
+export type WorkspaceUsageStatus = "running" | "normal" | "aborted" | "deleted";
+
+/** 作品层用量行（/usage/workspaces，REQ-20261027-012631 FR-003） */
+export type WorkspaceUsageRow = {
+  workspace_id: string;
+  title: string;
+  owner_user_id: string;
+  status: WorkspaceUsageStatus;
+  last_created_at: string | null;
+  total_tokens: number;
 };
 
 /** 活跃 trace（evolution /api/active-runs 富化返回，D7） */

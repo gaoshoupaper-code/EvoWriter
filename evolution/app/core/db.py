@@ -105,6 +105,8 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_nodes_kind ON nodes(kind);
             CREATE INDEX IF NOT EXISTS idx_nodes_agent ON nodes(agent_name);
             CREATE INDEX IF NOT EXISTS idx_nodes_tool ON nodes(tool_name);
+            -- 用量观测按作品聚合（REQ-20261027-012631 风险处置：GROUP BY workspace_id）
+            CREATE INDEX IF NOT EXISTS idx_runs_workspace ON runs(workspace_id);
 
             -- event_payloads：原始事件流 + 大字段正文
             CREATE TABLE IF NOT EXISTS event_payloads (
@@ -450,6 +452,20 @@ def init_db() -> None:
                 disabled    INTEGER NOT NULL DEFAULT 0,       -- 1=executor 侧已禁用
                 synced_at   TEXT NOT NULL                     -- 最近同步时间（ISO8601）
             );
+
+            -- workspace_cache：executor 作品列表的本地缓存（REQ-20261027-012631 FR-006）。
+            -- executor 的作品删除是物理删除——不缓存则书名与归属永久丢失。
+            -- 对账发现 executor 查不到的作品标 deleted=1，记录保留（token 累计
+            -- 随 runs/nodes 仍在库），5 分钟周期见 ingestion/workspace_sync.py。
+            CREATE TABLE IF NOT EXISTS workspace_cache (
+                workspace_id    TEXT PRIMARY KEY,             -- executor workspaces.workspace_id
+                owner_user_id   TEXT NOT NULL,                -- 归属用户（executor owner_id）
+                title           TEXT NOT NULL DEFAULT '',     -- 书名（删除后仍可读）
+                deleted         INTEGER NOT NULL DEFAULT 0,   -- 1=executor 侧已删除（对账标记）
+                first_synced_at TEXT NOT NULL,                -- 首次进入缓存时间
+                synced_at       TEXT NOT NULL                 -- 最近同步时间（ISO8601）
+            );
+            CREATE INDEX IF NOT EXISTS idx_workspace_cache_owner ON workspace_cache(owner_user_id);
 
             -- evolve_messages：进化对话消息（对话式共创工作台，决策 T6）。
             -- 一个 session 的全部对话消息（user/assistant/system/tool），按 seq 排序。

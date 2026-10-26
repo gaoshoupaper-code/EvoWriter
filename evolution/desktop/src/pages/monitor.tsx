@@ -1,13 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, RefreshCw } from "lucide-react";
+import { AlertTriangle, ChevronLeft, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import {
   getTraces,
+  getUserUsage,
+  getWorkspaceUsage,
   type TraceListItem,
+  type UserUsageRow,
+  type WorkspaceUsageRow,
+  type WorkspaceUsageStatus,
 } from "@/lib/api";
 import { useActiveRunsStream, type FinishedRunInfo } from "@/hooks/useActiveRunsStream";
 import type { ActiveRun, TraceIntegrityStatus, TraceStatus, TraceWorkload } from "@/lib/types";
+import { formatTokensW } from "@/lib/tokenFormat";
 
 const PAGE_SIZE = 50;
 const WORKLOADS: Array<{ value: TraceWorkload | "all"; label: string }> = [
@@ -187,6 +193,8 @@ export default function MonitorPage() {
         )}
       </RunSection>
 
+      <UsageDrilldown />
+
       <RunSection title="近期运行" count={recentRuns.length}>
         {recentRuns.length === 0 ? (
           <EmptyState label="当前筛选条件下无运行" />
@@ -263,6 +271,8 @@ function finishedRunToListItem(run: FinishedRunInfo): TraceListItem {
     skill_activation_count: 0,
     middleware_intervention_count: 0,
     hitl_count: 0,
+    // 占位行尚未入库，无 token 数据——显示「—」，刷新后由权威列表校正。
+    token_total: null,
   };
 }
 
@@ -343,4 +353,167 @@ function formatDateTime(iso: string): string {
   return new Date(iso).toLocaleString("zh-CN", {
     month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
   });
+}
+
+// ── 三层用量观测（REQ-20261027-012631 FR-001~005）──
+// 用户 → 作品 → trace 下钻；token 单位统一 w（DEC-012）。独立于上方全局
+// 活跃大盘（DEC-009 并存），本区加载失败不影响页面其他功能区（FR-001 失败语义）。
+
+type DrillState =
+  | { level: "users" }
+  | { level: "workspaces"; userId: string; username: string }
+  | { level: "traces"; userId: string; username: string; workspaceId: string; title: string };
+
+const WORKSPACE_STATUS_LABELS: Record<WorkspaceUsageStatus, string> = {
+  running: "进行中",
+  normal: "正常",
+  aborted: "异常中断",
+  deleted: "已删除",
+};
+
+function UsageDrilldown() {
+  const navigate = useNavigate();
+  const [drill, setDrill] = useState<DrillState>({ level: "users" });
+  const [users, setUsers] = useState<UserUsageRow[]>([]);
+  const [workspaces, setWorkspaces] = useState<WorkspaceUsageRow[]>([]);
+  const [traces, setTraces] = useState<TraceListItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      if (drill.level === "users") {
+        setUsers(await getUserUsage());
+      } else if (drill.level === "workspaces") {
+        setWorkspaces(await getWorkspaceUsage(drill.userId));
+      } else {
+        const resp = await getTraces({ workspace: drill.workspaceId, limit: 100 });
+        setTraces(resp.items);
+      }
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "用量观测数据加载失败");
+    } finally {
+      setLoading(false);
+    }
+  }, [drill]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  return (
+    <section className="workbench-section">
+      <div className="section-heading">
+        <h2>用量观测</h2>
+        <span className="usage-crumb">
+          {drill.level === "workspaces" && (
+            <button className="usage-back" type="button" onClick={() => setDrill({ level: "users" })}>
+              <ChevronLeft size={14} />全部用户
+            </button>
+          )}
+          {drill.level === "traces" && (
+            <button
+              className="usage-back" type="button"
+              onClick={() => setDrill({ level: "workspaces", userId: drill.userId, username: drill.username })}
+            >
+              <ChevronLeft size={14} />{drill.username} 的作品
+            </button>
+          )}
+          <span className="usage-crumb-current">
+            {drill.level === "users" ? "全部用户"
+              : drill.level === "workspaces" ? `${drill.username} 的作品`
+              : drill.title || drill.workspaceId.slice(0, 8)}
+          </span>
+        </span>
+      </div>
+
+      {loading ? (
+        <div className="workbench-empty">加载用量观测…</div>
+      ) : error ? (
+        <div className="workbench-empty">
+          <div>{error}</div>
+          <button className="page-error-retry" type="button" onClick={() => void refresh()}>重试</button>
+        </div>
+      ) : drill.level === "users" ? (
+        users.length === 0 ? <EmptyState label="暂无用户" /> : (
+          <div className="run-table-wrap">
+            <table className="workbench-table">
+              <thead><tr><th>用户</th><th>运行状态</th><th>上次创作</th><th className="usage-num">token 消耗</th></tr></thead>
+              <tbody>
+                {users.map((u) => (
+                  <tr
+                    key={u.user_id} className="clickable-row" tabIndex={0}
+                    onClick={() => setDrill({ level: "workspaces", userId: u.user_id, username: u.username })}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setDrill({ level: "workspaces", userId: u.user_id, username: u.username }); }}
+                  >
+                    <td><span className="run-primary">{u.username || u.user_id}</span></td>
+                    <td>{u.running ? <span className="usage-status running">运行中</span> : <span className="usage-status normal">空闲</span>}</td>
+                    <td>{u.last_created_at ? formatDateTime(u.last_created_at) : "—"}</td>
+                    <td className="usage-num">{formatTokensW(u.total_tokens)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : drill.level === "workspaces" ? (
+        workspaces.length === 0 ? <EmptyState label="暂无作品" /> : (
+          <div className="run-table-wrap">
+            <table className="workbench-table">
+              <thead><tr><th>作品</th><th>状态</th><th>最新创作</th><th className="usage-num">token 消耗</th></tr></thead>
+              <tbody>
+                {workspaces.map((w) => (
+                  <tr
+                    key={w.workspace_id} className="clickable-row" tabIndex={0}
+                    onClick={() => setDrill({
+                      level: "traces", userId: drill.userId, username: drill.username,
+                      workspaceId: w.workspace_id, title: w.title,
+                    })}
+                    onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") setDrill({
+                      level: "traces", userId: drill.userId, username: drill.username,
+                      workspaceId: w.workspace_id, title: w.title,
+                    }); }}
+                  >
+                    <td>
+                      <span className={`run-primary${w.status === "deleted" ? " usage-title-deleted" : ""}`}>
+                        {w.title || w.workspace_id.slice(0, 8)}
+                      </span>
+                    </td>
+                    <td><span className={`usage-status ${w.status}`}>{WORKSPACE_STATUS_LABELS[w.status]}</span></td>
+                    <td>{w.last_created_at ? formatDateTime(w.last_created_at) : "—"}</td>
+                    <td className="usage-num">{formatTokensW(w.total_tokens)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )
+      ) : traces.length === 0 ? <EmptyState label="暂无创作记录" /> : (
+        <div className="run-table-wrap">
+          <table className="workbench-table">
+            <thead><tr><th>运行</th><th>状态</th><th>开始 / 耗时</th><th className="usage-num">token 消耗</th></tr></thead>
+            <tbody>
+              {traces.map((t) => (
+                <tr
+                  key={t.trace_id} className="clickable-row" tabIndex={0}
+                  onClick={() => navigate(`/traces/${t.trace_id}`)}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") navigate(`/traces/${t.trace_id}`); }}
+                >
+                  <td><span className="run-primary" title={t.trace_id}>{t.session_name || t.trace_id.slice(0, 14)}</span></td>
+                  <td><StatusBadge status={t.status} /></td>
+                  <td className="run-time-cell">
+                    {t.started_at ? formatDateTime(t.started_at) : "—"}
+                    <span>{formatMs(t.duration_ms)}</span>
+                  </td>
+                  <td className="usage-num">{formatTokensW(t.token_total)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
+  );
 }

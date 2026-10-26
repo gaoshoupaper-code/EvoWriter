@@ -143,6 +143,9 @@ class TraceRecorder:
         # 维护"已见消息"索引用于计算 LLM input 的增量范围。
         # 跨重启丢失（T6 降级）：丢失后该 trace 退化为全量存储，不报错。
         self._increment_states: dict[str, IncrementState] = {}
+        # 运行中 token 累计（REQ-20261027-012631 DEC-010）：活跃 trace 尚未摄入
+        # evolution，用量观测的唯一数据源在此。per-trace 累加，终态清理。
+        self._usage_totals: dict[str, int] = {}
         # T15 活跃大盘：记录活跃 trace 的 endpoint（轻量，不读文件）。
         self._run_endpoints: dict[str, str] = {}
         # Phase 3：trace_id → workspace_path 持久索引。
@@ -242,6 +245,7 @@ class TraceRecorder:
             trace_phase="recording",
             coverage={"payload": "known", "token": "unknown", "cost": "unknown"},
             external_refs=refs,
+            user_id=thread.user_id,
         )
         self._run_metadata[trace_id] = {"run_summary": summary.model_dump(mode="json")}
         try:
@@ -438,6 +442,14 @@ class TraceRecorder:
                 artifact_revision_id=self._optional_str(values.get("artifact_revision_id")),
                 artifact=values.get("artifact"),
             )
+
+            # 运行中 token 累计（REQ-20261027-012631 DEC-010）：llm_end 等
+            # 带 usage 的事件即时累加，供 list_active_runs 透传给 evolution。
+            if event.usage is not None:
+                total = event.usage.total_tokens
+                if total is None:
+                    total = (event.usage.input_tokens or 0) + (event.usage.output_tokens or 0)
+                self._usage_totals[trace_id] = self._usage_totals.get(trace_id, 0) + (total or 0)
 
             run_path = self._run_paths.get(trace_id)
             if run_path is None:
@@ -1405,6 +1417,11 @@ class TraceRecorder:
                 "workload": run.workload if run else None,
                 "run_purpose": run.purpose if run else None,
                 "service": run.service if run else "executor",
+                # REQ-20261027-012631 DEC-010：运行中 trace 未摄入 evolution，
+                # 用量观测靠这两个字段实时归户——owner 从 index 读（丢索引降级
+                # None，调用方自行回退 workspace 归户），usage 是内存累加器。
+                "owner_user_id": run.user_id if run else None,
+                "usage_total": self._usage_totals.get(trace_id, 0),
             })
         return result
 
@@ -2048,6 +2065,7 @@ class TraceRecorder:
         self._capture_degraded.pop(trace_id, None)
         self._skill_catalog.pop(trace_id, None)
         self._skill_runtime_paths.pop(trace_id, None)
+        self._usage_totals.pop(trace_id, None)
 
     def _write_manifest(self, trace_id: str) -> TraceManifest:
         run_path = self._run_paths.get(trace_id)

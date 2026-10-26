@@ -200,6 +200,9 @@ class TraceRunSummary(BaseModel):
     links: list[TraceSpanLink] = Field(default_factory=list)
     external_refs: dict[str, str] = Field(default_factory=dict)
     manifest: TraceManifest | None = None
+    # 归属用户（REQ-20261027-012631 FR-005）：运行中 trace 尚未摄入 evolution，
+    # 活跃端点靠此字段把 trace 归到用户头上；旧索引缺省 None，向后兼容。
+    user_id: str | None = None
     # 四维正交生命周期（DEC-008，全部向后兼容默认值）：
     #   trace_phase —— 记录/封存阶段，与业务状态、完整性正交；旧索引缺省 None。
     #   cancel_audit —— 取消身份审计（CancelAudit），未取消即 None。

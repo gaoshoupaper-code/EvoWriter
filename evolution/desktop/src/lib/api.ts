@@ -11,6 +11,9 @@ import type {
   TraceIntegrityStatus,
   TraceWorkload,
   WorkloadProfilesResponse,
+  UserUsageRow,
+  WorkspaceUsageRow,
+  WorkspaceUsageStatus,
 } from "@/lib/types";
 
 // 统一类型从 lib/types.ts 引用（trace 移植后对齐）
@@ -19,6 +22,9 @@ export type {
   TraceListItem,
   TraceListResponse,
   ActiveRun,
+  UserUsageRow,
+  WorkspaceUsageRow,
+  WorkspaceUsageStatus,
 };
 
 /**
@@ -347,6 +353,7 @@ export async function getActiveRuns(): Promise<ActiveRun[]> {
 export async function getTraces(params?: {
   status?: string;
   run_purpose?: string;
+  workspace?: string;
   workload?: TraceWorkload;
   integrity_status?: TraceIntegrityStatus;
   owner?: string;
@@ -358,6 +365,7 @@ export async function getTraces(params?: {
   const qs = new URLSearchParams();
   if (params?.status) qs.set("status", params.status);
   if (params?.run_purpose) qs.set("run_purpose", params.run_purpose);
+  if (params?.workspace) qs.set("workspace", params.workspace);
   if (params?.workload) qs.set("workload", params.workload);
   if (params?.integrity_status) qs.set("integrity_status", params.integrity_status);
   if (params?.owner) qs.set("owner", params.owner);
@@ -367,6 +375,17 @@ export async function getTraces(params?: {
   if (params?.offset) qs.set("offset", String(params.offset));
   const q = qs.toString();
   return evoJson<TraceListResponse>(`/api/traces${q ? "?" + q : ""}`, { method: "GET" });
+}
+
+// ── 三层用量观测（REQ-20261027-012631 FR-002/FR-003）──
+
+export async function getUserUsage(): Promise<UserUsageRow[]> {
+  return evoJson<UserUsageRow[]>("/api/usage/users", { method: "GET" });
+}
+
+export async function getWorkspaceUsage(ownerUserId: string): Promise<WorkspaceUsageRow[]> {
+  const qs = new URLSearchParams({ owner_user_id: ownerUserId });
+  return evoJson<WorkspaceUsageRow[]>(`/api/usage/workspaces?${qs.toString()}`, { method: "GET" });
 }
 
 // ── 人工确认进证据编纂（REQ-20260802-211032）──

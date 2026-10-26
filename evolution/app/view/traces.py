@@ -80,6 +80,10 @@ class TraceListItem(BaseModel):
     skill_activation_count: int = 0
     middleware_intervention_count: int = 0
     hitl_count: int = 0
+    # 该 trace 全部 nodes 的 usage_total 之和（FR-004/FR-005）。
+    # None=该 trace 没有任何带 usage 的节点（历史数据缺失），前端显示「—」，
+    # 与 0（有数据但合计为 0）严格区分（AC-006 边界）。
+    token_total: int | None = None
 
 
 class TraceListResponse(BaseModel):
@@ -157,7 +161,9 @@ def list_traces(
                     WHERE e.trace_id=r.trace_id AND e.type='middleware_intervention')
                        AS middleware_intervention_count,
                    (SELECT COUNT(*) FROM event_payloads e
-                    WHERE e.trace_id=r.trace_id AND e.type='hitl') AS hitl_count
+                    WHERE e.trace_id=r.trace_id AND e.type='hitl') AS hitl_count,
+                   (SELECT SUM(n.usage_total) FROM nodes n
+                    WHERE n.trace_id=r.trace_id) AS token_total
             FROM runs r
             LEFT JOIN user_cache uc ON r.owner_user_id = uc.user_id
             {where_sql}
@@ -186,6 +192,10 @@ def list_traces(
                 skill_activation_count=int(r.get("skill_activation_count") or 0),
                 middleware_intervention_count=int(r.get("middleware_intervention_count") or 0),
                 hitl_count=int(r.get("hitl_count") or 0),
+                token_total=(
+                    int(r["token_total"])
+                    if r.get("token_total") is not None else None
+                ),
             )
             for r in rows
         ],

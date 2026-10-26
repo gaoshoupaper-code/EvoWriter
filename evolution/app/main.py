@@ -46,7 +46,9 @@ from app.view.versions_api import router as versions_router
 from app.dataset.api import router as dataset_router
 from app.ingestion.scan import start_scan_scheduler
 from app.ingestion.user_sync import start_user_sync_scheduler
+from app.ingestion.workspace_sync import start_workspace_sync_scheduler
 from app.view.active import start_active_poller
+from app.view.usage import router as usage_router
 from app.benchmark.api import router as benchmark_router
 from app.trace.recorder import EvolutionTraceRecorder
 from app.trace_payloads import start_payload_lifecycle_scheduler
@@ -74,6 +76,8 @@ async def lifespan(app: FastAPI):
     start_active_poller()
     # 用户映射同步：定时从 executor 拉取用户列表 → user_cache 表（trace 历史列表展示用户名）
     start_user_sync_scheduler()
+    # 作品缓存对账（REQ-20261027-012631 FR-006）：5 分钟周期，已删除作品保留书名与归属
+    start_workspace_sync_scheduler()
     start_payload_lifecycle_scheduler()
 
     # D5/D8：创建 recorder 单例 + 崩溃恢复 + 启动 drain + 心跳扫描。
@@ -141,6 +145,8 @@ app.include_router(ingestion_router, prefix="/api")
 app.include_router(traces_router, prefix="/api")
 app.include_router(trace_workbenches_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
+# 三层用量观测（REQ-20261027-012631）：用户层/作品层聚合 API
+app.include_router(usage_router, prefix="/api")
 app.include_router(snapshot_router, prefix="/api")
 # Harness 要素展示（前端「Harness 要素」页）
 app.include_router(elements_router, prefix="/api")

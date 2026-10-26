@@ -10262,6 +10262,23 @@ html[data-theme="dark"] {
 .mechanism-summary { color: var(--wb-muted); font-family: var(--font-mono); font-size: var(--text-ui-xs); white-space: nowrap; }
 .run-time-cell { color: var(--wb-muted) !important; font-size: var(--text-ui-xs); white-space: nowrap; }
 .run-time-cell span { display: block; margin-top: 3px; }
+
+/* ── 三层用量观测（REQ-20261027-012631）：用户/作品状态标签与数字列 ── */
+.usage-status { font-size: var(--text-ui-sm); font-weight: 500; white-space: nowrap; }
+.usage-status.running { color: var(--teal, #3a9a7e); }
+.usage-status.normal { color: #6ecfb8; }
+.usage-status.aborted { color: var(--coral, #c9794e); }
+.usage-status.deleted { color: var(--wb-muted); }
+.usage-title-deleted { color: var(--wb-muted); text-decoration: line-through; }
+.usage-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.usage-crumb { display: inline-flex; align-items: center; gap: 8px; font-size: var(--text-ui-sm); color: var(--wb-muted); }
+.usage-crumb-current { color: var(--wb-ink, inherit); }
+.usage-back {
+  display: inline-flex; align-items: center; gap: 2px;
+  background: none; border: none; cursor: pointer; padding: 2px 4px;
+  color: var(--wb-muted); font-size: var(--text-ui-sm);
+}
+.usage-back:hover { color: var(--wb-ink, inherit); }
 .workbench-empty {
   min-height: 78px;
   display: grid;

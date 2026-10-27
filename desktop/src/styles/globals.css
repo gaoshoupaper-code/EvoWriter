@@ -8615,3 +8615,22 @@ html[data-theme="dark"] .admin-outline {
   overflow-y: auto;
 }
 
+/* 标注详情卡（点击已挂标注的高亮弹出，2026-10-27 修订） */
+.ann-detail-card {
+  width: 300px;
+}
+
+.ann-detail-quote {
+  margin: 0;
+  font-size: var(--text-ui-xs);
+  color: var(--muted);
+  border-left: 2px solid var(--line-strong);
+  padding-left: 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.ann-danger-btn {
+  color: var(--danger);
+}
+

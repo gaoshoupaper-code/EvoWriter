@@ -122,6 +122,17 @@ def test_create_annotation_persists_pending(tmp_path: Path):
     assert (tmp_path / ANNOTATIONS_FILE).is_file()
 
 
+def test_create_custom_without_label_name(tmp_path: Path):
+    """自定义免标签名（修订 2026-10-27）：只写意见即可；意见标签名全空才拒。"""
+    _seed_five_book(tmp_path)
+    ann = create_annotation(
+        tmp_path, _req("总纲.md", "第二段独立文字", label=LABEL_CUSTOM, note="这句莫名其妙")
+    )
+    assert ann.label == "custom" and ann.custom_label is None and ann.note == "这句莫名其妙"
+    with pytest.raises(ValueError, match="意见"):
+        create_annotation(tmp_path, _req("总纲.md", "第二段独立文字", label=LABEL_CUSTOM))
+
+
 def test_create_rejects_ambiguous_and_missing(tmp_path: Path):
     _seed_five_book(tmp_path)
     dup = "他一挥手，法则之力倾泻而下，把追兵尽数轰飞。"

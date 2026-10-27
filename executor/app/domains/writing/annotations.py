@@ -158,8 +158,9 @@ def create_annotation(workspace: Path, req: AnnotationCreateRequest) -> Annotati
         raise ValueError(f"该产物不支持标注（范围：总纲/文风/卷纲/章纲/正文；主题与旧工作区除外）：{req.artifact_rel}")
     if req.label not in LABELS:
         raise ValueError(f"label 只能是 {'/'.join(sorted(LABELS))}")
-    if req.label == LABEL_CUSTOM and not (req.custom_label or "").strip():
-        raise ValueError("自定义标签必须填写标签名")
+    # 自定义标注免标签名（修订 2026-10-27）：意见即指令——两者都空才拒
+    if req.label == LABEL_CUSTOM and not (req.custom_label or "").strip() and not (req.note or "").strip():
+        raise ValueError("自定义标注要写一句意见")
     file_text = _read_artifact(workspace, req.artifact_rel)
     if file_text is None:
         raise ValueError(f"产物文件不存在：{req.artifact_rel}")

@@ -41,6 +41,7 @@ from app.schemas.screenplay import (
     WorkspaceSummary,
     WorkspaceWorldviewContent,
     WritingStageUpdateRequest,
+    WritingStageAdvanceRequest,
     WritingModeUpdateRequest,
 )
 
@@ -357,6 +358,47 @@ def update_writing_stage(
     state = load_writing_state(workspace_path)
     state.confirmed_stage = payload.stage
     state.stage = payload.stage
+    save_writing_state(workspace_path, state)
+    return pipeline_status(workspace_path)
+
+
+@router.post("/workspaces/{workspace_id}/writing/stage/advance")
+def advance_writing_stage(
+    workspace_id: str, payload: WritingStageAdvanceRequest,
+    user: CurrentUser = Depends(current_user),
+) -> dict:
+    """段审确认后的循环切段（自动模式段间推进）——按创作循环推导下一段。
+
+    界面「确认通过」动作调用（人工确认语义，仍走人工段指针唯一通道）：
+    一卷卷纲确认 → 章纲；一批章纲确认 → 正文；正文库存尽 → 回章纲；
+    本卷章纲齐 → 下一卷卷纲（next_stage_on_confirm，区别于线性五段）。
+    trace_id 幂等：同一待审 trace 重复推进 no-op（重试不二次跳段）。
+    """
+    from app.domains.writing.pipeline import classify_workspace, current_stage, pipeline_status
+    from contracts.writing_artifacts import (
+        STAGE_LABELS, load_writing_state, next_stage_on_confirm, save_writing_state,
+    )
+
+    thread_store = get_thread_store()
+    workspace = thread_store.get_workspace(user.user_id, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace_path = Path(workspace.workspace_path)
+    if classify_workspace(workspace_path) == "legacy":
+        raise HTTPException(status_code=409, detail="旧版工作区只读，不支持切段")
+    state = load_writing_state(workspace_path)
+    if payload.trace_id and state.last_stage_advance.get("trace_id") == payload.trace_id:
+        return pipeline_status(workspace_path)
+    current = (
+        state.confirmed_stage if state.confirmed_stage in STAGE_LABELS
+        else current_stage(workspace_path)
+    )
+    nxt = next_stage_on_confirm(workspace_path, current)
+    state.confirmed_stage = nxt
+    state.stage = nxt
+    state.last_stage_advance = {
+        "trace_id": payload.trace_id, "from": current, "to": nxt,
+    }
     save_writing_state(workspace_path, state)
     return pipeline_status(workspace_path)
 

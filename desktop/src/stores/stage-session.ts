@@ -29,6 +29,7 @@ import {
   fetchWorkspaceOutline,
   fetchWritingMode,
   updateWritingStage,
+  advanceWritingStage,
   updateWritingMode,
 } from "@/lib/api";
 import { notifyStageReady } from "@/lib/notify";
@@ -117,6 +118,12 @@ interface StageSessionState {
   hydrateModes: (workspaceId: string) => Promise<void>;
   /** 模式开关（唯一写通道）：写服务端并本地对齐；失败 toast 不改本地 */
   toggleStageMode: (workspaceId: string, stage: string) => Promise<void>;
+  /**
+   * 段审确认循环推进（stage 审查卡「确认通过」时、resume 前调用）：
+   * 服务端按创作循环推导下一段写指针；本地对齐相位 + 重绑当前会话到新段
+   * （自动模式一条会话滚动跨段，不切新会话）。失败返回 false（不续跑可重试）。
+   */
+  confirmStageReviewAdvance: (workspaceId: string, traceId: string) => Promise<boolean>;
 
   /** 启动/切书时恢复该工作区全部会话的阶段归属（FR-012）。 */
   hydrateForWorkspace: (workspaceId: string) => Promise<void>;
@@ -175,6 +182,24 @@ export const useStageSessionStore = create<StageSessionState>((set, get) => ({
       });
     } catch (toggleError) {
       toast.error(toggleError instanceof Error ? toggleError.message : "模式切换失败，请重试。");
+    }
+  },
+
+  confirmStageReviewAdvance: async (workspaceId, traceId) => {
+    try {
+      const status = await advanceWritingStage(workspaceId, traceId);
+      if (status) {
+        // 相位即时对齐（resume 装配读新指针，本地条形不能滞后）+ 就绪边沿重置
+        useContentStore.getState().setOutlinePipeline(status);
+        readyEdge.set(workspaceId, status.ready?.ready === true);
+        // 自动模式一条会话滚动跨段：重绑到新段，避免 syncWithPipeline 误挂恢复卡
+        const activeThreadId = useWorkspaceStore.getState().activeThreadId;
+        if (activeThreadId) get().bindThreadStage(workspaceId, activeThreadId, status.phase);
+      }
+      return true;
+    } catch (advanceError) {
+      toast.error(advanceError instanceof Error ? advanceError.message : "段间推进失败，请重试。");
+      return false;
     }
   },
 

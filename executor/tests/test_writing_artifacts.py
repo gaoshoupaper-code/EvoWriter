@@ -36,6 +36,7 @@ from contracts.writing_artifacts import (
     artifact_relpath,
     classify_writing_workspace,
     derive_stage,
+    next_stage_on_confirm,
     parse_manuscript_status,
     parse_relpath,
     load_writing_state,
@@ -213,6 +214,84 @@ def test_stage_outline_when_master_final_but_incomplete(tmp_path: Path) -> None:
     prog = scan_writing_progress(tmp_path)
     assert prog.outline_done is False
     assert derive_stage(prog) == STAGE_OUTLINE
+
+
+# ── next_stage_on_confirm（段审确认循环推进，2026-10-27 卷纲连写 bug）──
+
+MASTER_FINAL_3V = MASTER_FINAL.replace(
+    "| 二 | 保住小队 | 城区 | 连长 | 反杀 |",
+    "| 二 | 保住小队 | 城区 | 连长 | 反杀 |\n| 三 | 夺回矿区 | 矿区 | 矿主 | 破局 |",
+)
+
+
+def _seed_loop_book(ws: Path) -> None:
+    """3 卷计划：第 1 卷 3 章全部写完，第 2 卷卷纲刚定稿（待进章纲）。
+
+    该形态下 derive_stage 推回 STAGE_VOLUME（outlined==written 盲区）——
+    正是段审确认后 agent 连写下一卷的线上 bug 场景。
+    """
+    _touch(ws, "主题.md", THEME_FINAL)
+    _touch(ws, "总纲.md", MASTER_FINAL_3V)
+    _touch(ws, "卷纲/第01卷.md", VOLUME_FINAL)
+    _touch(ws, "卷纲/第02卷.md", VOLUME_FINAL)
+    for n in (1, 2, 3):
+        _touch(ws, f"章纲/第{n:03d}章.md")
+        _touch(ws, f"正文/第{n:03d}章完.md", f"# 第{n:03d}章 · 完\n> 状态：人修定稿\n")
+
+
+def test_confirm_advance_volume_goes_chapter_not_next_volume(tmp_path: Path) -> None:
+    """回归锚：第 2 卷卷纲确认 → 进章纲，不按 derive_stage 留在卷纲连写第 3 卷。"""
+    _seed_loop_book(tmp_path)
+    assert derive_stage(scan_writing_progress(tmp_path)) == STAGE_VOLUME  # 盲区复现
+    assert next_stage_on_confirm(tmp_path, STAGE_VOLUME) == STAGE_CHAPTER
+
+
+def test_confirm_advance_volume_without_final_volume_stays(tmp_path: Path) -> None:
+    """防御：卷纲段无定稿卷（提前交审）→ 留在卷纲。"""
+    _touch(tmp_path, "主题.md", THEME_FINAL)
+    _touch(tmp_path, "总纲.md", MASTER_FINAL)
+    assert next_stage_on_confirm(tmp_path, STAGE_VOLUME) == STAGE_VOLUME
+
+
+def test_confirm_advance_chapter_with_stock_goes_text(tmp_path: Path) -> None:
+    """一批章纲确认（库存>0）→ 进正文。"""
+    _seed_loop_book(tmp_path)
+    for n in (4, 5):
+        _touch(tmp_path, f"章纲/第{n:03d}章.md")
+    assert next_stage_on_confirm(tmp_path, STAGE_CHAPTER) == STAGE_TEXT
+
+
+def test_confirm_advance_chapter_stock_out_goes_next_volume(tmp_path: Path) -> None:
+    """本卷章纲齐确认（库存=0、还有卷）→ 回卷纲做下一卷。"""
+    _seed_loop_book(tmp_path)
+    assert next_stage_on_confirm(tmp_path, STAGE_CHAPTER) == STAGE_VOLUME
+
+
+def test_confirm_advance_chapter_stock_out_all_volumes_stays(tmp_path: Path) -> None:
+    """末卷章纲齐确认（库存=0、卷全齐）→ 留章纲（全书收尾滚动）。"""
+    _seed_loop_book(tmp_path)
+    _touch(tmp_path, "卷纲/第03卷.md", VOLUME_FINAL)
+    assert next_stage_on_confirm(tmp_path, STAGE_CHAPTER) == STAGE_CHAPTER
+
+
+def test_confirm_advance_text_stock_out_back_to_chapter(tmp_path: Path) -> None:
+    """正文库存尽确认 → 回章纲补纲。"""
+    _seed_loop_book(tmp_path)
+    assert next_stage_on_confirm(tmp_path, STAGE_TEXT) == STAGE_CHAPTER
+
+
+def test_confirm_advance_text_with_stock_stays(tmp_path: Path) -> None:
+    """正文段停审但库存仍足（卡点上报类）→ 留正文。"""
+    _seed_loop_book(tmp_path)
+    for n in (4, 5):
+        _touch(tmp_path, f"章纲/第{n:03d}章.md")
+    assert next_stage_on_confirm(tmp_path, STAGE_TEXT) == STAGE_TEXT
+
+
+def test_confirm_advance_theme_outline_passthrough(tmp_path: Path) -> None:
+    """题材/总纲不经段审通道 → 原样返回。"""
+    assert next_stage_on_confirm(tmp_path, STAGE_THEME) == STAGE_THEME
+    assert next_stage_on_confirm(tmp_path, STAGE_OUTLINE) == STAGE_OUTLINE
 
 
 # ── 定稿闸（REQ-20261019-183150 FR-001/002；主线脉络事故回归锚）──

@@ -443,6 +443,35 @@ def derive_stage(prog: WritingProgress) -> str:
     return STAGE_CHAPTER
 
 
+def next_stage_on_confirm(workspace_path: Path, current: str) -> str:
+    """段产物审查确认后的循环推进目标段（一卷→一批章纲→一批正文→回章纲…→下一卷）。
+
+    与 derive_stage（纯产物推导）的区别：derive_stage 在「上一卷正文写完、
+    新一卷卷纲刚定稿」时看不到章纲事实差异（outlined==written 两种场景同形），
+    会把指针留在卷纲段——自动模式段审确认后 agent 继续写下一卷（2026-10-27
+    线上 bug）。本函数按「确认时所在段」定向推进：
+
+      volume  → chapter（一卷交审通过即进章纲摊本卷；无定稿卷时留卷纲）
+      chapter → 细纲库存>0 → text；库存=0 → 还有卷 → volume（本卷章纲齐，
+                进下一卷），否则留在 chapter
+      text    → 库存=0 → chapter（回章纲补纲）；库存>0 → 留在 text
+      theme/outline 原样返回（不经段审通道）
+    """
+    if current == STAGE_VOLUME:
+        prog = scan_writing_progress(Path(workspace_path))
+        return STAGE_CHAPTER if prog.volumes else STAGE_VOLUME
+    if current not in (STAGE_CHAPTER, STAGE_TEXT):
+        return current
+    prog = scan_writing_progress(Path(workspace_path))
+    stock = set(prog.chapter_outlines) - set(prog.chapter_texts)
+    if current == STAGE_TEXT:
+        return STAGE_CHAPTER if not stock else STAGE_TEXT
+    if stock:
+        return STAGE_TEXT
+    total = prog.outline_volumes or ((prog.volumes[-1] + 1) if prog.volumes else 1)
+    return STAGE_VOLUME if len(prog.volumes) < total else STAGE_CHAPTER
+
+
 # ── 创作双模式（REQ-20261026-191719 DEC-001/002/013）────────────────
 MODE_INTERACTIVE = "interactive"   # 逐步确认（现状行为）
 MODE_AUTO = "auto"                 # 自动完成（段内不提问，只在停等点停）
@@ -525,6 +554,11 @@ class WritingState(BaseModel):
     text_batch_size: int = Field(
         default=DEFAULT_TEXT_BATCH_SIZE,
         description="正文批次章数（FR-003/DEC-007）：批次审查卡现场指定后回写，首批缺省 5",
+    )
+    last_stage_advance: dict[str, str] = Field(
+        default_factory=dict,
+        description="段审循环推进幂等标记：{trace_id, from, to}——同一待审 trace 的"
+        "「确认通过」只推进一次（网络重试不二次跳段）；单槽，只留最近一次",
     )
     updated_at: str = ""
 
@@ -614,6 +648,7 @@ __all__ = [
     "derive_stage",
     "is_final_status",
     "load_writing_state",
+    "next_stage_on_confirm",
     "resolve_confirmed_stage",
     "parse_manuscript_status",
     "parse_relpath",

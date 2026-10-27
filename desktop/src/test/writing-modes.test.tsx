@@ -11,6 +11,7 @@ import userEvent from "@testing-library/user-event";
 import { ChatPanel } from "@/components/workspace/ChatPanel";
 import { useStageSessionStore } from "@/stores/stage-session";
 import { useContentStore } from "@/stores/content";
+import { useWorkspaceStore } from "@/stores/workspace";
 import type { ChatMessage } from "@/lib/types";
 
 function baseProps() {
@@ -118,5 +119,64 @@ describe("ReviewCard 停等卡", () => {
     };
     render(<ChatPanel {...baseProps()} messages={[msg]} />);
     expect(screen.getByTestId("auto-answer-list").textContent).toContain("选 A 还是 B");
+  });
+});
+
+describe("ReviewCard 段审确认循环推进（2026-10-27 卷纲连写 bug 修复）", () => {
+  beforeEach(() => {
+    useContentStore.setState({ outlinePipeline: null });
+    useStageSessionStore.setState({
+      stageModes: null,
+      autoEligibleStages: [],
+      batchSize: 5,
+      lastBatchUsage: null,
+    });
+    useWorkspaceStore.setState({ activeWorkspaceId: "ws-1" } as never);
+  });
+
+  it("段审卡确认通过：先切段推进，再续跑 resume", async () => {
+    const advance = vi.fn().mockResolvedValue(true);
+    useStageSessionStore.setState({ confirmStageReviewAdvance: advance });
+    const props = baseProps();
+    render(<ChatPanel {...props} messages={[reviewMessage("stage")]} />);
+    await userEvent.click(await screen.findByRole("button", { name: "确认通过" }));
+    expect(advance).toHaveBeenCalledWith("ws-1", "");
+    expect(props.onResumeSubmit).toHaveBeenCalledWith("确认通过");
+  });
+
+  it("段审卡推进失败：不续跑，卡片解锁可重试", async () => {
+    const advance = vi.fn().mockResolvedValue(false);
+    useStageSessionStore.setState({ confirmStageReviewAdvance: advance });
+    const props = baseProps();
+    render(<ChatPanel {...props} messages={[reviewMessage("stage")]} />);
+    await userEvent.click(await screen.findByRole("button", { name: "确认通过" }));
+    expect(advance).toHaveBeenCalled();
+    expect(props.onResumeSubmit).not.toHaveBeenCalled();
+    // 解锁重试：再次点击仍走完整链路
+    await userEvent.click(screen.getByRole("button", { name: "确认通过" }));
+    expect(advance).toHaveBeenCalledTimes(2);
+  });
+
+  it("段审卡打回：不推进段，直接 resume 意见", async () => {
+    const advance = vi.fn().mockResolvedValue(true);
+    useStageSessionStore.setState({ confirmStageReviewAdvance: advance });
+    const props = baseProps();
+    render(<ChatPanel {...props} messages={[reviewMessage("stage")]} />);
+    await userEvent.click(await screen.findByRole("button", { name: "打回修改" }));
+    const textarea = await screen.findByPlaceholderText(/打回意见/);
+    await userEvent.type(textarea, "钩子不够劲");
+    await userEvent.click(screen.getByRole("button", { name: "提交打回" }));
+    expect(advance).not.toHaveBeenCalled();
+    expect(props.onResumeSubmit).toHaveBeenCalledWith("打回：钩子不够劲");
+  });
+
+  it("文风卡确认通过：不推进段（留在章纲段继续）", async () => {
+    const advance = vi.fn().mockResolvedValue(true);
+    useStageSessionStore.setState({ confirmStageReviewAdvance: advance });
+    const props = baseProps();
+    render(<ChatPanel {...props} messages={[reviewMessage("style")]} />);
+    await userEvent.click(await screen.findByRole("button", { name: "确认通过" }));
+    expect(advance).not.toHaveBeenCalled();
+    expect(props.onResumeSubmit).toHaveBeenCalledWith("确认通过");
   });
 });

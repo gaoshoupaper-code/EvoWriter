@@ -211,6 +211,16 @@ class WritingStageUpdateRequest(BaseModel):
     stage: str = Field(description="目标大段：theme/outline/volume/chapter/text")
 
 
+class WritingStageAdvanceRequest(BaseModel):
+    """段审确认循环推进请求（自动模式「确认通过」时由界面调用）。
+
+    trace_id 是待审 run 的幂等键：同一 trace 重复推进为 no-op
+    （resume 网络重试不得二次跳段）。
+    """
+
+    trace_id: str = Field(default="", description="待审 trace_id（幂等键）")
+
+
 class WritingModeUpdateRequest(BaseModel):
     """段级创作模式写入请求（REQ-20261026-191719 FR-008）。
 

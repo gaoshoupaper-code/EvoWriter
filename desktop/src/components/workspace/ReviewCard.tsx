@@ -10,6 +10,8 @@
  * 提交走 resume 通道（与访谈拍板同一 submit 路径，带 trace_id）：
  * 「继续写 N 章」「确认通过」「打回：<意见>」——agent 按提示词语义消化。
  * N 通过 mode 端点一并回写服务端（DEC-007：批次大小持久化，directive 注入）。
+ * stage 卡「确认通过」先走段审循环推进（服务端按一卷→章纲→正文→…循环切
+ * 指针，resume 后 agent 即按新段规程开工），推进失败不续跑、卡片解锁可重试。
  */
 import { useState } from "react";
 import { useStageSessionStore } from "@/stores/stage-session";
@@ -20,6 +22,8 @@ type ReviewCardProps = {
   reviewKind: "batch" | "style" | "stage";
   onSubmit: (resume: string) => Promise<void>;
   disabled?: boolean;
+  /** 待审 run 的 trace_id（stage 确认推进段的幂等键） */
+  traceId?: string;
 };
 
 const KIND_TITLES: Record<ReviewCardProps["reviewKind"], string> = {
@@ -28,10 +32,11 @@ const KIND_TITLES: Record<ReviewCardProps["reviewKind"], string> = {
   stage: "本段产物已齐，请审查",
 };
 
-export function ReviewCard({ reviewKind, onSubmit, disabled }: ReviewCardProps) {
+export function ReviewCard({ reviewKind, onSubmit, disabled, traceId }: ReviewCardProps) {
   const batchSize = useStageSessionStore((s) => s.batchSize);
   const lastBatchUsage = useStageSessionStore((s) => s.lastBatchUsage);
   const hydrateModes = useStageSessionStore((s) => s.hydrateModes);
+  const confirmStageAdvance = useStageSessionStore((s) => s.confirmStageReviewAdvance);
   const workspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const [nextN, setNextN] = useState(String(batchSize));
   const [rejectOpen, setRejectOpen] = useState(false);
@@ -40,7 +45,7 @@ export function ReviewCard({ reviewKind, onSubmit, disabled }: ReviewCardProps) 
 
   const locked = disabled || submitted;
 
-  async function submit(resume: string, batchN?: number) {
+  async function submit(resume: string, batchN?: number, stageAdvance = false) {
     if (locked) return;
     setSubmitted(true);
     // 批次 N 回写服务端（DEC-007）：下一轮 directive 读到新批次大小
@@ -50,6 +55,14 @@ export function ReviewCard({ reviewKind, onSubmit, disabled }: ReviewCardProps) 
         void hydrateModes(workspaceId);
       } catch {
         /* 回写失败不阻塞续跑（directive 兜底默认值） */
+      }
+    }
+    // stage 确认先切段（resume 装配读新指针）；失败解锁重试，不带旧段续跑
+    if (stageAdvance && workspaceId) {
+      const ok = await confirmStageAdvance(workspaceId, traceId ?? "");
+      if (!ok) {
+        setSubmitted(false);
+        return;
       }
     }
     try {
@@ -108,7 +121,7 @@ export function ReviewCard({ reviewKind, onSubmit, disabled }: ReviewCardProps) 
             type="button"
             className="review-primary"
             disabled={locked}
-            onClick={() => void submit("确认通过")}
+            onClick={() => void submit("确认通过", undefined, reviewKind === "stage")}
           >
             确认通过
           </button>

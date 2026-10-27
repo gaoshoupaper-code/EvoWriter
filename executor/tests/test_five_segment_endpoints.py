@@ -170,3 +170,66 @@ def test_stage_pointer_rejects_invalid_and_legacy(client: TestClient, tmp_path: 
     assert resp.status_code == 409
     resp = client.put("/workspaces/ws2/writing/stage", json={"stage": "theme"})
     assert resp.status_code == 404
+
+
+# ── 段审循环推进端点（2026-10-27 自动模式卷纲连写 bug 修复）────────
+
+
+def _seed_confirm_loop_book(ws: Path) -> None:
+    """3 卷计划：第 1 卷 3 章写完，第 2 卷卷纲刚定稿（确认后应进章纲）。"""
+    (ws / "卷纲").mkdir(exist_ok=True)
+    (ws / "章纲").mkdir(exist_ok=True)
+    (ws / "正文").mkdir(exist_ok=True)
+    (ws / "主题.md").write_text(
+        "# 主题 · 书\n> 状态：定稿\n\n## 一句话主题\nx\n\n## 约束级\n"
+        "### 核心爽点\nx\n### 核心矛盾\nx\n### 核心爽点剧情\nx\n", encoding="utf-8",
+    )
+    (ws / "总纲.md").write_text(
+        "# 总纲 · 书\n> 状态：定稿\n\n## 核心纲\n\n"
+        "| 卷 | 小目标 | 地图 | BOSS | 关键节点 |\n|---|---|---|---|---|\n"
+        "| 一 | 活下去 | 垃圾场 | 工头 | 捡神器 |\n"
+        "| 二 | 保住小队 | 城区 | 连长 | 反杀 |\n"
+        "| 三 | 夺回矿区 | 矿区 | 矿主 | 破局 |\n", encoding="utf-8",
+    )
+    vol = (
+        "# 卷纲 · 第 1 卷 · 活下去\n> 状态：定稿\n\n| 卷末超大爽点 | 捡到首件神器 |\n|---|---|\n"
+        "## 发展阶段\n阶段表\n## 爽点节奏表\n节奏表\n## 爽点质检表\n质检表\n## 卷末钩子\n钩子\n"
+    )
+    (ws / "卷纲" / "第01卷.md").write_text(vol, encoding="utf-8")
+    (ws / "卷纲" / "第02卷.md").write_text(vol, encoding="utf-8")
+    for n in (1, 2, 3):
+        (ws / "章纲" / f"第{n:03d}章.md").write_text("# 章纲\n", encoding="utf-8")
+        (ws / "正文" / f"第{n:03d}章完.md").write_text(
+            f"# 第{n:03d}章 · 完\n> 状态：人修定稿\n", encoding="utf-8",
+        )
+
+
+def test_stage_advance_loop_roundtrip(client: TestClient, tmp_path: Path) -> None:
+    """卷纲段审确认 → 进章纲（不连写下一卷）；trace_id 幂等重放 no-op。"""
+    from contracts.writing_artifacts import load_writing_state
+
+    _seed_confirm_loop_book(tmp_path)
+    assert client.put("/workspaces/ws1/writing/stage", json={"stage": "volume"}).status_code == 200
+    resp = client.post("/workspaces/ws1/writing/stage/advance", json={"trace_id": "tr-1"})
+    assert resp.status_code == 200
+    assert resp.json()["phase"] == "chapter"
+    state = load_writing_state(tmp_path)
+    assert state.confirmed_stage == "chapter"
+    assert state.last_stage_advance["trace_id"] == "tr-1"
+    assert state.last_stage_advance["from"] == "volume"
+    # 同一待审 trace 重放（resume 网络重试）→ no-op，不二次跳段
+    resp = client.post("/workspaces/ws1/writing/stage/advance", json={"trace_id": "tr-1"})
+    assert resp.status_code == 200
+    assert resp.json()["phase"] == "chapter"
+    # 新一段的确认（新 trace）：章纲批已落盘 → 进正文
+    (tmp_path / "章纲" / "第004章.md").write_text("# 章纲\n", encoding="utf-8")
+    resp = client.post("/workspaces/ws1/writing/stage/advance", json={"trace_id": "tr-2"})
+    assert resp.json()["phase"] == "text"
+
+
+def test_stage_advance_rejects_legacy_and_missing(client: TestClient, tmp_path: Path) -> None:
+    _seed_confirm_loop_book(tmp_path)
+    assert client.post("/workspaces/ws2/writing/stage/advance", json={"trace_id": "t"}).status_code == 404
+    (tmp_path / "storyline.md").write_text("旧五件套", encoding="utf-8")
+    resp = client.post("/workspaces/ws1/writing/stage/advance", json={"trace_id": "t"})
+    assert resp.status_code == 409

@@ -492,6 +492,22 @@ export async function updateWritingStage(workspaceId: string, stage: string) {
   );
 }
 
+/**
+ * 段审确认循环推进（自动模式「确认通过」时调用）——服务端按创作循环
+ * （一卷→一批章纲→一批正文→回章纲…→下一卷）推导下一段并写指针。
+ * trace_id 是幂等键：同一待审 trace 重复推进 no-op（重试不二次跳段）。
+ */
+export async function advanceWritingStage(workspaceId: string, traceId: string) {
+  return apiJson<import("./types").PipelineStatus>(
+    `${API_BASE_URL}/api/workspaces/${workspaceId}/writing/stage/advance`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ trace_id: traceId }),
+    },
+  );
+}
+
 /** 段级创作模式快照（REQ-20261026-191719 FR-008/FR-011）。 */
 export type WritingModeInfo = {
   stage_modes: Record<string, string>;

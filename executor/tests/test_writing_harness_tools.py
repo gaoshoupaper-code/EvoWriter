@@ -458,6 +458,60 @@ def test_stage_gate_build_legacy_denies_all_writes(tmp_path: Path) -> None:
     gate = sg_mod.build(abc)
     for kind in ("theme", "outline", "volume_outline", "chapter_outline", "chapter_text", "style"):
         assert gate._maybe_block(_req("save_artifact", kind=kind)) is not None
+
+
+# ── stage_gate 标注任务放行（REQ-20261027-213246 FR-005/DEC-004）──
+
+
+def _write_annotations(ws: Path, items: list[dict]) -> None:
+    import json as _json
+
+    ann_dir = ws / ".writing"
+    ann_dir.mkdir(parents=True, exist_ok=True)
+    (ann_dir / "annotations.json").write_text(
+        _json.dumps({"version": 1, "annotations": items}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
+def test_annotation_task_kinds_reads_dispatched_pending(tmp_path: Path) -> None:
+    """放行集 = 已进任务包且仍待处理的标注所属 kind；其余不计。"""
+    from harness_current.middleware.stage_gate import annotation_task_kinds
+
+    _write_annotations(tmp_path, [
+        {"artifact_rel": "总纲.md", "status": "pending", "dispatched": True},
+        {"artifact_rel": "卷纲/第01卷.md", "status": "pending", "dispatched": True},
+        {"artifact_rel": "文风.md", "status": "pending", "dispatched": False},   # 未派发
+        {"artifact_rel": "正文/第001章开局.md", "status": "resolved", "dispatched": True},  # 已解决
+        {"artifact_rel": "主题.md", "status": "pending", "dispatched": True},    # 范围外（parse None）
+    ])
+    assert annotation_task_kinds(tmp_path) == {"outline", "volume_outline"}
+    # 文件缺失 → 空集（闸门语义不变）
+    empty = tmp_path / "empty-ws"
+    empty.mkdir()
+    assert annotation_task_kinds(empty) == set()
+
+
+def test_stage_gate_annotation_widening_edit_only(tmp_path: Path) -> None:
+    """正文段处理标注任务：任务包内 kind 的锚点 edit 放行，full 仍拦。"""
+    import harness_current.middleware.stage_gate as sg_mod
+
+    _write_annotations(tmp_path, [
+        {"artifact_rel": "总纲.md", "status": "pending", "dispatched": True},
+    ])
+    abc = SimpleNamespace(workspace_path=tmp_path)
+    gate = sg_mod.build(abc)
+    assert gate.stage == "theme"  # 空工作区目录扫描兜底段；不影响断言口径
+    # theme 段上：outline 属任务包 → 锚点 edit 放行、full 拦截
+    assert gate._maybe_block(
+        _req("save_artifact", kind="outline", mode="edit", anchor="a", replacement="b")
+    ) is None
+    blocked_full = gate._maybe_block(
+        _req("save_artifact", kind="outline", mode="full", content="x")
+    )
+    assert blocked_full is not None and "阶段闸" in blocked_full.content
+    # 任务包外 kind（text）照拦
+    assert gate._maybe_block(_req("save_artifact", kind="chapter_text")) is not None
     assert gate._maybe_block(_req("update_foreshadow_table")) is not None
     assert gate._maybe_block(_req("read_artifact", kind="theme")) is None  # 读不拦
 

@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 REWRITE_RHYTHM_TOOL_DESCRIPTION = """回写某卷卷纲的爽点节奏表（仅章纲阶段可用；分区更新，不动卷纲其余内容）。
 
 摊章区间因弹性变动（某段占 5 章而非 4 章等）时，用 table 提交该卷完整的
-新节奏表（按章区间排），整表替换卷纲的「节奏」小节并注明摊章日期。"""
+新节奏表（逐章排，爽点＋压抑双供给），整表替换卷纲的「节奏」小节并注明摊章日期。"""
 
 
 class RewriteRhythmInput(BaseModel):

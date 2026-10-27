@@ -263,6 +263,22 @@ class AnnotationDispatchResponse(BaseModel):
     invalidated: int = Field(default=0, description="发出前复验剔除（转已失效）的条数")
 
 
+class ArtifactRedoDeleteRequest(BaseModel):
+    """定稿产物删除重做请求（2026-10-28 修订：仅最下游的总纲/卷纲）。"""
+
+    rel: str = Field(min_length=1, description="总纲.md 或 卷纲/第NN卷.md")
+
+
+class ArtifactRedoDeleteResponse(BaseModel):
+    status: str = "ok"
+    deleted: str = Field(description="被删除的产物 rel")
+    trash_rel: str = Field(description="回收暂存路径（.writing/trash/…，误删人工找回）")
+    removed_annotations: int = Field(default=0, description="随产物清除的标注条数")
+    stage_reset_to: str | None = Field(default=None, description="段指针回落到的段（未回落为 None）")
+    stage_label: str = Field(description="重做起始段的中文标签")
+    pipeline: dict[str, Any] = Field(default_factory=dict, description="最新 pipeline_status")
+
+
 class WritingStageUpdateRequest(BaseModel):
     """人工段指针写入请求（REQ-20260919-232617 FR-002/004）。
 

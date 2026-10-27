@@ -30,6 +30,8 @@ from app.schemas.screenplay import (
     AnnotationDispatchResponse,
     AnnotationsListResponse,
     AnnotationUpdateRequest,
+    ArtifactRedoDeleteRequest,
+    ArtifactRedoDeleteResponse,
     OutlineFileEntry,
     PanoramaEvent,
     HookProgress,
@@ -670,6 +672,34 @@ def dispatch_annotations(
     return AnnotationDispatchResponse(
         message=message, annotation_ids=annotation_ids, invalidated=invalidated
     )
+
+
+@router.post("/workspaces/{workspace_id}/artifact/delete", response_model=ArtifactRedoDeleteResponse)
+def delete_artifact_for_redo(
+    workspace_id: str, payload: ArtifactRedoDeleteRequest,
+    user: CurrentUser = Depends(current_user),
+) -> ArtifactRedoDeleteResponse:
+    """定稿产物删除重做（2026-10-28 修订）——仅最下游的总纲/卷纲。
+
+    界面显式确认后调用：文件移入 .writing/trash/ 暂存、清除该产物标注、
+    段指针在下游时回落（总纲→总纲段，卷纲→卷纲段），流水线自然重走。
+    """
+    from app.domains.writing.pipeline import classify_workspace, pipeline_status
+    from app.domains.writing.artifact_redo import delete_artifact_for_redo as _delete
+
+    thread_store = get_thread_store()
+    workspace = thread_store.get_workspace(user.user_id, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace_path = Path(workspace.workspace_path)
+    if classify_workspace(workspace_path) == "legacy":
+        raise HTTPException(status_code=409, detail="旧版工作区只读，不支持删除重做")
+    try:
+        result = _delete(workspace_path, payload.rel)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    result["pipeline"] = pipeline_status(workspace_path)
+    return ArtifactRedoDeleteResponse(**result)
 
 
 @router.get("/workspaces/{workspace_id}/watch")

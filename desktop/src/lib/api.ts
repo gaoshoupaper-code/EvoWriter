@@ -849,6 +849,23 @@ export async function dispatchAnnotations(workspaceId: string) {
   );
 }
 
+/** 定稿产物删除重做（2026-10-28 修订）——仅最下游的总纲/卷纲。 */
+export async function deleteArtifactForRedo(workspaceId: string, rel: string) {
+  return _annotationRequest<{
+    status: string;
+    deleted: string;
+    trash_rel: string;
+    removed_annotations: number;
+    stage_reset_to: string | null;
+    stage_label: string;
+    pipeline: import("./types").PipelineStatus;
+  }>(`${API_BASE_URL}/api/workspaces/${workspaceId}/artifact/delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rel }),
+  });
+}
+
 // ── 用户自定义写作技能（REQ-20261023-000000 / REQ-20261025-205943：
 //    库 CRUD + 按书启用；技能带阶段归属，每段 ≤5 条）──────────────
 

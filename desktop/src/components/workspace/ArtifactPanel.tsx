@@ -16,12 +16,16 @@ import remarkBreaks from "remark-breaks";
 import { markdownTableComponents } from "../../lib/markdown-components";
 import type { OutlineFileEntry, PipelineStatus } from "../../lib/types";
 import { annotationRelAllowed } from "@/lib/annotations";
+import { redoEligibility, redoTargetKind } from "@/lib/artifact-redo";
+import { deleteArtifactForRedo } from "@/lib/api";
+import { refreshWorkspaceContent } from "@/lib/usePanelPolling";
 import { useAnnotationsStore } from "@/stores/annotations";
 import { useExecutionStore } from "@/stores/execution";
 import { PipelineStageBar } from "./PipelineStageBar";
 import { ManuscriptEditor } from "./ManuscriptEditor";
 import { AnnotationHost } from "./annotations/AnnotationHost";
 import { AnnotationDrawer } from "./annotations/AnnotationDrawer";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { useStageSessionStore } from "@/stores/stage-session";
 
@@ -63,6 +67,14 @@ export function ArtifactPanel({
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [dispatching, setDispatching] = useState(false);
   const [reanchorTarget, setReanchorTarget] = useState<string | null>(null);
+  // 删除重做（2026-10-28 修订）：仅总纲/卷纲；服务端做最下游权威校验
+  const loading = useExecutionStore((s) => s.loading);
+  const [redoOpen, setRedoOpen] = useState(false);
+  const [redoBusy, setRedoBusy] = useState(false);
+  const redo = useMemo(
+    () => (active && fiveKind && redoTargetKind(active.rel) ? redoEligibility(active.rel, files) : null),
+    [active, fiveKind, files],
+  );
 
   // 产物树变化（轮询/watch 推送）时刷新标注状态——服务端读前做锚点复验
   const filesSignature = useMemo(
@@ -110,6 +122,22 @@ export function ArtifactPanel({
     toast.info(`请在「${relLabel(ann.artifact_rel)}」里划选新的文字段落`);
   };
 
+  /** 删除重做确认后执行：删文件→回段重走，产物树与标注随刷新更新。 */
+  const handleRedoConfirm = async () => {
+    if (!active) return;
+    setRedoBusy(true);
+    try {
+      const result = await deleteArtifactForRedo(workspaceId, active.rel);
+      toast.success(`已删除「${relLabel(result.deleted)}」，回到${result.stage_label}重做`);
+      setRedoOpen(false);
+      await refreshWorkspaceContent(workspaceId);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "删除失败，请重试");
+    } finally {
+      setRedoBusy(false);
+    }
+  };
+
   return (
     <section className="panel-surface content-panel" aria-label="作品产物">
       <div className="panel-heading">
@@ -118,6 +146,23 @@ export function ArtifactPanel({
           <h2>作品产物</h2>
         </div>
         <div className="panel-heading-actions">
+          {redo ? (
+            <button
+              type="button"
+              className={`panel-redo-entry${redo.eligible ? "" : " disabled"}`}
+              disabled={!redo.eligible || loading || redoBusy}
+              title={
+                !redo.eligible
+                  ? redo.reason
+                  : loading
+                    ? "生成中不可删除，等本轮结束再操作"
+                    : "删除该定稿产物并回到对应段重做（二次确认）"
+              }
+              onClick={() => setRedoOpen(true)}
+            >
+              删除重做
+            </button>
+          ) : null}
           {fiveKind ? (
             <button
               type="button"
@@ -201,6 +246,19 @@ export function ArtifactPanel({
         onClose={() => setDrawerOpen(false)}
         onDispatch={() => void handleDispatch()}
         onReanchor={handleReanchor}
+      />
+
+      <ConfirmDialog
+        open={redoOpen}
+        title={`删除重做「${active ? relLabel(active.rel) : ""}」？`}
+        description={
+          "该定稿产物会被删除并移入回收暂存（.writing/trash，误删可人工找回），" +
+          "流水线回到对应段从头重做；该产物上的标注一并清除。已有下游产物不会被删。"
+        }
+        confirmLabel="删除重做"
+        loading={redoBusy}
+        onConfirm={() => void handleRedoConfirm()}
+        onCancel={() => setRedoOpen(false)}
       />
     </section>
   );

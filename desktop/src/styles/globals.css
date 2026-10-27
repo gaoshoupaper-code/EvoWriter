@@ -8431,6 +8431,27 @@ html[data-theme="dark"] .admin-outline {
   gap: 8px;
 }
 
+.panel-redo-entry {
+  padding: 4px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--danger);
+  font-size: var(--text-ui-caption);
+  cursor: pointer;
+}
+
+.panel-redo-entry:hover:not(:disabled) {
+  background: rgba(185, 74, 64, 0.08);
+}
+
+.panel-redo-entry:disabled,
+.panel-redo-entry.disabled {
+  border-color: var(--line);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
 .panel-ann-entry {
   padding: 4px 12px;
   border: 1px solid var(--line-strong);

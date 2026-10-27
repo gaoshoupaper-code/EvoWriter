@@ -201,6 +201,68 @@ class ManuscriptSaveRequest(BaseModel):
     finalize: bool = Field(default=False, description="true = 本次保存后人修定稿（状态行改写）")
 
 
+# ── 产物划词标注（REQ-20261027-213246）─────────────────────
+
+
+class Annotation(BaseModel):
+    """一条划词标注（DEC-001/007/009 持久便签，存服务端 workspace）。"""
+
+    id: str = Field(description="标注 id（a- 前缀）")
+    artifact_rel: str = Field(description="所属产物相对路径，如 总纲.md / 卷纲/第01卷.md")
+    label: str = Field(description="abstract（抽象设定）| contradiction（前后矛盾）| custom（自定义）")
+    custom_label: str | None = Field(default=None, description="自定义标签名（label=custom 时必填）")
+    note: str | None = Field(default=None, description="作者意见（选填，追加在标签默认指令后）")
+    quote: str = Field(description="划选的原文（渲染文本口径）")
+    context_before: str = Field(default="", description="选区前文窗口（归一匹配与消歧用）")
+    context_after: str = Field(default="", description="选区后文窗口")
+    status: str = Field(default="pending", description="pending | resolved（已解决）| invalid（已失效灰显）")
+    dispatched: bool = Field(default=False, description="是否已进过任务包（复验区分 resolved/invalid）")
+    created_at: str = Field(default="", description="创建时间（ISO）")
+    updated_at: str = Field(default="", description="最后变更时间（ISO）")
+
+
+class AnnotationCreateRequest(BaseModel):
+    artifact_rel: str = Field(min_length=1)
+    label: str = Field(description="abstract | contradiction | custom")
+    custom_label: str | None = None
+    note: str | None = None
+    quote: str = Field(min_length=1, description="划选原文（渲染文本）")
+    context_before: str = ""
+    context_after: str = ""
+
+
+class AnnotationReanchor(BaseModel):
+    """重新框选（已失效标注换锚点并复位待处理）。"""
+
+    quote: str = Field(min_length=1)
+    context_before: str = ""
+    context_after: str = ""
+
+
+class AnnotationUpdateRequest(BaseModel):
+    note: str | None = None
+    custom_label: str | None = None
+    reanchor: AnnotationReanchor | None = None
+
+
+class AnnotationClearRequest(BaseModel):
+    """一键清空指定状态（FR-002；只接受终态）。"""
+
+    statuses: list[str] = Field(min_length=1)
+
+
+class AnnotationsListResponse(BaseModel):
+    annotations: list[Annotation] = Field(default_factory=list)
+
+
+class AnnotationDispatchResponse(BaseModel):
+    """派发结果：任务消息由桌面端走聊天通道发出（FR-004）。"""
+
+    message: str = Field(description="组装好的标注任务消息（发到当前对话线程）")
+    annotation_ids: list[str] = Field(default_factory=list, description="进包的标注 id")
+    invalidated: int = Field(default=0, description="发出前复验剔除（转已失效）的条数")
+
+
 class WritingStageUpdateRequest(BaseModel):
     """人工段指针写入请求（REQ-20260919-232617 FR-002/004）。
 

@@ -25,6 +25,33 @@ export type WorkspaceOutlineContent = {
   files: OutlineFileEntry[];
 };
 
+// ── 产物划词标注（REQ-20261027-213246）──
+
+export type AnnotationStatus = "pending" | "resolved" | "invalid";
+
+export type AnnotationLabel = "abstract" | "contradiction" | "custom";
+
+export type ArtifactAnnotation = {
+  id: string;
+  artifact_rel: string;
+  label: AnnotationLabel | string;
+  custom_label?: string | null;
+  note?: string | null;
+  quote: string;
+  context_before?: string;
+  context_after?: string;
+  status: AnnotationStatus | string;
+  dispatched?: boolean;
+  created_at?: string;
+  updated_at?: string;
+};
+
+export type AnnotationDispatchResult = {
+  message: string;
+  annotation_ids: string[];
+  invalidated: number;
+};
+
 export type Style = {
   style_id: string;
   name: string;

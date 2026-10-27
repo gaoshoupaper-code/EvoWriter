@@ -765,6 +765,90 @@ export function trackRegenerate(traceId: string, contentPreview = ""): void {
   }).catch(() => { /* fire-and-forget */ });
 }
 
+// ── 产物划词标注（REQ-20261027-213246）─────────────────────
+
+export type AnnotationCreateInput = {
+  artifact_rel: string;
+  label: string;
+  custom_label?: string;
+  note?: string;
+  quote: string;
+  context_before?: string;
+  context_after?: string;
+};
+
+/** 422 等错误要把服务端 detail（锚点歧义/找不到的中文说明）带给界面。 */
+async function _annotationRequest<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await apiFetch(path, init);
+  if (!response.ok) {
+    let detail = `API returned ${response.status}`;
+    try {
+      const body = (await response.json()) as { detail?: string };
+      if (body?.detail) detail = body.detail;
+    } catch { /* 保留状态码文案 */ }
+    throw new Error(detail);
+  }
+  return (await response.json()) as T;
+}
+
+export async function fetchAnnotations(workspaceId: string) {
+  return _annotationRequest<{ annotations: import("./types").ArtifactAnnotation[] }>(
+    `${API_BASE_URL}/api/workspaces/${workspaceId}/annotations`,
+  );
+}
+
+export async function createAnnotation(workspaceId: string, input: AnnotationCreateInput) {
+  return _annotationRequest<import("./types").ArtifactAnnotation>(
+    `${API_BASE_URL}/api/workspaces/${workspaceId}/annotations`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function updateAnnotation(
+  workspaceId: string,
+  annotationId: string,
+  patch: { note?: string; custom_label?: string; reanchor?: { quote: string; context_before?: string; context_after?: string } },
+) {
+  return _annotationRequest<import("./types").ArtifactAnnotation>(
+    `${API_BASE_URL}/api/workspaces/${workspaceId}/annotations/${annotationId}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    },
+  );
+}
+
+export async function deleteAnnotation(workspaceId: string, annotationId: string) {
+  return _annotationRequest<{ status: string; deleted: string }>(
+    `${API_BASE_URL}/api/workspaces/${workspaceId}/annotations/${annotationId}`,
+    { method: "DELETE" },
+  );
+}
+
+export async function clearAnnotations(workspaceId: string, statuses: string[]) {
+  return _annotationRequest<{ status: string; deleted: number }>(
+    `${API_BASE_URL}/api/workspaces/${workspaceId}/annotations/clear`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ statuses }),
+    },
+  );
+}
+
+/** 打包全部待处理标注为任务消息（FR-004）；消息由界面走聊天通道发出。 */
+export async function dispatchAnnotations(workspaceId: string) {
+  return _annotationRequest<import("./types").AnnotationDispatchResult>(
+    `${API_BASE_URL}/api/workspaces/${workspaceId}/annotations/dispatch`,
+    { method: "POST" },
+  );
+}
+
 // ── 用户自定义写作技能（REQ-20261023-000000 / REQ-20261025-205943：
 //    库 CRUD + 按书启用；技能带阶段归属，每段 ≤5 条）──────────────
 

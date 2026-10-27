@@ -10,6 +10,7 @@ import {
 } from "./api";
 import { useContentStore } from "../stores/content";
 import { useWorkrailStore } from "../stores/workrail";
+import { useAnnotationsStore } from "../stores/annotations";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -227,6 +228,9 @@ export function usePanelPolling({
     // bootstrap 是权威源（切换工作区时跳过，避免状态闪烁）；
     // 在途周期未结束也跳过本拍（单飞，防止慢请求下并发堆积）。
     if (bootstrappingRef.current || pollInFlight) return;
+    // 标注交互进行中（划词/写意见）：跳过本拍刷新——刷新会重挂渲染、打断
+    // 选区并丢失正在写的意见（REQ-20261027-213246 FR-001）。
+    if (useAnnotationsStore.getState().interacting) return;
     await enqueuePoll(workspaceId, settersRef.current);
   };
 

@@ -8303,3 +8303,315 @@ html[data-theme="dark"] .admin-outline {
   font-size: 12px;
   opacity: 0.65;
 }
+
+/* ══ 产物划词标注（REQ-20261027-213246）═════════════════════
+   渲染页划选 → 标签浮条 → 意见卡；高亮走 CSS Custom Highlight
+   （::highlight，WebView2/Chromium；不支持的环境自动降级无高亮）。 */
+
+.ann-host {
+  position: relative;
+}
+
+.ann-host.ann-enabled {
+  cursor: text;
+}
+
+::highlight(ann-pending) {
+  background-color: rgba(214, 158, 46, 0.38);
+}
+
+::highlight(ann-resolved) {
+  background-color: rgba(88, 148, 104, 0.28);
+}
+
+::highlight(ann-invalid) {
+  background-color: rgba(120, 113, 92, 0.22);
+  color: var(--muted);
+}
+
+/* 标签浮条：贴选区上方（DEC-010 划词浮条） */
+.ann-float-bar {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow-soft);
+  white-space: nowrap;
+}
+
+.ann-label-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--ink);
+  font-size: var(--text-ui-sm);
+  cursor: pointer;
+}
+
+.ann-label-btn:hover {
+  background: var(--hover);
+}
+
+.ann-close-btn {
+  padding: 2px 7px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-ui-md);
+  cursor: pointer;
+}
+
+.ann-close-btn:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+/* 意见小卡 */
+.ann-note-card {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  z-index: 31;
+  display: grid;
+  gap: 8px;
+  width: 320px;
+  max-width: calc(100% - 16px);
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow);
+}
+
+.ann-note-quote {
+  font-size: var(--text-ui-xs);
+  color: var(--muted);
+  border-left: 2px solid var(--line-strong);
+  padding-left: 8px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.ann-custom-input,
+.ann-note-input {
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: var(--text-ui-sm);
+  font-family: var(--font-sans);
+}
+
+.ann-note-input {
+  resize: vertical;
+  min-height: 56px;
+}
+
+.ann-note-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+/* 面板顶部标注入口（DEC-010「标注 N 条」总入口） */
+.panel-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.panel-ann-entry {
+  padding: 4px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-ui-caption);
+  cursor: pointer;
+}
+
+.panel-ann-entry:hover {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.panel-ann-entry.has-pending {
+  border-color: var(--gold);
+  color: var(--gold);
+}
+
+/* 清单抽屉（FR-002/004） */
+.ann-drawer-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(46, 38, 24, 0.22);
+  display: flex;
+  justify-content: flex-end;
+}
+
+.ann-drawer {
+  display: flex;
+  flex-direction: column;
+  width: min(420px, 92vw);
+  height: 100%;
+  background: var(--panel-solid);
+  border-left: 1px solid var(--line-strong);
+  box-shadow: var(--shadow);
+}
+
+.ann-drawer-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.ann-drawer-head h3 {
+  margin: 0;
+  font-size: var(--text-ui-lg);
+}
+
+.ann-drawer-count {
+  font-size: var(--text-ui-caption);
+  color: var(--gold);
+  flex: 1;
+}
+
+.ann-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 12px 16px;
+}
+
+.ann-drawer-empty {
+  color: var(--muted);
+  font-size: var(--text-ui-sm);
+  margin: 24px 0;
+  text-align: center;
+}
+
+.ann-item {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+}
+
+.ann-item-invalid {
+  opacity: 0.62;
+}
+
+.ann-item-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ann-chip {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: var(--text-ui-2xs);
+}
+
+.ann-chip-pending {
+  background: rgba(214, 158, 46, 0.2);
+  color: var(--gold);
+}
+
+.ann-chip-resolved {
+  background: rgba(88, 148, 104, 0.2);
+  color: var(--teal);
+}
+
+.ann-chip-invalid {
+  background: rgba(120, 113, 92, 0.18);
+  color: var(--muted);
+}
+
+.ann-item-label {
+  font-size: var(--text-ui-sm);
+  font-weight: 600;
+}
+
+.ann-item-rel {
+  font-size: var(--text-ui-2xs);
+  color: var(--muted);
+  flex: 1;
+  text-align: right;
+}
+
+.ann-item-quote {
+  margin: 0;
+  font-size: var(--text-ui-xs);
+  color: var(--muted);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
+.ann-item-note {
+  margin: 0;
+  font-size: var(--text-ui-xs);
+}
+
+.ann-item-actions {
+  display: flex;
+  gap: 12px;
+}
+
+.ann-item-actions button {
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--teal);
+  font-size: var(--text-ui-xs);
+  cursor: pointer;
+}
+
+.ann-item-actions button:hover {
+  text-decoration: underline;
+}
+
+.ann-item-actions .ann-danger {
+  color: var(--danger);
+}
+
+.ann-drawer-foot {
+  display: grid;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line);
+}
+
+.ann-clear-row {
+  display: flex;
+  gap: 8px;
+}
+
+/* 正文阅读态（DEC-005 双模式）沿用 outline-markdown 排版，
+   补滚动容器尺寸 */
+.manuscript-reading {
+  max-height: 100%;
+  overflow-y: auto;
+}
+

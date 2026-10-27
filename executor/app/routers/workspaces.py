@@ -24,6 +24,12 @@ from app.domains.writing.expert_agent.services.storyline_graph import (
 )
 from app.routers.context import _log, get_agent_service, get_character_service, get_thread_store
 from app.schemas.screenplay import (
+    Annotation,
+    AnnotationClearRequest,
+    AnnotationCreateRequest,
+    AnnotationDispatchResponse,
+    AnnotationsListResponse,
+    AnnotationUpdateRequest,
     OutlineFileEntry,
     PanoramaEvent,
     HookProgress,
@@ -228,6 +234,14 @@ async def _workspace_watch_generator(owner_id: str, workspace_id: str, workspace
             if not categories:
                 continue
             if "outline" in categories:
+                # 产物变更 → 标注锚点复验（REQ-20261027-213246 FR-002）：
+                # 尽力而为，复验失败不影响 outline 推送本身。
+                try:
+                    from app.domains.writing.annotations import reverify_annotations
+
+                    reverify_annotations(workspace_path)
+                except Exception:  # pragma: no cover - 文件竞态等边缘，降级为跳过
+                    logger.warning("标注复验失败: workspace=%s", workspace_id, exc_info=True)
                 yield _sse_event("outline", _read_outline_content(workspace_path).model_dump())
             if "storyline" in categories:
                 content = thread_store.artifacts.read_workspace_storyline(owner_id, workspace_id)
@@ -547,6 +561,114 @@ def save_manuscript(
     return ManuscriptContent(
         chapter=chapter, markdown=text,
         status=_manuscript_status(path), exists=True,
+    )
+
+
+# ════════════════════════════════════════════════════════════
+# 产物划词标注（REQ-20261027-213246）——持久便签，agent 定点修改通道
+# ════════════════════════════════════════════════════════════
+
+
+def _annotation_workspace(workspace_id: str, user: CurrentUser) -> Path:
+    """取工作区路径并拦截 legacy（DEC-006 非目标：旧工作区只读）。"""
+    from app.domains.writing.pipeline import classify_workspace
+
+    thread_store = get_thread_store()
+    workspace = thread_store.get_workspace(user.user_id, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace_path = Path(workspace.workspace_path)
+    if classify_workspace(workspace_path) == "legacy":
+        raise HTTPException(status_code=409, detail="旧版工作区只读，不支持标注")
+    return workspace_path
+
+
+@router.get("/workspaces/{workspace_id}/annotations", response_model=AnnotationsListResponse)
+def list_annotations(workspace_id: str, user: CurrentUser = Depends(current_user)) -> AnnotationsListResponse:
+    """标注清单全集（读前复验，保证状态与产物现状对齐）。"""
+    from app.domains.writing.annotations import load_annotations, reverify_annotations
+
+    workspace_path = _annotation_workspace(workspace_id, user)
+    reverify_annotations(workspace_path)
+    return AnnotationsListResponse(annotations=load_annotations(workspace_path))
+
+
+@router.post("/workspaces/{workspace_id}/annotations", response_model=Annotation)
+def create_annotation(
+    workspace_id: str, payload: AnnotationCreateRequest,
+    user: CurrentUser = Depends(current_user),
+) -> Annotation:
+    """新建标注（FR-001）：服务端校验锚点在产物内唯一命中，歧义/找不到 422。"""
+    from app.domains.writing.annotations import create_annotation as _create
+
+    workspace_path = _annotation_workspace(workspace_id, user)
+    try:
+        return _create(workspace_path, payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.put("/workspaces/{workspace_id}/annotations/{annotation_id}", response_model=Annotation)
+def update_annotation(
+    workspace_id: str, annotation_id: str, payload: AnnotationUpdateRequest,
+    user: CurrentUser = Depends(current_user),
+) -> Annotation:
+    """改意见／重新框选（FR-002）：重框选校验新锚点并复位待处理。"""
+    from app.domains.writing.annotations import update_annotation as _update
+
+    workspace_path = _annotation_workspace(workspace_id, user)
+    try:
+        return _update(workspace_path, annotation_id, payload)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete("/workspaces/{workspace_id}/annotations/{annotation_id}")
+def delete_annotation(
+    workspace_id: str, annotation_id: str,
+    user: CurrentUser = Depends(current_user),
+) -> dict[str, str | bool]:
+    from app.domains.writing.annotations import delete_annotation as _delete
+
+    workspace_path = _annotation_workspace(workspace_id, user)
+    if not _delete(workspace_path, annotation_id):
+        raise HTTPException(status_code=404, detail="标注不存在")
+    return {"status": "ok", "deleted": annotation_id}
+
+
+@router.post("/workspaces/{workspace_id}/annotations/clear")
+def clear_annotations(
+    workspace_id: str, payload: AnnotationClearRequest,
+    user: CurrentUser = Depends(current_user),
+) -> dict[str, str | int]:
+    """一键清空指定终态（已解决/已失效）标注（FR-002）。"""
+    from app.domains.writing.annotations import clear_annotations as _clear
+
+    workspace_path = _annotation_workspace(workspace_id, user)
+    return {"status": "ok", "deleted": _clear(workspace_path, payload.statuses)}
+
+
+@router.post("/workspaces/{workspace_id}/annotations/dispatch", response_model=AnnotationDispatchResponse)
+def dispatch_annotations(
+    workspace_id: str,
+    user: CurrentUser = Depends(current_user),
+) -> AnnotationDispatchResponse:
+    """把全部待处理标注打包成任务消息（FR-004/005）。
+
+    发出前复验剔除失效条目；返回的消息由桌面端经聊天通道（generate/stream，
+    复用排队语义 DEC-011）发到当前对话线程，agent 的处理与回复都在聊天面板。
+    """
+    from app.domains.writing.annotations import dispatch_annotations as _dispatch
+
+    workspace_path = _annotation_workspace(workspace_id, user)
+    try:
+        message, annotation_ids, invalidated = _dispatch(workspace_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return AnnotationDispatchResponse(
+        message=message, annotation_ids=annotation_ids, invalidated=invalidated
     )
 
 

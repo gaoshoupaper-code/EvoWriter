@@ -393,9 +393,12 @@ class MetaAgentService(BaseAgentService):
     ) -> str | None:
         """组装当前段用户写作技能提示词段（REQ-20261025-205943 FR-003）。
 
-        注入文本自带两条声明（DEC-008）：效力低于「表达铁律」＋不得突破
-        产物结构约定。段判定与切段接口同源（state.json 人工段指针）。
-        用户内容只走运行时 DB 读取，不进 harness 发版制品。
+        注入文本声明（DEC-008 基础上 2026-10-28 修订）：技能封闭清单
+        （爽点/桥段词表）升级为硬约束——清单外禁止自造，防止降级措辞
+        架空技能清单（卷纲爽点不齐根因之一）；边界两条不变：表达层面
+        低于「表达铁律」＋产物结构与流程以段规程为准。段判定与切段
+        接口同源（state.json 人工段指针）。用户内容只走运行时 DB 读取，
+        不进 harness 发版制品。
         """
         skills = self._list_enabled_stage_skills(workspace_id, owner_id, workspace_path)
         if not skills:
@@ -403,9 +406,12 @@ class MetaAgentService(BaseAgentService):
         parts = [
             "## 作者启用的写作技能（作者本人设定）",
             "",
-            "以下技能由作者亲自启用，仅作题材与场景层面的补充指导；"
-            "效力低于上方「表达铁律」，与表达铁律冲突时一律以表达铁律为准；"
-            "技能不得突破当前段规程约定的产物结构与流程，冲突时一律以段规程为准：",
+            "以下技能由作者亲自启用，是本书的既定设定，不是可选参考。"
+            "技能内声明的封闭清单（「仅限以下条目」式的爽点、桥段等词表）是硬约束："
+            "只能使用清单内的条目，清单之外禁止自造，"
+            "段规程与弹药库的举例只是方法论，不构成额外条目；"
+            "边界两条不变：表达层面与上方「表达铁律」冲突时一律以表达铁律为准；"
+            "产物结构与流程不得突破当前段规程的约定，冲突时一律以段规程为准：",
             "",
         ]
         for sk in skills:
@@ -859,7 +865,13 @@ class MetaAgentService(BaseAgentService):
             for agent_key, trace_id in state.active_traces.items():
                 if not trace_id:
                     continue
-                run = self.trace_recorder.find_run_by_trace_id(trace_id)
+                # 带工作区提示：重启后内存 trace 索引丢失，但本工作区 traces/
+                # index.json 还留着 awaiting_input——直读工作区索引判活，不能把
+                # 还挂着的审查停等 run 当僵尸清掉（清掉后 resume 降级普通消息，
+                # 2026-10-28 线上打回被误读成下一卷的根因）。
+                run = self.trace_recorder.find_run_by_trace_id(
+                    trace_id, workspace_path=str(workspace_path)
+                )
                 if run is None or run.status not in ("running", "awaiting_input"):
                     stale.append(agent_key)
             if not stale:

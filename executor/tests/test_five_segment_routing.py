@@ -139,6 +139,39 @@ def test_route_stage_progression(tmp_path: Path) -> None:
     assert d.phase == "outline"
 
 
+def test_route_volume_directive_targets_latest_volume(tmp_path: Path) -> None:
+    """卷纲段 directive 报活卷不报下一卷（2026-10-28 线上打回事故回归）。
+
+    第 1 卷卷纲已落盘（定稿等审 / 被打回在改）时，directive 不得报
+    「当前目标：第 2 卷」——降级 resume / 重启后新 run 会照 directive 把
+    打回读成重做还没开工的下一卷。
+    """
+    (tmp_path / "主题.md").write_text(THEME_FINAL, encoding="utf-8")
+    (tmp_path / "总纲.md").write_text(MASTER_FINAL, encoding="utf-8")
+    state = load_writing_state(tmp_path)
+    state.confirmed_stage = STAGE_VOLUME
+    save_writing_state(tmp_path, state)
+
+    # 无卷纲文件：开第 1 卷
+    d = _route(tmp_path)
+    assert "当前目标：第 1 卷卷纲" in d.directive
+
+    # 第 1 卷定稿落盘（等审/在改）：活卷是第 1 卷，不出现第 2 卷
+    vol_dir = tmp_path / "卷纲"
+    vol_dir.mkdir()
+    (vol_dir / "第1卷.md").write_text(VOLUME_FINAL, encoding="utf-8")
+    d = _route(tmp_path)
+    assert "当前活卷：第 1 卷" in d.directive
+    assert "第 2 卷" not in d.directive
+
+    # 起草中的卷文件同样算活卷（四步未走完，本卷还在写）
+    (vol_dir / "第1卷.md").write_text(
+        VOLUME_FINAL.replace("定稿", "起草中"), encoding="utf-8"
+    )
+    d = _route(tmp_path)
+    assert "当前活卷：第 1 卷" in d.directive
+
+
 def test_route_pointer_wins_and_persists(tmp_path: Path) -> None:
     """人工段指针优先于扫描；run 生命周期不清指针（FR-002，AC-004 镜像）。"""
     (tmp_path / "主题.md").write_text(THEME_FINAL, encoding="utf-8")

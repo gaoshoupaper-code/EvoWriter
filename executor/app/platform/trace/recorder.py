@@ -295,8 +295,10 @@ class TraceRecorder:
             self._update_index_status(thread, trace_id, "running", None)
             _notify_evolution(thread, trace_id, "running", None)
             return TraceRunHandle(trace_id=trace_id, queue=self._queues[trace_id]), False
-        # 路径2：index 命中 awaiting_input → 重建（执行端重启后）
-        run = self.find_run_by_trace_id(trace_id)
+        # 路径2：index 命中 awaiting_input → 重建（执行端重启后）。带工作区提示：
+        # 重启后内存 _trace_workspace 丢失，靠 thread 自带的 workspace_path 直读
+        # 该工作区 index.json 复活，不降级 create_run（打回/确认 resume 不断线）。
+        run = self.find_run_by_trace_id(trace_id, workspace_path=str(thread.workspace_path))
         if run is not None and run.status == "awaiting_input":
             handle = self._rebuild_active_state(thread, run)
             self._update_index_status(thread, trace_id, "running", None)
@@ -1244,19 +1246,29 @@ class TraceRecorder:
         self._trace_workspace[trace_id] = workspace_path
         return True
 
-    def find_run_by_trace_id(self, trace_id: str) -> TraceRunSummary | None:
+    def find_run_by_trace_id(
+        self, trace_id: str, workspace_path: str | None = None
+    ) -> TraceRunSummary | None:
         """按 trace_id 反查 run summary（不依赖 thread，Phase 3 evolution 拉取用）。
 
         先查内存 _trace_workspace 索引拿 workspace_path，再从该 workspace 的
         index.json 读 run summary。内存索引丢失时（进程重启 / 隔离子进程产物未登记）
-        退化为 _discover_workspace_on_disk 磁盘兜底，避免同一 trace_id 永久 404。
+        依序退化为：调用方已知的工作区提示（workspace_path 直读该工作区 index.json）
+        → _discover_workspace_on_disk 磁盘兜底，避免同一 trace_id 永久 404。
+
+        workspace_path 提示只回填不覆盖：内存索引已指向的工作区优先（CON-004）。
 
         返回 TraceRunSummary（含相对 workspace 的 path 字段，可拼出 jsonl 全路径）。
         """
         ws_path = self._trace_workspace.get(trace_id)
+        if ws_path is None and workspace_path is not None:
+            if self._load_run_index_entry(workspace_path, trace_id) is not None:
+                self._trace_workspace[trace_id] = workspace_path
+                self._disk_miss_until.pop(trace_id, None)
+                ws_path = workspace_path
         if ws_path is None:
             # 负缓存：近期已确认磁盘上没有该 trace_id，跳过昂贵的全临时目录扫描，
-            # 避免前端轮询期间对同一不存在的 trace_id 反复 glob（TTL 内跨进程登记
+            # 避免前端轮询期间对同一 trace_id 反复 glob（TTL 内跨进程登记
             # 通常已完成，到期后再扫一次兜底竞态）。
             miss_until = self._disk_miss_until.get(trace_id)
             if miss_until is not None and time.monotonic() < miss_until:

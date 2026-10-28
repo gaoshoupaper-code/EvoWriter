@@ -31,6 +31,8 @@ from contracts.writing_artifacts import (
     MASTER_FILENAME,
     STYLE_FILENAME,
     THEME_FILENAME,
+    VOLUME_DIR,
+    VOLUME_FILE_PATTERN,
     WritingProgress,
     classify_writing_workspace,
     derive_stage,
@@ -136,8 +138,20 @@ def _unit_detail(workspace: Path, stage: str) -> str:
     """
     prog = scan_writing_progress(workspace)
     if stage == "volume":
-        nxt = (prog.volumes[-1] if prog.volumes else 0) + 1
-        return f"当前目标：第 {nxt} 卷卷纲。"
+        # 活卷 = 磁盘上号数最大的卷纲文件（含起草中，定稿扫描 prog.volumes 不算
+        # 草稿）。卷纲段一次只做一卷：最新那卷要么在写、要么定稿等审、要么被打回
+        # 在改，都是「这一卷」的活——不能报成 last+1 的下一卷（2026-10-28 线上：
+        # 打回第 1 卷被 directive「当前目标：第 2 卷」带偏成重做没开工的第 2 卷）。
+        # 没有任何卷纲文件才是从第 1 卷开始。
+        vol_dir = workspace / VOLUME_DIR
+        vols = sorted(
+            int(m.group(1))
+            for f in vol_dir.iterdir()
+            if f.is_file() and (m := VOLUME_FILE_PATTERN.match(f.name))
+        ) if vol_dir.is_dir() else []
+        if vols:
+            return f"当前活卷：第 {vols[-1]} 卷（已落盘的最新一卷，本段工作对象）。"
+        return "当前目标：第 1 卷卷纲。"
     if stage == STAGE_CHAPTER:
         stock = len(prog.chapter_outlines) - len(prog.chapter_texts)
         return f"细纲库存 {stock} 章。"

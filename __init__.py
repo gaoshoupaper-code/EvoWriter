@@ -78,6 +78,67 @@ def auto_mode_prompt() -> str | None:
         return None
 
 
+# ── 按模式组装引导（REQ-20261028-110538）────────────────────────────────────
+# 新结构与旧文件共存发布（DEC-008）：中性段规程＋两份交互引导为独立新文件，
+# 旧 stage_*.md / author_base.md / auto_mode.md 原样保留供旧 executor 读取；
+# 新 executor 只读下列新文件。缺失返回 None，由 executor 侧 fail-fast
+# （FR-007：中性结构下无安全退路，缺文件必须显性失败，不静默裸奔）。
+
+NEUTRAL_STAGE_PROMPT_FILES: dict[str, str] = {
+    STAGE_THEME: "stage_theme_neutral.md",
+    STAGE_OUTLINE: "stage_zonggang_neutral.md",
+    STAGE_VOLUME: "stage_juangang_neutral.md",
+    STAGE_CHAPTER: "stage_zhanggang_neutral.md",
+    STAGE_TEXT: "stage_zhengwen_neutral.md",
+}
+
+GUIDE_INTERACTIVE_FILE = "guide_interactive.md"
+GUIDE_AUTO_FILE = "guide_auto.md"
+AUTHOR_BASE_NEUTRAL_FILE = "author_base_neutral.md"
+
+
+def _read_prompt(filename: str) -> str | None:
+    path = PACKAGE_DIR / "prompts" / filename
+    try:
+        return path.read_text(encoding="utf-8").strip()
+    except OSError:
+        logger.warning("提示词读取失败: file=%s", path)
+        return None
+
+
+def neutral_stage_prompt(stage: str) -> str | None:
+    """读当前段的中性段规程（业务口径，不含交互编排）。
+
+    未知段返回 None；已知段文件缺失也返回 None，由 executor 判定 fail-fast。
+    """
+    filename = NEUTRAL_STAGE_PROMPT_FILES.get(stage)
+    if not filename:
+        return None
+    return _read_prompt(filename)
+
+
+def guide_prompt(mode: str) -> str | None:
+    """读指定模式的交互引导文本（interactive / auto）。
+
+    未知模式或文件缺失返回 None，由 executor 判定 fail-fast。
+    """
+    filename = {
+        "interactive": GUIDE_INTERACTIVE_FILE,
+        "auto": GUIDE_AUTO_FILE,
+    }.get(mode)
+    if not filename:
+        return None
+    return _read_prompt(filename)
+
+
+def author_base_neutral_prompt() -> str | None:
+    """读常驻骨架中性版（工具用法规则，不含逐步交互口径）。
+
+    文件缺失返回 None，由 executor 判定 fail-fast。
+    """
+    return _read_prompt(AUTHOR_BASE_NEUTRAL_FILE)
+
+
 def assemble(ctx: RuntimeContext, agent_name: str | None = None):
     """清单驱动装配：薄委托架构清单解释器（读 architecture.json 实例化）。
 
@@ -89,4 +150,8 @@ def assemble(ctx: RuntimeContext, agent_name: str | None = None):
     return assemble_from_manifest(ctx, package=__package__, agent_name=agent_name)
 
 
-__all__ = ["PACKAGE_DIR", "STAGE_PROMPT_FILES", "assemble", "auto_mode_prompt", "stage_prompt"]
+__all__ = [
+    "PACKAGE_DIR", "STAGE_PROMPT_FILES", "assemble",
+    "auto_mode_prompt", "stage_prompt",
+    "author_base_neutral_prompt", "guide_prompt", "neutral_stage_prompt",
+]

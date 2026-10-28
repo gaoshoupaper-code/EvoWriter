@@ -194,7 +194,13 @@ def _build_tools(abc: AgentBuildCtx) -> list:
 
 
 def _system_prompt(abc: AgentBuildCtx) -> str:
-    text = (abc.pkg_dir / abc.agent.prompt).read_text(encoding="utf-8").strip()
+    # 主 prompt 全文替换（REQ-20261028-110538 FR-001）：ctx.prompt_overrides
+    # 有值时清单 prompt 文件被整体替换；styles suffix 照常追加在后。
+    override = (abc.ctx.prompt_overrides or {}).get(abc.agent.name)
+    if override is not None:
+        text = override
+    else:
+        text = (abc.pkg_dir / abc.agent.prompt).read_text(encoding="utf-8").strip()
     suffix = (abc.ctx.styles or {}).get(abc.agent.name)
     return f"{text}\n\n{suffix}" if suffix else text
 

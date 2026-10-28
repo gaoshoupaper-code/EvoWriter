@@ -56,6 +56,53 @@ def _safe_version(pkg: str) -> str | None:
         return None
 
 
+def _compose_mode_assembly(
+    pkg, workspace_path: Path, stage: str,
+) -> tuple[str, dict[str, str]]:
+    """按模式组装段规程＋交互引导（REQ-20261028-110538 FR-001）。
+
+    组装 = 中性段规程（纯业务口径）+ 当前段模式二选一的交互引导，作为
+    author 的 styles suffix；author_base 用中性版整体替换主 prompt
+    （prompt_overrides，清单引用的旧文件不动——新旧 executor 与新旧包
+    任意组合都安全，DEC-008 共存发布）。
+
+    Returns:
+        (author styles suffix, prompt_overrides)。
+
+    Raises:
+        RuntimeError: 任一组件缺失（FR-007 fail-fast）——中性结构下没有
+            安全退路，缺文件必须显性失败，不静默裸奔装配。
+    """
+    from contracts.writing_artifacts import stage_mode
+
+    neutral_fn = getattr(pkg, "neutral_stage_prompt", None)
+    guide_fn = getattr(pkg, "guide_prompt", None)
+    base_fn = getattr(pkg, "author_base_neutral_prompt", None)
+    if not all(callable(f) for f in (neutral_fn, guide_fn, base_fn)):
+        raise RuntimeError(
+            "harness 包缺少按模式组装接口（neutral_stage_prompt/"
+            "guide_prompt/author_base_neutral_prompt）——请发版包含"
+            "新结构的 harness 包（FR-007 fail-fast）"
+        )
+    stage_text = neutral_fn(stage)
+    if not stage_text:
+        raise RuntimeError(
+            f"中性段规程缺失: stage={stage}（FR-007 fail-fast，不裸奔装配）"
+        )
+    mode = stage_mode(workspace_path, stage)
+    guide_text = guide_fn(mode)
+    if not guide_text:
+        raise RuntimeError(
+            f"交互引导缺失: mode={mode}（FR-007 fail-fast，不裸奔装配）"
+        )
+    base_text = base_fn()
+    if not base_text:
+        raise RuntimeError(
+            "author_base 中性版缺失（FR-007 fail-fast，不裸奔装配）"
+        )
+    return f"{stage_text}\n\n{guide_text}", {"author": base_text}
+
+
 def _build_tool_replay_policy(trace_recorder, trace_id: str | None):
     """构建带 Trace 观测回调的 TaskReplayPolicy（CON-005 平台级 task 防重放）。
 
@@ -608,33 +655,23 @@ class MetaAgentService(BaseAgentService):
                     resolved[scope] = suffix
             styles = resolved or None
 
-        # 五段制段规程注入（REQ-20261018-115508 DEC-002）：author 的段流程
-        # 提示词按当前大段经 styles 通道注入——styles 是解释器既有的 prompt
-        # suffix 注入口，复用它避免为「按段换提示词」扩清单 schema（TD：
-        # styles 通道复用）。段解析用 current_stage（点名跳段优先，与
-        # stage_gate/route 同口径，C3 修复）。legacy（agent_name=None）不注入。
+        # 五段制按模式组装引导（REQ-20261028-110538 FR-001/DEC-008）：
+        # 组装 = 中性段规程（纯业务口径）+ 当前段模式二选一的交互引导，
+        # 经 styles 通道注入；author_base 用中性版整体替换主 prompt
+        # （ctx.prompt_overrides，清单引用的旧文件不动——新旧 executor 与
+        # 新旧包任意组合都安全）。任一组件缺失 fail-fast（FR-007），见
+        # _compose_mode_assembly。legacy（agent_name=None 或非五段制）不注入，
+        # 走清单旧文件原样。
+        prompt_overrides: dict[str, str] | None = None
         if agent_name == "author":
-            try:
-                from app.domains.writing.pipeline import classify_workspace, current_stage
-                from contracts.writing_artifacts import MODE_AUTO, stage_mode
+            from app.domains.writing.pipeline import classify_workspace, current_stage
 
-                if classify_workspace(workspace_path) == "five":
-                    stage = current_stage(workspace_path)
-                    stage_prompt_fn = getattr(pkg, "stage_prompt", None)
-                    if callable(stage_prompt_fn):
-                        stage_text = stage_prompt_fn(stage)
-                        # 自动模式纪律追加（REQ-20261026-191719 DEC-004）：auto 段
-                        # 在段规程后追加 auto_mode.md——「不提问」纪律 + 设计内
-                        # 停等口（request_review）说明。文件缺失（旧发版）跳过。
-                        if stage_text and stage_mode(workspace_path, stage) == MODE_AUTO:
-                            auto_fn = getattr(pkg, "auto_mode_prompt", None)
-                            auto_text = auto_fn() if callable(auto_fn) else None
-                            if auto_text:
-                                stage_text = f"{stage_text}\n\n{auto_text}"
-                        if stage_text:
-                            styles = {**(styles or {}), "author": stage_text}
-            except Exception:  # noqa: BLE001 — 注入失败退回常驻骨架，不阻塞装配
-                logger.warning("段规程注入失败，退回常驻骨架", exc_info=True)
+            if classify_workspace(workspace_path) == "five":
+                stage = current_stage(workspace_path)
+                author_style, prompt_overrides = _compose_mode_assembly(
+                    pkg, workspace_path, stage,
+                )
+                styles = {**(styles or {}), "author": author_style}
 
         # 用户自定义写作技能（REQ-20261023-000000 FR-003）：服务端硬闸在
         # _compose 内（仅正文段）；非正文段 styles 与现状逐字一致（AC-003）。
@@ -651,6 +688,9 @@ class MetaAgentService(BaseAgentService):
             trace_id=trace_id,
             owner_id=owner_id,
             styles=styles,
+            # 按模式组装（REQ-20261028-110538）：五段制时中性 author_base 整体
+            # 替换清单主 prompt；None = 按清单文件读（legacy 现状行为）。
+            prompt_overrides=prompt_overrides,
             trace_recorder=self.trace_recorder,
             trace_middleware_cls=TraceMiddleware,  # T2：类由执行端注入，包内实例化
             # CON-005/FR-003：注入平台级 task 防重放边界。harness 的 ErrorRecovery

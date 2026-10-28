@@ -89,6 +89,12 @@ class RuntimeContext:
     trace_id: str | None = None
     owner_id: str | None = None
     styles: dict[str, str] | None = None  # scope 名 → 风格 suffix 文本
+    # 主 prompt 全文替换（REQ-20261028-110538 FR-001）：key = 清单 agent 名，
+    # value = 替换文本。有值时清单 prompt 字段指向的文件被整体替换（styles
+    # suffix 仍追加在后）。None 或缺 key = 按清单文件读（现状行为）。
+    # 用途：author_base 按模式中性化——清单引用的旧文件与旧 executor 共存
+    # （DEC-008 新文件名共存发布），新 executor 经此字段注入中性版。
+    prompt_overrides: dict[str, str] | None = None
     # 平台级（进程内复用）
     trace_recorder: object | None = None
     trace_middleware_cls: object | None = None  # TraceMiddleware 类，执行端注入

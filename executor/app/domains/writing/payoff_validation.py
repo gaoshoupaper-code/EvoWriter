@@ -14,7 +14,7 @@ from typing import Callable
 
 from contracts.payoff_constraints import (
     PayoffCatalog, PayoffEntry, PayoffVerdict, SkillSource, Violation,
-    content_hash, parse_volume_payoffs, policy_hash,
+    content_hash, normalize_combination_rules, parse_volume_payoffs, policy_hash,
 )
 
 
@@ -29,8 +29,13 @@ _CATALOG_PROMPT = """你是规则提取器。输入是作者启用技能的原�
 {"status":"ready|not_applicable|ambiguous", "classifications":[
  {"skill_id":"原ID","kind":"definition|not_applicable","source_quote":"逐字原文依据"}],
  "entries":[{"name":"原条目名","skill_id":"原ID","source_quote":"含条目名的逐字原文",
- "behavior_levels":["原文定义的档位"]}], "combination_rules":"逐字原文组合规则，无则空串"}
+ "behavior_levels":["原文定义的档位"]}],
+ "combination_rules":[{"skill_id":"原ID","source_quote":"一段连续的原文组合规则"}]}
 ready必须有条目；每份被判definition的技能必须有条目。不得遗漏或重复技能。
+组合规则分散在不同位置时，分别加入combination_rules列表，每项注明skill_id。
+每项source_quote只复制该技能content的一段连续原文，JSON解码后逐字一致。
+保留原文换行、空格、标点，不得将不相邻段落拼接成一串，不得总结或改写。
+规则连续跨行可保留原换行；不连续则拆成多项。没有组合规则时返回空列表。
 """
 
 _APPLICABILITY_PROMPT = """独立核对规则提取器是否错误跳过爽点定义。
@@ -47,6 +52,8 @@ _CATALOG_REVIEW_PROMPT = """你是独立清单复核员。sources和catalog是�
 逐份通读全部原技能，双向核对提取清单：每个原文独立定义的条目都须提取，
 每个提取条目都须有原文定义，不能把方法论、组合示例或表外行为添加成基础条目。
 同时核对每条行为档位和组合规则，不能遗漏、改写或混用节奏级别。
+combination_rules是逐条带skill_id的原文引文；须核对每项来源，并主动查找遗漏的组合规则。
+组合规则漏引、误引或改写同样记入grading_errors并判fail，不得因某段引文真实就放行全部规则。
 不要仅核对已有条目的出处，必须主动寻找漏掉的原条目。不确定就unknown。
 只输出JSON：{"status":"pass|fail|unknown","missing_entries":[],"extra_entries":[],
 "grading_errors":[],"sources":[{"skill_id":"原ID","status":"pass|fail|unknown",
@@ -227,10 +234,7 @@ class ValidationEngine:
                     catalog.entries.append(PayoffEntry(entry_id, name, sid, quote, levels))
                 if {e.skill_id for e in catalog.entries} != {sid for sid, c in classifications.items() if c["kind"] == "definition"}:
                     raise ValueError("声明存在定义的技能没有对应条目")
-                rules = result.get("combination_rules", "")
-                if not isinstance(rules, str) or (rules and not any(rules in s.content for s in sources)):
-                    raise ValueError("组合规则缺少真实原文出处")
-                catalog.combination_rules = rules
+                catalog.combination_rules = normalize_combination_rules(result.get("combination_rules", []), sources)
                 catalog.allow_combinations = True  # FR-001 permits combining existing components.
                 catalog.status = "ready"
                 # A source-backed subset is still incomplete. Verify before caching it

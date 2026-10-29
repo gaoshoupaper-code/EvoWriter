@@ -12,7 +12,7 @@ from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 
 
-CATALOG_VERSION = 2
+CATALOG_VERSION = 3
 RHYTHM_LEVELS = ("小", "中", "大", "超大")
 
 
@@ -34,6 +34,30 @@ def policy_hash(sources: list[SkillSource]) -> str:
     ))
 
 
+def normalize_combination_rules(value: object, sources: list[SkillSource]) -> list[dict[str, str]]:
+    """Keep separate source quotes separate; never repair paraphrased rules."""
+    source_map = {source.skill_id: source.content for source in sources}
+    if isinstance(value, str):
+        if not value:
+            return []
+        matches = [sid for sid, text in source_map.items() if value in text]
+        if len(matches) != 1:
+            raise ValueError("组合规则字符串缺少唯一连续原文出处，请逐条提供skill_id与source_quote")
+        value = [{"skill_id": matches[0], "source_quote": value}]
+    if not isinstance(value, list):
+        raise ValueError("组合规则须为逐条原文引文列表")
+    quotes = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise ValueError("组合规则引文须有skill_id与source_quote")
+        sid, quote = item.get("skill_id"), item.get("source_quote")
+        if (not isinstance(sid, str) or sid not in source_map
+                or not isinstance(quote, str) or not quote.strip() or quote not in source_map[sid]):
+            raise ValueError("组合规则引文缺少对应技能的连续原文出处")
+        quotes.append({"skill_id": sid, "source_quote": quote})
+    return quotes
+
+
 @dataclass
 class PayoffEntry:
     entry_id: str
@@ -50,7 +74,7 @@ class PayoffCatalog:
     sources: list[SkillSource] = field(default_factory=list)
     entries: list[PayoffEntry] = field(default_factory=list)
     allow_combinations: bool = False
-    combination_rules: str = ""
+    combination_rules: list[dict[str, str]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -80,10 +104,11 @@ class PayoffCatalog:
             raise ValueError("清单状态非法")
         if (raw["status"] == "ready" and not entries) or (raw["status"] == "not_applicable" and entries):
             raise ValueError("清单状态与条目不一致")
+        rules = normalize_combination_rules(raw.get("combination_rules", []), sources)
         return cls(
             status=raw["status"], policy_hash=raw["policy_hash"], sources=sources,
             entries=entries, allow_combinations=raw.get("allow_combinations", False),
-            combination_rules=raw.get("combination_rules", ""), errors=raw.get("errors", []),
+            combination_rules=rules, errors=raw.get("errors", []),
         )
 
 
@@ -374,4 +399,5 @@ __all__ = [
     "CATALOG_VERSION", "PayoffCatalog", "PayoffComponent", "PayoffEntry",
     "PayoffOccurrence", "PayoffVerdict", "SkillSource", "Violation", "content_hash",
     "parse_volume_payoffs", "policy_hash",
+    "normalize_combination_rules",
 ]

@@ -344,3 +344,33 @@ def test_repair_receives_the_exact_volume_table_and_component_format():
     assert "【爽】原条目甲+原条目乙" in prompt
     assert "原条目甲:小+原条目乙:高" in prompt
     assert "一次【爽】" in prompt
+
+
+def test_separate_combination_quotes_keep_source_and_original_newlines():
+    skill = {**SKILL, "content": SKILL["content"] + "\n\n组合须保持原行为。\n叠加规则另行核对。"}
+    answer = extraction()
+    answer["combination_rules"] = [
+        {"skill_id": SKILL["skill_id"], "source_quote": "已有条目允许组合。"},
+        {"skill_id": SKILL["skill_id"], "source_quote": "组合须保持原行为。\n叠加规则另行核对。"},
+    ]
+    catalog = ValidationEngine(Model(answer)).catalog([skill])
+    assert catalog.status == "ready"
+    assert catalog.combination_rules == answer["combination_rules"]
+
+
+def test_legacy_contiguous_rule_string_is_attributed_to_its_source():
+    catalog = ValidationEngine(Model(extraction())).catalog([SKILL])
+    assert catalog.combination_rules == [{"skill_id": SKILL["skill_id"], "source_quote": "已有条目允许组合。"}]
+
+
+@pytest.mark.parametrize("rules", [
+    [{"skill_id": "wrong-source", "source_quote": "已有条目允许组合。"}],
+    [{"skill_id": SKILL["skill_id"], "source_quote": "组合自然会变强。"}],
+    [{"skill_id": SKILL["skill_id"], "source_quote": "已有条目允许组合。", "reason": "说明"},
+     {"skill_id": SKILL["skill_id"], "source_quote": "基础甲：小、中、高。基础乙：小、中、高。"}],
+    "已有条目允许组合。基础甲：小、中、高。",
+])
+def test_rule_quote_lists_do_not_accept_wrong_sources_or_joined_paraphrases(rules):
+    answer = extraction()
+    answer["combination_rules"] = rules
+    assert ValidationEngine(Model(answer)).catalog([SKILL]).status in ("ambiguous", "error")

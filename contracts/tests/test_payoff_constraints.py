@@ -10,6 +10,7 @@ from contracts.payoff_constraints import (
     SkillSource,
     content_hash,
     parse_volume_payoffs,
+    policy_hash,
 )
 
 
@@ -265,3 +266,15 @@ def test_unmatched_plus_parts_cannot_create_new_components(policy):
     policy.entries[0].name = "基础甲+原名"
     text = volume("| 1 | 行动 | 【爽】基础甲+新词+基础乙 | 小、高 | 大 |", span="1-1")
     assert "unknown_entry" in codes(text, policy)
+
+
+@pytest.mark.parametrize("rules", [
+    [{"skill_id": "unknown-source", "source_quote": "允许已有条目组合。"}],
+    [{"skill_id": "skill-a", "source_quote": "原文未写的规则。"}],
+    [{"skill_id": "skill-a", "source_quote": ""}],
+])
+def test_cached_combination_rules_each_need_their_exact_source(policy, rules):
+    policy.policy_hash = policy_hash(policy.sources)
+    policy.combination_rules = rules
+    with pytest.raises(ValueError, match="组合规则"):
+        PayoffCatalog.from_dict(policy.to_dict())

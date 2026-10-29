@@ -115,13 +115,20 @@ class ValidationEngine:
         self.call = call
         self.cache_path = Path(cache_path) if cache_path is not None else None
 
-    def _json(self, messages: list[dict], purpose: str) -> dict:
+    def _json(self, messages: list[dict], purpose: str, *, allow_retry: bool = True) -> dict:
         value = self.call(messages, purpose)
         if hasattr(value, "content"):
             value = value.content
         if isinstance(value, str):
             value = re.sub(r"^```(?:json)?\s*|\s*```$", "", value.strip())
-            value = json.loads(value)
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                # 长输出偶发被端点提前收流（无 usage 尾块、固定位置截断），
+                # 属传输抖动而非内容问题：原样重试一次自愈，不重试则整卷定稿被卡死。
+                if not allow_retry:
+                    raise
+                return self._json(messages, purpose, allow_retry=False)
         if not isinstance(value, dict):
             raise ValueError("模型未返回JSON对象")
         return value

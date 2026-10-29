@@ -232,8 +232,8 @@ def _seed_loop_book(ws: Path) -> None:
     """
     _touch(ws, "主题.md", THEME_FINAL)
     _touch(ws, "总纲.md", MASTER_FINAL_3V)
-    _touch(ws, "卷纲/第01卷.md", VOLUME_FINAL)
-    _touch(ws, "卷纲/第02卷.md", VOLUME_FINAL)
+    _touch(ws, "卷纲/第01卷.md", VOLUME_FINAL.replace("\n节奏表\n", "\n本卷章号范围：1-3\n节奏表\n"))
+    _touch(ws, "卷纲/第02卷.md", VOLUME_FINAL.replace("\n节奏表\n", "\n本卷章号范围：4-6\n节奏表\n"))
     for n in (1, 2, 3):
         _touch(ws, f"章纲/第{n:03d}章.md")
         _touch(ws, f"正文/第{n:03d}章完.md", f"# 第{n:03d}章 · 完\n> 状态：人修定稿\n")
@@ -264,6 +264,9 @@ def test_confirm_advance_chapter_with_stock_goes_text(tmp_path: Path) -> None:
 def test_confirm_advance_chapter_stock_out_goes_next_volume(tmp_path: Path) -> None:
     """本卷章纲齐确认（库存=0、还有卷）→ 回卷纲做下一卷。"""
     _seed_loop_book(tmp_path)
+    for n in (4, 5, 6):
+        _touch(tmp_path, f"章纲/第{n:03d}章.md")
+        _touch(tmp_path, f"正文/第{n:03d}章.md")
     assert next_stage_on_confirm(tmp_path, STAGE_CHAPTER) == STAGE_VOLUME
 
 

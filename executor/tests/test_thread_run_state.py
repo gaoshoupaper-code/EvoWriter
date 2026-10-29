@@ -42,7 +42,7 @@ def _event(seq: int, type_: str, **extra) -> TraceLogEvent:
         sequence=seq,
         type=type_,
         status=extra.pop("status", "running"),
-        timestamp=f"2026-10-18T20:1{seq}:00+00:00",
+        timestamp=f"2026-10-18T20:{10 + seq:02d}:00+00:00",
         source="runtime",
     )
     base.update(extra)
@@ -144,6 +144,40 @@ def test_awaiting_without_question_degrades_to_none():
     body = resp.json()
     assert body["status"] == "awaiting_input"
     assert body["awaiting"] is None
+
+
+@pytest.mark.parametrize("review_kind", ["batch", "style", "stage"])
+def test_restored_review_preserves_kind_and_current_review_id(review_kind):
+    """同一 trace 多次交审后，只恢复最后一张审查卡及独立幂等编号。"""
+    events = [
+        *_AWAITING_EVENTS,
+        _event(10, "tool_start", tool_call_id="review-old", tool_name="request_review",
+               tool_args={"review_kind": "stage", "question": "卷纲已完成"}),
+        _event(11, "hitl", status="awaiting_input", tool_call_id="review-old"),
+        _event(12, "tool_start", tool_call_id="review-current", tool_name="request_review",
+               agent_name="author", tool_args={"review_kind": review_kind, "question": "本批已完成"}),
+        _event(13, "hitl", status="awaiting_input", tool_call_id="review-current"),
+    ]
+    rec = _FakeRecorder([_run("trace-1", "awaiting_input")], _detail(events))
+    resp = _client(rec).get("/threads/t1/run-state")
+    assert resp.status_code == 200
+    awaiting = resp.json()["awaiting"]
+    assert awaiting["kind"] == "review"
+    assert awaiting["review_kind"] == review_kind
+    assert awaiting["review_id"] == "review-current"
+    assert awaiting["source"] == "review"
+    assert awaiting["question"] == "本批已完成"
+    assert awaiting["multi_select"] is False
+
+
+def test_restored_review_without_kind_does_not_become_choice():
+    events = [
+        _event(1, "tool_start", tool_call_id="bad-review", tool_name="request_review",
+               tool_args={"question": "待审产物"}),
+        _event(2, "hitl", status="awaiting_input", tool_call_id="bad-review"),
+    ]
+    rec = _FakeRecorder([_run("trace-1", "awaiting_input")], _detail(events))
+    assert _client(rec).get("/threads/t1/run-state").json()["awaiting"] is None
 
 
 def test_thread_not_found_404():

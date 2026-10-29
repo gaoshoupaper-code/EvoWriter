@@ -123,7 +123,7 @@ interface StageSessionState {
    * 服务端按创作循环推导下一段写指针；本地对齐相位 + 重绑当前会话到新段
    * （自动模式一条会话滚动跨段，不切新会话）。失败返回 false（不续跑可重试）。
    */
-  confirmStageReviewAdvance: (workspaceId: string, traceId: string) => Promise<boolean>;
+  confirmStageReviewAdvance: (workspaceId: string, traceId: string, reviewId?: string) => Promise<boolean>;
 
   /** 启动/切书时恢复该工作区全部会话的阶段归属（FR-012）。 */
   hydrateForWorkspace: (workspaceId: string) => Promise<void>;
@@ -185,9 +185,9 @@ export const useStageSessionStore = create<StageSessionState>((set, get) => ({
     }
   },
 
-  confirmStageReviewAdvance: async (workspaceId, traceId) => {
+  confirmStageReviewAdvance: async (workspaceId, traceId, reviewId) => {
     try {
-      const status = await advanceWritingStage(workspaceId, traceId);
+      const status = await advanceWritingStage(workspaceId, traceId, reviewId);
       if (status) {
         // 相位即时对齐（resume 装配读新指针，本地条形不能滞后）+ 就绪边沿重置
         useContentStore.getState().setOutlinePipeline(status);

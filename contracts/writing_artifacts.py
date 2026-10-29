@@ -446,6 +446,7 @@ class WritingProgress:
     outline_done: bool = False
     outline_volumes: int = 0
     volumes: list[int] = field(default_factory=list)
+    volume_chapter_ranges: dict[int, tuple[int, int]] = field(default_factory=dict)
     chapter_outlines: list[int] = field(default_factory=list)
     chapter_texts: dict[int, ManuscriptState] = field(default_factory=dict)
     style_ready: bool = False
@@ -506,7 +507,16 @@ def scan_writing_progress(workspace: Path) -> WritingProgress:
                 and volume_payoff_receipt_valid(workspace, int(m.group(1)), text)
             ):
                 continue
-            prog.volumes.append(int(m.group(1)))
+            volume = int(m.group(1))
+            prog.volumes.append(volume)
+            ranges = re.findall(
+                r"本卷章号范围\s*[:：]\s*(?:第\s*)?(\d+)\s*[-—–~～至]\s*(\d+)\s*章?",
+                text,
+            )
+            if len(ranges) == 1:
+                start, end = map(int, ranges[0])
+                if 1 <= start <= end and end - start <= 1000:
+                    prog.volume_chapter_ranges[volume] = (start, end)
         prog.volumes.sort()
 
     co_dir = workspace / CHAPTER_OUTLINE_DIR
@@ -561,8 +571,8 @@ def next_stage_on_confirm(workspace_path: Path, current: str) -> str:
     线上 bug）。本函数按「确认时所在段」定向推进：
 
       volume  → chapter（一卷交审通过即进章纲摊本卷；无定稿卷时留卷纲）
-      chapter → 细纲库存>0 → text；库存=0 → 还有卷 → volume（本卷章纲齐，
-                进下一卷），否则留在 chapter
+      chapter → 细纲库存>0 → text；库存=0 且本卷章纲、正文齐 → 还有卷时
+                进 volume，否则留在 chapter
       text    → 库存=0 → chapter（回章纲补纲）；库存>0 → 留在 text
       theme/outline 原样返回（不经段审通道）
     """
@@ -579,7 +589,15 @@ def next_stage_on_confirm(workspace_path: Path, current: str) -> str:
         return STAGE_CHAPTER if not stock else STAGE_TEXT
     if stock:
         return STAGE_TEXT
-    total = prog.outline_volumes or ((prog.volumes[-1] + 1) if prog.volumes else 1)
+    if not prog.volumes:
+        return STAGE_CHAPTER
+    span = prog.volume_chapter_ranges.get(prog.volumes[-1])
+    if span is None:
+        return STAGE_CHAPTER
+    expected = set(range(span[0], span[1] + 1))
+    if not expected.issubset(prog.chapter_outlines) or not expected.issubset(prog.chapter_texts):
+        return STAGE_CHAPTER
+    total = prog.outline_volumes or (prog.volumes[-1] + 1)
     return STAGE_VOLUME if len(prog.volumes) < total else STAGE_CHAPTER
 
 

@@ -274,6 +274,26 @@ describe("FR-001（REQ-20261009-002227）: interrupt 后正常关流不误报断
     expect(lastMsg?.awaitingInput?.multi_select).toBe(true);
   });
 
+  it("审查 SSE 保留独立审查编号，供确认后推进使用", async () => {
+    streams = [encode([
+      sseEvent("trace_event", {
+        trace_id: "trace-shared", event_id: "evt-1", sequence: 1, type: "run_start", status: "running",
+        timestamp: "2026-01-01T00:00:00Z", source: "system",
+        input: { workspace_id: "ws-1", thread_id: "thread-1", session_name: "测试会话", endpoint: "screenplay.generate.stream" },
+      }),
+      sseEvent("interrupt", {
+        kind: "review", review_kind: "stage", review_id: "review-volume",
+        question: "第一卷卷纲已完成", options: [], multi_select: false, source: "review",
+      }),
+    ])];
+    const { lastMsg } = await submitAndWaitIdle("继续创作");
+    expect(lastMsg?.traceId).toBe("trace-shared");
+    expect(lastMsg?.awaitingInput).toMatchObject({
+      kind: "review", review_kind: "stage", review_id: "review-volume",
+    });
+    expect(screen.getByTestId("review-card")).toBeInTheDocument();
+  });
+
   it("AC-001 补充：model_stream 叙述后收到 interrupt，正文必须是提案问题而非叙述文本", async () => {
     // 复刻线上形态（2026-10-09 彻查）：agent 先流式输出叙述（已读取需求…端出方案），
     // 再发 interrupt。修复前每轮 chunk 后的无条件覆盖 set 会把 interrupt 写入的

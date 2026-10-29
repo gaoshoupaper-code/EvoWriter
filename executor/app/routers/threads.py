@@ -150,12 +150,18 @@ def _reconstruct_awaiting_input(
                 RunStateOption(label=str(o.get("label", "")), description=str(o.get("description", "")))
                 for o in raw_options if isinstance(o, dict)
             ] or None
+        is_review = event.tool_name == "request_review"
+        review_kind = args.get("review_kind") if is_review else None
+        if is_review and review_kind not in ("batch", "style", "stage"):
+            return None
         return AwaitingInputDetail(
-            kind="choice",
+            kind="review" if is_review else "choice",
+            review_kind=review_kind,
+            review_id=hitl.tool_call_id if is_review else None,
             question=question,
             options=options,
             multi_select=bool(args.get("multi_select", False)),
-            source=f"{event.agent_name}-confirm" if event.agent_name else None,
+            source="review" if is_review else (f"{event.agent_name}-confirm" if event.agent_name else None),
             asked_at=hitl.timestamp,
         )
     return None

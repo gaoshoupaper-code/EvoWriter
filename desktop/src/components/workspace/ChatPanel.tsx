@@ -240,6 +240,7 @@ export function ChatPanel({
                         onSubmit={onResumeSubmit}
                         disabled={loading}
                         traceId={message.traceId}
+                        reviewId={message.awaitingInput.review_id}
                       />
                     ) : message.awaitingInput.options?.length ? (
                       <InterviewOptions

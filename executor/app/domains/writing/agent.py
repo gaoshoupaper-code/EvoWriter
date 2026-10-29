@@ -1434,7 +1434,11 @@ class MetaAgentService(BaseAgentService):
 
             # resume 分支已在上方判定，据此构造 agent 输入（degraded 按普通消息）
             if resume_value is not None and not pipe_decision.resume_degraded:
-                agent_input: object = Command(resume=resume_value)
+                agent_resume = resume_value
+                if isinstance(agent_resume, str) and writing_pipeline.classify_workspace(workspace_path) == "five":
+                    # 确认后段指针、卷号和库存可能已变化；恢复工具也须读到最新事实。
+                    agent_resume = f"{agent_resume}\n\n【系统更新：当前运行状态】\n{pipe_decision.directive}"
+                agent_input: object = Command(resume=agent_resume)
             else:
                 prompt = self._build_user_prompt(payload, thread, directive=pipe_decision.directive)
                 agent_input = {"messages": [{"role": "user", "content": prompt}]}
@@ -1521,6 +1525,8 @@ class MetaAgentService(BaseAgentService):
                                     interrupt_payload["source"] = iv["source"]
                                 if isinstance(iv.get("review_kind"), str):
                                     interrupt_payload["review_kind"] = iv["review_kind"]
+                                if isinstance(iv.get("review_id"), str):
+                                    interrupt_payload["review_id"] = iv["review_id"]
                                 interrupt_payload["question"] = iv.get("question", "")
                                 interrupt_payload["options"] = iv.get("options")
                                 interrupt_payload["multi_select"] = iv.get("multi_select", False)

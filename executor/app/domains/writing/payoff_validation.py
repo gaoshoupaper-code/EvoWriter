@@ -12,6 +12,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Callable
 
+from app.domains.writing.retry import WriterRetryError
+
 from contracts.payoff_constraints import (
     PayoffCatalog, PayoffEntry, PayoffVerdict, SkillSource, Violation,
     content_hash, normalize_combination_rules, parse_volume_payoffs, policy_hash,
@@ -300,6 +302,8 @@ class ValidationEngine:
                     if component.get("status") != "pass" or not isinstance(evidence, str) or not evidence or evidence not in occurrence.plot_text:
                         raise ValueError(f"{occurrence.location}组合成分缺少实际剧情证据")
         except Exception as exc:
+            if isinstance(exc, WriterRetryError) and exc.is_retryable and not exc.had_partial_response:
+                raise
             verdict.violations.append(Violation("semantic_review_failed", str(exc)))
         return verdict
 

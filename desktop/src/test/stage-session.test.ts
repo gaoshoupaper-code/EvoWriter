@@ -31,10 +31,12 @@ vi.mock("@tauri-apps/plugin-store", () => ({
 const createThreadMock = vi.fn();
 const fetchOutlineMock = vi.fn();
 const updateStageMock = vi.fn();
+const advanceStageMock = vi.fn();
 vi.mock("@/lib/api", () => ({
   createThread: (...args: unknown[]) => createThreadMock(...args),
   fetchWorkspaceOutline: (...args: unknown[]) => fetchOutlineMock(...args),
   updateWritingStage: (...args: unknown[]) => updateStageMock(...args),
+  advanceWritingStage: (...args: unknown[]) => advanceStageMock(...args),
 }));
 
 import { useStageSessionStore, stageThreadDisplayName, threadsForStage, _resetReadyEdgeForTests } from "@/stores/stage-session";
@@ -65,6 +67,7 @@ function resetStores() {
 beforeEach(() => {
   stores.clear();
   createThreadMock.mockReset();
+  advanceStageMock.mockReset();
   _resetReadyEdgeForTests();
   notifyStageReadyMock.mockClear();
   // 人工段指针写入（232617 FR-002）：默认按入参回显 pipeline_status
@@ -143,6 +146,18 @@ describe("syncWithPipeline 阶段变化不变量（FR-004）", () => {
     expect(useStageSessionStore.getState().pendingTransition).toEqual({
       fromStage: "chapter", toStage: "text", sourceStage: undefined,
     });
+  });
+});
+
+describe("段审推进", () => {
+  it("转发本次审查编号，并同步新段与当前会话归属", async () => {
+    useWorkspaceStore.setState({ activeThreadId: "t1" });
+    advanceStageMock.mockResolvedValue({ kind: "five", phase: "chapter", next_unit: "章纲", awaiting: {} });
+    expect(await useStageSessionStore.getState().confirmStageReviewAdvance(WS, "trace-shared", "review-volume"))
+      .toBe(true);
+    expect(advanceStageMock).toHaveBeenCalledWith(WS, "trace-shared", "review-volume");
+    expect(useContentStore.getState().outlinePipeline?.phase).toBe("chapter");
+    expect(useStageSessionStore.getState().threadStageMeta.get("t1")?.stage).toBe("chapter");
   });
 });
 

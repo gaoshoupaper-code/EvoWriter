@@ -109,7 +109,13 @@ export async function apiFetch(input: string, init: RequestInit = {}): Promise<R
 
 async function parseJsonResponse<T>(response: RelayResponse): Promise<T> {
   if (!response.ok) {
-    throw new Error(`API returned ${response.status}`);
+    let detail: unknown;
+    try {
+      detail = (await response.json())?.detail;
+    } catch {
+      // 非 JSON 错误页沿用状态码提示。
+    }
+    throw new Error(typeof detail === "string" && detail.trim() ? detail : `API returned ${response.status}`);
   }
 
   return (await response.json()) as T;
@@ -495,15 +501,15 @@ export async function updateWritingStage(workspaceId: string, stage: string) {
 /**
  * 段审确认循环推进（自动模式「确认通过」时调用）——服务端按创作循环
  * （一卷→一批章纲→一批正文→回章纲…→下一卷）推导下一段并写指针。
- * trace_id 是幂等键：同一待审 trace 重复推进 no-op（重试不二次跳段）。
+ * review_id 标识本次审查；同一 trace 可完成多次审查，重试不二次跳段。
  */
-export async function advanceWritingStage(workspaceId: string, traceId: string) {
+export async function advanceWritingStage(workspaceId: string, traceId: string, reviewId?: string) {
   return apiJson<import("./types").PipelineStatus>(
     `${API_BASE_URL}/api/workspaces/${workspaceId}/writing/stage/advance`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ trace_id: traceId }),
+      body: JSON.stringify({ trace_id: traceId, review_id: reviewId }),
     },
   );
 }
@@ -608,6 +614,8 @@ export type ThreadRunState = {
   /** 仅 status="awaiting_input" 且服务端提问重建成功时非 null */
   awaiting: {
     kind: string;
+    review_kind?: "batch" | "style" | "stage" | null;
+    review_id?: string | null;
     question: string;
     options: RunStateOption[] | null;
     multi_select: boolean;

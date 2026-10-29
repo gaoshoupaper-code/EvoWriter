@@ -50,6 +50,8 @@ export function reconcileMessagesWithRunState(
       content: withNote(last.content, a.question || "等待你的输入"),
       awaitingInput: {
         kind: a.kind || "choice",
+        review_kind: a.review_kind ?? undefined,
+        review_id: a.review_id ?? undefined,
         question: a.question,
         options: a.options ?? null,
         multi_select: a.multi_select ?? false,

@@ -22,7 +22,7 @@ from app.domains.writing.expert_agent.services.storyline_graph import (
     build_panorama_events,
     build_rhythm_data,
 )
-from app.routers.context import _log, get_agent_service, get_character_service, get_thread_store
+from app.routers.context import _log, get_agent_service, get_character_service, get_thread_store, get_trace_recorder
 from app.schemas.screenplay import (
     Annotation,
     AnnotationClearRequest,
@@ -388,7 +388,7 @@ def advance_writing_stage(
     界面「确认通过」动作调用（人工确认语义，仍走人工段指针唯一通道）：
     一卷卷纲确认 → 章纲；一批章纲确认 → 正文；正文库存尽 → 回章纲；
     本卷章纲齐 → 下一卷卷纲（next_stage_on_confirm，区别于线性五段）。
-    trace_id 幂等：同一待审 trace 重复推进 no-op（重试不二次跳段）。
+    每次审查独立幂等：同一 run 的后续审查仍可推进，重试不二次跳段。
     """
     from app.domains.writing.pipeline import classify_workspace, current_stage, pipeline_status
     from contracts.writing_artifacts import (
@@ -404,8 +404,35 @@ def advance_writing_stage(
     if classify_workspace(workspace_path) == "legacy":
         raise HTTPException(status_code=409, detail="旧版工作区只读，不支持切段")
     state = load_writing_state(workspace_path)
-    if payload.trace_id and state.last_stage_advance.get("trace_id") == payload.trace_id:
-        return pipeline_status(workspace_path)
+    last = state.last_stage_advance
+    review_id = payload.review_id
+    if payload.trace_id:
+        recorder = get_trace_recorder()
+        run = recorder.find_run_by_trace_id(payload.trace_id, workspace_path=str(workspace_path))
+        if run is not None:
+            from app.routers.threads import _reconstruct_awaiting_input
+
+            if Path(run.workspace_path) != workspace_path:
+                raise HTTPException(status_code=409, detail="待审任务不属于当前作品。")
+            thread = thread_store.get_thread(user.user_id, run.thread_id)
+            awaiting = (
+                _reconstruct_awaiting_input(recorder, thread, payload.trace_id)
+                if thread and thread.workspace_id == workspace_id else None
+            )
+            if (awaiting is None or awaiting.kind != "review" or awaiting.review_kind != "stage"
+                    or not awaiting.review_id):
+                raise HTTPException(status_code=409, detail="当前停等点不是段审查，请刷新会话。")
+            if review_id and review_id != awaiting.review_id:
+                raise HTTPException(status_code=409, detail="审查已更新，请刷新后确认当前产物。")
+            review_id = awaiting.review_id
+            if (last.get("trace_id") == payload.trace_id and last.get("review_id") == review_id):
+                return pipeline_status(workspace_path)
+            if run.status != "awaiting_input":
+                raise HTTPException(status_code=409, detail="当前创作没有等待审查，请刷新会话。")
+        elif review_id:
+            raise HTTPException(status_code=409, detail="待审任务不存在，请刷新会话。")
+        elif last.get("trace_id") == payload.trace_id:
+            return pipeline_status(workspace_path)
     current = (
         state.confirmed_stage if state.confirmed_stage in STAGE_LABELS
         else current_stage(workspace_path)
@@ -422,7 +449,7 @@ def advance_writing_stage(
     state.confirmed_stage = nxt
     state.stage = nxt
     state.last_stage_advance = {
-        "trace_id": payload.trace_id, "from": current, "to": nxt,
+        "trace_id": payload.trace_id, "review_id": review_id or "", "from": current, "to": nxt,
     }
     save_writing_state(workspace_path, state)
     return pipeline_status(workspace_path)

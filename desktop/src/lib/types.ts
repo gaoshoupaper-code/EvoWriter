@@ -443,6 +443,7 @@ export type ChatMessage = {
     source?: string;
     // review 停等点（REQ-20261026-191719 TD-003）：batch=正文批次 / style=文风卡 / stage=段产物审
     review_kind?: "batch" | "style" | "stage";
+    review_id?: string;
     // image_review 透传（DD4）
     round?: number;
     versions?: unknown[];

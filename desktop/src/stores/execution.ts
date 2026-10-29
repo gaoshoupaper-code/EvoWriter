@@ -1066,6 +1066,7 @@ async function performSubmit(
             const iv = event.data as {
               kind?: string; question?: string; options?: AskUserOption[] | null; multi_select?: boolean; source?: string;
               review_kind?: "batch" | "style" | "stage";
+              review_id?: string;
               round?: number; versions?: unknown[];
             };
             gotInterrupt = true;
@@ -1095,7 +1096,7 @@ async function performSubmit(
                 awaitingInput: {
                   kind: interruptKind, question: iv.question || "", options: iv.options ?? null,
                   multi_select: iv.multi_select ?? false, source: iv.source, round: iv.round, versions: iv.versions,
-                  ...(interruptKind === "review" ? { review_kind: iv.review_kind ?? "stage" } : {}),
+                  ...(interruptKind === "review" ? { review_kind: iv.review_kind ?? "stage", review_id: iv.review_id } : {}),
                   askedAt: new Date().toISOString(),
                 },
               })),

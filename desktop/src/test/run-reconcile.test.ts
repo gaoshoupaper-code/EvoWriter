@@ -55,6 +55,18 @@ describe("reconcileMessagesWithRunState", () => {
     expect(next![next!.length - 1].content).toBe("已生成的正文");
   });
 
+  it.each(["batch", "style", "stage"] as const)("恢复 %s 审查卡保留审查类型和独立编号", (reviewKind) => {
+    const next = reconcileMessagesWithRunState(messages(), state({
+      awaiting: {
+        kind: "review", review_kind: reviewKind, review_id: "review-current",
+        question: "本批已完成", options: null, multi_select: false, source: "review",
+      },
+    }), NOW);
+    expect(next![next!.length - 1].awaitingInput).toMatchObject({
+      kind: "review", review_kind: reviewKind, review_id: "review-current",
+    });
+  });
+
   it("awaiting 但服务端重建失败（无详情）→ 不动", () => {
     expect(reconcileMessagesWithRunState(messages(), state({ awaiting: null }), NOW)).toBeNull();
   });

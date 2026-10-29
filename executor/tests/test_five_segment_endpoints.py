@@ -14,23 +14,76 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.auth import current_user
+from app.platform.trace import TraceDetail, TraceRunSummary
+from app.platform.trace.recorder import TraceLogEvent
 from app.routers import workspaces as ws_router
 
 
 class _FakeStore:
     def __init__(self, workspace_path: Path) -> None:
         self._ws = SimpleNamespace(workspace_path=str(workspace_path))
+        self._thread = SimpleNamespace(
+            thread_id="t1", workspace_id="ws1", workspace_path=str(workspace_path),
+        )
 
     def get_workspace(self, owner_id: str, workspace_id: str):
         return self._ws if workspace_id == "ws1" else None
 
+    def get_thread(self, owner_id: str, thread_id: str):
+        return self._thread if owner_id == "u1" and thread_id == "t1" else None
+
+
+class _FakeRecorder:
+    def __init__(self, workspace_path: Path) -> None:
+        self.workspace_path = workspace_path
+        self.run: TraceRunSummary | None = None
+        self.events: list[TraceLogEvent] = []
+        self.lookups: list[tuple[str, str | None]] = []
+
+    def find_run_by_trace_id(self, trace_id: str, workspace_path: str | None = None):
+        self.lookups.append((trace_id, workspace_path))
+        return self.run if self.run is not None and self.run.trace_id == trace_id else None
+
+    def read_run(self, thread, trace_id: str):
+        assert thread.thread_id == "t1"
+        assert self.run is not None and self.run.trace_id == trace_id
+        return TraceDetail(run=self.run, events=self.events, nodes=[], context=[], todos=[])
+
+    def await_review(self, review_id: str, review_kind: str = "stage", *, choice: bool = False) -> None:
+        self.run = TraceRunSummary(
+            trace_id="trace-loop", workspace_id="ws1", thread_id="t1", session_name="创作",
+            workspace_path=str(self.workspace_path), endpoint="screenplay.generate.stream",
+            status="awaiting_input", started_at="2026-10-29T01:00:00+00:00",
+            path="traces/20261029-0100/trace-loop.jsonl",
+        )
+        args = {"question": "本批已完成，请审查", "options": []}
+        if not choice:
+            args["review_kind"] = review_kind
+        for kind, extra in (
+            ("tool_start", {"status": "running", "tool_name": "confirm_with_user" if choice else "request_review",
+                            "tool_args": args}),
+            ("hitl", {"status": "awaiting_input"}),
+        ):
+            seq = len(self.events) + 1
+            self.events.append(TraceLogEvent.model_validate({
+                "trace_id": self.run.trace_id, "event_id": f"trace-loop-{seq}", "sequence": seq,
+                "type": kind, "timestamp": "2026-10-29T01:00:00+00:00", "source": "runtime",
+                "agent_name": "author", "tool_call_id": review_id, **extra,
+            }))
+
 
 @pytest.fixture()
-def client(tmp_path: Path, monkeypatch) -> TestClient:
+def recorder(tmp_path: Path) -> _FakeRecorder:
+    return _FakeRecorder(tmp_path)
+
+
+@pytest.fixture()
+def client(tmp_path: Path, monkeypatch, recorder: _FakeRecorder) -> TestClient:
     app = FastAPI()
     app.include_router(ws_router.router)
     app.dependency_overrides[current_user] = lambda: SimpleNamespace(user_id="u1")
     monkeypatch.setattr(ws_router, "get_thread_store", lambda: _FakeStore(tmp_path))
+    monkeypatch.setattr(ws_router, "get_trace_recorder", lambda: recorder)
     return TestClient(app)
 
 
@@ -195,8 +248,12 @@ def _seed_confirm_loop_book(ws: Path) -> None:
         "# 卷纲 · 第 1 卷 · 活下去\n> 状态：定稿\n\n| 卷末超大爽点 | 捡到首件神器 |\n|---|---|\n"
         "## 发展阶段\n阶段表\n## 爽点节奏表\n节奏表\n## 爽点质检表\n质检表\n## 卷末钩子\n钩子\n"
     )
-    (ws / "卷纲" / "第01卷.md").write_text(vol, encoding="utf-8")
-    (ws / "卷纲" / "第02卷.md").write_text(vol, encoding="utf-8")
+    (ws / "卷纲" / "第01卷.md").write_text(
+        vol.replace("\n节奏表\n", "\n本卷章号范围：1-3\n节奏表\n"), encoding="utf-8",
+    )
+    (ws / "卷纲" / "第02卷.md").write_text(
+        vol.replace("\n节奏表\n", "\n本卷章号范围：4-6\n节奏表\n"), encoding="utf-8",
+    )
     for n in (1, 2, 3):
         (ws / "章纲" / f"第{n:03d}章.md").write_text("# 章纲\n", encoding="utf-8")
         (ws / "正文" / f"第{n:03d}章完.md").write_text(
@@ -255,3 +312,156 @@ def test_failed_volume_revision_cannot_advance_using_old_final(client: TestClien
     assert "清单外爽点" in response.json()["detail"]
     assert load_writing_state(tmp_path).confirmed_stage == "volume"
     assert (tmp_path / "卷纲/第02卷.md").read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("send_review_id", [True, False])
+def test_same_trace_advances_each_review_through_volume_cycle(
+    client: TestClient, tmp_path: Path, recorder: _FakeRecorder, send_review_id: bool,
+) -> None:
+    """真实 resume 复用 trace；新旧客户端都按每次工具调用推进。"""
+    from contracts.writing_artifacts import load_writing_state
+
+    _seed_confirm_loop_book(tmp_path)
+    client.put("/workspaces/ws1/writing/stage", json={"stage": "volume"})
+
+    def confirm(review_id: str, expected: str) -> None:
+        recorder.await_review(review_id)
+        payload = {"trace_id": "trace-loop"}
+        if send_review_id:
+            payload["review_id"] = review_id
+        for _ in range(2):
+            response = client.post("/workspaces/ws1/writing/stage/advance", json=payload)
+            assert response.status_code == 200, response.text
+            assert response.json()["phase"] == expected
+        assert load_writing_state(tmp_path).last_stage_advance["review_id"] == review_id
+
+    confirm("volume-2-ready", "chapter")
+    (tmp_path / "章纲/第004章.md").write_text("# 章纲\n", encoding="utf-8")
+    confirm("chapter-4-ready", "text")
+    (tmp_path / "正文/第004章.md").write_text("# 正文\n", encoding="utf-8")
+    confirm("text-4-stock-empty", "chapter")
+    for chapter in (5, 6):
+        (tmp_path / f"章纲/第{chapter:03d}章.md").write_text("# 章纲\n", encoding="utf-8")
+    confirm("chapter-5-6-ready", "text")
+    for chapter in (5, 6):
+        (tmp_path / f"正文/第{chapter:03d}章.md").write_text("# 正文\n", encoding="utf-8")
+    confirm("text-5-6-stock-empty", "chapter")
+    confirm("all-volume-2-chapters-complete", "volume")
+    state = load_writing_state(tmp_path)
+    assert state.last_stage_advance == {
+        "trace_id": "trace-loop", "review_id": "all-volume-2-chapters-complete",
+        "from": "chapter", "to": "volume",
+    }
+    assert recorder.lookups
+    assert all(path == str(tmp_path) for _, path in recorder.lookups)
+
+
+def test_review_retry_after_resume_does_not_advance_twice(
+    client: TestClient, tmp_path: Path, recorder: _FakeRecorder,
+) -> None:
+    from contracts.writing_artifacts import load_writing_state
+
+    _seed_confirm_loop_book(tmp_path)
+    client.put("/workspaces/ws1/writing/stage", json={"stage": "volume"})
+    recorder.await_review("volume-ready")
+    payload = {"trace_id": "trace-loop", "review_id": "volume-ready"}
+    assert client.post("/workspaces/ws1/writing/stage/advance", json=payload).json()["phase"] == "chapter"
+    assert recorder.run is not None
+    recorder.run.status = "running"
+    (tmp_path / "章纲/第004章.md").write_text("# 章纲\n", encoding="utf-8")
+
+    response = client.post("/workspaces/ws1/writing/stage/advance", json=payload)
+    assert response.status_code == 200
+    assert response.json()["phase"] == "chapter"
+    assert load_writing_state(tmp_path).last_stage_advance["review_id"] == "volume-ready"
+
+
+def test_old_review_is_rejected_after_new_review_arrives(
+    client: TestClient, tmp_path: Path, recorder: _FakeRecorder,
+) -> None:
+    from contracts.writing_artifacts import load_writing_state
+
+    _seed_confirm_loop_book(tmp_path)
+    client.put("/workspaces/ws1/writing/stage", json={"stage": "volume"})
+    recorder.await_review("volume-ready")
+    old_payload = {"trace_id": "trace-loop", "review_id": "volume-ready"}
+    assert client.post("/workspaces/ws1/writing/stage/advance", json=old_payload).status_code == 200
+    (tmp_path / "章纲/第004章.md").write_text("# 章纲\n", encoding="utf-8")
+    recorder.await_review("chapter-ready")
+
+    response = client.post("/workspaces/ws1/writing/stage/advance", json=old_payload)
+    assert response.status_code == 409
+    assert "审查已更新" in response.json()["detail"]
+    assert load_writing_state(tmp_path).confirmed_stage == "chapter"
+    response = client.post("/workspaces/ws1/writing/stage/advance", json={
+        "trace_id": "trace-loop", "review_id": "chapter-ready",
+    })
+    assert response.status_code == 200
+    assert response.json()["phase"] == "text"
+
+
+@pytest.mark.parametrize("review_kind", ["style", "batch", "choice"])
+def test_nonstage_interrupt_cannot_advance(
+    client: TestClient, tmp_path: Path, recorder: _FakeRecorder, review_kind: str,
+) -> None:
+    from contracts.writing_artifacts import load_writing_state
+
+    _seed_confirm_loop_book(tmp_path)
+    client.put("/workspaces/ws1/writing/stage", json={"stage": "chapter"})
+    recorder.await_review("not-stage", review_kind=review_kind, choice=review_kind == "choice")
+    response = client.post("/workspaces/ws1/writing/stage/advance", json={
+        "trace_id": "trace-loop", "review_id": "not-stage",
+    })
+    assert response.status_code == 409
+    assert "不是段审查" in response.json()["detail"]
+    assert load_writing_state(tmp_path).confirmed_stage == "chapter"
+
+
+def test_review_from_another_workspace_cannot_advance(
+    client: TestClient, tmp_path: Path, recorder: _FakeRecorder,
+) -> None:
+    from contracts.writing_artifacts import load_writing_state
+
+    _seed_confirm_loop_book(tmp_path)
+    client.put("/workspaces/ws1/writing/stage", json={"stage": "volume"})
+    recorder.await_review("another-book-review")
+    assert recorder.run is not None
+    # recorder 的工作区参数只是查找提示，内存索引可能指向另一本书。
+    recorder.run.workspace_path = str(tmp_path / "another-book")
+    recorder.run.workspace_id = "ws-other"
+    response = client.post("/workspaces/ws1/writing/stage/advance", json={
+        "trace_id": "trace-loop", "review_id": "another-book-review",
+    })
+    assert response.status_code == 409
+    assert load_writing_state(tmp_path).confirmed_stage == "volume"
+
+
+def test_unknown_review_cannot_advance(client: TestClient, tmp_path: Path) -> None:
+    from contracts.writing_artifacts import load_writing_state
+
+    _seed_confirm_loop_book(tmp_path)
+    client.put("/workspaces/ws1/writing/stage", json={"stage": "volume"})
+    response = client.post("/workspaces/ws1/writing/stage/advance", json={
+        "trace_id": "missing-trace", "review_id": "missing-review",
+    })
+    assert response.status_code == 409
+    assert "待审任务不存在" in response.json()["detail"]
+    assert load_writing_state(tmp_path).confirmed_stage == "volume"
+
+
+def test_new_confirmation_requires_an_awaiting_run(
+    client: TestClient, tmp_path: Path, recorder: _FakeRecorder,
+) -> None:
+    from contracts.writing_artifacts import load_writing_state
+
+    _seed_confirm_loop_book(tmp_path)
+    client.put("/workspaces/ws1/writing/stage", json={"stage": "volume"})
+    recorder.await_review("volume-ready")
+    assert recorder.run is not None
+    recorder.run.status = "running"
+    response = client.post("/workspaces/ws1/writing/stage/advance", json={
+        "trace_id": "trace-loop", "review_id": "volume-ready",
+    })
+    assert response.status_code == 409
+    assert "没有等待审查" in response.json()["detail"]
+    assert load_writing_state(tmp_path).confirmed_stage == "volume"

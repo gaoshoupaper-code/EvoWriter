@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from uuid import uuid4
 
+from app.domains.writing.retry import WriterRetryError
+
 from contracts.writing_artifacts import (
     KIND_VOLUME,
     VOLUME_PAYOFF_CHECKS_RELPATH,
@@ -196,7 +198,10 @@ class VolumePayoffGuard:
                 rel = volume_draft_relpath(volume)
             content = _draft_text(candidate, reason)
             operation.update(status=status, reason=reason, candidate_hash=_hash(candidate))
-            operation.pop("candidate_text", None)
+            if status == "retryable":
+                operation["candidate_text"] = candidate
+            else:
+                operation.pop("candidate_text", None)
             result = self._result(status, rel, content, reason, operation, violations)
             operation["result"] = result
             record["active_operation"] = operation
@@ -309,14 +314,15 @@ class VolumePayoffGuard:
                     if operation.get("status") == "blocked":
                         return operation["result"]
                     cached = operation.get("result")
-                    if operation.get("input_hash") == _hash(candidate_text) and cached:
+                    if (operation.get("status") != "retryable"
+                            and operation.get("input_hash") == _hash(candidate_text) and cached):
                         if _hash(_read(self.workspace / cached["path"])) == _hash(cached["content"]):
                             return cached
                 elif self.operation_id in record.get("previous_operations", {}):
                     previous = record["previous_operations"][self.operation_id]
                     return self._result("blocked", "", "", "该修复任务已被新任务替代。", previous)
 
-                resuming = same_operation and operation.get("status") == "repairing"
+                resuming = same_operation and operation.get("status") in ("repairing", "retryable")
                 if not resuming:
                     base_path = self.workspace / (volume_draft_relpath(volume) if draft else rel)
                     if _read(base_path) != base_text:
@@ -398,7 +404,14 @@ class VolumePayoffGuard:
             reason = f"卷纲检查或提交失败（{type(exc).__name__}）：{exc}"
             if "base_hash" in operation:
                 try:
-                    return self._retain_draft(volume, candidate_text, operation, reason)
+                    retryable = (
+                        isinstance(exc, WriterRetryError) and exc.is_retryable
+                        and not exc.had_partial_response
+                    )
+                    return self._retain_draft(
+                        volume, candidate_text, operation, reason,
+                        status="retryable" if retryable else "blocked",
+                    )
                 except Exception:
                     pass
             return self._result("blocked", "", "", reason, operation)

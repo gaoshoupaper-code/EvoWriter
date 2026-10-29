@@ -24,6 +24,7 @@ type ReviewCardProps = {
   disabled?: boolean;
   /** 待审 run 的 trace_id（stage 确认推进段的幂等键） */
   traceId?: string;
+  reviewId?: string;
 };
 
 const KIND_TITLES: Record<ReviewCardProps["reviewKind"], string> = {
@@ -32,7 +33,7 @@ const KIND_TITLES: Record<ReviewCardProps["reviewKind"], string> = {
   stage: "本段产物已齐，请审查",
 };
 
-export function ReviewCard({ reviewKind, onSubmit, disabled, traceId }: ReviewCardProps) {
+export function ReviewCard({ reviewKind, onSubmit, disabled, traceId, reviewId }: ReviewCardProps) {
   const batchSize = useStageSessionStore((s) => s.batchSize);
   const lastBatchUsage = useStageSessionStore((s) => s.lastBatchUsage);
   const hydrateModes = useStageSessionStore((s) => s.hydrateModes);
@@ -59,7 +60,7 @@ export function ReviewCard({ reviewKind, onSubmit, disabled, traceId }: ReviewCa
     }
     // stage 确认先切段（resume 装配读新指针）；失败解锁重试，不带旧段续跑
     if (stageAdvance && workspaceId) {
-      const ok = await confirmStageAdvance(workspaceId, traceId ?? "");
+      const ok = await confirmStageAdvance(workspaceId, traceId ?? "", reviewId);
       if (!ok) {
         setSubmitted(false);
         return;

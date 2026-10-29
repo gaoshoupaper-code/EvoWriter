@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -292,11 +292,11 @@ class WritingStageUpdateRequest(BaseModel):
 class WritingStageAdvanceRequest(BaseModel):
     """段审确认循环推进请求（自动模式「确认通过」时由界面调用）。
 
-    trace_id 是待审 run 的幂等键：同一 trace 重复推进为 no-op
-    （resume 网络重试不得二次跳段）。
+    同一 run 可多次交审；以 review_id 区分停等点，重试不二次跳段。
     """
 
-    trace_id: str = Field(default="", description="待审 trace_id（幂等键）")
+    trace_id: str = Field(default="", description="待审 trace_id")
+    review_id: str | None = Field(default=None, description="待审工具调用编号；旧客户端由服务端补齐")
 
 
 class WritingModeUpdateRequest(BaseModel):
@@ -395,6 +395,8 @@ class AwaitingInputDetail(BaseModel):
     """
 
     kind: str = "choice"
+    review_kind: Literal["batch", "style", "stage"] | None = None
+    review_id: str | None = None
     question: str = ""
     options: list[RunStateOption] | None = None
     multi_select: bool = False

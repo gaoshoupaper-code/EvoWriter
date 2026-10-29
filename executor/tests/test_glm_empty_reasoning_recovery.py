@@ -25,12 +25,15 @@ def test_empty_reasoning_retries_once_and_keeps_both_usage_records(monkeypatch):
         calls.append(kwargs)
         if len(calls) == 1:
             terminal = chunk(finish="length")
-            terminal.generation_info.update(model_name="glm-5.3", system_fingerprint="first")
+            terminal.generation_info.update(model_name="glm-5.3", system_fingerprint="first",
+                                            headers={"x-request-id": "first"})
             yield terminal
             yield chunk(usage=usage)
         else:
             assert kwargs["extra_body"] == {"custom": True, "thinking": {"type": "disabled"}}
-            yield chunk("done", finish="stop", usage=usage)
+            terminal = chunk("done", finish="stop", usage=usage)
+            terminal.generation_info["headers"] = {"x-request-id": "second"}
+            yield terminal
 
     monkeypatch.setattr(ChatOpenAI, "_stream", stream)
     model = ReasoningStreamChatModel(model="glm-5.3", api_key="test")
@@ -40,6 +43,7 @@ def test_empty_reasoning_retries_once_and_keeps_both_usage_records(monkeypatch):
     assert [c.generation_info.get("finish_reason") for c in chunks if c.generation_info] == ["stop"]
     assert sum((c.message.usage_metadata or {}).get("output_tokens", 0) for c in chunks) == 64
     assert not any((c.generation_info or {}).get("system_fingerprint") == "first" for c in chunks)
+    assert [c.generation_info["headers"] for c in chunks if (c.generation_info or {}).get("headers")] == [{"x-request-id": "second"}]
 
 
 @pytest.mark.parametrize("content,tool,finish,disabled,model_name", [

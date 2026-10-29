@@ -80,9 +80,15 @@ class ReasoningStreamChatModel(ChatOpenAI):
                 and thinking.get("type") != "disabled")
 
     def _stream(self, *args: Any, **kwargs: Any):
-        visible, finish = False, None
+        visible, finish, headers = False, None, None
         for chunk in super()._stream(*args, **kwargs):
             visible = visible or _has_visible_output(chunk)
+            info = dict(chunk.generation_info or {})
+            if self.model_name.startswith("glm-") and not visible:
+                headers = info.pop("headers", headers)
+            elif headers is not None:
+                info["headers"], headers = headers, None
+            chunk = ChatGenerationChunk(message=chunk.message, generation_info=info or None)
             finish = (chunk.generation_info or {}).get("finish_reason", finish)
             # 终止块不能先交给上层，否则一次空转会被提前结算为最终回答。
             if ((chunk.generation_info or {}).get("finish_reason") == "length"
@@ -92,11 +98,19 @@ class ReasoningStreamChatModel(ChatOpenAI):
         if self._recover_empty_reasoning(kwargs, visible, finish):
             logger.warning("GLM reasoning exhausted output without content; retrying once without thinking")
             yield from super()._stream(*args, **_without_thinking(kwargs, self.extra_body))
+        elif headers is not None:
+            yield ChatGenerationChunk(message=AIMessageChunk(content=""), generation_info={"headers": headers})
 
     async def _astream(self, *args: Any, **kwargs: Any):
-        visible, finish = False, None
+        visible, finish, headers = False, None, None
         async for chunk in super()._astream(*args, **kwargs):
             visible = visible or _has_visible_output(chunk)
+            info = dict(chunk.generation_info or {})
+            if self.model_name.startswith("glm-") and not visible:
+                headers = info.pop("headers", headers)
+            elif headers is not None:
+                info["headers"], headers = headers, None
+            chunk = ChatGenerationChunk(message=chunk.message, generation_info=info or None)
             finish = (chunk.generation_info or {}).get("finish_reason", finish)
             if ((chunk.generation_info or {}).get("finish_reason") == "length"
                     and self._recover_empty_reasoning(kwargs, visible, finish)):
@@ -106,6 +120,8 @@ class ReasoningStreamChatModel(ChatOpenAI):
             logger.warning("GLM reasoning exhausted output without content; retrying once without thinking")
             async for chunk in super()._astream(*args, **_without_thinking(kwargs, self.extra_body)):
                 yield chunk
+        elif headers is not None:
+            yield ChatGenerationChunk(message=AIMessageChunk(content=""), generation_info={"headers": headers})
 
     def _convert_chunk_to_generation_chunk(
         self,

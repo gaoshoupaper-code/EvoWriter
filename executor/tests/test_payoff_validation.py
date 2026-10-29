@@ -28,6 +28,11 @@ VOLUME = f"""# 卷纲 · 第 1 卷
 ## 卷末钩子
 钩子说明。
 """
+UNIFIED_VOLUME = VOLUME.replace(
+    "| 行为档位 | 节奏级别 |", "| 爽点级别 |",
+).replace("|---|---|---|---|---|", "|---|---|---|---|").replace(
+    "| 高 | 小 |", "| 小 |",
+).replace("| 小 | 超大 |", "| 超大 |")
 
 
 def extraction():
@@ -156,6 +161,34 @@ def test_independent_review_receives_raw_sources_and_complete_candidate():
     assert payload["candidate"] == VOLUME
     assert payload["sources"][0]["content"] == SKILL["content"]
     assert len(verdict.review_results) == 2
+
+
+def test_unified_table_reaches_semantic_review_without_behavior_grades():
+    model = Model(extraction(), review_response)
+    engine = ValidationEngine(model)
+    verdict = engine.check(UNIFIED_VOLUME, engine.catalog([SKILL]))
+    assert verdict.passed
+    assert len(verdict.review_results) == 2
+    payload = json.loads(model.calls[-1][0][-1]["content"])
+    assert payload["candidate"] == UNIFIED_VOLUME
+    assert all(c["behavior_level"] is None for o in payload["occurrences"] for c in o["components"])
+    prompt = model.calls[-1][0][0]["content"]
+    assert "不要求另列行为档位" in prompt
+    assert "原技能核对实际行动与组合规则" in prompt
+
+
+def test_unified_combination_still_requires_semantic_evidence_for_every_component():
+    candidate = UNIFIED_VOLUME.replace("【爽】基础甲", "【爽】基础甲+基础乙", 1)
+
+    def reject(messages):
+        answer = review_response(messages)
+        answer["items"][0]["components"][1].update(status="fail", reason="没有行动乙")
+        return answer
+
+    engine = ValidationEngine(Model(extraction(), reject))
+    verdict = engine.check(candidate, engine.catalog([SKILL]))
+    assert not verdict.passed
+    assert {v.code for v in verdict.violations} == {"semantic_review_failed"}
 
 
 @pytest.mark.parametrize("mutation", [
@@ -335,15 +368,20 @@ def test_explanation_wrapped_around_valid_evidence_is_rejected(target):
 
 
 def test_repair_receives_the_exact_volume_table_and_component_format():
-    model = Model(extraction(), {"candidate": VOLUME})
+    model = Model(extraction(), {"candidate": UNIFIED_VOLUME})
     engine = ValidationEngine(model)
     policy = engine.catalog([SKILL])
-    assert engine.repair("旧候选", [], policy) == VOLUME
+    assert engine.repair(VOLUME, [], policy) == UNIFIED_VOLUME
     prompt = next(messages[0]["content"] for messages, purpose in model.calls if purpose == "payoff_repair")
-    assert "章号 | 剧情安排 | 技能条目／组合成分 | 行为档位 | 节奏级别" in prompt
+    assert "章号 | 剧情安排 | 技能条目／组合成分 | 爽点级别" in prompt
+    assert "固定四列" in prompt
     assert "【爽】原条目甲+原条目乙" in prompt
-    assert "原条目甲:小+原条目乙:高" in prompt
     assert "一次【爽】" in prompt
+    assert "不再添加「行为档位」「节奏级别」列" in prompt
+    assert "| 行为档位 |" not in prompt
+    assert "| 节奏级别 |" not in prompt
+    assert "原条目甲:小+原条目乙:高" not in prompt
+    assert parse_volume_payoffs(UNIFIED_VOLUME, policy)[1] == []
 
 
 def test_separate_combination_quotes_keep_source_and_original_newlines():

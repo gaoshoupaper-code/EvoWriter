@@ -27,15 +27,17 @@ def policy():
     )
 
 
-def volume(rows, *, span="1-2", extra=""):
+def volume(rows, *, span="1-2", extra="", unified=False):
+    header = "章号 | 剧情安排 | 技能条目／组合成分 | 爽点级别" if unified else "章号 | 剧情安排 | 技能条目／组合成分 | 行为档位 | 节奏级别"
+    separator = "|---|---|---|---|" if unified else "|---|---|---|---|---|"
     return f"""# 卷纲 · 第 1 卷
 > 状态：定稿
 本卷章号范围：{span}
 ## 发展阶段
 阶段说明。
 ## 爽点节奏表
-| 章号 | 剧情安排 | 技能条目／组合成分 | 行为档位 | 节奏级别 |
-|---|---|---|---|---|
+| {header} |
+{separator}
 {rows}
 ## 爽点质检表
 质检说明。
@@ -59,6 +61,54 @@ def test_valid_volume_and_serializable_contract(policy):
     assert occurrences[0].components[0].behavior_level == "高"
     assert occurrences[0].rhythm_level == "小"
     assert asdict(policy)["sources"][0]["skill_id"] == "skill-a"
+
+
+@pytest.mark.parametrize("level", ["小", "中", "大", "超大"])
+def test_unified_level_does_not_require_independent_behavior_grade(policy, level):
+    text = volume(f"| 1 | 实际行动甲 | 【爽】基础甲 | {level} |", span="1-1", unified=True)
+    occurrences, violations = parse_volume_payoffs(text, policy)
+    assert violations == []
+    assert occurrences[0].rhythm_level == level
+    assert occurrences[0].components[0].behavior_level is None
+
+
+def test_unified_combination_keeps_all_components_without_grade_mapping(policy):
+    text = volume("| 1 | 行动甲与行动乙 | 【爽】基础甲+基础乙 | 大 |", span="1-1", unified=True)
+    occurrences, violations = parse_volume_payoffs(text, policy)
+    assert violations == []
+    assert [c.entry_id for c in occurrences[0].components] == ["a", "b"]
+    assert all(c.behavior_level is None for c in occurrences[0].components)
+
+
+@pytest.mark.parametrize("row, expected", [
+    ("| 1 | 行动甲 | 【爽】基础甲 | 高 |", "invalid_rhythm_level"),
+    ("| 1 | 行动甲 | 【爽】基础甲 | |", "invalid_rhythm_level"),
+    ("| 1 | 行动甲 | 【爽】基础甲 | 基础甲:高 |", "invalid_rhythm_level"),
+    ("| 1 | 行动甲 | 【爽】基础甲；【爽】新条目 | 小 |", "unknown_entry"),
+    ("| 1 | 行动甲与行动乙 | 【爽】基础甲+新条目 | 大 |", "unknown_entry"),
+    ("| 1 | 行动甲 | 【爽】基础甲+基础甲 | 大 |", "duplicate_component"),
+    ("| 1 | 只有压抑 | 【压·小】 | 小 |", "chapter_without_payoff"),
+    ("| 1-2 | 行动甲 | 【爽】基础甲 | 小 |", "invalid_chapter"),
+    ("| 1 | 行动甲 | 【爽】基础甲 | 小 | 额外单元格 |", "invalid_rhythm_table"),
+])
+def test_unified_table_still_rejects_invalid_levels_sources_and_rows(policy, row, expected):
+    assert expected in codes(volume(row, span="1-1", unified=True), policy)
+
+
+def test_unified_table_still_requires_every_declared_chapter(policy):
+    text = volume("| 1 | 行动甲 | 【爽】基础甲 | 小 |", unified=True)
+    assert "missing_chapter" in codes(text, policy)
+
+
+def test_unified_table_does_not_bypass_combination_permission(policy):
+    policy.allow_combinations = False
+    text = volume("| 1 | 行动甲与行动乙 | 【爽】基础甲+基础乙 | 大 |", span="1-1", unified=True)
+    assert "combination_forbidden" in codes(text, policy)
+
+
+def test_legacy_rhythm_level_still_requires_behavior_column(policy):
+    text = volume("| 1 | 行动甲 | 【爽】基础甲 | 小 |", span="1-1", unified=True)
+    assert "invalid_rhythm_table" in codes(text.replace("爽点级别", "节奏级别"), policy)
 
 
 def test_unknown_label_rejected_even_alongside_valid_payoff(policy):

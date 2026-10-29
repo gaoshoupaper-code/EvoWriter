@@ -262,7 +262,7 @@ def parse_volume_payoffs(text: str, catalog: PayoffCatalog) -> tuple[list[Payoff
             violations.append(Violation("invalid_chapter_range", "本卷章号范围非法"))
         else:
             expected = set(range(start, end + 1))
-    row_context: dict[int, tuple[int | None, str, str, str, bool]] = {}
+    row_context: dict[int, tuple[int | None, str | None, str, str, bool]] = {}
     chapters: set[int] = set()
     rhythm_lines: set[int] = set()
     for index, section, header, cells in _table_rows(lines):
@@ -271,10 +271,12 @@ def parse_volume_payoffs(text: str, catalog: PayoffCatalog) -> tuple[list[Payoff
             chapter_idx = _column(header, ("章号", "章", "章节"))
             source_idx = _column(header, ("技能条目／组合成分", "技能条目/组合成分", "技能条目", "组合成分", "爽点来源"))
             grade_idx = _column(header, ("行为档位",))
-            rhythm_idx = _column(header, ("节奏级别",))
+            rhythm_idx = _column(header, ("爽点级别", "节奏级别"))
             plot_idx = _column(header, ("剧情安排", "供给内容", "供给点内容"))
-            if None in (chapter_idx, source_idx, grade_idx, rhythm_idx, plot_idx) or len(cells) != len(header):
-                violations.append(Violation("invalid_rhythm_table", "节奏表须分别填写章号、剧情、技能来源、行为档位、节奏级别", location=location))
+            legacy_missing_grade = "爽点级别" not in header and grade_idx is None
+            if (None in (chapter_idx, source_idx, rhythm_idx, plot_idx)
+                    or legacy_missing_grade or len(cells) != len(header)):
+                violations.append(Violation("invalid_rhythm_table", "节奏表须填写章号、剧情、技能来源、爽点级别；旧版节奏级别须配行为档位", location=location))
                 continue
             chapter_match = re.fullmatch(r"(?:第\s*)?(\d+)\s*章?", cells[chapter_idx])
             if chapter_match is None:
@@ -284,7 +286,9 @@ def parse_volume_payoffs(text: str, catalog: PayoffCatalog) -> tuple[list[Payoff
             chapters.add(chapter)
             if expected and chapter not in expected:
                 violations.append(Violation("chapter_out_of_range", "章号超出本卷声明范围", chapter, location))
-            row_context[index] = (chapter, cells[grade_idx], cells[rhythm_idx], cells[plot_idx], True)
+            # None opts the new table out of legacy grade checks; an empty old cell must still fail.
+            row_context[index] = (chapter, cells[grade_idx] if grade_idx is not None else None,
+                                  cells[rhythm_idx], cells[plot_idx], True)
             rhythm_lines.add(index)
             source_cell = cells[source_idx]
             if "【爽】" not in source_cell and not re.search(r"【压[·・]?[小大]?】", source_cell):
@@ -309,7 +313,7 @@ def parse_volume_payoffs(text: str, catalog: PayoffCatalog) -> tuple[list[Payoff
             return (len(pair) == 2 and bool(_clean(pair[1]))
                     and not re.search(r"[:：]", pair[1])
                     and len(_source_match(_clean(pair[0]), aliases)[0]) == 1)
-        assignments = _known_segmentations(grade, "+＋;；", grade_assignment)
+        assignments = _known_segmentations(grade or "", "+＋;；", grade_assignment)
         if len(assignments) > 1:
             violations.append(Violation("ambiguous_behavior_grade", "行为档位映射存在多种解释，请用明确的原条目引用", chapter, f"第{index + 1}行"))
         for item in assignments[0] if len(assignments) == 1 else []:
@@ -341,7 +345,7 @@ def parse_volume_payoffs(text: str, catalog: PayoffCatalog) -> tuple[list[Payoff
                 names = []
             references.append((marker, reference, names))
         component_count = sum(len(names) for _, _, names in references)
-        ordered_levels = [_clean(level) for level in re.split(r"[,，、]", grade)] if not grade_map else []
+        ordered_levels = [_clean(level) for level in re.split(r"[,，、]", grade or "")] if not grade_map else []
         if is_rhythm and len(ordered_levels) > 1 and len(ordered_levels) != component_count:
             violations.append(Violation("missing_component_grade", "顺序档位数量须与基础成分数量一致", chapter, f"第{index + 1}行"))
         component_index = 0
@@ -368,8 +372,8 @@ def parse_volume_payoffs(text: str, catalog: PayoffCatalog) -> tuple[list[Payoff
                 if level is None and len(ordered_levels) > 1 and len(ordered_levels) == component_count:
                     level = ordered_levels[position]
                 if level is None and len(names) == 1 and not grade_map and len(ordered_levels) == 1:
-                    level = _clean(grade)
-                if is_rhythm:
+                    level = _clean(grade or "")
+                if is_rhythm and grade is not None:
                     if annotation_level and level and annotation_level != level:
                         violations.append(Violation("conflicting_behavior_level", f"{entry.name}的来源档位附注与档位列不一致", chapter, location))
                     if len(names) > 1 and not level:
@@ -380,7 +384,7 @@ def parse_volume_payoffs(text: str, catalog: PayoffCatalog) -> tuple[list[Payoff
                         violations.append(Violation("invalid_behavior_level", f"技能未给{entry.name}定义行为档位", chapter, location))
                 components.append(PayoffComponent(entry.entry_id, level or annotation_level or None))
             if is_rhythm and rhythm not in RHYTHM_LEVELS:
-                violations.append(Violation("invalid_rhythm_level", f"节奏级别须为小/中/大/超大：{rhythm}", chapter, location))
+                violations.append(Violation("invalid_rhythm_level", f"爽点级别须为小/中/大/超大：{rhythm}", chapter, location))
             occurrences.append(PayoffOccurrence(
                 f"L{index + 1}:P{marker.start()}", chapter, components, rhythm,
                 plot, line, location,

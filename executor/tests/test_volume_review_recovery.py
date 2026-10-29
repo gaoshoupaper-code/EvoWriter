@@ -147,6 +147,16 @@ def test_stage_review_rejects_missing_or_draft_volume_without_interrupt(tmp_path
     assert "[交审失败]" in tool.func("stage", "卷纲好了")
 
 
+def test_probe_recorder_without_history_queries_keeps_first_review_check(tmp_path, review_module, monkeypatch):
+    save_writing_state(tmp_path, WritingState(confirmed_stage="volume"))
+    monkeypatch.setattr(review_module, "interrupt", lambda payload: pytest.fail("草稿不能交审"))
+    tool = review_module.build(SimpleNamespace(
+        workspace_path=tmp_path,
+        ctx=SimpleNamespace(trace_id="probe-trace", trace_recorder=SimpleNamespace(append_event=lambda *args: None)),
+    ))
+    assert "[交审失败]" in tool.func("stage", "卷纲好了")
+
+
 def test_failed_revision_cannot_be_reviewed_using_previous_accepted_volume(tmp_path, review_module, monkeypatch):
     save_writing_state(tmp_path, WritingState(confirmed_stage="chapter"))
     candidate = volume_text()

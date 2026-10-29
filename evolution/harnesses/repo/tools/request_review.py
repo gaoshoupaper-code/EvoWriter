@@ -126,11 +126,13 @@ def build(abc):
     trace_id = getattr(abc.ctx, "trace_id", None)
     recorder = getattr(abc.ctx, "trace_recorder", None)
     review_ids: set[str] = set()
-    if trace_id and recorder is not None:
-        run = recorder.find_run_by_trace_id(trace_id, workspace_path=str(abc.workspace_path))
+    find_run = getattr(recorder, "find_run_by_trace_id", None)
+    read_events = getattr(recorder, "read_trace_events", None)
+    if trace_id and callable(find_run) and callable(read_events):
+        run = find_run(trace_id, workspace_path=str(abc.workspace_path))
         if run is not None:
             review_ids = {
-                event.tool_call_id for event in (recorder.read_trace_events(trace_id) or [])
+                event.tool_call_id for event in (read_events(trace_id) or [])
                 if event.type == "hitl" and event.status == "awaiting_input" and event.tool_call_id
             }
     return build_request_review_tool(

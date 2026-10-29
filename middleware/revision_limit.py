@@ -106,4 +106,17 @@ def _mapping_value(mapping: object, key: str) -> Any:
 
 def build(abc):
     """架构清单挂载钩子：审查闭环 RevisionLimit 硬上限（max_revisions 取清单声明）。"""
-    return RevisionLimitMiddleware(max_revisions=abc.agent.max_revisions)
+    from contracts.writing_artifacts import (
+        MODE_AUTO, STAGE_TEXT, resolve_confirmed_stage, scan_writing_progress,
+        stage_mode, text_batch_size,
+    )
+
+    max_revisions = abc.agent.max_revisions
+    stage = resolve_confirmed_stage(abc.workspace_path)
+    if stage == STAGE_TEXT and stage_mode(abc.workspace_path, stage) == MODE_AUTO:
+        progress = scan_writing_progress(abc.workspace_path)
+        stock = set(progress.chapter_outlines) - set(progress.chapter_texts)
+        # 自动正文一轮会连写多章；额度按本批实际可写章数计算，仍保留总上限。
+        chapters = max(1, min(text_batch_size(abc.workspace_path), len(stock)))
+        max_revisions *= chapters
+    return RevisionLimitMiddleware(max_revisions=max_revisions)

@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from langchain_core.messages import AIMessage, AIMessageChunk
 
@@ -12,6 +13,11 @@ from app.domains.writing.models import build_writer_model, parse_writer_model
 
 
 class WriterModelTest(unittest.TestCase):
+    def setUp(self) -> None:
+        config = patch("app.platform.llm_config.loader.get_active_llm_config", return_value=None)
+        config.start()
+        self.addCleanup(config.stop)
+
     def test_parse_writer_model_defaults_to_openai_provider(self) -> None:
         self.assertEqual(parse_writer_model("gpt-4o-mini"), ("openai", "gpt-4o-mini"))
 
@@ -38,6 +44,7 @@ class WriterModelTest(unittest.TestCase):
         self.assertIsInstance(model, DeepSeekThinkingChatModel)
         self.assertEqual(model.model_name, "deepseek-chat")
         self.assertEqual(model.extra_body, {"thinking": {"type": "enabled"}})
+        self.assertIsNone(model.max_tokens)
 
     def test_build_writer_model_uses_deepseek_adapter_for_bare_model(self) -> None:
         model = build_writer_model(
@@ -85,6 +92,34 @@ class WriterModelTest(unittest.TestCase):
                 )
                 self.assertIsInstance(model, ReasoningStreamChatModel)
                 self.assertIsNone(model.extra_body)
+
+    def test_glm_request_sends_supported_output_limit(self) -> None:
+        model = build_writer_model(
+            SimpleNamespace(
+                writer_model="glm-5.3",
+                writer_temperature=None,
+                writer_top_p=None,
+                openai_api_key="test-key",
+                openai_base_url="https://open.bigmodel.cn/api/coding/paas/v4",
+            )
+        )
+
+        for options, expected in (({}, 32000), ({"max_tokens": 64}, 64),
+                                  ({"max_completion_tokens": 128}, 128)):
+            with self.subTest(options=options):
+                payload = model._get_request_payload("Count to ten", **options)
+                self.assertEqual(payload.get("max_tokens"), expected)
+                self.assertNotIn("max_completion_tokens", payload)
+
+    def test_non_glm_request_preserves_openai_output_limit(self) -> None:
+        model = ReasoningStreamChatModel(
+            model="gpt-4o-mini", api_key="test-key", max_tokens=32000,
+        )
+
+        payload = model._get_request_payload("Count to ten")
+
+        self.assertEqual(payload.get("max_completion_tokens"), 32000)
+        self.assertNotIn("max_tokens", payload)
 
     def test_reasoning_stream_model_passes_through_reasoning_delta(self) -> None:
         model = ReasoningStreamChatModel(model="glm-5.3", api_key="test-key", stream_usage=False)

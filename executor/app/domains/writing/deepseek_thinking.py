@@ -47,6 +47,19 @@ class ReasoningStreamChatModel(ChatOpenAI):
     reasoning 回填进请求，也不注入 thinking extra_body）。
     """
 
+    def _get_request_payload(
+        self,
+        input_: Any,
+        *,
+        stop: list[str] | None = None,
+        **kwargs: Any,
+    ) -> dict:
+        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+        # 智谱忽略 max_completion_tokens，必须发送旧版字段才会执行输出上限。
+        if self.model_name.startswith("glm-") and "max_completion_tokens" in payload:
+            payload["max_tokens"] = payload.pop("max_completion_tokens")
+        return payload
+
     def _convert_chunk_to_generation_chunk(
         self,
         chunk: dict,

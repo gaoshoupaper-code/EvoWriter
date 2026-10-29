@@ -191,3 +191,77 @@ def test_chapter_quality_row_still_requires_payoff_source(policy):
 | 1 | 金手指到手 | 通过 |"""
     text = volume(GOOD_ROWS).replace("质检说明。", quality)
     assert "missing_reference" in codes(text, policy)
+
+
+@pytest.mark.parametrize("source", ["【爽】基础甲＋【爽】基础乙", "【爽】基础甲（小）＋【爽】基础乙（高）"])
+def test_real_repair_repeated_markers_support_ordered_component_grades(policy, source):
+    text = volume(f"| 1 | 先行动甲，再行动乙 | {source} | 小、高 | 超大 |", span="1-1")
+    occurrences, violations = parse_volume_payoffs(text, policy)
+    assert violations == []
+    assert [o.components[0].entry_id for o in occurrences] == ["a", "b"]
+    assert [o.components[0].behavior_level for o in occurrences] == ["小", "高"]
+
+
+def test_ordered_grades_are_checked_against_each_original_entry(policy):
+    policy.entries[0].behavior_levels = ["小"]
+    policy.entries[1].behavior_levels = ["高"]
+    text = volume("| 1 | 先行动甲，再行动乙 | 【爽】基础甲＋【爽】基础乙 | 高、小 | 超大 |", span="1-1")
+    assert "invalid_behavior_level" in codes(text, policy)
+
+
+@pytest.mark.parametrize("source", [
+    "【爽】基础甲＋", "【爽】基础甲＋；【爽】基础乙", "【爽】＋【爽】基础乙",
+    "【爽】基础甲（虚构档位）＋【爽】基础乙", "【爽】新条目（小）＋【爽】基础乙",
+])
+def test_format_tolerance_does_not_accept_empty_or_forged_sources(policy, source):
+    text = volume(f"| 1 | 先行动甲，再行动乙 | {source} | 小、高 | 超大 |", span="1-1")
+    assert {"unknown_entry", "empty_reference"} & codes(text, policy)
+
+
+def test_source_grade_annotation_must_agree_with_the_grade_column(policy):
+    text = volume("| 1 | 行动甲 | 【爽】基础甲（小） | 高 | 大 |", span="1-1")
+    assert "conflicting_behavior_level" in codes(text, policy)
+
+
+def test_original_parenthesized_name_takes_priority_over_grade_annotation(policy):
+    policy.entries[0].name = "基础甲（小）"
+    policy.entries[0].behavior_levels = ["高"]
+    text = volume(GOOD_ROWS.replace("【爽】基础甲", "【爽】基础甲（小）"))
+    occurrences, violations = parse_volume_payoffs(text, policy)
+    assert violations == []
+    assert occurrences[0].components[0].behavior_level == "高"
+
+
+def test_literal_trailing_plus_is_not_removed_when_it_is_the_original_name(policy):
+    policy.entries[0].name = "基础甲＋"
+    text = volume("| 1 | 先行动甲，再行动乙 | 【爽】基础甲＋【爽】基础乙 | 高、小 | 大 |", span="1-1")
+    occurrences, violations = parse_volume_payoffs(text, policy)
+    assert violations == []
+    assert [o.components[0].entry_id for o in occurrences] == ["a", "b"]
+
+
+@pytest.mark.parametrize("original", ["基础甲+原名", "基础甲（原名+扩展）"])
+def test_original_plus_name_in_combination_and_grade_mapping_stays_one_entry(policy, original):
+    policy.entries[0].name = original
+    text = volume(f"| 1 | 先行动甲，再行动乙 | 【爽】{original}+基础乙 | {original}:小+基础乙:高 | 大 |", span="1-1")
+    occurrences, violations = parse_volume_payoffs(text, policy)
+    assert violations == []
+    assert [c.entry_id for c in occurrences[0].components] == ["a", "b"]
+    assert [c.behavior_level for c in occurrences[0].components] == ["小", "高"]
+
+
+def test_truly_ambiguous_alias_segmentation_is_rejected(policy):
+    policy.entries = [
+        PayoffEntry("ab", "甲+乙", "skill-a", "甲+乙", ["小"]),
+        PayoffEntry("c", "丙", "skill-a", "丙", ["高"]),
+        PayoffEntry("a", "甲", "skill-a", "甲", ["小"]),
+        PayoffEntry("bc", "乙+丙", "skill-a", "乙+丙", ["高"]),
+    ]
+    text = volume("| 1 | 发生对应行动 | 【爽】甲+乙+丙 | 小、高 | 大 |", span="1-1")
+    assert "ambiguous_reference" in codes(text, policy)
+
+
+def test_unmatched_plus_parts_cannot_create_new_components(policy):
+    policy.entries[0].name = "基础甲+原名"
+    text = volume("| 1 | 行动 | 【爽】基础甲+新词+基础乙 | 小、高 | 大 |", span="1-1")
+    assert "unknown_entry" in codes(text, policy)

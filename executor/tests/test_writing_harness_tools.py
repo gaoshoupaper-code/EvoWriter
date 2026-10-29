@@ -730,6 +730,11 @@ def test_guarded_rhythm_rewrite_checks_merged_whole_volume(tmp_path: Path) -> No
     assert "新节奏表" in call["candidate_text"]
     assert "保留阶段安排" in call["candidate_text"]
     assert "保留钩子" in call["candidate_text"]
+    prefix, rest = _VOLUME.split("## 爽点节奏表\n", 1)
+    assert call["edit_scope"] == {
+        "prefix": prefix + "## 爽点节奏表\n",
+        "suffix": "## 爽点质检表" + rest.split("## 爽点质检表", 1)[1],
+    }
 
 
 def test_volume_guard_failure_keeps_formal_and_reports_draft(tmp_path: Path) -> None:
@@ -941,3 +946,49 @@ def test_guarded_rhythm_build_uses_real_snapshot_callback_contract(tmp_path: Pat
     assert snapshots[0]["file_path"] == "卷纲/第01卷.md"
     assert snapshots[0]["content"] == actual
     assert snapshots[0]["tool"] == "rewrite_rhythm_table"
+
+
+@pytest.mark.parametrize("rewrite_other_section", [False, True])
+def test_rhythm_repair_is_limited_to_section_body(tmp_path: Path, rewrite_other_section: bool) -> None:
+    from app.domains.writing.volume_payoff_guard import VolumePayoffGuard
+    from contracts.payoff_constraints import content_hash
+
+    path = tmp_path / "卷纲/第01卷.md"
+    path.parent.mkdir()
+    path.write_text(_VOLUME, encoding="utf-8")
+    original = path.read_bytes()
+    checked = []
+
+    def check(text):
+        checked.append(text)
+        passed = "金手指到手" not in text
+        return {
+            "passed": passed, "candidate_hash": content_hash(text), "policy_hash": "scope-policy",
+            "violations": [] if passed else [{"code": "unknown_entry", "message": "清单外爽点"}],
+        }
+
+    def repair(text, errors):
+        revised = text.replace("金手指到手", "条目甲")
+        if rewrite_other_section:
+            revised = revised.replace("保留钩子", "未经授权修改的卷末钩子")
+        return revised
+
+    guard = VolumePayoffGuard(
+        tmp_path, operation_id="rhythm-scope-task", policy_hash="scope-policy",
+        check=check, repair=repair,
+    )
+    table = _VOLUME.split("## 爽点节奏表\n", 1)[1].split("## 爽点质检表", 1)[0]
+    tool = build_rewrite_rhythm_tool(tmp_path, volume_guard=guard)
+    out = _call(tool, volume=1, table=table.replace("条目甲", "金手指到手"))
+    if rewrite_other_section:
+        assert "未定稿" in out and "获准" in out
+        assert path.read_bytes() == original
+        assert len(checked) == 1
+    else:
+        assert "已回写" in out
+        final = path.read_text(encoding="utf-8")
+        prefix = _VOLUME.split("## 爽点节奏表\n", 1)[0] + "## 爽点节奏表\n"
+        suffix = "## 爽点质检表" + _VOLUME.split("## 爽点质检表", 1)[1]
+        assert final.startswith(prefix) and final.endswith(suffix)
+        assert "【爽】条目甲" in final and "金手指到手" not in final
+        assert len(checked) == 2

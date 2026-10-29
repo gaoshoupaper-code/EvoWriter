@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 from dataclasses import asdict, dataclass, field
+from functools import lru_cache
 
 
 CATALOG_VERSION = 2
@@ -174,6 +175,39 @@ def _column(header: list[str], names: tuple[str, ...]) -> int | None:
     return None
 
 
+def _source_match(name: str, aliases: dict[str, list[PayoffEntry]]):
+    matches = aliases.get(name, [])
+    if matches:
+        return matches, None
+    annotation = re.fullmatch(r"(.+?)(?:（([^（）]+)）|\(([^()]+)\))", name)
+    if annotation:
+        original = aliases.get(_clean(annotation.group(1)), [])
+        level_note = _clean(annotation.group(2) or annotation.group(3))
+        if len(original) == 1 and level_note in original[0].behavior_levels:
+            return original, level_note
+    return [], None
+
+
+def _known_segmentations(text: str, separators: str, accepts):
+    """Return at most two complete parses; ambiguity must never pick an entry."""
+    @lru_cache(maxsize=None)
+    def parse(fragment: str):
+        paths = []
+        ends = [i for i, char in enumerate(fragment) if char in separators] + [len(fragment)]
+        for end in ends:
+            token = _clean(fragment[:end])
+            if not token or not accepts(token):
+                continue
+            tails = [[]] if end == len(fragment) else parse(fragment[end + 1:].strip())
+            for tail in tails:
+                paths.append([token, *tail])
+                if len(paths) == 2:
+                    return paths
+        return paths
+
+    return parse(text.strip())
+
+
 def parse_volume_payoffs(text: str, catalog: PayoffCatalog) -> tuple[list[PayoffOccurrence], list[Violation]]:
     """Parse the generated volume template, checking every explicit payoff claim.
 
@@ -245,24 +279,59 @@ def parse_volume_payoffs(text: str, catalog: PayoffCatalog) -> tuple[list[Payoff
         context = row_context.get(index)
         chapter, grade, rhythm, plot, is_rhythm = context or (None, "", "", line, False)
         grade_map: dict[str, str] = {}
-        for item in re.split(r"[+＋;；]", grade):
+        def grade_assignment(item: str) -> bool:
             pair = re.split(r"[:：]", item, maxsplit=1)
-            if len(pair) == 2:
+            return (len(pair) == 2 and bool(_clean(pair[1]))
+                    and not re.search(r"[:：]", pair[1])
+                    and len(_source_match(_clean(pair[0]), aliases)[0]) == 1)
+        assignments = _known_segmentations(grade, "+＋;；", grade_assignment)
+        if len(assignments) > 1:
+            violations.append(Violation("ambiguous_behavior_grade", "行为档位映射存在多种解释，请用明确的原条目引用", chapter, f"第{index + 1}行"))
+        for item in assignments[0] if len(assignments) == 1 else []:
+            pair = re.split(r"[:：]", item, maxsplit=1)
+            if _clean(pair[0]) in grade_map:
+                violations.append(Violation("ambiguous_behavior_grade", "同一来源的行为档位映射重复", chapter, f"第{index + 1}行"))
+            else:
                 grade_map[_clean(pair[0])] = _clean(pair[1])
         if _CLAIM_HEAD.match(line.strip()) and "【爽】" not in line:
             violations.append(Violation("missing_reference", "爽点主张须引用已有技能条目", location=f"第{index + 1}行"))
+        references = []
         for marker in _MARKER.finditer(line):
-            location = f"第{index + 1}行"
             reference = _clean(marker.group(1))
+            # A connector between two explicitly marked sources is punctuation,
+            # unless the complete spelling is already an original entry name.
+            if (reference not in aliases and reference.endswith(("+", "＋"))
+                    and re.match(r"\s*【爽】", line[marker.end():])):
+                reference = reference[:-1].rstrip()
+            if reference in aliases:
+                names = [reference]
+            elif reference:
+                segments = _known_segmentations(reference, "+＋", lambda name: len(_source_match(name, aliases)[0]) == 1)
+                if len(segments) > 1:
+                    violations.append(Violation("ambiguous_reference", "来源可拆成多组已有条目，请用明确的条目ID", chapter, f"第{index + 1}行"))
+                    names = []
+                else:
+                    names = segments[0] if segments else [reference]
+            else:
+                names = []
+            references.append((marker, reference, names))
+        component_count = sum(len(names) for _, _, names in references)
+        ordered_levels = [_clean(level) for level in re.split(r"[,，、]", grade)] if not grade_map else []
+        if is_rhythm and len(ordered_levels) > 1 and len(ordered_levels) != component_count:
+            violations.append(Violation("missing_component_grade", "顺序档位数量须与基础成分数量一致", chapter, f"第{index + 1}行"))
+        component_index = 0
+        for marker, reference, names in references:
+            location = f"第{index + 1}行"
             components: list[PayoffComponent] = []
             if not reference:
                 violations.append(Violation("empty_reference", "【爽】后缺少已有技能条目", chapter, location))
-            names = ([reference] if reference in aliases else [_clean(name) for name in re.split(r"[+＋]", reference)]) if reference else []
             if len(names) > 1 and not catalog.allow_combinations:
                 violations.append(Violation("combination_forbidden", "当前技能未允许条目组合", chapter, location))
             seen: set[str] = set()
             for name in names:
-                matches = aliases.get(name, [])
+                position = component_index
+                component_index += 1
+                matches, annotation_level = _source_match(name, aliases)
                 if len(matches) != 1:
                     violations.append(Violation("unknown_entry", f"条目不在唯一来源清单中：{name or '空条目'}", chapter, location))
                     continue
@@ -270,17 +339,21 @@ def parse_volume_payoffs(text: str, catalog: PayoffCatalog) -> tuple[list[Payoff
                 if entry.entry_id in seen:
                     violations.append(Violation("duplicate_component", f"组合重复引用同一基础条目：{entry.name}", chapter, location))
                 seen.add(entry.entry_id)
-                level = grade_map.get(entry.name, grade_map.get(entry.entry_id))
-                if level is None and len(names) == 1 and not grade_map:
+                level = grade_map.get(entry.name, grade_map.get(entry.entry_id, grade_map.get(name)))
+                if level is None and len(ordered_levels) > 1 and len(ordered_levels) == component_count:
+                    level = ordered_levels[position]
+                if level is None and len(names) == 1 and not grade_map and len(ordered_levels) == 1:
                     level = _clean(grade)
                 if is_rhythm:
+                    if annotation_level and level and annotation_level != level:
+                        violations.append(Violation("conflicting_behavior_level", f"{entry.name}的来源档位附注与档位列不一致", chapter, location))
                     if len(names) > 1 and not level:
                         violations.append(Violation("missing_component_grade", f"组合成分缺少独立行为档位：{entry.name}", chapter, location))
                     elif entry.behavior_levels and level not in entry.behavior_levels:
                         violations.append(Violation("invalid_behavior_level", f"{entry.name}的行为档位不符合技能：{level}", chapter, location))
                     elif not entry.behavior_levels and level not in ("", "—", "无"):
                         violations.append(Violation("invalid_behavior_level", f"技能未给{entry.name}定义行为档位", chapter, location))
-                components.append(PayoffComponent(entry.entry_id, level or None))
+                components.append(PayoffComponent(entry.entry_id, level or annotation_level or None))
             if is_rhythm and rhythm not in RHYTHM_LEVELS:
                 violations.append(Violation("invalid_rhythm_level", f"节奏级别须为小/中/大/超大：{rhythm}", chapter, location))
             occurrences.append(PayoffOccurrence(

@@ -36,6 +36,24 @@ def _atomic_write(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
+def _rhythm_edit_scope(text: str) -> dict[str, str]:
+    """整卷检查，但自动修复只获准修改节奏标题所辖正文。"""
+    lines = text.splitlines(keepends=True)
+    start, level = None, 0
+    for index, line in enumerate(lines):
+        heading = line.lstrip()
+        if not heading.startswith("#"):
+            continue
+        depth = len(heading) - len(heading.lstrip("#"))
+        if start is None and "节奏" in heading:
+            start, level = index, depth
+        elif start is not None and depth <= level:
+            return {"prefix": "".join(lines[:start + 1]), "suffix": "".join(lines[index:])}
+    if start is None:
+        raise ValueError("卷纲中找不到节奏小节")
+    return {"prefix": "".join(lines[:start + 1]), "suffix": ""}
+
+
 def build_rewrite_rhythm_tool(workspace_root: Path, *, volume_guard=None,
                               capture=None) -> StructuredTool:
     from .update_foreshadow_table import replace_section
@@ -56,6 +74,7 @@ def build_rewrite_rhythm_tool(workspace_root: Path, *, volume_guard=None,
         guarded = _guard_volume_write(
             volume_guard, volume=volume, base_text=current,
             candidate_text=updated, source="rewrite", capture=capture,
+            edit_scope=_rhythm_edit_scope(current),
         )
         if guarded is not None:
             return _volume_write_message(guarded, volume, rewrite=True)

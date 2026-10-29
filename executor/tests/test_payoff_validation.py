@@ -332,3 +332,15 @@ def test_explanation_wrapped_around_valid_evidence_is_rejected(target):
 
     engine = ValidationEngine(Model(extraction(), answer))
     assert not engine.check(VOLUME, engine.catalog([SKILL])).passed
+
+
+def test_repair_receives_the_exact_volume_table_and_component_format():
+    model = Model(extraction(), {"candidate": VOLUME})
+    engine = ValidationEngine(model)
+    policy = engine.catalog([SKILL])
+    assert engine.repair("旧候选", [], policy) == VOLUME
+    prompt = next(messages[0]["content"] for messages, purpose in model.calls if purpose == "payoff_repair")
+    assert "章号 | 剧情安排 | 技能条目／组合成分 | 行为档位 | 节奏级别" in prompt
+    assert "【爽】原条目甲+原条目乙" in prompt
+    assert "原条目甲:小+原条目乙:高" in prompt
+    assert "一次【爽】" in prompt

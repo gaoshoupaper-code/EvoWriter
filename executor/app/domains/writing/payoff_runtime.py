@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from contracts.payoff_constraints import PayoffCatalog, Violation, content_hash
 
-from app.domains.writing.retry import RetryBudget, WriterRetryController
+from app.domains.writing.retry import RetryBudget, WriterRetryController, WriterRetryError
 from app.domains.writing.volume_payoff_guard import VolumePayoffGuard
 
 logger = logging.getLogger(__name__)
@@ -48,6 +48,14 @@ def make_payoff_model_call(
                 logger.warning("卷纲复核追踪记录失败", exc_info=True)
 
         record("llm_start", "running", input={"messages": messages})
+        response = None
+        seen_chunk = False
+
+        def add_chunk(chunk):
+            nonlocal response, seen_chunk
+            seen_chunk = True
+            response = chunk if response is None else response + chunk
+
         budget = RetryBudget(on_attempt_complete=lambda outcome: (
             None if outcome.success else record(
                 "middleware_intervention", "running", intervention={
@@ -59,12 +67,30 @@ def make_payoff_model_call(
         try:
             controller = WriterRetryController(budget)
             if (event_loop is not None and threading.get_ident() != calling_thread
-                    and callable(getattr(model, "ainvoke", None))):
+                    and (callable(getattr(model, "astream", None))
+                         or callable(getattr(model, "ainvoke", None)))):
                 async def invoke_async():
+                    nonlocal response, seen_chunk
+                    response, seen_chunk = None, False
                     assert_active()
-                    return await model.ainvoke(messages, config={"callbacks": []})
+                    if not callable(getattr(model, "astream", None)):
+                        return await model.ainvoke(messages, config={"callbacks": []})
+                    stream = model.astream(messages, config={"callbacks": []})
+                    try:
+                        async for chunk in stream:
+                            add_chunk(chunk)
+                            assert_active()
+                    finally:
+                        close = getattr(stream, "aclose", None)
+                        if callable(close):
+                            await close()
+                    if response is None:
+                        raise ValueError("卷纲复核未返回模型输出。")
+                    return response
 
-                future = asyncio.run_coroutine_threadsafe(controller.acall(invoke_async), event_loop)
+                future = asyncio.run_coroutine_threadsafe(
+                    controller.acall(invoke_async, is_partial=lambda exc: seen_chunk), event_loop,
+                )
                 try:
                     while True:
                         assert_active()
@@ -78,13 +104,32 @@ def make_payoff_model_call(
                         future.cancel()
             else:
                 def invoke():
+                    nonlocal response, seen_chunk
+                    response, seen_chunk = None, False
                     assert_active()
-                    return model.invoke(messages, config={"callbacks": []})
+                    if not callable(getattr(model, "stream", None)):
+                        return model.invoke(messages, config={"callbacks": []})
+                    stream = model.stream(messages, config={"callbacks": []})
+                    try:
+                        for chunk in stream:
+                            add_chunk(chunk)
+                            assert_active()
+                    finally:
+                        close = getattr(stream, "close", None)
+                        if callable(close):
+                            close()
+                    if response is None:
+                        raise ValueError("卷纲复核未返回模型输出。")
+                    return response
 
-                response = controller.call(invoke)
+                response = controller.call(invoke, is_partial=lambda exc: seen_chunk)
             assert_active()
         except Exception as exc:
+            usage = getattr(response, "usage_metadata", None)
+            if isinstance(exc, WriterRetryError) and usage:
+                exc.usage = usage
             record("llm_error", "failed", error=f"{type(exc).__name__}: {exc}",
+                   usage=usage,
                    duration_ms=int((time.perf_counter() - started) * 1000))
             raise
         content = getattr(response, "content", response)

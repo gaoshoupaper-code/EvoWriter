@@ -10,11 +10,12 @@ from types import SimpleNamespace
 import pytest
 
 from app.domains.writing.payoff_validation import ValidationEngine
+from app.domains.writing.payoff_runtime import VolumePayoffRuntime
 from app.domains.writing.retry import WriterRetryError
 from app.domains.writing.volume_payoff_guard import VolumePayoffGuard, bind_volume_operation
 from contracts.payoff_constraints import PayoffCatalog, content_hash
 from contracts.writing_artifacts import (
-    WritingState, save_writing_state, scan_writing_progress, volume_review_block_reason,
+    WritingState, save_writing_state, scan_writing_progress, volume_draft_relpath, volume_review_block_reason,
 )
 
 
@@ -134,6 +135,56 @@ def review_module(monkeypatch):
     monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.fixture
+def save_module(monkeypatch):
+    path = Path(__file__).resolve().parents[2] / "evolution/harnesses/repo/tools/save_artifact.py"
+    spec = importlib.util.spec_from_file_location("recoverable_save_artifact", path)
+    module = importlib.util.module_from_spec(spec)
+    monkeypatch.setitem(sys.modules, spec.name, module)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("via_runtime", [False, True])
+@pytest.mark.parametrize("existing_final", [False, True])
+def test_save_tool_preserves_retryable_timeout_reason_and_draft_path(
+    tmp_path, save_module, via_runtime, existing_final,
+):
+    def timeout(*args):
+        raise temporary_failure()
+
+    service = guard(tmp_path, check=timeout)
+    if via_runtime:
+        service = VolumePayoffRuntime(
+            tmp_path, skills=[{"skill_id": "rule-1", "content": "来源规则"}],
+            operation_id="trace-1", engine=SimpleNamespace(
+                catalog=lambda skills: PayoffCatalog("ready", "policy"), check=timeout,
+            ),
+        )
+    registry = {}
+    original = volume_text("原有正式稿")
+    if existing_final:
+        path = tmp_path / "卷纲/第01卷.md"
+        path.parent.mkdir(parents=True)
+        path.write_text(original, encoding="utf-8")
+        registry["卷纲/第01卷.md"] = {"content_hash": content_hash(original)}
+    tool = save_module.build_save_artifact_tool(tmp_path, registry, {}, volume_guard=service)
+    message = tool.invoke({
+        "kind": "volume_outline", "volume": 1, "mode": "full", "content": volume_text(),
+    })
+    draft_path = volume_draft_relpath(1) if existing_final else "卷纲/第01卷.md"
+    if existing_final:
+        assert (tmp_path / "卷纲/第01卷.md").read_text(encoding="utf-8") == original
+    assert f"草稿：{draft_path}。" in message
+    assert "Request timed out" in message
+    assert "可稍后重试本次提交" in message
+    assert "沿用原候选与已用修复额度" in message
+    assert (tmp_path / draft_path).is_file()
+    operation = json.loads((tmp_path / ".writing/volume-payoff-checks.json").read_text())["volumes"]["1"]["active_operation"]
+    assert operation["status"] == "retryable"
+    assert operation["candidate_text"] == volume_text()
 
 
 def test_stage_review_rejects_missing_or_draft_volume_without_interrupt(tmp_path, review_module, monkeypatch):

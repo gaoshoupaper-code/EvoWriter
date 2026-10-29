@@ -175,7 +175,7 @@ def _guard_volume_write(guard, *, volume: int, base_text: str,
             volume=volume, base_text=base_text, candidate_text=candidate_text,
             source=source, draft=draft, edit_scope=edit_scope,
         )
-        if not isinstance(result, dict) or result.get("status") not in {"committed", "draft", "blocked"}:
+        if not isinstance(result, dict) or result.get("status") not in {"committed", "draft", "blocked", "retryable"}:
             raise ValueError("卷纲检查结果格式不合法")
         if result["status"] == "committed" and (
             not isinstance(result.get("path"), str) or not isinstance(result.get("content"), str)
@@ -201,6 +201,8 @@ def _volume_write_message(result: dict, volume: int, *, rewrite: bool = False) -
     if result.get("path"):
         draft = result["path"].endswith("-修订草稿.md")
         guidance = f"继续修订先 read_artifact(kind=volume_outline, volume={volume}, draft={str(draft).lower()})，再按同一 draft 值编辑。"
+    if result.get("status") == "retryable":
+        guidance += "检查暂时失败，可稍后重试本次提交；沿用原候选与已用修复额度。"
     return f"[卷纲未定稿] {location}{result.get('reason') or '检查未通过'}。{guidance}"
 
 

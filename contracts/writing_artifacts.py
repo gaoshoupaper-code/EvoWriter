@@ -27,6 +27,7 @@ executor 管线层与 harness 工具共用本模块（跨端共享契约，零�
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -75,6 +76,7 @@ CHAPTER_OUTLINE_DIR = "章纲"
 TEXT_DIR = "正文"
 
 VOLUME_FILE_PATTERN = re.compile(r"^第(\d+)卷\.md$")
+VOLUME_PAYOFF_CHECKS_RELPATH = ".writing/volume-payoff-checks.json"
 CHAPTER_OUTLINE_PATTERN = re.compile(r"^第(\d+)章\.md$")
 TEXT_FILE_PATTERN = re.compile(r"^第(\d+)章(.*)\.md$")
 
@@ -269,6 +271,112 @@ def validate_volume_final(text: str) -> list[str]:
     return errors
 
 
+def volume_draft_relpath(volume: int) -> str:
+    """修订草稿不匹配正式卷纲文件名，现有列表仍可展示。"""
+    if isinstance(volume, bool) or not isinstance(volume, int) or volume < 1:
+        raise ValueError("卷号必须是正整数")
+    return f"{VOLUME_DIR}/第{volume:02d}卷-修订草稿.md"
+
+
+def _volume_payoff_journal(workspace: Path) -> dict:
+    path = Path(workspace) / VOLUME_PAYOFF_CHECKS_RELPATH
+    if not path.exists():
+        return {"schema_version": 1, "volumes": {}}
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if (not isinstance(raw, dict) or raw.get("schema_version") != 1
+            or not isinstance(raw.get("volumes"), dict)):
+        raise ValueError("卷纲检查记录格式无效")
+    return raw
+
+
+def volume_payoff_receipt_valid(workspace: Path, volume: int, text: str) -> bool:
+    """未接管的历史卷不重算；已接管卷只能使用已接纳的内容。"""
+    try:
+        record = _volume_payoff_journal(workspace)["volumes"].get(str(volume))
+        if record is None:
+            return True
+        if not isinstance(record, dict):
+            return False
+        fingerprint = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        receipt = record.get("accepted_receipt") or {}
+        return bool(
+            isinstance(receipt, dict)
+            and receipt.get("content_hash") == fingerprint
+            and receipt.get("policy_hash")
+        ) or fingerprint in (
+            record.get("legacy_content_hash"), record.get("unconstrained_content_hash"),
+        )
+    except (OSError, UnicodeDecodeError, ValueError, TypeError):
+        return False
+
+
+def volume_review_block_reason(
+    workspace: Path, volume: int | None = None, operation_id: str | None = None,
+) -> str | None:
+    """核对待审卷的当前修改；不让别卷定稿或旧正式稿掩盖失败候选。"""
+    try:
+        journal = _volume_payoff_journal(workspace)
+        records = journal["volumes"]
+        bindings = journal.get("trace_operations", {})
+        if not isinstance(bindings, dict):
+            raise ValueError("修订任务绑定记录损坏")
+        binding = bindings.get(operation_id) if operation_id else None
+        pending_revision = False
+        if binding is not None:
+            if not isinstance(binding, dict) or not isinstance(binding.get("current"), str):
+                raise ValueError("修订任务绑定记录损坏")
+            pending_revision = binding["current"] != operation_id
+            operation_id = binding["current"]
+        if volume is None and operation_id is None:
+            directory = Path(workspace) / VOLUME_DIR
+            numbers = [
+                int(match.group(1)) for path in directory.iterdir()
+                if (match := VOLUME_FILE_PATTERN.match(path.name))
+            ] if directory.is_dir() else []
+            if not numbers:
+                numbers.extend(int(number) for number in records)
+            volume = max(numbers) if numbers else None
+        selected = [(str(volume), records.get(str(volume)))] if volume is not None else list(records.items())
+        found_operation = False
+        for number, record in selected:
+            if not isinstance(record, dict):
+                if record is not None:
+                    return "卷纲检查记录损坏，不能确认通过。"
+                text = _read(Path(workspace), artifact_relpath(KIND_VOLUME, volume=int(number)))
+                if text is not None and (not is_final_status(text) or validate_volume_final(text)):
+                    return f"第 {number} 卷尚未定稿。"
+                continue
+            operation = record.get("active_operation") or {}
+            if not isinstance(operation, dict):
+                return "卷纲修改记录损坏，不能确认通过。"
+            if operation_id and operation.get("operation_id") != operation_id:
+                if volume is not None and operation:
+                    return "该卷已有新的修改任务，请审查当前候选。"
+                continue
+            if operation_id and operation:
+                found_operation = True
+            for trace_id, current_binding in bindings.items():
+                if (isinstance(current_binding, dict)
+                        and isinstance(current_binding.get("revisions"), dict)
+                        and (operation.get("operation_id") == trace_id
+                             or operation.get("operation_id") in current_binding["revisions"].values())
+                        and operation.get("operation_id") != current_binding.get("current")):
+                    return "本次修订尚未通过爽点检查。"
+            if operation and operation.get("status") != "passed":
+                return f"第 {number} 卷尚未通过爽点检查：{operation.get('reason') or '仍有待修内容'}"
+            if operation:
+                text = _read(Path(workspace), artifact_relpath(KIND_VOLUME, volume=int(number)))
+                if text is None or not is_final_status(text) or validate_volume_final(text):
+                    return f"第 {number} 卷尚未定稿。"
+                if not volume_payoff_receipt_valid(workspace, int(number), text):
+                    return f"第 {number} 卷正式稿与通过记录不匹配。"
+        if pending_revision and not found_operation:
+            return "本次修订尚未通过爽点检查。"
+        return None
+    except (OSError, UnicodeDecodeError, ValueError, TypeError):
+        return "卷纲检查记录不可用，不能确认通过。"
+
+
 # ── 定稿状态行（REQ-20261019-183150 FR-001：段完成信号）────────────
 
 # 状态行窗口：与正文 parse_manuscript_status 同口径（文件头前 8 行）
@@ -395,6 +503,7 @@ def scan_writing_progress(workspace: Path) -> WritingProgress:
                 is_final_status(text)
                 and validate_volume_final(text) == []
                 and not _placeholder_blocks_final(text)
+                and volume_payoff_receipt_valid(workspace, int(m.group(1)), text)
             ):
                 continue
             prog.volumes.append(int(m.group(1)))
@@ -458,6 +567,8 @@ def next_stage_on_confirm(workspace_path: Path, current: str) -> str:
       theme/outline 原样返回（不经段审通道）
     """
     if current == STAGE_VOLUME:
+        if volume_review_block_reason(Path(workspace_path)):
+            return STAGE_VOLUME
         prog = scan_writing_progress(Path(workspace_path))
         return STAGE_CHAPTER if prog.volumes else STAGE_VOLUME
     if current not in (STAGE_CHAPTER, STAGE_TEXT):
@@ -639,6 +750,7 @@ __all__ = [
     "THEME_FILENAME",
     "VOLUME_DIR",
     "VOLUME_FILE_PATTERN",
+    "VOLUME_PAYOFF_CHECKS_RELPATH",
     "WRITING_STATE_RELPATH",
     "WRITING_STATE_SCHEMA_VERSION",
     "WritingProgress",
@@ -661,4 +773,7 @@ __all__ = [
     "validate_master_final",
     "validate_theme_final",
     "validate_volume_final",
+    "volume_draft_relpath",
+    "volume_payoff_receipt_valid",
+    "volume_review_block_reason",
 ]

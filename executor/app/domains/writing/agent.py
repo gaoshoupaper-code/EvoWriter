@@ -437,6 +437,7 @@ class MetaAgentService(BaseAgentService):
 
     def _compose_user_writing_skills(
         self, workspace_id: str | None, owner_id: str | None, workspace_path: Path,
+        *, skills: list[dict] | None = None,
     ) -> str | None:
         """组装当前段用户写作技能提示词段（REQ-20261025-205943 FR-003）。
 
@@ -447,7 +448,8 @@ class MetaAgentService(BaseAgentService):
         接口同源（state.json 人工段指针）。用户内容只走运行时 DB 读取，
         不进 harness 发版制品。
         """
-        skills = self._list_enabled_stage_skills(workspace_id, owner_id, workspace_path)
+        if skills is None:
+            skills = self._list_enabled_stage_skills(workspace_id, owner_id, workspace_path)
         if not skills:
             return None
         parts = [
@@ -507,6 +509,7 @@ class MetaAgentService(BaseAgentService):
     def _apply_user_writing_skills(
         self, *, styles: dict[str, str] | None, agent_name: str | None,
         workspace_id: str | None, owner_id: str | None, workspace_path: Path,
+        stage_skills: list[dict] | None = None,
     ) -> dict[str, str] | None:
         """把用户写作技能追加进 styles["author"]（段规程之后）；正文段同时以
         审查约束口径注入 styles["review"]（REQ-20261025-230811 FR-005）。
@@ -517,7 +520,9 @@ class MetaAgentService(BaseAgentService):
             return styles
         try:
             merged = dict(styles or {})
-            suffix = self._compose_user_writing_skills(workspace_id, owner_id, workspace_path)
+            suffix = self._compose_user_writing_skills(
+                workspace_id, owner_id, workspace_path, skills=stage_skills,
+            )
             if suffix:
                 base = merged.get("author") or ""
                 merged["author"] = f"{base}\n\n{suffix}" if base else suffix
@@ -529,7 +534,76 @@ class MetaAgentService(BaseAgentService):
             logger.warning("用户写作技能注入失败，跳过", exc_info=True)
             return styles
 
-    def _agent_for_workspace(self, workspace_path: Path, trace_id: str | None = None, workspace_id: str | None = None, *, model=None, checkpointer=None, owner_id: str | None = None, strict_evidence: bool = False, llm_override=None, binding: BindingRecord | None = None, agent_name: str | None = None):
+    def _list_volume_constraint_skills(
+        self, workspace_id: str | None, owner_id: str | None, workspace_path: Path,
+    ) -> list[dict]:
+        """Read the target artifact's rules even during chapter writeback."""
+        if not workspace_id or not owner_id:
+            return []
+        from app.domains.writing.pipeline import classify_workspace
+        from app.platform.core.db import WritingSkillRepository, get_database
+
+        if classify_workspace(workspace_path) != "five":
+            return []
+        return [skill for skill in WritingSkillRepository(get_database())
+                .list_enabled_for_workspace(workspace_id, owner_id) if skill["stage"] == "volume"]
+
+    def _volume_payoff_runtime(
+        self, workspace_path, workspace_id, owner_id, trace_id, model,
+        *, message_id=None, new_revision=False,
+    ):
+        from app.domains.writing.payoff_runtime import VolumePayoffRuntime, make_payoff_model_call
+        from app.domains.writing.payoff_validation import ValidationEngine
+        from app.domains.writing.volume_payoff_guard import bind_volume_operation
+
+        skills, load_error = [], ""
+        try:
+            skills = self._list_volume_constraint_skills(workspace_id, owner_id, workspace_path)
+        except Exception as exc:
+            load_error = f"卷纲技能读取失败（{type(exc).__name__}）：{exc}"
+            logger.warning("卷纲技能读取失败，后续写入按阻断处理", exc_info=True)
+        if not skills and not load_error:
+            return None, []
+        from uuid import uuid4
+        from app.domains.writing.pipeline import current_stage
+
+        run_trace = trace_id or f"untraced-{uuid4().hex}"
+
+        def operation_id():
+            return bind_volume_operation(
+                workspace_path, run_trace, message_id=message_id, new_revision=new_revision,
+            )
+
+        volume_task = current_stage(workspace_path) == "volume"
+
+        try:
+            request_task, event_loop = asyncio.current_task(), asyncio.get_running_loop()
+        except RuntimeError:
+            request_task, event_loop = None, None
+
+        def is_active() -> bool:
+            if request_task is not None and (request_task.done() or request_task.cancelling()):
+                return False
+            stopped = getattr(self.trace_recorder, "is_user_stop_requested", None)
+            return not (trace_id and callable(stopped) and stopped(trace_id))
+
+        runtime = VolumePayoffRuntime(
+            workspace_path, skills=skills,
+            operation_id=operation_id() if volume_task else run_trace,
+            operation_loader=None if volume_task else operation_id,
+            engine=ValidationEngine(
+                make_payoff_model_call(
+                    model, recorder=self.trace_recorder, trace_id=trace_id,
+                    is_active=is_active, event_loop=event_loop,
+                ),
+                cache_path=workspace_path / ".writing" / "payoff-catalog.json",
+            ), load_error=load_error,
+            sources_loader=lambda: self._list_volume_constraint_skills(workspace_id, owner_id, workspace_path),
+            is_active=is_active,
+        )
+        return runtime, skills
+
+    def _agent_for_workspace(self, workspace_path: Path, trace_id: str | None = None, workspace_id: str | None = None, *, model=None, checkpointer=None, owner_id: str | None = None, strict_evidence: bool = False, llm_override=None, binding: BindingRecord | None = None, agent_name: str | None = None, payoff_message_id: str | None = None, payoff_revision: bool = False):
         # 多用户隔离（T2.4/T2.5）：model 用用户解密 key 构建，
         # checkpointer 用用户的分库 saver。两者外部注入，缺省回退全局（管理员兜底）。
         # Phase 7 包化重构：装配逻辑从 evolution 拉 manifest 改为同进程 import Agent 包。
@@ -544,6 +618,7 @@ class MetaAgentService(BaseAgentService):
             strict_evidence=strict_evidence,
             llm_override=llm_override, binding=binding,
             agent_name=agent_name,
+            payoff_message_id=payoff_message_id, payoff_revision=payoff_revision,
         )
 
     def _assemble_via_package(
@@ -559,6 +634,8 @@ class MetaAgentService(BaseAgentService):
         llm_override=None,
         binding: BindingRecord | None = None,
         agent_name: str | None = None,
+        payoff_message_id: str | None = None,
+        payoff_revision: bool = False,
     ):
         """Phase 7：经 Agent 包装配（替代 _assemble_via_manifest）。
 
@@ -663,22 +740,44 @@ class MetaAgentService(BaseAgentService):
         # _compose_mode_assembly。legacy（agent_name=None 或非五段制）不注入，
         # 走清单旧文件原样。
         prompt_overrides: dict[str, str] | None = None
+        volume_write_guard = None
+        volume_skills: list[dict] | None = None
+        volume_stage = False
         if agent_name == "author":
             from app.domains.writing.pipeline import classify_workspace, current_stage
 
             if classify_workspace(workspace_path) == "five":
                 stage = current_stage(workspace_path)
+                volume_stage = stage == "volume"
                 author_style, prompt_overrides = _compose_mode_assembly(
                     pkg, workspace_path, stage,
                 )
                 styles = {**(styles or {}), "author": author_style}
+
+                volume_write_guard, volume_skills = self._volume_payoff_runtime(
+                    workspace_path, workspace_id, owner_id, trace_id, model,
+                    message_id=payoff_message_id, new_revision=payoff_revision,
+                )
+                if volume_write_guard is not None:
+                    import importlib
+
+                    save_module = importlib.import_module(f"{pkg.__name__}.tools.save_artifact")
+                    if getattr(save_module, "VOLUME_PAYOFF_GUARD_VERSION", 0) < 1:
+                        raise RuntimeError("harness 缺少卷纲检查能力，请先发布兼容版本。")
 
         # 用户自定义写作技能（REQ-20261023-000000 FR-003）：服务端硬闸在
         # _compose 内（仅正文段）；非正文段 styles 与现状逐字一致（AC-003）。
         styles = self._apply_user_writing_skills(
             styles=styles, agent_name=agent_name, workspace_id=workspace_id,
             owner_id=owner_id, workspace_path=workspace_path,
+            stage_skills=volume_skills if volume_stage else None,
         )
+        if volume_skills and not volume_stage:
+            # Only writes targeting a volume use these rules; chapter creation keeps its own Skills.
+            scope = "## 卷纲回写约束（仅修改卷纲时适用）\n\n"
+            scope += "以下为本书卷纲的技能快照；修改卷纲时仍须遵守，章纲自身沿用当前段规程。\n\n"
+            scope += "\n\n".join(f"### {skill['name']}\n{skill['content']}" for skill in volume_skills)
+            styles = {**(styles or {}), "author": f"{(styles or {}).get('author', '')}\n\n{scope}"}
 
         ctx = RuntimeContext(
             model=model,
@@ -691,6 +790,7 @@ class MetaAgentService(BaseAgentService):
             # 按模式组装（REQ-20261028-110538）：五段制时中性 author_base 整体
             # 替换清单主 prompt；None = 按清单文件读（legacy 现状行为）。
             prompt_overrides=prompt_overrides,
+            volume_write_guard=volume_write_guard,
             trace_recorder=self.trace_recorder,
             trace_middleware_cls=TraceMiddleware,  # T2：类由执行端注入，包内实例化
             # CON-005/FR-003：注入平台级 task 防重放边界。harness 的 ErrorRecovery
@@ -1283,6 +1383,12 @@ class MetaAgentService(BaseAgentService):
                 strict_evidence=run_purpose != "user_generation",
                 llm_override=llm_override, binding=binding,
                 agent_name=agent_name,
+                payoff_message_id=user_msg_id,
+                payoff_revision=(
+                    isinstance(resume_value, str)
+                    and resume_value.strip().startswith(("打回：", "打回:"))
+                    and bool(resume_value.strip()[3:].strip())
+                ),
             )
 
             # 管线状态落盘（会话与 active trace 登记）+ 桌面端阶段条事件（FR-010）

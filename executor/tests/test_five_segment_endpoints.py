@@ -233,3 +233,25 @@ def test_stage_advance_rejects_legacy_and_missing(client: TestClient, tmp_path: 
     (tmp_path / "storyline.md").write_text("旧五件套", encoding="utf-8")
     resp = client.post("/workspaces/ws1/writing/stage/advance", json={"trace_id": "t"})
     assert resp.status_code == 409
+
+
+def test_failed_volume_revision_cannot_advance_using_old_final(client: TestClient, tmp_path: Path) -> None:
+    import hashlib
+    import json
+    from contracts.writing_artifacts import load_writing_state
+
+    _seed_confirm_loop_book(tmp_path)
+    client.put("/workspaces/ws1/writing/stage", json={"stage": "volume"})
+    original = (tmp_path / "卷纲/第02卷.md").read_text(encoding="utf-8")
+    journal = {
+        "schema_version": 1, "volumes": {"2": {
+            "legacy_content_hash": hashlib.sha256(original.encode()).hexdigest(),
+            "active_operation": {"operation_id": "failed-trace", "status": "blocked", "reason": "仍有清单外爽点"},
+        }},
+    }
+    (tmp_path / ".writing/volume-payoff-checks.json").write_text(json.dumps(journal), encoding="utf-8")
+    response = client.post("/workspaces/ws1/writing/stage/advance", json={"trace_id": "failed-trace"})
+    assert response.status_code == 409
+    assert "清单外爽点" in response.json()["detail"]
+    assert load_writing_state(tmp_path).confirmed_stage == "volume"
+    assert (tmp_path / "卷纲/第02卷.md").read_text(encoding="utf-8") == original

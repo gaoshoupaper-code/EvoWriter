@@ -42,6 +42,7 @@ from contracts.writing_artifacts import (
     scan_writing_progress,
     stage_mode,
     text_batch_size,
+    volume_review_block_reason,
 )
 
 # 单 agent 架构名（architecture.json 唯一 main）
@@ -363,6 +364,8 @@ def _advance_readiness(workspace: Path, state) -> dict:
     )
     idx = _STAGE_ORDER.index(pointer)
     if idx >= len(_STAGE_ORDER) - 1:
+        return {"ready": False, "next": None}
+    if pointer == "volume" and volume_review_block_reason(workspace):
         return {"ready": False, "next": None}
     if any(state.active_traces.values()):
         return {"ready": False, "next": None}

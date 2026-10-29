@@ -180,6 +180,7 @@ class TestReviewConstraints:
         )
         assert "review" not in out
 
+
     def test_no_skills_no_review_key(self, svc, seeded):
         """正文段但无启用技能：review 键不注入。"""
         u1, ws_id, ws_path, db = seeded
@@ -189,3 +190,57 @@ class TestReviewConstraints:
             workspace_id=ws_id, owner_id=u1, workspace_path=ws_path,
         )
         assert "review" not in out
+
+
+class TestVolumeConstraintSnapshot:
+    def test_chapter_write_uses_volume_skills_without_injecting_text_skills(self, svc, seeded):
+        u1, ws_id, ws_path, db = seeded
+        repo = WritingSkillRepository(db)
+        volume = repo.create(owner_id=u1, name="闭合定义", description="范围", content="清单内条目", stage="volume")["skill_id"]
+        repo.set_enabled(ws_id, u1, [volume])
+        save_writing_state(ws_path, WritingState(confirmed_stage="chapter", stage="chapter"))
+        skills = svc._list_volume_constraint_skills(ws_id, u1, ws_path)
+        assert [skill["skill_id"] for skill in skills] == [volume]
+        assert svc._compose_user_writing_skills(ws_id, u1, ws_path) is None
+
+    def test_volume_prompt_uses_the_frozen_skill_snapshot(self, svc, seeded, monkeypatch):
+        u1, ws_id, ws_path, _ = seeded
+        save_writing_state(ws_path, WritingState(confirmed_stage="volume", stage="volume"))
+        snapshot = [{"skill_id": "frozen", "name": "定义", "description": "来源", "content": "冻结的原文"}]
+        monkeypatch.setattr(svc, "_list_enabled_stage_skills", lambda *args: (_ for _ in ()).throw(AssertionError("must not re-read")))
+        text = svc._compose_user_writing_skills(ws_id, u1, ws_path, skills=snapshot)
+        assert "冻结的原文" in text
+
+    def test_explicit_rejection_and_resume_share_server_bound_revision(self, svc, seeded):
+        u1, ws_id, ws_path, db = seeded
+        save_writing_state(ws_path, WritingState(confirmed_stage="volume", stage="volume"))
+        repo = WritingSkillRepository(db)
+        skill = repo.create(owner_id=u1, name="清单", description="定义", content="已有条目", stage="volume")["skill_id"]
+        repo.set_enabled(ws_id, u1, [skill])
+        svc.trace_recorder = None
+        original, _ = svc._volume_payoff_runtime(ws_path, ws_id, u1, "same-trace", object())
+        revised, _ = svc._volume_payoff_runtime(
+            ws_path, ws_id, u1, "same-trace", object(), message_id="author-message", new_revision=True,
+        )
+        resumed, _ = svc._volume_payoff_runtime(
+            ws_path, ws_id, u1, "same-trace", object(), message_id="ordinary-answer",
+        )
+        retried, _ = svc._volume_payoff_runtime(
+            ws_path, ws_id, u1, "same-trace", object(), message_id="author-message", new_revision=True,
+        )
+        assert original.operation_id != revised.operation_id
+        assert revised.operation_id == resumed.operation_id == retried.operation_id
+
+    def test_chapter_rejection_does_not_create_a_pending_volume_task(self, svc, seeded):
+        from contracts.writing_artifacts import volume_review_block_reason
+
+        u1, ws_id, ws_path, db = seeded
+        repo = WritingSkillRepository(db)
+        skill = repo.create(owner_id=u1, name="清单", description="定义", content="已有条目", stage="volume")["skill_id"]
+        repo.set_enabled(ws_id, u1, [skill])
+        save_writing_state(ws_path, WritingState(confirmed_stage="chapter", stage="chapter"))
+        svc.trace_recorder = None
+        svc._volume_payoff_runtime(
+            ws_path, ws_id, u1, "chapter-only", object(), message_id="reject-chapter", new_revision=True,
+        )
+        assert volume_review_block_reason(ws_path, operation_id="chapter-only") is None

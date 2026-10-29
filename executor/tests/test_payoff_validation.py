@@ -377,6 +377,9 @@ def test_repair_receives_the_exact_volume_table_and_component_format():
     assert "固定四列" in prompt
     assert "【爽】原条目甲+原条目乙" in prompt
     assert "一次【爽】" in prompt
+    assert "全文所有【爽】引用" in prompt
+    assert "不要用全角竖线「｜」" in prompt
+    assert "不要让右括号或后续说明紧贴条目名" in prompt
     assert "不再添加「行为档位」「节奏级别」列" in prompt
     assert "| 行为档位 |" not in prompt
     assert "| 节奏级别 |" not in prompt

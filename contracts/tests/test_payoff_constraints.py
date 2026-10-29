@@ -72,6 +72,18 @@ def test_unified_level_does_not_require_independent_behavior_grade(policy, level
     assert occurrences[0].components[0].behavior_level is None
 
 
+@pytest.mark.parametrize("extra", [
+    "来源：【爽】基础甲+基础乙；爽点级别：超大。",
+    "（第60章为【爽】基础甲+基础乙；每个成分均实际发生）",
+])
+def test_narrative_combination_ends_before_explanation(policy, extra):
+    text = volume("| 1 | 行动甲与行动乙 | 【爽】基础甲+基础乙 | 大 |",
+                  span="1-1", unified=True, extra=extra)
+    occurrences, violations = parse_volume_payoffs(text, policy)
+    assert violations == []
+    assert [c.entry_id for c in occurrences[-1].components] == ["a", "b"]
+
+
 def test_unified_combination_keeps_all_components_without_grade_mapping(policy):
     text = volume("| 1 | 行动甲与行动乙 | 【爽】基础甲+基础乙 | 大 |", span="1-1", unified=True)
     occurrences, violations = parse_volume_payoffs(text, policy)

@@ -8,6 +8,7 @@ agent 按产物 kind 读档案，不接触任何文件路径：kind+卷号/章�
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -35,6 +36,7 @@ kind 取值：
 - chapter_text（正文章节，需 chapter 章号）
 
 section 可选：只取包含该关键词的小节（如 section="伏笔登记表"）。
+draft=true 仅卷纲可用：显式读取修订草稿，之后编辑草稿也须传 draft=true。
 每次起草或修订前先读对应档案；编辑落盘（save_artifact mode=edit）前必须先读本产物。"""
 
 _KINDS = (KIND_THEME, KIND_OUTLINE, KIND_STYLE, KIND_VOLUME, KIND_CHAPTER, KIND_TEXT)
@@ -45,6 +47,7 @@ class ReadArtifactInput(BaseModel):
     volume: int | None = Field(default=None, ge=1, description="卷号（volume_outline 必填）")
     chapter: int | None = Field(default=None, ge=1, description="章号（chapter_outline/chapter_text 必填）")
     section: str | None = Field(default=None, description="可选：只取包含该关键词的小节")
+    draft: bool = Field(default=False, description="仅卷纲：读取修订草稿，不读取正式稿")
 
 
 def _slice_section(text: str, keyword: str) -> str:
@@ -72,6 +75,7 @@ def read_artifact(
     volume: int | None = None,
     chapter: int | None = None,
     section: str | None = None,
+    draft: bool = False,
 ) -> str:
     raise NotImplementedError("由 build(abc) 闭包实现（需要 workspace 与读取登记）")
 
@@ -85,9 +89,15 @@ def build_read_artifact_tool(workspace_root: Path, registry: dict) -> Structured
     """
 
     def _read(kind: str, volume: int | None = None, chapter: int | None = None,
-              section: str | None = None) -> str:
+              section: str | None = None, draft: bool = False) -> str:
+        if draft and kind != KIND_VOLUME:
+            return "[read_artifact 失败] draft 仅卷纲可用。"
         try:
             rel = artifact_relpath(kind, volume=volume, chapter=chapter)
+            if draft:
+                from contracts.writing_artifacts import volume_draft_relpath
+
+                rel = volume_draft_relpath(volume)
         except ValueError as exc:
             return f"[read_artifact 失败] {exc}"
         path = workspace_root / rel
@@ -102,7 +112,11 @@ def build_read_artifact_tool(workspace_root: Path, registry: dict) -> Structured
             text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             return f"[read_artifact 失败] 读取失败：{type(exc).__name__}"
-        registry[rel] = True  # 先读后改保险：save_artifact(mode=edit) 消费
+        # 卷纲复核耗时较长，登记读取时内容，防调用保存前已被作者改过。
+        registry[rel] = (
+            {"content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+            if kind == KIND_VOLUME else True
+        )
         if section:
             return _slice_section(text, section)
         return text

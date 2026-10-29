@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 from pathlib import Path
 
@@ -35,8 +36,28 @@ def _atomic_write(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
-def build_rewrite_rhythm_tool(workspace_root: Path) -> StructuredTool:
+def _rhythm_edit_scope(text: str) -> dict[str, str]:
+    """整卷检查，但自动修复只获准修改节奏标题所辖正文。"""
+    lines = text.splitlines(keepends=True)
+    start, level = None, 0
+    for index, line in enumerate(lines):
+        heading = line.lstrip()
+        if not heading.startswith("#"):
+            continue
+        depth = len(heading) - len(heading.lstrip("#"))
+        if start is None and "节奏" in heading:
+            start, level = index, depth
+        elif start is not None and depth <= level:
+            return {"prefix": "".join(lines[:start + 1]), "suffix": "".join(lines[index:])}
+    if start is None:
+        raise ValueError("卷纲中找不到节奏小节")
+    return {"prefix": "".join(lines[:start + 1]), "suffix": ""}
+
+
+def build_rewrite_rhythm_tool(workspace_root: Path, *, volume_guard=None,
+                              capture=None) -> StructuredTool:
     from .update_foreshadow_table import replace_section
+    from .save_artifact import _guard_volume_write, _volume_write_message
 
     def _rewrite(volume: int, table: str) -> str:
         rel = artifact_relpath(KIND_VOLUME, volume=volume)
@@ -50,6 +71,13 @@ def build_rewrite_rhythm_tool(workspace_root: Path) -> StructuredTool:
         updated = replace_section(current, "节奏", table)
         if updated is None:
             return f"[rewrite_rhythm_table 失败] 第 {volume} 卷卷纲中找不到「节奏」小节。"
+        guarded = _guard_volume_write(
+            volume_guard, volume=volume, base_text=current,
+            candidate_text=updated, source="rewrite", capture=capture,
+            edit_scope=_rhythm_edit_scope(current),
+        )
+        if guarded is not None:
+            return _volume_write_message(guarded, volume, rewrite=True)
         try:
             _atomic_write(path, updated)
         except OSError as exc:
@@ -66,7 +94,24 @@ def build_rewrite_rhythm_tool(workspace_root: Path) -> StructuredTool:
 
 
 def build(abc):
-    return build_rewrite_rhythm_tool(abc.workspace_path)
+    from .save_artifact import _MISSING_VOLUME_GUARD
+
+    callback = getattr(abc, "artifact_callback", None)
+
+    def capture(rel: str, text: str) -> None:
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        callback({
+            "file_path": rel, "content": text, "fingerprint": digest,
+            "tool": "rewrite_rhythm_table",
+            "tool_call_id": f"rewrite_rhythm_table:{digest[:16]}",
+            "agent_name": getattr(abc, "trace_name", "author-subagent"),
+        })
+
+    return build_rewrite_rhythm_tool(
+        abc.workspace_path,
+        volume_guard=getattr(abc.ctx, "volume_write_guard", _MISSING_VOLUME_GUARD),
+        capture=capture if callback is not None else None,
+    )
 
 
 __all__ = [

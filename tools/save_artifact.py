@@ -37,13 +37,17 @@ from contracts.writing_artifacts import (
     KIND_TEXT,
     KIND_THEME,
     KIND_VOLUME,
+    STAGE_VOLUME,
     artifact_relpath,
+    resolve_confirmed_stage,
 )
 
 logger = logging.getLogger(__name__)
 
 # 编辑重试上限：同一产物连续失败到该次数后封死 edit、强制 full（DEC-007）
 _EDIT_FAILURE_CAP = 3
+VOLUME_PAYOFF_GUARD_VERSION = 1
+_MISSING_VOLUME_GUARD = object()
 
 SAVE_ARTIFACT_TOOL_DESCRIPTION = """按产物种类落盘（不接触文件路径）。每个点被作者确认后立即落盘。
 
@@ -58,6 +62,9 @@ kind 取值：theme / outline / style / volume_outline(+volume) / chapter_outlin
   编辑前必须先 read_artifact 读过该产物；锚点不唯一/找不到会报错且文件不变，
   带更多上下文重试；连续失败 3 次后改用 mode="full" 提交完整内容。
 
+仅卷纲支持 draft=true：读取并编辑修订草稿，须先 read_artifact(draft=true)。
+卷纲正式提交会核验完整候选；检查未通过时保留草稿并说明原因，不能宣称定稿。
+
 落盘内容遵守文件头两行约定：标题行 + 状态日期行；约束级/参考级分区。"""
 
 
@@ -69,6 +76,7 @@ class SaveArtifactInput(BaseModel):
     anchor: str | None = Field(default=None, description="edit 模式：要替换的原文片段（须唯一）")
     replacement: str | None = Field(default=None, description="edit 模式：替换后的文本")
     content: str | None = Field(default=None, description="full 模式：完整新内容")
+    draft: bool = Field(default=False, description="仅卷纲：以修订草稿为编辑基线")
 
 
 def _quote_norm(s: str) -> str:
@@ -155,10 +163,52 @@ def save_artifact(*args, **kwargs) -> str:  # pragma: no cover - 由 build 闭�
     raise NotImplementedError("由 build(abc) 闭包实现（需要 workspace 与登记容器）")
 
 
+def _guard_volume_write(guard, *, volume: int, base_text: str,
+                        candidate_text: str, source: str, draft: bool = False,
+                        edit_scope: dict | None = None, capture=None) -> dict | None:
+    if guard is None:  # 显式无约束，兼容未启用定义的工作区及低层工具调用。
+        return None
+    if guard is _MISSING_VOLUME_GUARD:
+        return {"status": "blocked", "reason": "运行端缺少卷纲检查能力，请更新后重试。"}
+    try:
+        result = guard.commit(
+            volume=volume, base_text=base_text, candidate_text=candidate_text,
+            source=source, draft=draft, edit_scope=edit_scope,
+        )
+        if not isinstance(result, dict) or result.get("status") not in {"committed", "draft", "blocked"}:
+            raise ValueError("卷纲检查结果格式不合法")
+        if result["status"] == "committed" and (
+            not isinstance(result.get("path"), str) or not isinstance(result.get("content"), str)
+        ):
+            raise ValueError("卷纲提交结果缺少实际内容")
+    except Exception:  # noqa: BLE001 — 检查异常不得退回无约束写入。
+        logger.exception("卷纲检查失败，保留原稿")
+        return {"status": "blocked", "reason": "卷纲检查失败，原稿未覆盖；请稍后重试。"}
+    if capture and isinstance(result.get("path"), str) and isinstance(result.get("content"), str):
+        try:
+            capture(result["path"], result["content"])
+        except Exception:  # noqa: BLE001 — 取证失败不改变已完成的业务提交。
+            logger.warning("卷纲写入快照失败，已完成的提交不重放", exc_info=True)
+    return result
+
+
+def _volume_write_message(result: dict, volume: int, *, rewrite: bool = False) -> str:
+    if result.get("status") == "committed":
+        action = f"第 {volume} 卷节奏表已回写" if rewrite else f"已落盘 volume_outline（第 {volume} 卷）"
+        return f"{action}（完整卷纲检查通过；自动修正 {result.get('repair_attempts', 0)} 轮）。"
+    location = f"草稿：{result['path']}。" if result.get("path") else "原稿未覆盖。"
+    guidance = ""
+    if result.get("path"):
+        draft = result["path"].endswith("-修订草稿.md")
+        guidance = f"继续修订先 read_artifact(kind=volume_outline, volume={volume}, draft={str(draft).lower()})，再按同一 draft 值编辑。"
+    return f"[卷纲未定稿] {location}{result.get('reason') or '检查未通过'}。{guidance}"
+
+
 def build_save_artifact_tool(
     workspace_root: Path, registry: dict, failures: dict,
     *, recorder=None, trace_id: str | None = None,
     agent_name: str = "author-subagent",
+    volume_guard=None, restrict_volume_edits: bool = False,
 ) -> StructuredTool:
     """构建落盘工具。
 
@@ -205,9 +255,15 @@ def build_save_artifact_tool(
     def _save(kind: str, volume: int | None = None, chapter: int | None = None,
               mode: str = "edit",
               anchor: str | None = None, replacement: str | None = None,
-              content: str | None = None) -> str:
+              content: str | None = None, draft: bool = False) -> str:
+        if draft and kind != KIND_VOLUME:
+            return "[save_artifact 失败] draft 仅卷纲可用。"
         try:
             rel = artifact_relpath(kind, volume=volume, chapter=chapter)
+            if draft:
+                from contracts.writing_artifacts import volume_draft_relpath
+
+                rel = volume_draft_relpath(volume)
         except ValueError as exc:
             return f"[save_artifact 失败] {exc}"
         if mode not in ("edit", "full"):
@@ -232,10 +288,25 @@ def build_save_artifact_tool(
                 "[save_artifact 拒绝] 先调 read_artifact 读取该产物，再落盘——"
                 "锚点/整文件替换都必须基于刚读到的当前内容。"
             )
+        read_entry = registry.get(rel)
+        if exists and kind == KIND_VOLUME and isinstance(read_entry, dict):
+            fingerprint = hashlib.sha256(current.encode("utf-8")).hexdigest()
+            if read_entry.get("content_hash") != fingerprint:
+                return "[save_artifact 拒绝] 卷纲自读取后已变化，请重新 read_artifact 后合并修改。"
 
         if mode == "full":
             if content is None or not content.strip():
                 return "[save_artifact 失败] mode=full 需要 content（完整新内容）。"
+            if kind == KIND_VOLUME:
+                guarded = _guard_volume_write(
+                    volume_guard, volume=volume, base_text=current,
+                    candidate_text=content, source="full", draft=draft,
+                    capture=_capture_revision,
+                )
+                if guarded is not None:
+                    if guarded.get("status") == "committed":
+                        failures.pop(rel, None)
+                    return _volume_write_message(guarded, volume)
             try:
                 _atomic_write(path, content)
             except OSError as exc:
@@ -259,6 +330,20 @@ def build_save_artifact_tool(
             failures[rel] = failures.get(rel, 0) + 1
             return f"[save_artifact 失败·文件未变] {result}"
         new_text, hits = result
+        if kind == KIND_VOLUME:
+            edit_scope = None
+            if restrict_volume_edits:
+                start, end = find_edit_match(current, anchor)
+                edit_scope = {"prefix": current[:start], "suffix": current[end:]}
+            guarded = _guard_volume_write(
+                volume_guard, volume=volume, base_text=current,
+                candidate_text=new_text, source="edit", draft=draft,
+                edit_scope=edit_scope, capture=_capture_revision,
+            )
+            if guarded is not None:
+                if guarded.get("status") == "committed":
+                    failures.pop(rel, None)
+                return _volume_write_message(guarded, volume)
         try:
             _atomic_write(path, new_text)
         except OSError as exc:
@@ -302,12 +387,15 @@ def build(abc):
         recorder=getattr(ctx, "trace_recorder", None),
         trace_id=getattr(ctx, "trace_id", None),
         agent_name=getattr(abc, "trace_name", None) or "author-subagent",
+        volume_guard=getattr(ctx, "volume_write_guard", _MISSING_VOLUME_GUARD),
+        restrict_volume_edits=resolve_confirmed_stage(abc.workspace_path) != STAGE_VOLUME,
     )
 
 
 __all__ = [
     "SAVE_ARTIFACT_TOOL_DESCRIPTION",
     "SaveArtifactInput",
+    "VOLUME_PAYOFF_GUARD_VERSION",
     "apply_edit",
     "build",
     "build_save_artifact_tool",

@@ -17,6 +17,9 @@ resume 值作为本工具返回值回到模型。
 """
 from __future__ import annotations
 
+from pathlib import Path
+
+from langchain.tools import ToolRuntime
 from langchain_core.tools import StructuredTool
 from langgraph.types import interrupt
 from pydantic import BaseModel, Field
@@ -59,9 +62,11 @@ class RequestReviewInput(BaseModel):
 REVIEW_KINDS = ("batch", "style", "stage")
 
 
-def build_review_payload(review_kind: str, question: str, options: list[ReviewOption]) -> dict[str, object]:
+def build_review_payload(
+    review_kind: str, question: str, options: list[ReviewOption], *, review_id: str | None = None,
+) -> dict[str, object]:
     """构造 review interrupt payload（纯逻辑，便于测试）。"""
-    return {
+    payload: dict[str, object] = {
         "kind": "review",
         "review_kind": review_kind,
         "source": "review",
@@ -69,13 +74,41 @@ def build_review_payload(review_kind: str, question: str, options: list[ReviewOp
         "options": [opt.model_dump() for opt in options],
         "multi_select": False,
     }
+    if review_id:
+        payload["review_id"] = review_id
+    return payload
 
 
-def build_request_review_tool() -> StructuredTool:
-    def request_review(review_kind: str, question: str, options: list[ReviewOption] | None = None):
+def build_request_review_tool(
+    workspace_root: Path | None = None, *, trace_id: str | None = None,
+    resuming_review_ids: set[str] | None = None,
+) -> StructuredTool:
+    def request_review(
+        review_kind: str, question: str, options: list[ReviewOption] | None = None,
+        runtime: ToolRuntime = None,
+    ):
         if review_kind not in REVIEW_KINDS:
             return f"review_kind 必须是 {'/'.join(REVIEW_KINDS)}，收到 {review_kind!r}；请重试。"
-        payload = build_review_payload(review_kind, question, options or [])
+        review_id = getattr(runtime, "tool_call_id", None)
+        # 恢复会重进工具；已交审的调用必须先把用户意见送回模型。
+        if (review_kind == "stage" and workspace_root is not None
+                and review_id not in (resuming_review_ids or set())):
+            from contracts.writing_artifacts import (
+                STAGE_VOLUME, resolve_confirmed_stage, scan_writing_progress,
+                volume_review_block_reason,
+            )
+
+            reason = volume_review_block_reason(workspace_root, operation_id=trace_id) if trace_id else None
+            if resolve_confirmed_stage(workspace_root) == STAGE_VOLUME:
+                reason = reason or volume_review_block_reason(workspace_root)
+                if not reason and not scan_writing_progress(workspace_root).volumes:
+                    reason = "本卷尚未定稿，请先完成卷纲。"
+            if reason:
+                return f"[交审失败] {reason}请先修订并通过检查，再提交审查。"
+        payload = build_review_payload(
+            review_kind, question, options or [],
+            review_id=review_id,
+        )
         answer: str = interrupt(payload)
         return answer
 
@@ -90,7 +123,19 @@ def build_request_review_tool() -> StructuredTool:
 
 def build(abc):
     """架构清单挂载钩子（仅主控 author 声明挂载）。"""
-    return build_request_review_tool()
+    trace_id = getattr(abc.ctx, "trace_id", None)
+    recorder = getattr(abc.ctx, "trace_recorder", None)
+    review_ids: set[str] = set()
+    if trace_id and recorder is not None:
+        run = recorder.find_run_by_trace_id(trace_id, workspace_path=str(abc.workspace_path))
+        if run is not None:
+            review_ids = {
+                event.tool_call_id for event in (recorder.read_trace_events(trace_id) or [])
+                if event.type == "hitl" and event.status == "awaiting_input" and event.tool_call_id
+            }
+    return build_request_review_tool(
+        abc.workspace_path, trace_id=trace_id, resuming_review_ids=review_ids,
+    )
 
 
 __all__ = [

@@ -12,7 +12,7 @@ import {
   type WorkspaceUsageStatus,
 } from "@/lib/api";
 import { useActiveRunsStream, type FinishedRunInfo } from "@/hooks/useActiveRunsStream";
-import type { ActiveRun, TraceIntegrityStatus, TraceStatus, TraceWorkload } from "@/lib/types";
+import type { ActiveRun, TraceIntegrityStatus, TraceMetrics, TraceStatus, TraceWorkload } from "@/lib/types";
 import { formatTokensW } from "@/lib/tokenFormat";
 
 const PAGE_SIZE = 50;
@@ -38,10 +38,17 @@ export default function MonitorPage() {
   const [integrity, setIntegrity] = useState<TraceIntegrityStatus | "all">("all");
   const [timeRange, setTimeRange] = useState<TimeRange>("7d");
   const [page, setPage] = useState(0);
-  const [recentRuns, setRecentRuns] = useState<TraceListItem[]>([]);
+  const [recentRuns, setRecentRunsState] = useState<TraceListItem[]>([]);
+  const recentRunsRef = useRef<TraceListItem[]>([]);
+  const setRecentRuns = useCallback((update: (previous: TraceListItem[]) => TraceListItem[]) => {
+    const next = update(recentRunsRef.current);
+    recentRunsRef.current = next;
+    setRecentRunsState(next);
+  }, []);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const finishedMetricsRef = useRef(new Map<string, TraceMetrics>());
 
   const since = useMemo(() => {
     if (timeRange === "all") return undefined;
@@ -59,7 +66,16 @@ export default function MonitorPage() {
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
       });
-      setRecentRuns(recent.items);
+      setRecentRuns((prev) => recent.items.map((run) => {
+        const cached = finishedMetricsRef.current.get(run.trace_id);
+        const next = preserveKnownTotal(run, prev.find((item) => item.trace_id === run.trace_id),
+          cached);
+        const reportedTotal = run.metrics?.total_tokens ?? run.token_total;
+        if (reportedTotal != null && cached?.total_tokens != null && reportedTotal >= cached.total_tokens) {
+          finishedMetricsRef.current.delete(run.trace_id);
+        }
+        return next;
+      }));
       setTotal(recent.total);
       setError(null);
     } catch (caught) {
@@ -80,20 +96,34 @@ export default function MonitorPage() {
   const correctTimerRef = useRef<number | null>(null);
   const finishedSeenRef = useRef<Set<string>>(new Set());
   const handleRunFinished = useCallback(
-    (run: FinishedRunInfo | null, traceId: string) => {
-      // 重复 finished（notify 主路径 + poller 兜底竞态）只结算一次（review R5）。
-      if (traceId && finishedSeenRef.current.has(traceId)) return;
-      if (traceId) finishedSeenRef.current.add(traceId);
+    (run: FinishedRunInfo | null, traceId: string, lastMetrics?: TraceMetrics) => {
+      // 完整摘要可补齐兜底通知；同一条新运行只增加一次计数。
+      const alreadyFinished = finishedSeenRef.current.has(traceId);
+      if (run && traceId) finishedSeenRef.current.add(traceId);
+      const knownMetrics = run?.metrics ?? lastMetrics;
+      const previousMetrics = finishedMetricsRef.current.get(traceId);
+      if (knownMetrics?.total_tokens != null
+        && (previousMetrics?.total_tokens == null || knownMetrics.total_tokens >= previousMetrics.total_tokens)) {
+        finishedMetricsRef.current.set(traceId, knownMetrics);
+      }
+      const cached = finishedMetricsRef.current.get(traceId);
+      if (cached) {
+        // 空终态摘要不创建新行，但已有行必须保留活跃阶段的最新用量。
+        setRecentRuns((prev) => prev.map((item) => item.trace_id === traceId
+          ? preserveKnownTotal(item, undefined, cached) : item));
+      }
       if (run) {
         // 只在匹配当前筛选时插入近期区（review R5：避免非匹配行突兀出现）。
         const workloadMatch = workload === "all" || run.workload === workload;
         if (workloadMatch) {
-          setRecentRuns((prev) =>
-            prev.some((r) => r.trace_id === traceId)
-              ? prev
-              : [finishedRunToListItem(run), ...prev].slice(0, PAGE_SIZE),
-          );
-          setTotal((t) => t + 1);
+          const alreadyListed = recentRunsRef.current.some((item) => item.trace_id === traceId);
+          setRecentRuns((prev) => {
+            const finished = preserveKnownTotal(finishedRunToListItem(run), undefined, cached);
+            return prev.some((r) => r.trace_id === traceId)
+              ? prev.map((r) => r.trace_id === traceId ? preserveKnownTotal(finished, r) : r)
+              : [finished, ...prev].slice(0, PAGE_SIZE);
+          });
+          if (!alreadyFinished && !alreadyListed) setTotal((t) => t + 1);
         }
       }
       if (correctTimerRef.current != null) window.clearTimeout(correctTimerRef.current);
@@ -203,9 +233,12 @@ export default function MonitorPage() {
             <table className="workbench-table">
               <RunTableHead />
               <tbody>
-                {recentRuns.map((run) => (
-                  <RunRow key={run.trace_id} run={run} onOpen={() => navigate(`/traces/${run.trace_id}`)} />
-                ))}
+                {recentRuns.map((run) => {
+                  const active = activeRuns.find((item) => item.trace_id === run.trace_id);
+                  const known = preserveKnownTotal(run, undefined, finishedMetricsRef.current.get(run.trace_id));
+                  const current = active ? { ...known, metrics: active.metrics ?? known.metrics, stats_stale: active.stats_stale } : known;
+                  return <RunRow key={run.trace_id} run={current} onOpen={() => navigate(`/traces/${run.trace_id}`)} />;
+                })}
               </tbody>
             </table>
           </div>
@@ -237,11 +270,26 @@ function RunTableHead({ active = false }: { active?: boolean }) {
     <thead><tr>
       <th>运行</th><th>工作负载</th><th>状态</th><th>完整性</th><th>Coverage</th>
       <th>机制</th><th>{active ? "已运行" : "开始 / 耗时"}</th>
+      <th>Token 总量</th>
     </tr></thead>
   );
 }
 
 type ObservableRun = ActiveRun | TraceListItem;
+
+function preserveKnownTotal(next: TraceListItem, previous?: TraceListItem, cached?: TraceMetrics): TraceListItem {
+  const previousTotal = previous?.metrics?.total_tokens ?? previous?.token_total;
+  const cachedTotal = cached?.total_tokens;
+  const knownTotal = previousTotal == null ? cachedTotal
+    : cachedTotal == null ? previousTotal : Math.max(previousTotal, cachedTotal);
+  const reportedTotal = next.metrics?.total_tokens ?? next.token_total;
+  // 终态摄入可能短暂缺字段或落后于活跃快照；累计不能因此回退。
+  if (knownTotal != null && (reportedTotal == null || reportedTotal < knownTotal)) {
+    return { ...next, token_total: knownTotal,
+      metrics: cachedTotal === knownTotal ? cached : previous?.metrics };
+  }
+  return next;
+}
 
 /** run_finished 事件行 → 近期区列表项（入库前的即时占位，刷新后自然校正）。 */
 function finishedRunToListItem(run: FinishedRunInfo): TraceListItem {
@@ -271,8 +319,8 @@ function finishedRunToListItem(run: FinishedRunInfo): TraceListItem {
     skill_activation_count: 0,
     middleware_intervention_count: 0,
     hitl_count: 0,
-    // 占位行尚未入库，无 token 数据——显示「—」，刷新后由权威列表校正。
-    token_total: null,
+    token_total: run.metrics?.total_tokens ?? null,
+    metrics: run.metrics,
   };
 }
 
@@ -295,6 +343,11 @@ function RunRow({ run, onOpen }: { run: ObservableRun; onOpen: () => void }) {
       <td className="run-time-cell">
         {run.started_at ? formatDateTime(run.started_at) : "—"}
         <span>{formatMs(run.duration_ms)}</span>
+      </td>
+      <td className="usage-num">
+        {formatTokensW(run.metrics?.total_tokens ?? ("token_total" in run ? run.token_total : null))}
+        {run.metrics?.total_partial && <small className="run-secondary">部分用量缺失</small>}
+        {"stats_stale" in run && run.stats_stale && <small className="run-secondary">数据可能过时</small>}
       </td>
     </tr>
   );

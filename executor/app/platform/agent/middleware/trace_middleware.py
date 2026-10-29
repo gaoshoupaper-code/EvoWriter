@@ -13,7 +13,7 @@
   - parent_run_id: 父级运行标识（用于构建调用树）
   - duration_ms  : 调用耗时（毫秒）
   - model_name   : 使用的模型名称（仅 LLM 事件）
-  - usage        : token 使用量（仅 LLM 完成事件）
+  - usage        : token 使用量（LLM 完成或失败时已知的真实用量）
   - tool_calls   : 模型请求的工具调用列表（仅 LLM 完成事件）
   - tool_name    : 工具名称（仅 Tool 事件）
   - tool_output  : 工具返回值（仅 Tool 完成事件）
@@ -38,6 +38,7 @@ from langgraph.config import get_config
 from langgraph.errors import GraphInterrupt
 from langchain_core.messages import BaseMessage
 from pydantic import BaseModel
+from contracts.trace.usage import normalize_usage as _normalize_usage
 
 from app.platform.trace import TraceRecorder
 
@@ -302,6 +303,7 @@ class TraceMiddleware(AgentMiddleware):
                 "model_name": _model_name(request.model),
                 "duration_ms": _duration_ms(started),
                 "error": f"{error.__class__.__name__}: {error}",
+                "usage": _normalize_usage(error.usage) if getattr(error, "usage", None) is not None else None,
             },
         )
 
@@ -534,26 +536,6 @@ def _usage_from_model_output(value: object) -> object | None:
     return None
 
 
-def _normalize_usage(value: object) -> dict[str, int | None]:
-    """将各种格式的 token 使用量归一化为统一结构。
-
-    兼容不同供应商返回的字段名：
-    - input_tokens / prompt_tokens  → input_tokens
-    - output_tokens / completion_tokens → output_tokens
-    - total_tokens（缺失时自动计算）
-    """
-    if isinstance(value, BaseModel):
-        value = value.model_dump(mode="python")
-    if not isinstance(value, Mapping):
-        return {"input_tokens": None, "output_tokens": None, "total_tokens": None}
-    input_tokens = _int_or_none(value.get("input_tokens") or value.get("prompt_tokens"))
-    output_tokens = _int_or_none(value.get("output_tokens") or value.get("completion_tokens"))
-    total_tokens = _int_or_none(value.get("total_tokens"))
-    if total_tokens is None and (input_tokens is not None or output_tokens is not None):
-        total_tokens = (input_tokens or 0) + (output_tokens or 0)
-    return {"input_tokens": input_tokens, "output_tokens": output_tokens, "total_tokens": total_tokens}
-
-
 def _tool_calls_from_value(value: object) -> list[object]:
     """从值中递归提取工具调用列表。
 
@@ -585,16 +567,6 @@ def _tool_call_summary(call: object) -> dict[str, object]:
         if value not in (None, ""):
             summary[key] = _jsonable(value)
     return summary or {"name": "unknown"}
-
-
-def _int_or_none(value: object) -> int | None:
-    """安全地将值转换为整数，失败返回 None。"""
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _message_payload(message: BaseMessage) -> dict[str, object]:

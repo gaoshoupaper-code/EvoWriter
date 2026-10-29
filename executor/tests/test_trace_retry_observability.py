@@ -9,7 +9,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.platform.agent.middleware import TraceMiddleware
 from app.platform.trace.recorder import TraceRecorder
@@ -52,6 +52,47 @@ def _make_request():
 
 
 class TraceRetryObservabilityTest(unittest.TestCase):
+    def test_average_counts_retry_and_backoff_as_one_successful_call(self) -> None:
+        from app.domains.writing.retry import RetryBudget, WriterRetryController
+
+        clock = [0.0]
+        attempts = []
+
+        async def sleep(delay):
+            clock[0] += delay
+
+        async def retry_runner(invoke, on_attempt, on_backoff):
+            budget = RetryBudget(
+                backoff_seconds=15.0,
+                sleep_async=sleep,
+                on_attempt_complete=lambda outcome: None if outcome.success else on_attempt(
+                    outcome.attempt_number, 2, outcome.error_class,
+                ),
+                on_backoff=lambda _id, attempt, delay: on_backoff(attempt, attempt + 1, delay),
+            )
+            return await WriterRetryController(budget).acall(invoke)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            recorder = TraceRecorder()
+            handle = recorder.create_run(_thread(Path(tmp)), "screenplay.generate.stream")
+            middleware = TraceMiddleware(recorder, handle.trace_id, "writer", retry_runner=retry_runner)
+
+            async def handler(_request):
+                attempts.append(1)
+                if len(attempts) == 1:
+                    clock[0] += 5.0
+                    raise _make_exc("APITimeoutError")
+                clock[0] += 10.0
+                return _make_response()
+
+            with patch("app.platform.agent.middleware.trace_middleware.time.perf_counter", side_effect=lambda: clock[0]):
+                asyncio.run(middleware.awrap_model_call(_make_request(), handler))
+
+            self.assertEqual(len(attempts), 2)
+            self.assertEqual(recorder.list_active_runs()[0]["metrics"]["average_duration_ms"], 30000)
+            detail = recorder.read_run(_thread(Path(tmp)), handle.trace_id)
+            self.assertEqual(len([event for event in detail.events if event.type == "llm_end"]), 1)
+
     def test_retry_attempts_become_visible_interventions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             workspace = Path(tmp)
@@ -115,6 +156,7 @@ class TraceRetryObservabilityTest(unittest.TestCase):
             backoffs = [i for i in interventions if i.get("action") == "model_attempt_backoff"]
             self.assertEqual(len(fails), 1)
             self.assertEqual(len(backoffs), 0)
+            self.assertIsNone(recorder.list_active_runs()[0]["metrics"]["average_duration_ms"])
 
     def test_no_retry_runner_keeps_legacy_single_boundary(self) -> None:
         # 未注入 retry_runner：保持原"只看外边界"行为，不写 attempt intervention。

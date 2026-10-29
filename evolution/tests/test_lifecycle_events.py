@@ -123,6 +123,8 @@ class NotifyFinishedEventTest(unittest.TestCase):
             ended_at="2026-09-20T12:01:00+00:00",
             duration_ms=60000, event_count=42, path="p",
             workload="creation",
+            metrics={"input_tokens": 20000, "output_tokens": 5000,
+                     "total_tokens": 25000, "average_duration_ms": 20000},
         )
         original = ingestion._fetch_trace_content
         ingestion._fetch_trace_content = (
@@ -141,6 +143,8 @@ class NotifyFinishedEventTest(unittest.TestCase):
         self.assertEqual(data["run"]["status"], "completed")
         self.assertEqual(data["run"]["session_name"], "写一部赛博修仙小说")
         self.assertEqual(data["run"]["duration_ms"], 60000)
+        self.assertEqual(data["run"]["metrics"]["total_tokens"], 25000)
+        self.assertEqual(data["run"]["metrics"]["average_duration_ms"], 20000)
         # 去重登记：后续 poller 兜底 diff 不再重复发。
         self.assertIn("trace-exec-fin", active_mod._finished_emitted)
 

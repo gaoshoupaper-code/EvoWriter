@@ -34,6 +34,17 @@ export type TraceUsage = {
   total_tokens?: number | null;
 };
 
+/** 同一 Trace 的真实模型调用统计；缺失值与明确零值分开。 */
+export type TraceMetrics = {
+  input_tokens: number | null;
+  output_tokens: number | null;
+  total_tokens: number | null;
+  input_partial: boolean;
+  output_partial: boolean;
+  total_partial: boolean;
+  average_duration_ms: number | null;
+};
+
 export type TraceContextRange = {
   start_anchor_id?: string | null;
   end_anchor_id?: string | null;
@@ -185,6 +196,7 @@ export type TraceDetailLite = {
   run: TraceRunSummary;
   nodes: TraceNode[];
   todos: TraceTodoSnapshot[];
+  metrics?: TraceMetrics;
 };
 
 /**
@@ -237,6 +249,7 @@ export type TraceListItem = {
   hitl_count: number;
   /** 该 trace 全部节点 token 合计；null=无 usage 数据（显示「—」，REQ-20261027-012631） */
   token_total: number | null;
+  metrics?: TraceMetrics;
 };
 
 /** trace 列表分页响应（含 total 供分页器计算页码） */
@@ -292,6 +305,8 @@ export type ActiveRun = {
   skill_activation_count: number;
   middleware_intervention_count: number;
   hitl_count: number;
+  metrics?: TraceMetrics;
+  stats_stale?: boolean;
 };
 
 export type TraceWorkload = "creation" | "evidence_compile" | "evaluation" | "evolution";

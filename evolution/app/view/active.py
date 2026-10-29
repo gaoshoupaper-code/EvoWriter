@@ -33,6 +33,8 @@ _task: asyncio.Task | None = None
 # 最近一次成功轮询的列表（review R2：失败只清展示缓存，diff 基线保留——
 # 否则 executor 宕机窗口内结束的运行在恢复后无从对比，幽灵行悬挂）。
 _last_good_runs: list[dict[str, Any]] = []
+_executor_stats_stale = False
+_last_evolution_runs: list[dict[str, Any]] = []
 
 # 已发过 run_finished 的 trace_id（notify 主路径与 poller 兜底去重）。
 # 有界：超过上限整批清理（极端量级下允许一次重复事件，前端按行幂等处理）。
@@ -65,7 +67,7 @@ async def _poll_loop(executor_url: str) -> None:
 
 def _poll_once(executor_url: str) -> None:
     """轮询一次执行端 /internal/active-runs，diff 出增删并发布 SSE 事件。"""
-    global _active_cache, _last_good_runs
+    global _active_cache, _last_good_runs, _executor_stats_stale
     try:
         import httpx
 
@@ -78,10 +80,12 @@ def _poll_once(executor_url: str) -> None:
         # 不发 run_finished：来源不可达 ≠ 运行结束（FR-004 失败语义，
         # 误发会把大盘行提前踢进近期区）。
         _active_cache = []
+        _executor_stats_stale = True
         return
     _emit_diff_events(_last_good_runs, runs)
     _last_good_runs = runs
     _active_cache = runs
+    _executor_stats_stale = False
 
 
 def _mark_finished_published(trace_id: str) -> None:
@@ -117,10 +121,12 @@ def _emit_diff_events(prev: list[dict[str, Any]], current: list[dict[str, Any]])
 
 def _reset_diff_state_for_test() -> None:
     """测试隔离：清空 diff 状态（不影响生产路径）。"""
-    global _active_cache
+    global _active_cache, _executor_stats_stale
     _active_cache = []
     _last_good_runs.clear()
     _finished_emitted.clear()
+    _last_evolution_runs.clear()
+    _executor_stats_stale = False
 
 
 # ── D7：富化 JSON 端点（供监测前端轮询）──
@@ -139,6 +145,9 @@ def active_runs_api() -> list[dict[str, Any]]:
     """
     # ── 合并两个数据源 ──
     runs = get_active_runs()  # executor 活跃 trace（轮询缓存）
+    if _executor_stats_stale:
+        # Source failure is not a zero-consumption snapshot or a finished run.
+        runs = [{**row, "stats_stale": True} for row in _last_good_runs]
 
     # D9：合并 evolution recorder 自己的活跃 trace
     evo_runs = _get_evolution_active_runs()
@@ -200,6 +209,9 @@ def active_runs_api() -> list[dict[str, Any]]:
             "started_at": r.get("started_at"),
             "duration_ms": r.get("duration_ms"),
             "event_count": r.get("event_count", 0),
+            "metrics": r.get("metrics"),
+            "token_total": (r.get("metrics") or {}).get("total_tokens"),
+            "stats_stale": bool(r.get("stats_stale", False)),
             # D7 富化：优先 executor 运行中透传的元数据（FR-003，不等入库 join），
             # 透传缺失时回退库 join（evolution 源 create_run 即写库）。
             "session_name": r.get("session_name") or meta.get("session_name"),
@@ -224,11 +236,13 @@ def _get_evolution_active_runs() -> list[dict[str, Any]]:
     evolution 端的评估/进化 agent 运行时，trace 由 EvolutionTraceRecorder 记录，
     不经过 executor 的 active-runs 轮询。这里从 app.state.trace_recorder 取内存中活跃列表。
     """
+    global _last_evolution_runs
     try:
         from app.main import app
         recorder = getattr(app.state, "trace_recorder", None)
         if recorder is None:
             return []
-        return recorder.list_active_runs()
+        _last_evolution_runs = recorder.list_active_runs()
+        return list(_last_evolution_runs)
     except Exception:
-        return []
+        return [{**row, "stats_stale": True} for row in _last_evolution_runs]

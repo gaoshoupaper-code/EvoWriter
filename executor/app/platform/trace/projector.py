@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TypeVar
+from contracts.trace.usage import normalize_usage
 
 T = TypeVar("T")
 
@@ -303,6 +304,7 @@ class _ProjectionState:
                 ended_at=error.timestamp,
                 duration_ms=error.duration_ms,
                 model_name=error.model_name,
+                usage=error.usage or _usage_from_llm_output(error.output),
                 context_anchor_id=_range_start(input_range) or anchor_id,
                 input_context_range=input_range,
                 output_context_anchor_id=anchor_id,
@@ -850,21 +852,8 @@ def _usage_from_llm_output(output: Any) -> TraceUsage | None:
             continue
         usage = message.get("usage") or message.get("usage_metadata")
         if isinstance(usage, dict):
-            return TraceUsage(
-                input_tokens=_int_or_none(usage.get("input_tokens") or usage.get("prompt_tokens")),
-                output_tokens=_int_or_none(usage.get("output_tokens") or usage.get("completion_tokens")),
-                total_tokens=_int_or_none(usage.get("total_tokens")),
-            )
+            return TraceUsage(**normalize_usage(usage))
     return None
-
-
-def _int_or_none(value: Any) -> int | None:
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _tool_content(output: Any) -> Any:

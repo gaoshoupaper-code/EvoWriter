@@ -227,6 +227,7 @@ def _emit_finished_event_from_executor(
                     "duration_ms": run.duration_ms,
                     "event_count": run.event_count,
                     "error": run.error,
+                    "metrics": run.metrics.model_dump() if run.metrics is not None else None,
                 },
             },
         )

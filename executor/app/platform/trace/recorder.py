@@ -33,6 +33,7 @@ from contracts.trace.payload import (
     sanitize_structural_text,
 )
 from contracts.trace.w3c import create_trace_context
+from contracts.trace.usage import TraceMetricsAccumulator
 
 # ── 写盘解耦参数 ──────────────────────────────────────────────
 # 根因：append_event 原来在事件循环线程上同步 open("a")+write，单次生成会写
@@ -146,6 +147,7 @@ class TraceRecorder:
         # 运行中 token 累计（REQ-20261027-012631 DEC-010）：活跃 trace 尚未摄入
         # evolution，用量观测的唯一数据源在此。per-trace 累加，终态清理。
         self._usage_totals: dict[str, int] = {}
+        self._trace_metrics: dict[str, TraceMetricsAccumulator] = {}
         # T15 活跃大盘：记录活跃 trace 的 endpoint（轻量，不读文件）。
         self._run_endpoints: dict[str, str] = {}
         # Phase 3：trace_id → workspace_path 持久索引。
@@ -206,6 +208,7 @@ class TraceRecorder:
 
         self._locks[trace_id] = RLock()
         self._sequences[trace_id] = 0
+        self._trace_metrics[trace_id] = TraceMetricsAccumulator()
         self._queues[trace_id] = asyncio.Queue()
         self._started_monotonic[trace_id] = time.perf_counter()
         self._run_paths[trace_id] = run_path
@@ -329,6 +332,14 @@ class TraceRecorder:
         # _increment_states 不重建 → 退化为全量存储（recorder 既有降级设计）
         self._run_endpoints[trace_id] = run.endpoint
         self._trace_workspace[trace_id] = thread.workspace_path
+        metrics = TraceMetricsAccumulator()
+        try:
+            for event in self._read_events(run_path):
+                metrics.add_event(event)
+        except (OSError, ValueError):
+            self._mark_capture_degraded(trace_id, "metrics_replay_failed")
+        self._trace_metrics[trace_id] = metrics
+        self._usage_totals[trace_id] = metrics.snapshot().total_tokens or 0
         return TraceRunHandle(trace_id=trace_id, queue=self._queues[trace_id])
 
     def register_run(
@@ -445,13 +456,10 @@ class TraceRecorder:
                 artifact=values.get("artifact"),
             )
 
-            # 运行中 token 累计（REQ-20261027-012631 DEC-010）：llm_end 等
-            # 带 usage 的事件即时累加，供 list_active_runs 透传给 evolution。
-            if event.usage is not None:
-                total = event.usage.total_tokens
-                if total is None:
-                    total = (event.usage.input_tokens or 0) + (event.usage.output_tokens or 0)
-                self._usage_totals[trace_id] = self._usage_totals.get(trace_id, 0) + (total or 0)
+            metrics = self._trace_metrics.setdefault(trace_id, TraceMetricsAccumulator())
+            metrics.add_event(event)
+            # 旧用户/作品统计仍读 usage_total；完整缺失信息由 metrics 快照提供。
+            self._usage_totals[trace_id] = metrics.snapshot().total_tokens or 0
 
             run_path = self._run_paths.get(trace_id)
             if run_path is None:
@@ -909,6 +917,10 @@ class TraceRecorder:
             error_message = _CANCEL_REASON_MESSAGES[reason]
             # 检查磁盘是否已有终态事件（子进程 SIGKILL 前可能已写入）。
             events = self._read_events(run_path)
+            metrics = TraceMetricsAccumulator()
+            for event in events:
+                metrics.add_event(event)
+            self._trace_metrics[trace_id] = metrics
             has_terminal = any(
                 e.type in {"run_end", "run_error", "run_cancelled"} for e in events
             )
@@ -1410,7 +1422,15 @@ class TraceRecorder:
         """
         now = time.perf_counter()
         result: list[dict[str, Any]] = []
-        for trace_id, started in self._started_monotonic.items():
+        for trace_id, started in list(self._started_monotonic.items()):
+            lock = self._locks.get(trace_id)
+            if lock is None:
+                continue
+            with lock:
+                state = self._trace_metrics.get(trace_id)
+                if state is None:
+                    continue
+                metrics = state.snapshot().model_dump()
             run = self.find_run_by_trace_id(trace_id)
             status = run.status if run else "running"
             result.append({
@@ -1434,6 +1454,7 @@ class TraceRecorder:
                 # None，调用方自行回退 workspace 归户），usage 是内存累加器。
                 "owner_user_id": run.user_id if run else None,
                 "usage_total": self._usage_totals.get(trace_id, 0),
+                "metrics": metrics,
             })
         return result
 
@@ -1966,6 +1987,10 @@ class TraceRecorder:
         if prompt_versions:
             run_snapshot["prompt_versions"] = prompt_versions
         run["run_snapshot"] = run_snapshot
+        metrics = self._trace_metrics.get(trace_id)
+        run["metrics"] = metrics.snapshot(
+            terminal=status in {"cancelled", "cancel_timeout", "interrupted", "failed"},
+        ).model_dump() if metrics is not None else None
         # FR-008/DEC-008：封存阶段先标 sealing（让 UI 显示"封存中/校验中"，不误报 incomplete）。
         run["trace_phase"] = "sealing"
         run["lifecycle_revision"] = int(run.get("lifecycle_revision", 0) or 0) + 1
@@ -2078,6 +2103,7 @@ class TraceRecorder:
         self._skill_catalog.pop(trace_id, None)
         self._skill_runtime_paths.pop(trace_id, None)
         self._usage_totals.pop(trace_id, None)
+        self._trace_metrics.pop(trace_id, None)
 
     def _write_manifest(self, trace_id: str) -> TraceManifest:
         run_path = self._run_paths.get(trace_id)

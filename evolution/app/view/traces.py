@@ -12,6 +12,7 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
+from contracts.trace.usage import TraceMetrics, metrics_from_nodes, usage_from_output
 
 import app.core.db as db
 from app.ingestion import projector
@@ -51,6 +52,7 @@ class TraceDetailLite(BaseModel):
     run: TraceRunSummary
     nodes: list[TraceNode]
     todos: list[TraceTodoSnapshot]
+    metrics: TraceMetrics = Field(default_factory=TraceMetrics)
 
 
 class TraceListItem(BaseModel):
@@ -80,10 +82,11 @@ class TraceListItem(BaseModel):
     skill_activation_count: int = 0
     middleware_intervention_count: int = 0
     hitl_count: int = 0
-    # 该 trace 全部 nodes 的 usage_total 之和（FR-004/FR-005）。
+    # 模型调用的已知总量；metrics 同时说明分项和部分缺失。
     # None=该 trace 没有任何带 usage 的节点（历史数据缺失），前端显示「—」，
     # 与 0（有数据但合计为 0）严格区分（AC-006 边界）。
     token_total: int | None = None
+    metrics: TraceMetrics = Field(default_factory=TraceMetrics)
 
 
 class TraceListResponse(BaseModel):
@@ -161,15 +164,14 @@ def list_traces(
                     WHERE e.trace_id=r.trace_id AND e.type='middleware_intervention')
                        AS middleware_intervention_count,
                    (SELECT COUNT(*) FROM event_payloads e
-                    WHERE e.trace_id=r.trace_id AND e.type='hitl') AS hitl_count,
-                   (SELECT SUM(n.usage_total) FROM nodes n
-                    WHERE n.trace_id=r.trace_id) AS token_total
+                    WHERE e.trace_id=r.trace_id AND e.type='hitl') AS hitl_count
             FROM runs r
             LEFT JOIN user_cache uc ON r.owner_user_id = uc.user_id
             {where_sql}
             ORDER BY r.started_at DESC LIMIT ? OFFSET ?""",
         tuple(params + [limit, offset]),
     )
+    metrics = _load_node_metrics([r["trace_id"] for r in rows])
     return TraceListResponse(
         items=[
             TraceListItem(
@@ -192,15 +194,31 @@ def list_traces(
                 skill_activation_count=int(r.get("skill_activation_count") or 0),
                 middleware_intervention_count=int(r.get("middleware_intervention_count") or 0),
                 hitl_count=int(r.get("hitl_count") or 0),
-                token_total=(
-                    int(r["token_total"])
-                    if r.get("token_total") is not None else None
-                ),
+                token_total=metrics[r["trace_id"]].total_tokens,
+                metrics=metrics[r["trace_id"]],
             )
             for r in rows
         ],
         total=total, limit=limit, offset=offset,
     )
+
+
+def _load_node_metrics(trace_ids: list[str]) -> dict[str, TraceMetrics]:
+    if not trace_ids:
+        return {}
+    placeholders = ",".join("?" for _ in trace_ids)
+    # Lists only need structural counters, never the model input/output payloads.
+    rows = db.query_all(
+        f"""SELECT trace_id, node_id, kind, status, model_name, tool_name,
+                   duration_ms, usage_input, usage_output, usage_total
+            FROM nodes WHERE trace_id IN ({placeholders})
+              AND (kind='llm' OR kind='error')""",
+        tuple(trace_ids),
+    )
+    nodes: dict[str, list[dict[str, Any]]] = {tid: [] for tid in trace_ids}
+    for row in rows:
+        nodes[row["trace_id"]].append(row)
+    return {tid: metrics_from_nodes(values) for tid, values in nodes.items()}
 
 
 def load_trace_detail(trace_id: str) -> TraceDetail | None:
@@ -279,6 +297,7 @@ def refresh_executor_trace(trace_id: str, request: Request) -> TraceDetailLite:
 def _to_trace_detail_lite(detail: TraceDetail) -> TraceDetailLite:
     return TraceDetailLite(
         run=detail.run, nodes=detail.nodes, todos=detail.todos,
+        metrics=metrics_from_nodes(detail.nodes),
     )
 
 
@@ -904,6 +923,11 @@ def _load_events(trace_id: str) -> list[TraceLogEvent]:
 def _structural_event(event: TraceLogEvent) -> TraceLogEvent:
     """Remove both V2 references' bodies and legacy inline semantic content."""
     values = event.model_dump()
+    if event.usage is None and event.type in {"llm_end", "llm_error"}:
+        # Legacy inline responses may be the only recorded source of usage.
+        usage = usage_from_output(event.output)
+        if usage is not None:
+            values["usage"] = usage
     for field_name in ("input", "output", "tool_args", "tool_output"):
         values[field_name] = None
     if isinstance(values.get("tool_calls"), list):

@@ -200,6 +200,16 @@ class TraceProjectorTest(unittest.TestCase):
 
 
 class TraceMiddlewareUsageTest(unittest.TestCase):
+    def test_zero_usage_stays_known_and_partial_usage_stays_unknown(self) -> None:
+        from app.platform.agent.middleware.trace_middleware import _normalize_usage
+
+        self.assertEqual(_normalize_usage({"input_tokens": 0, "output_tokens": 0}), {
+            "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+        })
+        self.assertEqual(_normalize_usage({"output_tokens": 3000}), {
+            "input_tokens": None, "output_tokens": 3000, "total_tokens": None,
+        })
+
     def test_extracts_usage_from_response_metadata_usage(self) -> None:
         message = AIMessage(
             content="调用工具中...",

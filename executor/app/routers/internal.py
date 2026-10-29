@@ -272,6 +272,11 @@ def get_trace_content(
     run = recorder.find_run_by_trace_id(trace_id)
     if run is None:
         raise HTTPException(status_code=404, detail=f"trace_id not found: {trace_id}")
+    if run.metrics is not None and since_seq >= run.event_count and run.status in {
+        "completed", "failed", "evidence_capture_failed", "cancelled", "cancel_timeout",
+        "interrupted", "step_limit_reached",
+    }:
+        return TraceContentResponse(run=run, events=[])
     events = recorder.read_trace_events(trace_id, since_seq=since_seq)
     if events is None:
         raise HTTPException(status_code=404, detail=f"trace file missing: {trace_id}")

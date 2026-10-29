@@ -60,6 +60,7 @@ from contracts.trace.payload import (
     sanitize_structural_text,
 )
 from contracts.trace.w3c import create_trace_context
+from contracts.trace.usage import TraceMetrics, TraceMetricsAccumulator, metrics_from_nodes
 
 logger = logging.getLogger("evolution.trace.recorder")
 
@@ -159,6 +160,7 @@ class EvolutionTraceRecorder:
     def __init__(self) -> None:
         self._locks: dict[str, RLock] = {}
         self._sequences: dict[str, int] = {}
+        self._trace_metrics: dict[str, TraceMetricsAccumulator] = {}
         self._queues: dict[str, asyncio.Queue[TraceLogEvent]] = {}
         self._started_monotonic: dict[str, float] = {}
         self._wal_paths: dict[str, Path] = {}
@@ -244,6 +246,7 @@ class EvolutionTraceRecorder:
 
         self._locks[trace_id] = RLock()
         self._sequences[trace_id] = 0
+        self._trace_metrics[trace_id] = TraceMetricsAccumulator()
         self._queues[trace_id] = asyncio.Queue()
         self._started_monotonic[trace_id] = time.perf_counter()
         self._wal_paths[trace_id] = wal_path
@@ -386,6 +389,13 @@ class EvolutionTraceRecorder:
         started_at = datetime.fromisoformat(row["started_at"]) if row.get("started_at") else datetime.now(UTC)
         self._locks[trace_id] = RLock()
         self._sequences[trace_id] = int(max_seq)
+        metrics = TraceMetricsAccumulator()
+        try:
+            for event in self._load_events_from_db(trace_id):
+                metrics.add_event(event)
+        except ValueError:
+            self._mark_capture_degraded(trace_id, "metrics_replay_failed")
+        self._trace_metrics[trace_id] = metrics
         self._queues[trace_id] = asyncio.Queue()
         # 进程重启后无法还原原始 monotonic 起点——用 0 占位，duration_ms 会从重启点算起，
         # 仅影响「运行时长」展示精度，不影响事件写入正确性。
@@ -635,6 +645,8 @@ class EvolutionTraceRecorder:
                 artifact=values.get("artifact"),
             )
 
+            self._trace_metrics.setdefault(trace_id, TraceMetricsAccumulator()).add_event(event)
+
             # 入内存缓冲（drain 批量落盘）。
             json_line = event.model_dump_json(exclude_none=True)
             with self._pending_lock:
@@ -836,7 +848,12 @@ class EvolutionTraceRecorder:
             )
 
         # D7：终态批量投影 → 写 nodes 表。
-        self._project_and_write_nodes(trace_id, status)
+        final_metrics = self._project_and_write_nodes(trace_id, status)
+        if final_metrics is None:
+            state = self._trace_metrics.get(trace_id)
+            final_metrics = state.snapshot(
+                terminal=status in {"cancelled", "cancel_timeout", "interrupted", "failed"},
+            ) if state is not None else TraceMetrics()
 
         # UPDATE runs 终态。
         seq = self._sequences.get(trace_id, 0)
@@ -878,6 +895,7 @@ class EvolutionTraceRecorder:
                             "event_count": seq,
                             "error": self._optional_str(error),
                             "service": "evolution",
+                            "metrics": final_metrics.model_dump(),
                         },
                     },
                 )
@@ -890,7 +908,7 @@ class EvolutionTraceRecorder:
         # 清理内存活跃态。
         self._cleanup_run_state(trace_id)
 
-    def _project_and_write_nodes(self, trace_id: str, status: str) -> None:
+    def _project_and_write_nodes(self, trace_id: str, status: str) -> TraceMetrics | None:
         """终态投影：读 event_payloads → projector.project → executemany nodes。"""
         from app.ingestion.projector import TraceProjector
 
@@ -944,6 +962,7 @@ class EvolutionTraceRecorder:
                         for n in projection.nodes
                     ],
                 )
+            return metrics_from_nodes(projection.nodes)
         except Exception:
             logger.exception("投影 nodes 失败 trace=%s（不影响 trace 终态）", trace_id)
 
@@ -1290,7 +1309,15 @@ class EvolutionTraceRecorder:
         """列出当前活跃 trace（监测面板活跃大盘，纯内存读取）。"""
         now = time.perf_counter()
         result: list[dict[str, Any]] = []
-        for trace_id, started in self._started_monotonic.items():
+        for trace_id, started in list(self._started_monotonic.items()):
+            lock = self._locks.get(trace_id)
+            if lock is None:
+                continue
+            with lock:
+                state = self._trace_metrics.get(trace_id)
+                if state is None:
+                    continue
+                metrics = state.snapshot().model_dump()
             result.append({
                 "trace_id": trace_id,
                 "endpoint": self._run_purposes.get(trace_id, ""),
@@ -1298,6 +1325,7 @@ class EvolutionTraceRecorder:
                 "event_count": self._sequences.get(trace_id, 0),
                 "status": "running",
                 "run_purpose": self._run_purposes.get(trace_id, ""),
+                "metrics": metrics,
             })
         return result
 
@@ -1421,6 +1449,7 @@ class EvolutionTraceRecorder:
         self._wal_paths.pop(trace_id, None)
         self._locks.pop(trace_id, None)
         self._sequences.pop(trace_id, None)
+        self._trace_metrics.pop(trace_id, None)
         self._increment_states.pop(trace_id, None)
         self._run_purposes.pop(trace_id, None)
         self._differs.pop(trace_id, None)

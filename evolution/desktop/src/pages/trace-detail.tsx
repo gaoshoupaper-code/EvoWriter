@@ -16,6 +16,7 @@ import {
 } from "@/lib/api";
 import type { IntegrityDiagnosis } from "@/lib/api";
 import type { TraceNode, TraceRunSummary, TraceContextSegment, TraceLogEvent } from "@/lib/types";
+import { formatTokensW } from "@/lib/tokenFormat";
 
 /**
  * Trace 详情页（完全重写，替代原 156 行毛坯版本）。
@@ -65,9 +66,7 @@ export default function TraceDetailPage() {
   const activeRun: TraceRunSummary | null = detail?.run ?? null;
   const nodes = detail?.nodes ?? [];
   const todos = detail?.todos ?? [];
-  // loop 节点 = LLM 节点（前端 loopIndex 即对 LLM 节点编号）。
-  // 平均耗时 = 总耗时 ÷ loop 数，语义为"平均每轮 loop 的真实墙钟耗时"。
-  const loopCount = nodes.filter((n) => n.kind === "llm").length;
+  const metrics = detail?.metrics;
 
   const drawerNode: TraceNode | null = drawerNodeId
     ? nodes.find((n) => n.node_id === drawerNodeId) ?? null
@@ -485,10 +484,20 @@ export default function TraceDetailPage() {
         <div className="summary-item">
           <label>平均耗时</label>
           <span>
-            {run.duration_ms != null && loopCount > 0
-              ? formatDuration(run.duration_ms / loopCount)
+            {metrics?.average_duration_ms != null
+              ? formatDuration(metrics.average_duration_ms)
               : "—"}
           </span>
+        </div>
+        <div className="summary-item">
+          <label>输入 Token</label>
+          <span>{formatTokensW(metrics?.input_tokens)}</span>
+          {metrics?.input_partial && <small className="run-secondary">部分用量缺失</small>}
+        </div>
+        <div className="summary-item">
+          <label>输出 Token</label>
+          <span>{formatTokensW(metrics?.output_tokens)}</span>
+          {metrics?.output_partial && <small className="run-secondary">部分用量缺失</small>}
         </div>
         <div className="summary-item">
           <label>工作负载</label>

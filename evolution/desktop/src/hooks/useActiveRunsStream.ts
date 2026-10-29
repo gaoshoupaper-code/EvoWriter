@@ -4,6 +4,7 @@
  * 数据面：初始快照（GET /api/active-runs）→ SSE 订阅（/api/events/stream）事件驱动：
  *   - run_started  → 活跃行插入/更新（事件自带运行中元数据，不降级，FR-003）
  *   - run_finished → 活跃行移除 + onRunFinished 回调（近期区即时翻转，FR-002）
+ *   - 正常连接下每 2s 对齐快照，更新尚未结束 Trace 的真实用量。
  *
  * 传输面（DEC-008）：
  *   - SSE 断开（sse_end ok=false / 读错误 / 30s 无 chunk）→ 自动降级 5s 轮询；
@@ -16,9 +17,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { evoStreamPath, getActiveRuns } from "@/lib/api";
 import { streamRequest } from "@/lib/stream";
-import type { ActiveRun } from "@/lib/types";
+import type { ActiveRun, TraceMetrics } from "@/lib/types";
 
 const POLL_INTERVAL_MS = 5000;
+const METRICS_INTERVAL_MS = 2000;
 const RECONNECT_INTERVAL_MS = 15000;
 const WATCHDOG_CHECK_MS = 5000;
 const WATCHDOG_TIMEOUT_MS = 30000;
@@ -40,6 +42,7 @@ export interface FinishedRunInfo {
   duration_ms: number | null;
   event_count: number | null;
   error: string | null;
+  metrics?: TraceMetrics;
 }
 
 /** SSE 事件 envelope（服务端 app/view/events.py publish 的格式）。 */
@@ -77,12 +80,16 @@ function eventRunToActiveRun(run: Record<string, unknown> | null, fallbackTraceI
     skill_activation_count: 0,
     middleware_intervention_count: 0,
     hitl_count: 0,
+    metrics: run?.["metrics"] as TraceMetrics | undefined,
+    stats_stale: (run?.["stats_stale"] as boolean) ?? false,
   };
 }
 
-export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null, traceId: string) => void) {
+export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null, traceId: string, lastMetrics?: TraceMetrics) => void) {
   const [activeRuns, setActiveRuns] = useState<ActiveRun[]>([]);
   const [transport, setTransport] = useState<TransportMode>("connecting");
+  const activeRunsRef = useRef<ActiveRun[]>([]);
+  const snapshotInFlightRef = useRef(false);
 
   const modeRef = useRef<TransportMode>("connecting");
   const lastSeqRef = useRef<number | null>(null);
@@ -93,6 +100,7 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
   const pollTimerRef = useRef<number | null>(null);
   const reconnectTimerRef = useRef<number | null>(null);
   const watchdogTimerRef = useRef<number | null>(null);
+  const metricsTimerRef = useRef<number | null>(null);
   // run_finished 墓碑：trace_id → 过期时刻。快照合并时过滤（防滞后快照复活终态行）。
   const tombstonesRef = useRef<Map<string, number>>(new Map());
   // 事件行缺席计数：trace_id → 连续未出现在快照中的次数。
@@ -101,23 +109,32 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
   const finishedCbRef = useRef(onRunFinished);
   finishedCbRef.current = onRunFinished;
 
+  const updateRuns = useCallback((update: (previous: ActiveRun[]) => ActiveRun[]) => {
+    const next = update(activeRunsRef.current);
+    activeRunsRef.current = next;
+    setActiveRuns(next);
+  }, []);
+
   const setMode = useCallback((mode: TransportMode) => {
     modeRef.current = mode;
     setTransport(mode);
   }, []);
 
   const refreshSnapshot = useCallback(async () => {
+    if (snapshotInFlightRef.current) return;
+    snapshotInFlightRef.current = true;
     try {
       const runs = await getActiveRuns();
       if (cancelledRef.current) return;
-      setActiveRuns((prev) => {
+      updateRuns((prev) => {
         // 墓碑：run_finished 刚到的行，1s 轮询缓存快照里可能还在——过滤防复活。
         const now = Date.now();
         const tombstones = tombstonesRef.current;
         for (const [tid, expiresAt] of tombstones) {
           if (expiresAt <= now) tombstones.delete(tid);
         }
-        const fresh = runs.filter((r) => !tombstones.has(r.trace_id));
+        const fresh = runs.filter((r) => !tombstones.has(r.trace_id))
+          .map((r) => ({ ...r, stats_stale: r.stats_stale ?? false }));
         // 合并语义：快照为准，但保留「事件先到、快照尚未见」的活跃行——
         // evolution 对 executor 的轮询缓存有 ~1s 滞后，直连快照会闪掉新运行。
         // 淘汰：缺席超过 EVENT_ROW_MISS_LIMIT 次的事件行视为幽灵行（run_finished
@@ -136,9 +153,13 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
         return eventOnly.length > 0 ? [...fresh, ...eventOnly] : fresh;
       });
     } catch {
-      // 快照失败保留旧数据；SSE 事件 / 下轮轮询会继续推进。
+      if (!cancelledRef.current) {
+        updateRuns((prev) => prev.map((run) => ({ ...run, stats_stale: true })));
+      }
+    } finally {
+      snapshotInFlightRef.current = false;
     }
-  }, []);
+  }, [updateRuns]);
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current != null) {
@@ -194,11 +215,11 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
     if (type === "run_started") {
       const row = eventRunToActiveRun(envelope.data?.run, envelope.data?.trace_id);
       if (row) {
-        setActiveRuns((prev) => {
+        updateRuns((prev) => {
           const index = prev.findIndex((r) => r.trace_id === row.trace_id);
           if (index >= 0) {
             const next = [...prev];
-            next[index] = row;
+            next[index] = { ...row, metrics: row.metrics ?? prev[index].metrics };
             return next;
           }
           return [row, ...prev];
@@ -207,11 +228,14 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
     } else if (type === "run_finished") {
       const traceId = envelope.data?.trace_id;
       if (traceId) {
-        setActiveRuns((prev) => prev.filter((r) => r.trace_id !== traceId));
+        const previous = activeRunsRef.current.find((run) => run.trace_id === traceId);
+        updateRuns((prev) => prev.filter((r) => r.trace_id !== traceId));
         // 墓碑：滞后快照（1s 轮询缓存）里该行可能还在，TTL 内不复活。
         tombstonesRef.current.set(traceId, Date.now() + TOMBSTONE_TTL_MS);
         missCountRef.current.delete(traceId);
         const raw = envelope.data?.run ?? null;
+        const rawMetrics = raw?.["metrics"] as TraceMetrics | undefined;
+        const metrics = rawMetrics?.total_tokens != null ? rawMetrics : previous?.metrics ?? rawMetrics;
         finishedCbRef.current?.(
           raw
             ? {
@@ -224,13 +248,15 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
                 duration_ms: (raw["duration_ms"] as number) ?? null,
                 event_count: (raw["event_count"] as number) ?? null,
                 error: (raw["error"] as string) ?? null,
+                metrics,
               }
             : null,
           traceId,
+          metrics,
         );
       }
     }
-  }, [refreshSnapshot]);
+  }, [refreshSnapshot, updateRuns]);
 
   /** 断线降级：轮询兜底 + 周期重连（DEC-008）。幂等：已降级则只保持。 */
   const degradeToListing = useCallback(() => {
@@ -327,11 +353,19 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
     cancelledRef.current = false;
     void refreshSnapshot();
     void connectSse();
+    // SSE 负责生命周期；定期快照让 Trace 未结束时也能更新已完成调用的统计。
+    metricsTimerRef.current = window.setInterval(() => {
+      if (modeRef.current !== "polling") void refreshSnapshot();
+    }, METRICS_INTERVAL_MS);
     return () => {
       cancelledRef.current = true;
       stopPolling();
       stopReconnect();
       clearWatchdog();
+      if (metricsTimerRef.current != null) {
+        window.clearInterval(metricsTimerRef.current);
+        metricsTimerRef.current = null;
+      }
       void readerRef.current?.cancel().catch(() => undefined);
       readerRef.current = null;
     };

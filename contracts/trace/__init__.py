@@ -14,6 +14,7 @@ import json
 from typing import Any, Iterable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from .usage import TraceMetrics
 
 # ── 四维正交生命周期契约（DEC-008）──
 # 维度1 业务状态：覆盖 pending→running→cancelling→终态 的主路径与 cancel_timeout→cancelled 恢复边。
@@ -210,6 +211,7 @@ class TraceRunSummary(BaseModel):
     trace_phase: TracePhase | None = None
     cancel_audit: CancelAudit | None = None
     lifecycle_revision: int = 0
+    metrics: TraceMetrics | None = None
 
     @property
     def trace_incomplete(self) -> bool:

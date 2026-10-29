@@ -98,6 +98,36 @@ class TraceLiveRefreshTest(unittest.TestCase):
         )
         self.assertEqual([row["sequence"] for row in rows], [1, 2, 3])
 
+    @patch("app.ingestion.ingestion._fetch_trace_content")
+    def test_ac001_live_metrics_follow_incremental_model_calls_without_recounting(self, fetch) -> None:
+        end = TraceLogEvent.model_validate(_event(3, "llm_end").model_dump() | {
+            "status": "completed", "duration_ms": 10000,
+            "usage": {"input_tokens": 12000, "output_tokens": 3000},
+        })
+        # Validate through ingestion and projection, rather than only a mocked summary.
+        fetch.return_value = ([_event(1, "run_start"), _event(2, "llm_start"), end], _run(3), {})
+        first = refresh_executor_trace(TRACE_ID, self.request)
+        self.assertEqual(first.metrics.input_tokens, 12000)
+        self.assertEqual(first.metrics.output_tokens, 3000)
+        self.assertEqual(first.metrics.average_duration_ms, 10000)
+
+        second_start = _event(4, "llm_start").model_copy(update={"run_id": "llm-2", "agent_name": "writing"})
+        second_end = TraceLogEvent.model_validate(_event(5, "llm_end").model_dump() | {
+            "run_id": "llm-2", "agent_name": "writing", "status": "completed",
+            "duration_ms": 30000, "usage": {"input_tokens": 8000, "output_tokens": 2000},
+        })
+        fetch.return_value = ([second_start, second_end], _run(5), {})
+        second = refresh_executor_trace(TRACE_ID, self.request)
+        self.assertEqual(second.run.status, "running")
+        self.assertEqual(second.metrics.input_tokens, 20000)
+        self.assertEqual(second.metrics.output_tokens, 5000)
+        self.assertEqual(second.metrics.total_tokens, 25000)
+        self.assertEqual(second.metrics.average_duration_ms, 20000)
+
+        fetch.return_value = ([], _run(5), {})
+        repeated = refresh_executor_trace(TRACE_ID, self.request)
+        self.assertEqual(repeated.metrics, second.metrics)
+
 
 if __name__ == "__main__":
     unittest.main()

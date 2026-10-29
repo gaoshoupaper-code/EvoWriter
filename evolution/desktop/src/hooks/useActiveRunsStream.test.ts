@@ -157,6 +157,88 @@ function streamRequestCalls(): unknown[][] {
 }
 
 describe("useActiveRunsStream", () => {
+  const metrics = {
+    input_tokens: 12000, output_tokens: 3000, total_tokens: 15000,
+    input_partial: false, output_partial: false, total_partial: false,
+    average_duration_ms: 10000,
+  };
+
+  it("正常 SSE 连接中定期更新用量快照，重复同步不重复累加", async () => {
+    mockedGetActiveRuns.mockResolvedValue([{ ...makeSnapshotRun("trace-live"), metrics }] as never);
+    const { result } = await mount();
+    await act(async () => { emitChunk(": ping\n\n"); });
+    mockedGetActiveRuns.mockResolvedValue([{
+      ...makeSnapshotRun("trace-live"), metrics: { ...metrics, total_tokens: 25000 },
+    }] as never);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+    expect(result.current.transport).toBe("sse");
+    expect(result.current.activeRuns[0].metrics?.total_tokens).toBe(25000);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+    expect(result.current.activeRuns[0].metrics?.total_tokens).toBe(25000);
+  });
+
+  it("快照失败保留已知用量并标陈旧，恢复后自动对齐", async () => {
+    mockedGetActiveRuns.mockResolvedValue([{ ...makeSnapshotRun("trace-stale"), metrics }] as never);
+    const { result } = await mount();
+    await act(async () => { emitChunk(": ping\n\n"); });
+    mockedGetActiveRuns.mockRejectedValue(new Error("来源断线"));
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+    expect(result.current.activeRuns[0].metrics?.total_tokens).toBe(15000);
+    expect(result.current.activeRuns[0].stats_stale).toBe(true);
+    mockedGetActiveRuns.mockResolvedValue([{
+      ...makeSnapshotRun("trace-stale"), metrics: { ...metrics, total_tokens: 25000 }, stats_stale: false,
+    }] as never);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+    expect(result.current.activeRuns[0].metrics?.total_tokens).toBe(25000);
+    expect(result.current.activeRuns[0].stats_stale).toBe(false);
+  });
+
+  it("完成摘要缺少统计时，从最近活跃快照补齐后回调", async () => {
+    mockedGetActiveRuns.mockResolvedValue([{ ...makeSnapshotRun("trace-finish"), metrics }] as never);
+    const onRunFinished = vi.fn();
+    renderHook(() => useActiveRunsStream(onRunFinished));
+    await act(async () => {});
+    await act(async () => { emitChunk(runFinishedFrame(1, "trace-finish")); });
+    expect(onRunFinished).toHaveBeenCalledTimes(1);
+    expect(onRunFinished.mock.calls[0][0].metrics).toEqual(metrics);
+  });
+
+  it("完成摘要携带新统计时优先透传，空摘要保留未知状态和已知用量", async () => {
+    mockedGetActiveRuns.mockResolvedValue([
+      { ...makeSnapshotRun("trace-latest"), metrics },
+      { ...makeSnapshotRun("trace-fallback"), metrics },
+    ] as never);
+    const onRunFinished = vi.fn();
+    renderHook(() => useActiveRunsStream(onRunFinished));
+    await act(async () => {});
+    const latest = { ...metrics, total_tokens: 25000 };
+    await act(async () => {
+      emitChunk(`event: run_finished\ndata: ${makeEnvelope(1, "run_finished", {
+        trace_id: "trace-latest", source: "executor",
+        run: { trace_id: "trace-latest", status: "completed", metrics: latest },
+      })}\n\n`);
+      emitChunk(`event: run_finished\ndata: ${makeEnvelope(2, "run_finished", {
+        trace_id: "trace-fallback", source: "executor", run: null,
+      })}\n\n`);
+    });
+    expect(onRunFinished.mock.calls[0][0].metrics).toEqual(latest);
+    expect(onRunFinished.mock.calls[1]).toEqual([null, "trace-fallback", metrics]);
+  });
+
+  it("快照请求进行中不并发，卸载后不再定期查询", async () => {
+    let resolveSnapshot!: (value: never[]) => void;
+    mockedGetActiveRuns.mockImplementationOnce(() => new Promise((resolve) => { resolveSnapshot = resolve; }));
+    const page = await mount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(4100); });
+    expect(mockedGetActiveRuns).toHaveBeenCalledTimes(1);
+    await act(async () => { resolveSnapshot([]); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+    expect(mockedGetActiveRuns).toHaveBeenCalledTimes(2);
+    page.unmount();
+    await act(async () => { await vi.advanceTimersByTimeAsync(6000); });
+    expect(mockedGetActiveRuns).toHaveBeenCalledTimes(2);
+  });
+
   it("初始拉快照并进入 SSE 订阅", async () => {
     await mount();
     expect(mockedGetActiveRuns).toHaveBeenCalledTimes(1);
@@ -379,7 +461,7 @@ describe("useActiveRunsStream", () => {
       emitTauri("sse_end", { stream_id: currentStreamId(), ok: false });
     });
     await act(async () => {
-      vi.advanceTimersByTime(16000); // 3 轮快照
+      await vi.advanceTimersByTimeAsync(16000); // 每轮完成请求后再推进，覆盖单飞保护。
     });
     expect(result.current.activeRuns.some((r) => r.trace_id === "trace-ghost")).toBe(false);
   });

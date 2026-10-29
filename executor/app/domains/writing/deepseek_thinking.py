@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+import logging
 from typing import Any
 
 import openai
@@ -10,6 +11,19 @@ from langchain_openai import ChatOpenAI
 
 _REASONING_CONTENT_KEY = "reasoning_content"
 _TOOL_CALLS_KEY = "tool_calls"
+logger = logging.getLogger(__name__)
+
+
+def _has_visible_output(chunk: ChatGenerationChunk) -> bool:
+    message = chunk.message
+    return bool(chunk.text or getattr(message, "tool_call_chunks", None)
+                or message.additional_kwargs.get(_TOOL_CALLS_KEY))
+
+
+def _without_thinking(options: dict, defaults: dict | None = None) -> dict:
+    extra = dict(options.get("extra_body", defaults) or {})
+    extra["thinking"] = {"type": "disabled"}
+    return {**options, "extra_body": extra}
 
 
 class ReasoningSidecarStore:
@@ -59,6 +73,39 @@ class ReasoningStreamChatModel(ChatOpenAI):
         if self.model_name.startswith("glm-") and "max_completion_tokens" in payload:
             payload["max_tokens"] = payload.pop("max_completion_tokens")
         return payload
+
+    def _recover_empty_reasoning(self, options: dict, visible: bool, finish: str | None) -> bool:
+        thinking = (options.get("extra_body", self.extra_body) or {}).get("thinking") or {}
+        return (self.model_name.startswith("glm-") and not visible and finish == "length"
+                and thinking.get("type") != "disabled")
+
+    def _stream(self, *args: Any, **kwargs: Any):
+        visible, finish = False, None
+        for chunk in super()._stream(*args, **kwargs):
+            visible = visible or _has_visible_output(chunk)
+            finish = (chunk.generation_info or {}).get("finish_reason", finish)
+            # 终止块不能先交给上层，否则一次空转会被提前结算为最终回答。
+            if ((chunk.generation_info or {}).get("finish_reason") == "length"
+                    and self._recover_empty_reasoning(kwargs, visible, finish)):
+                chunk = ChatGenerationChunk(message=chunk.message, generation_info=None)
+            yield chunk
+        if self._recover_empty_reasoning(kwargs, visible, finish):
+            logger.warning("GLM reasoning exhausted output without content; retrying once without thinking")
+            yield from super()._stream(*args, **_without_thinking(kwargs, self.extra_body))
+
+    async def _astream(self, *args: Any, **kwargs: Any):
+        visible, finish = False, None
+        async for chunk in super()._astream(*args, **kwargs):
+            visible = visible or _has_visible_output(chunk)
+            finish = (chunk.generation_info or {}).get("finish_reason", finish)
+            if ((chunk.generation_info or {}).get("finish_reason") == "length"
+                    and self._recover_empty_reasoning(kwargs, visible, finish)):
+                chunk = ChatGenerationChunk(message=chunk.message, generation_info=None)
+            yield chunk
+        if self._recover_empty_reasoning(kwargs, visible, finish):
+            logger.warning("GLM reasoning exhausted output without content; retrying once without thinking")
+            async for chunk in super()._astream(*args, **_without_thinking(kwargs, self.extra_body)):
+                yield chunk
 
     def _convert_chunk_to_generation_chunk(
         self,

@@ -89,6 +89,9 @@ items[].evidence和components[].evidence必须是对应occurrence.plot_text中�
 "unlisted_claims":[], "items":[{"occurrence_id":"原ID","status":"pass|fail|unknown",
 "evidence":"该项plot_text中的逐字剧情", "reason":"判断理由", "components":[
 {"entry_id":"原ID","status":"pass|fail|unknown","evidence":"该项plot_text中的逐字剧情"}]}]}。
+catalog_checks按sources中的技能生成：每个skill_id恰好一项，不按catalog.entries条目逐项生成。
+例如sources只有一份技能而catalog有8个条目，catalog_checks也只能有1项；同一项中综合核对全部条目。
+items按occurrences生成，每个occurrence_id恰好一项；components按该项成分生成，每个entry_id恰好一项。
 原技能和所有occurrence及其成分必须一一对应，不得遗漏、重复或虚构。
 """
 
@@ -287,7 +290,9 @@ class ValidationEngine:
         if verdict.violations:
             return verdict
         payload = {"candidate": candidate, "sources": [asdict(s) for s in policy.sources],
-                   "catalog": policy.to_dict(), "occurrences": [asdict(o) for o in verdict.occurrences]}
+                   "catalog": policy.to_dict(), "occurrences": [asdict(o) for o in verdict.occurrences],
+                   "expected_catalog_skill_ids": [s.skill_id for s in policy.sources],
+                   "expected_occurrence_ids": [o.occurrence_id for o in verdict.occurrences]}
         try:
             report = self._json(self._messages(_REVIEW_PROMPT, payload), "payoff_review")
             if report.get("catalog_status") != "pass":

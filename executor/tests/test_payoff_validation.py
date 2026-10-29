@@ -161,6 +161,21 @@ def test_independent_review_receives_raw_sources_and_complete_candidate():
     assert payload["candidate"] == VOLUME
     assert payload["sources"][0]["content"] == SKILL["content"]
     assert len(verdict.review_results) == 2
+    assert payload["expected_catalog_skill_ids"] == [SKILL["skill_id"]]
+    assert payload["expected_occurrence_ids"] == [o.occurrence_id for o in verdict.occurrences]
+    assert "不按catalog.entries条目逐项生成" in model.calls[-1][0][0]["content"]
+
+
+def test_catalog_review_rejects_one_check_per_entry_instead_of_skill():
+    def per_entry(messages):
+        response = review_response(messages)
+        response["catalog_checks"] *= 2
+        return response
+
+    engine = ValidationEngine(Model(extraction(), per_entry))
+    verdict = engine.check(VOLUME, engine.catalog([SKILL]))
+    assert not verdict.passed
+    assert "重复标识" in verdict.violations[0].message
 
 
 def test_unified_table_reaches_semantic_review_without_behavior_grades():

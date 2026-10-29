@@ -66,6 +66,11 @@ def build_writer_model(
         # FR-001（REQ-20261010-182114）：openai 兼容路径用思考流透传适配器，
         # GLM 等模型的 delta.reasoning_content 不再被 langchain 默认转换丢弃。
         model_class = ReasoningStreamChatModel
+        # 不设 max_tokens 时端点默认输出上限≈8k tokens 且思考与正文共享额度：
+        # 爽点目录提取（逐条目带原文引用的 JSON）与整卷修订流会被拦腰截断，
+        # json.loads 以「Unterminated string」失败。实测 glm-5.3 coding 端点
+        # 接受 32000 且可完整输出（finish_reason=stop）。
+        provider_options["max_tokens"] = 32000
 
     # AD9：平台代付——优先用 PLATFORM_API_KEY（积分制专用），其次兼容旧 OPENAI_API_KEY。
     # api_key 参数仅为测试/旧路径保留，生产路径不再传用户 key（D22 一刀切）。

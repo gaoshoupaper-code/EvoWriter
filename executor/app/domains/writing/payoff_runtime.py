@@ -26,6 +26,12 @@ def make_payoff_model_call(
     """Use the Run-bound model and the existing transport retry budget."""
     calling_thread = threading.get_ident()
     def call(messages: list[dict], purpose: str):
+        call_options = {}
+        if (str(getattr(model, "model_name", "")).startswith("glm-")
+                and purpose in {"payoff_catalog", "payoff_catalog_review", "payoff_review", "payoff_repair"}):
+            # 结构化检查不需要思考流，避免推理耗尽共享额度而没有 JSON 正文。
+            call_options["extra_body"] = {"thinking": {"type": "disabled"}}
+
         def assert_active() -> None:
             if is_active is not None and not is_active():
                 raise RuntimeError("本次创作已停止，复核结果未提交。")
@@ -74,8 +80,8 @@ def make_payoff_model_call(
                     response, seen_chunk = None, False
                     assert_active()
                     if not callable(getattr(model, "astream", None)):
-                        return await model.ainvoke(messages, config={"callbacks": []})
-                    stream = model.astream(messages, config={"callbacks": []})
+                        return await model.ainvoke(messages, config={"callbacks": []}, **call_options)
+                    stream = model.astream(messages, config={"callbacks": []}, **call_options)
                     try:
                         async for chunk in stream:
                             add_chunk(chunk)
@@ -108,8 +114,8 @@ def make_payoff_model_call(
                     response, seen_chunk = None, False
                     assert_active()
                     if not callable(getattr(model, "stream", None)):
-                        return model.invoke(messages, config={"callbacks": []})
-                    stream = model.stream(messages, config={"callbacks": []})
+                        return model.invoke(messages, config={"callbacks": []}, **call_options)
+                    stream = model.stream(messages, config={"callbacks": []}, **call_options)
                     try:
                         for chunk in stream:
                             add_chunk(chunk)

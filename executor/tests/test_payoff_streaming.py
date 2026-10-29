@@ -56,6 +56,43 @@ def test_healthy_long_stream_aggregates_text_usage_and_duration(monkeypatch):
     assert end["model_name"] == "bound-model"
 
 
+@pytest.mark.parametrize("purpose", ["payoff_catalog", "payoff_catalog_review", "payoff_review", "payoff_repair"])
+def test_glm_structured_stream_disables_thinking(purpose):
+    class Model:
+        model_name = "glm-5.3"
+
+        def stream(self, messages, config=None, **kwargs):
+            assert kwargs == {"extra_body": {"thinking": {"type": "disabled"}}}
+            yield AIMessageChunk(content="{}")
+
+    assert make_payoff_model_call(Model())([], purpose) == "{}"
+
+
+def test_glm_async_structured_stream_disables_thinking():
+    async def scenario():
+        class Model:
+            model_name = "glm-5.3"
+
+            async def astream(self, messages, config=None, **kwargs):
+                assert kwargs == {"extra_body": {"thinking": {"type": "disabled"}}}
+                yield AIMessageChunk(content="{}")
+
+        call = make_payoff_model_call(Model(), event_loop=asyncio.get_running_loop())
+        assert await asyncio.to_thread(call, [], "payoff_catalog") == "{}"
+
+    asyncio.run(scenario())
+
+
+def test_non_structured_glm_call_keeps_default_thinking():
+    class Model:
+        model_name = "glm-5.3"
+
+        def stream(self, messages, config=None):
+            yield AIMessageChunk(content="{}")
+
+    assert make_payoff_model_call(Model())([], "writing") == "{}"
+
+
 def test_stream_retries_only_before_first_chunk():
     class Model:
         calls = 0

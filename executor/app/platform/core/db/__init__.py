@@ -470,6 +470,30 @@ class UserRepository:
                 (hash_password(password), _now(), user_id),
             )
 
+    def change_password(
+        self, user_id: str, current_password: str, new_password: str, session_id: str,
+    ) -> bool:
+        """校验旧密码并改密，原子撤销当前会话以外的登录。"""
+        # 校验与撤销共用事务，避免并发改密用旧凭证覆盖新密码。
+        with self.db.transaction() as conn:
+            row = conn.execute(
+                "SELECT u.password_hash FROM users u JOIN sessions s ON s.user_id = u.user_id "
+                "WHERE u.user_id = ? AND u.disabled = 0 AND s.session_id = ? "
+                "AND s.expires_at >= ?",
+                (user_id, session_id, _now()),
+            ).fetchone()
+            if row is None or not verify_password(current_password, row["password_hash"]):
+                return False
+            conn.execute(
+                "UPDATE users SET password_hash = ?, updated_at = ? WHERE user_id = ?",
+                (hash_password(new_password), _now(), user_id),
+            )
+            conn.execute(
+                "DELETE FROM sessions WHERE user_id = ? AND session_id != ?",
+                (user_id, session_id),
+            )
+        return True
+
     # ── API key + model（users 表的 active 配置缓存，真实源是 provider_configs）──
     def set_api_key(
         self, user_id: str, api_key: str, base_url: str | None, model: str | None = None,
@@ -916,6 +940,23 @@ class SessionRepository:
                 (session_id, user_id, now, expires, now),
             )
         return session_id
+
+    def create_for_verified_user(self, user: dict, *, ttl_days: int) -> str | None:
+        """只为仍有效的密码校验结果创建会话。"""
+        import secrets as _s
+        from datetime import timedelta
+        session_id = _s.token_urlsafe(32)
+        now = _now()
+        expires = (datetime.now(UTC) + timedelta(days=ttl_days)).isoformat()
+        # 验密期间可能发生改密；插入时须在同一事务里核对原密码哈希。
+        with self.db.transaction() as conn:
+            cur = conn.execute(
+                "INSERT INTO sessions (session_id, user_id, created_at, expires_at, last_seen_at) "
+                "SELECT ?, user_id, ?, ?, ? FROM users "
+                "WHERE user_id = ? AND password_hash = ? AND disabled = 0",
+                (session_id, now, expires, now, user["user_id"], user["password_hash"]),
+            )
+            return session_id if cur.rowcount else None
 
     def get(self, session_id: str) -> dict | None:
         row = self.db.conn.execute(

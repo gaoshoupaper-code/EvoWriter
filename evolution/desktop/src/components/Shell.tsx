@@ -19,6 +19,7 @@ import {
   type LucideIcon } from "lucide-react";
 import { fetchMeOrNull, logout, type AuthMe } from "@/lib/api";
 import UpdateBanner from "@/components/UpdateBanner";
+import ChangePasswordDialog from "@/components/ChangePasswordDialog";
 import { UiFontSizeControl, applyUiFontSize, loadUiFontSize } from "./ui/UiFontSizeControl";
 
 /**
@@ -163,6 +164,7 @@ export default function Shell() {
           <div className="shell-user-info">
             <span className="shell-user-name">{me.username}</span>
             <span className="shell-user-id">{me.user_id.slice(0, 8)}</span>
+            <ChangePasswordDialog />
           </div>
           <button className="shell-logout" onClick={handleLogout} title="退出登录" aria-label="退出登录">
             <LogOut size={14} />

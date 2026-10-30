@@ -97,7 +97,7 @@ describe("左下入口迁移（AC-001/003/006）", () => {
     const sidebar = screen.getByRole("complementary", { name: "作品侧栏" });
     await userEvent.click(within(sidebar).getByRole("button", { name: "用户菜单" }));
     expect(screen.getByText(hasApiKey ? "Key 已配置" : "Key 未配置")).toBeInTheDocument();
-    expect(screen.getByRole("menuitem", { name: "退出登录" })).toBeInTheDocument();
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["主题", "修改密码", "退出登录"]);
     expect(screen.queryByRole("menuitem", { name: "设置（API Key）" })).not.toBeInTheDocument();
   });
 

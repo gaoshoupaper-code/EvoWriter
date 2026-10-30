@@ -3826,6 +3826,44 @@ a {
   cursor: not-allowed;
 }
 
+.change-password-dialog {
+  max-height: calc(100dvh - 48px);
+  overflow-y: auto;
+}
+
+.change-password-dialog .auth-input {
+  border-color: var(--line-strong);
+  border-radius: var(--radius-md);
+}
+
+.change-password-dialog .auth-input:focus {
+  border-color: var(--blue);
+}
+
+.change-password-dialog .modal-button {
+  border-radius: var(--radius-md);
+}
+
+.change-password-dialog .modal-button:focus-visible {
+  outline: 2px solid var(--blue);
+  outline-offset: 2px;
+}
+
+.change-password-error,
+.change-password-success {
+  margin: 0;
+  font-size: var(--text-ui-base);
+  line-height: 1.6;
+}
+
+.change-password-error {
+  color: var(--danger);
+}
+
+.change-password-success {
+  color: var(--teal);
+}
+
 .workspace-create-form {
   display: grid;
   gap: 16px;

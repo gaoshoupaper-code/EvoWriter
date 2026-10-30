@@ -2,7 +2,7 @@
 
 对外契约：
 - FastAPI 依赖：current_user / require_admin
-- 端点（router）：/api/auth/register, /login, /logout, /me
+- 端点（router）：/api/auth/register, /login, /logout, /me, /change-password
 
 机制：
 - 登录成功发 HttpOnly cookie：session=<token>；Secure; SameSite=Lax。
@@ -50,6 +50,11 @@ class RegisterRequest(BaseModel):
 class LoginRequest(BaseModel):
     username: str
     password: str
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=6, max_length=128)
 
 
 class AuthMeResponse(BaseModel):
@@ -184,9 +189,11 @@ def login(payload: LoginRequest, response: Response) -> LoginResponse:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户名或密码错误")
 
     settings = get_settings()
-    session_id = SessionRepository(db).create(
-        user_id=user["user_id"], ttl_days=settings.session_ttl_days,
+    session_id = SessionRepository(db).create_for_verified_user(
+        user, ttl_days=settings.session_ttl_days,
     )
+    if session_id is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户名或密码错误")
     _set_session_cookie(response, session_id, settings.session_ttl_days)
     return LoginResponse(
         user_id=user["user_id"],
@@ -194,6 +201,22 @@ def login(payload: LoginRequest, response: Response) -> LoginResponse:
         is_admin=bool(user["is_admin"]),
         has_api_key=users.has_api_key(user["user_id"]),
     )
+
+
+@auth_router.post("/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    user: CurrentUser = Depends(current_user),
+    session: str = Cookie(alias=SESSION_COOKIE),
+) -> dict[str, bool]:
+    if payload.current_password == payload.new_password:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "新密码不能与当前密码相同")
+    users = UserRepository(get_database())
+    if not users.change_password(
+        user.user_id, payload.current_password, payload.new_password, session,
+    ):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "当前密码错误")
+    return {"ok": True}
 
 
 @auth_router.post("/logout")

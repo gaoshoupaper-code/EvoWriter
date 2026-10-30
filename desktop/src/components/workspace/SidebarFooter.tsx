@@ -1,6 +1,8 @@
+import { useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronRight, ChevronsUpDown, LogOut, Moon, Settings, Sun } from "lucide-react";
+import { Check, ChevronRight, ChevronsUpDown, KeyRound, LogOut, Moon, Settings, Sun } from "lucide-react";
+import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -18,17 +20,32 @@ type SidebarFooterProps = {
 };
 
 export function SidebarFooter({ theme, username, hasApiKey, onThemeToggle, onLogout }: SidebarFooterProps) {
+  const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
+  const passwordDialogRequested = useRef(false);
+  const accountTrigger = useRef<HTMLButtonElement>(null);
+
   return (
     <div className="sidebar-footer">
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button className="sidebar-account-trigger" type="button" aria-label="用户菜单" title={username || "用户"}>
+          <button ref={accountTrigger} className="sidebar-account-trigger" type="button" aria-label="用户菜单" title={username || "用户"}>
             <span className="user-menu-avatar" aria-hidden="true">{(username || "?").slice(0, 1).toUpperCase()}</span>
             <span className="user-menu-name">{username || "用户"}</span>
             <ChevronsUpDown size={14} aria-hidden="true" />
           </button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent side="top" align="start" className="sidebar-account-menu w-[220px]">
+        <DropdownMenuContent
+          side="top"
+          align="start"
+          className="sidebar-account-menu w-[220px]"
+          onCloseAutoFocus={(event) => {
+            if (!passwordDialogRequested.current) return;
+            // 等菜单完成关闭，再把焦点交给弹窗，避免菜单抢回账户按钮焦点。
+            event.preventDefault();
+            passwordDialogRequested.current = false;
+            setPasswordDialogOpen(true);
+          }}
+        >
           <div className="user-menu-header">
             <strong>{username || "用户"}</strong>
             <span className={`user-menu-keybadge ${hasApiKey ? "ok" : "missing"}`}>
@@ -68,12 +85,19 @@ export function SidebarFooter({ theme, username, hasApiKey, onThemeToggle, onLog
             </DropdownMenuPrimitive.Portal>
           </DropdownMenuPrimitive.Sub>
           <DropdownMenuSeparator />
+          <DropdownMenuItem onSelect={() => { passwordDialogRequested.current = true; }}>
+            <KeyRound size={16} aria-hidden="true" />
+            修改密码
+          </DropdownMenuItem>
           <DropdownMenuItem onSelect={onLogout}>
             <LogOut size={16} aria-hidden="true" />
             退出登录
           </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
+      {passwordDialogOpen ? (
+        <ChangePasswordDialog onClose={() => setPasswordDialogOpen(false)} returnFocusRef={accountTrigger} />
+      ) : null}
       <Link className="sidebar-settings-link" to="/settings" aria-label="设置（API Key）" title="设置（API Key）">
         <Settings size={18} aria-hidden="true" />
       </Link>

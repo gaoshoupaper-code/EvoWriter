@@ -232,6 +232,14 @@ export async function logout(): Promise<{ ok: boolean }> {
   return apiJson<{ ok: boolean }>("/api/auth/logout", { method: "POST" });
 }
 
+export async function changePassword(currentPassword: string, newPassword: string): Promise<{ ok: true }> {
+  return apiJson<{ ok: true }>("/api/auth/change-password", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+}
+
 /** 探测登录态（非抛错版，路由守卫用）。 */
 export async function fetchMeOrNull(): Promise<AuthMe | null> {
   try {

@@ -155,6 +155,14 @@ export async function logout() {
   return apiJson<{ ok: boolean }>(`${API_BASE_URL}/api/auth/logout`, { method: "POST" });
 }
 
+export async function changePassword(currentPassword: string, newPassword: string) {
+  return apiJson<{ ok: true }>(`${API_BASE_URL}/api/auth/change-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+}
+
 export async function fetchMe() {
   return apiJson<AuthMe>(`${API_BASE_URL}/api/auth/me`);
 }

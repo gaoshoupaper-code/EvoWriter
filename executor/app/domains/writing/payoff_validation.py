@@ -25,18 +25,19 @@ _CATALOG_PROMPT = """你是规则提取器。输入是作者启用技能的原�
 禁止从剧情、通用网文知识、方法论、需求层或组合示例创造基础条目。
 已有独立定义的游戏可作为条目；已有基础条目允许组合，但组合示例不是新基础条目。
 条目名及source_quote必须逐字来自对应skill_id的原文。
-behavior_levels仅作参考，复制明确写出的基础档位；不确定或只有派生规则时返回空列表。
+behavior_levels仅作参考，提取时省略该字段，档位以已给的完整sources原文为准。
 不要展开半档、游戏、组合或放大器形成档位枚举；保留对应原文规则即可。
 档位写法不确定、列表断尾或末尾分隔符不影响明确基础条目的提取，不得仅因此判ambiguous。
 不依赖技能名字判断。必须覆盖每份输入技能；无关文风技能可判not_applicable。
 拿不准输出ambiguous，不能用空清单伪装not_applicable。
 只输出JSON对象：
 {"status":"ready|not_applicable|ambiguous", "classifications":[
- {"skill_id":"原ID","kind":"definition|not_applicable","source_quote":"逐字原文依据"}],
- "entries":[{"name":"原条目名","skill_id":"原ID","source_quote":"含条目名的逐字原文",
- "behavior_levels":["原文定义的档位"]}],
+ {"skill_id":"原ID","kind":"definition|not_applicable","source_quote":"原文标题或短片段"}],
+ "entries":[{"name":"原条目名","skill_id":"原ID","source_quote":"原条目名"}],
  "combination_rules":[{"skill_id":"原ID","source_quote":"一段连续的原文组合规则"}]}
 ready必须有条目；每份被判definition的技能必须有条目。不得遗漏或重复技能。
+输出尽量精简，避免传输截断：entries[].source_quote只复制条目名本身，不复制整行描述。
+classifications[].source_quote只复制一个原文标题或连续短片段。不要缩减条目数量。
 组合规则分散在不同位置时，分别加入combination_rules列表，每项注明skill_id。
 每项source_quote只复制该技能content的一段连续原文，JSON解码后逐字一致。
 保留原文换行、空格、标点，不得将不相邻段落拼接成一串，不得总结或改写。

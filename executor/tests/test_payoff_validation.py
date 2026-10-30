@@ -134,6 +134,26 @@ def test_optional_grade_extraction_noise_does_not_block_catalog_or_volume(tmp_pa
     assert "列表断尾" in prompt
 
 
+def test_compact_catalog_omits_optional_grades_without_losing_raw_source():
+    answer = extraction()
+    answer["classifications"][0]["source_quote"] = "本书规则"
+    for entry in answer["entries"]:
+        entry["source_quote"] = entry["name"]
+        entry.pop("behavior_levels")
+    model = Model(answer, review_response)
+    engine = ValidationEngine(model)
+    catalog = engine.catalog([SKILL])
+    assert catalog.status == "ready"
+    assert len(catalog.entries) == 2
+    assert all(entry.behavior_levels == [] for entry in catalog.entries)
+    assert engine.check(VOLUME, catalog).passed
+    assert catalog.sources[0].content == SKILL["content"]
+    prompt = model.calls[0][0][0]["content"]
+    assert "source_quote只复制条目名本身" in prompt
+    assert "省略该字段" in prompt
+    assert "不要缩减条目数量" in prompt
+
+
 def test_half_step_and_amplifier_rules_stay_source_backed_without_expanding_grades():
     rule = "同一行为叠加以下任一条，按升半档对待：当众执行／有第三方围观／"
     skill = {**SKILL, "content": SKILL["content"] + "\n" + rule}

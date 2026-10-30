@@ -102,7 +102,6 @@ def test_no_skills_is_not_applicable_without_model_call():
     lambda d: d["entries"][0].update(source_quote="编造出处"),
     lambda d: d["entries"][0].update(name="新基础条目"),
     lambda d: d["entries"][0].update(skill_id="another-user"),
-    lambda d: d["entries"][0].update(behavior_levels=["超大"]),
     lambda d: d.update(entries=[]),
     lambda d: d.update(classifications=[]),
 ])
@@ -110,6 +109,46 @@ def test_unverifiable_extraction_never_becomes_ready(mutation):
     answer = extraction()
     mutation(answer)
     assert ValidationEngine(Model(answer)).catalog([SKILL]).status in ("ambiguous", "error")
+
+
+@pytest.mark.parametrize("levels, expected", [
+    ([" 小 ", "小", "高", "中＋半档", "超大", None, {}], ["小", "高"]),
+    ("中", ["中"]),
+    (["超大", "游戏最低中档", "中/高"], []),
+    (None, []),
+    ({"level": "小"}, []),
+])
+def test_optional_grade_extraction_noise_does_not_block_catalog_or_volume(tmp_path, levels, expected):
+    answer = extraction()
+    answer["entries"][0]["behavior_levels"] = levels
+    model = Model(answer, review_response)
+    cache = tmp_path / "catalog.json"
+    engine = ValidationEngine(model, cache_path=cache)
+    catalog = engine.catalog([SKILL])
+    assert catalog.status == "ready"
+    assert catalog.entries[0].behavior_levels == expected
+    assert engine.check(VOLUME, catalog).passed
+    assert ValidationEngine(Model(), cache_path=cache).catalog([SKILL]).entries[0].behavior_levels == expected
+    prompt = model.calls[0][0][0]["content"]
+    assert "behavior_levels仅作参考" in prompt
+    assert "列表断尾" in prompt
+
+
+def test_half_step_and_amplifier_rules_stay_source_backed_without_expanding_grades():
+    rule = "同一行为叠加以下任一条，按升半档对待：当众执行／有第三方围观／"
+    skill = {**SKILL, "content": SKILL["content"] + "\n" + rule}
+    answer = extraction()
+    answer["entries"][0]["behavior_levels"] = ["高＋半档"]
+    answer["combination_rules"] = [
+        {"skill_id": SKILL["skill_id"], "source_quote": "已有条目允许组合。"},
+        {"skill_id": SKILL["skill_id"], "source_quote": rule},
+    ]
+    engine = ValidationEngine(Model(answer, review_response))
+    catalog = engine.catalog([skill])
+    assert catalog.status == "ready"
+    assert catalog.entries[0].behavior_levels == []
+    assert catalog.combination_rules == answer["combination_rules"]
+    assert engine.check(VOLUME.replace("| 高 | 小 |", "| 高＋半档 | 小 |"), catalog).passed
 
 
 def test_example_combination_cannot_silently_be_added_as_base():
@@ -190,6 +229,8 @@ def test_unified_table_reaches_semantic_review_without_behavior_grades():
     prompt = model.calls[-1][0][0]["content"]
     assert "不要求另列行为档位" in prompt
     assert "原技能核对实际行动与组合规则" in prompt
+    assert "行为档位仅作参考" in prompt
+    assert "不因定级争议拒绝整卷" in prompt
 
 
 def test_unified_combination_still_requires_semantic_evidence_for_every_component():

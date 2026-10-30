@@ -118,9 +118,9 @@ def test_unified_table_does_not_bypass_combination_permission(policy):
     assert "combination_forbidden" in codes(text, policy)
 
 
-def test_legacy_rhythm_level_still_requires_behavior_column(policy):
+def test_legacy_rhythm_level_does_not_require_behavior_column(policy):
     text = volume("| 1 | 行动甲 | 【爽】基础甲 | 小 |", span="1-1", unified=True)
-    assert "invalid_rhythm_table" in codes(text.replace("爽点级别", "节奏级别"), policy)
+    assert parse_volume_payoffs(text.replace("爽点级别", "节奏级别"), policy)[1] == []
 
 
 def test_unknown_label_rejected_even_alongside_valid_payoff(policy):
@@ -149,9 +149,12 @@ def test_invalid_combination_components(policy, replacement, expected):
     assert expected in codes(volume(GOOD_ROWS.replace("基础甲", replacement, 1)), policy)
 
 
-def test_combination_requires_each_component_grade(policy):
-    text = volume("| 1 | 行动甲与行动乙 | 【爽】基础甲+基础乙 | 高 | 大 |", span="1-1")
-    assert "missing_component_grade" in codes(text, policy)
+@pytest.mark.parametrize("grade", ["高", "中＋半档", "", "小、高,中"])
+def test_legacy_combination_grades_are_optional_hints(policy, grade):
+    text = volume(f"| 1 | 行动甲与行动乙 | 【爽】基础甲+基础乙 | {grade} | 大 |", span="1-1")
+    occurrences, violations = parse_volume_payoffs(text, policy)
+    assert violations == []
+    assert [c.entry_id for c in occurrences[0].components] == ["a", "b"]
 
 
 def test_missing_middle_or_tail_chapter_cannot_pass(policy):
@@ -169,7 +172,6 @@ def test_pressure_only_chapter_does_not_count_as_payoff(policy):
 
 
 @pytest.mark.parametrize("old,new,expected", [
-    ("| 高 | 小 |", "| 超大 | 小 |", "invalid_behavior_level"),
     ("| 高 | 小 |", "| 高 | 高 |", "invalid_rhythm_level"),
 ])
 def test_behavior_and_rhythm_levels_do_not_substitute(policy, old, new, expected):
@@ -265,25 +267,25 @@ def test_real_repair_repeated_markers_support_ordered_component_grades(policy, s
     assert [o.components[0].behavior_level for o in occurrences] == ["小", "高"]
 
 
-def test_ordered_grades_are_checked_against_each_original_entry(policy):
+def test_ordered_grade_differences_do_not_block_real_sources(policy):
     policy.entries[0].behavior_levels = ["小"]
     policy.entries[1].behavior_levels = ["高"]
     text = volume("| 1 | 先行动甲，再行动乙 | 【爽】基础甲＋【爽】基础乙 | 高、小 | 超大 |", span="1-1")
-    assert "invalid_behavior_level" in codes(text, policy)
+    assert parse_volume_payoffs(text, policy)[1] == []
 
 
 @pytest.mark.parametrize("source", [
     "【爽】基础甲＋", "【爽】基础甲＋；【爽】基础乙", "【爽】＋【爽】基础乙",
-    "【爽】基础甲（虚构档位）＋【爽】基础乙", "【爽】新条目（小）＋【爽】基础乙",
+    "【爽】新条目（小）＋【爽】基础乙",
 ])
 def test_format_tolerance_does_not_accept_empty_or_forged_sources(policy, source):
     text = volume(f"| 1 | 先行动甲，再行动乙 | {source} | 小、高 | 超大 |", span="1-1")
     assert {"unknown_entry", "empty_reference"} & codes(text, policy)
 
 
-def test_source_grade_annotation_must_agree_with_the_grade_column(policy):
+def test_source_grade_annotation_difference_is_only_a_hint(policy):
     text = volume("| 1 | 行动甲 | 【爽】基础甲（小） | 高 | 大 |", span="1-1")
-    assert "conflicting_behavior_level" in codes(text, policy)
+    assert parse_volume_payoffs(text, policy)[1] == []
 
 
 def test_original_parenthesized_name_takes_priority_over_grade_annotation(policy):
@@ -328,6 +330,34 @@ def test_unmatched_plus_parts_cannot_create_new_components(policy):
     policy.entries[0].name = "基础甲+原名"
     text = volume("| 1 | 行动 | 【爽】基础甲+新词+基础乙 | 小、高 | 大 |", span="1-1")
     assert "unknown_entry" in codes(text, policy)
+
+
+@pytest.mark.parametrize("grade", ["超大", "中＋半档", "", "—"])
+def test_single_source_grade_does_not_gate_volume(policy, grade):
+    text = volume(f"| 1 | 行动甲 | 【爽】基础甲 | {grade} | 大 |", span="1-1")
+    assert parse_volume_payoffs(text, policy)[1] == []
+
+
+def test_annotated_source_does_not_depend_on_extracted_grade_hints(policy):
+    policy.entries[0].behavior_levels = []
+    text = volume("| 1 | 行动甲 | 【爽】基础甲（中＋半档） | 大 |", span="1-1", unified=True)
+    occurrences, violations = parse_volume_payoffs(text, policy)
+    assert violations == []
+    assert occurrences[0].components[0].behavior_level == "中＋半档"
+
+
+@pytest.mark.parametrize("levels, expected", [
+    ([" 小 ", "小", "中＋半档", "超大", None, {}], ["小"]),
+    (None, []),
+    ("高", ["高"]),
+    ({"level": "小"}, []),
+])
+def test_cached_grade_hints_are_normalized_without_invalidating_sources(policy, levels, expected):
+    policy.policy_hash = policy_hash(policy.sources)
+    policy.entries[0].behavior_levels = levels
+    restored = PayoffCatalog.from_dict(policy.to_dict())
+    assert restored.entries[0].behavior_levels == expected
+    assert restored.entries[0].name == "基础甲"
 
 
 @pytest.mark.parametrize("rules", [

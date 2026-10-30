@@ -30,6 +30,9 @@ from app.schemas.screenplay import (
     AnnotationDispatchResponse,
     AnnotationsListResponse,
     AnnotationUpdateRequest,
+    ArtifactRedoBatchDeleteRequest,
+    ArtifactRedoBatchDeleteResponse,
+    ArtifactRedoBatchItemResult,
     ArtifactRedoDeleteRequest,
     ArtifactRedoDeleteResponse,
     OutlineFileEntry,
@@ -40,6 +43,10 @@ from app.schemas.screenplay import (
     RhythmDataModel,
     RhythmPoint,
     ShapeSlotModel,
+    TrashItem,
+    TrashListResponse,
+    TrashRestoreRequest,
+    TrashRestoreResponse,
     WorkspaceBootstrapResponse,
     WorkspaceCharacterContent,
     WorkspaceCreateRequest,
@@ -751,10 +758,11 @@ def delete_artifact_for_redo(
     workspace_id: str, payload: ArtifactRedoDeleteRequest,
     user: CurrentUser = Depends(current_user),
 ) -> ArtifactRedoDeleteResponse:
-    """定稿产物删除重做（2026-10-28 修订）——仅最下游的总纲/卷纲。
+    """定稿产物删除重做（REQ-20261030-211446 全量开放：六类产物）。
 
     界面显式确认后调用：文件移入 .writing/trash/ 暂存、清除该产物标注、
-    段指针在下游时回落（总纲→总纲段，卷纲→卷纲段），流水线自然重走。
+    段指针在下游时回落（指针回落矩阵见 FR-002），流水线自然重走。
+    资格「从下往上不级联」：直接下游仍存在时 409。
     """
     from app.domains.writing.pipeline import classify_workspace, pipeline_status
     from app.domains.writing.artifact_redo import delete_artifact_for_redo as _delete
@@ -772,6 +780,97 @@ def delete_artifact_for_redo(
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     result["pipeline"] = pipeline_status(workspace_path)
     return ArtifactRedoDeleteResponse(**result)
+
+
+@router.post("/workspaces/{workspace_id}/artifact/delete-batch", response_model=ArtifactRedoBatchDeleteResponse)
+def delete_artifacts_for_redo_batch(
+    workspace_id: str, payload: ArtifactRedoBatchDeleteRequest,
+    user: CurrentUser = Depends(current_user),
+) -> ArtifactRedoBatchDeleteResponse:
+    """同类产物批量删除重做（FR-005）：逐个独立校验执行，接受部分成功。
+
+    单条失败（资格不符/不存在）不影响其余条目；逐条返回结果与原因。
+    前端限制同类，后端不感知批内顺序、不做批内互相解锁（DEC-004）。
+    """
+    from app.domains.writing.pipeline import classify_workspace, pipeline_status
+    from app.domains.writing.artifact_redo import delete_artifact_for_redo as _delete
+
+    thread_store = get_thread_store()
+    workspace = thread_store.get_workspace(user.user_id, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace_path = Path(workspace.workspace_path)
+    if classify_workspace(workspace_path) == "legacy":
+        raise HTTPException(status_code=409, detail="旧版工作区只读，不支持删除重做")
+    results: list[ArtifactRedoBatchItemResult] = []
+    for rel in payload.rels:
+        try:
+            r = _delete(workspace_path, rel)
+        except ValueError as exc:
+            results.append(ArtifactRedoBatchItemResult(rel=rel, status="failed", reason=str(exc)))
+            continue
+        except OSError as exc:
+            # 并发删除/文件系统异常同样按条记失败（FR-005 失败语义：
+            # trash 移动失败的条目无变化，其余条目不受影响），不打断整批
+            reason = "产物可能已被并发删除或移动失败，请刷新后重试"
+            logger.warning("批量删除条目异常 %s: %s", rel, exc)
+            results.append(ArtifactRedoBatchItemResult(rel=rel, status="failed", reason=reason))
+            continue
+        results.append(ArtifactRedoBatchItemResult(
+            rel=rel, status="ok", trash_rel=r["trash_rel"],
+            removed_annotations=r["removed_annotations"],
+            stage_reset_to=r["stage_reset_to"], stage_label=r["stage_label"],
+        ))
+    return ArtifactRedoBatchDeleteResponse(
+        deleted_count=sum(1 for r in results if r.status == "ok"),
+        results=results,
+        pipeline=pipeline_status(workspace_path),
+    )
+
+
+@router.get("/workspaces/{workspace_id}/trash", response_model=TrashListResponse)
+def list_workspace_trash(
+    workspace_id: str,
+    user: CurrentUser = Depends(current_user),
+) -> TrashListResponse:
+    """回收站列表（FR-006）：按删除时间倒序；解析失败的条目不返回。"""
+    from app.domains.writing.pipeline import classify_workspace
+    from app.domains.writing.artifact_trash import list_trash
+
+    thread_store = get_thread_store()
+    workspace = thread_store.get_workspace(user.user_id, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace_path = Path(workspace.workspace_path)
+    if classify_workspace(workspace_path) == "legacy":
+        raise HTTPException(status_code=409, detail="旧版工作区只读，无回收站")
+    return TrashListResponse(items=[TrashItem(**i) for i in list_trash(workspace_path)])
+
+
+@router.post("/workspaces/{workspace_id}/trash/restore", response_model=TrashRestoreResponse)
+def restore_workspace_trash(
+    workspace_id: str, payload: TrashRestoreRequest,
+    user: CurrentUser = Depends(current_user),
+) -> TrashRestoreResponse:
+    """回收站恢复（FR-006）：移回原位；原位被占不覆盖（409）；不动段指针。"""
+    from app.domains.writing.pipeline import classify_workspace, pipeline_status
+    from app.domains.writing.artifact_trash import restore_trash_item
+
+    thread_store = get_thread_store()
+    workspace = thread_store.get_workspace(user.user_id, workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace_path = Path(workspace.workspace_path)
+    if classify_workspace(workspace_path) == "legacy":
+        raise HTTPException(status_code=409, detail="旧版工作区只读，不支持恢复")
+    try:
+        result = restore_trash_item(workspace_path, payload.trash_rel)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    result["pipeline"] = pipeline_status(workspace_path)
+    return TrashRestoreResponse(**result)
 
 
 @router.get("/workspaces/{workspace_id}/watch")

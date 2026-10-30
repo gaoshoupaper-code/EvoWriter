@@ -264,18 +264,64 @@ class AnnotationDispatchResponse(BaseModel):
 
 
 class ArtifactRedoDeleteRequest(BaseModel):
-    """定稿产物删除重做请求（2026-10-28 修订：仅最下游的总纲/卷纲）。"""
+    """定稿产物删除重做请求（REQ-20261030-211446 全量开放：六类产物）。"""
 
-    rel: str = Field(min_length=1, description="总纲.md 或 卷纲/第NN卷.md")
+    rel: str = Field(min_length=1, description="五段产物相对路径")
 
 
 class ArtifactRedoDeleteResponse(BaseModel):
     status: str = "ok"
     deleted: str = Field(description="被删除的产物 rel")
-    trash_rel: str = Field(description="回收暂存路径（.writing/trash/…，误删人工找回）")
+    trash_rel: str = Field(description="回收暂存路径（.writing/trash/…，回收站可恢复）")
     removed_annotations: int = Field(default=0, description="随产物清除的标注条数")
     stage_reset_to: str | None = Field(default=None, description="段指针回落到的段（未回落为 None）")
     stage_label: str = Field(description="重做起始段的中文标签")
+    pipeline: dict[str, Any] = Field(default_factory=dict, description="最新 pipeline_status")
+
+
+class ArtifactRedoBatchDeleteRequest(BaseModel):
+    """同类产物批量删除重做请求（FR-005）：前端保证同类；后端逐个独立校验。"""
+
+    rels: list[str] = Field(min_length=1, description="产物相对路径列表")
+
+
+class ArtifactRedoBatchItemResult(BaseModel):
+    rel: str
+    status: str = Field(description="ok | failed")
+    reason: str = Field(default="", description="失败原因（成功为空）")
+    trash_rel: str | None = Field(default=None)
+    removed_annotations: int = Field(default=0)
+    stage_reset_to: str | None = Field(default=None)
+    stage_label: str = Field(default="")
+
+
+class ArtifactRedoBatchDeleteResponse(BaseModel):
+    status: str = "ok"
+    deleted_count: int = Field(description="成功删除的条数（部分成功语义）")
+    results: list[ArtifactRedoBatchItemResult] = Field(default_factory=list, description="逐条结果")
+    pipeline: dict[str, Any] = Field(default_factory=dict, description="最新 pipeline_status")
+
+
+class TrashItem(BaseModel):
+    """回收站条目（FR-006）：解析自 .writing/trash 暂存文件名。"""
+
+    trash_rel: str
+    original_rel: str = Field(description="恢复目标原路径")
+    kind_label: str = Field(description="产物类型中文标签")
+    deleted_at: str = Field(description="删除时间（YYYY-MM-DD HH:MM:SS）")
+
+
+class TrashListResponse(BaseModel):
+    items: list[TrashItem] = Field(default_factory=list)
+
+
+class TrashRestoreRequest(BaseModel):
+    trash_rel: str = Field(min_length=1, description="回收站条目路径")
+
+
+class TrashRestoreResponse(BaseModel):
+    status: str = "ok"
+    restored: str = Field(description="恢复回原位的产物 rel")
     pipeline: dict[str, Any] = Field(default_factory=dict, description="最新 pipeline_status")
 
 

@@ -8510,6 +8510,138 @@ html[data-theme="dark"] .admin-outline {
   color: var(--gold);
 }
 
+/* 批量删除 / 回收站入口（REQ-20261030-211446 FR-005/006） */
+.panel-batch-entry,
+.panel-trash-entry {
+  padding: 4px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--text-ui-caption);
+  cursor: pointer;
+}
+
+.panel-batch-entry:hover:not(:disabled),
+.panel-trash-entry:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--ink);
+}
+
+.panel-batch-entry:disabled,
+.panel-trash-entry:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* 多选态的产物标签：已勾选描红、异类锁灰 */
+.outline-file-tab.batch.picked {
+  color: var(--danger);
+  border-color: var(--danger);
+}
+
+.outline-file-tab.batch.locked {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.batch-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 10px;
+}
+
+.batch-bar-count {
+  font-size: var(--text-ui-caption);
+  color: var(--muted);
+}
+
+/* 缺号空档提示（FR-004：删哪补哪，只报内部洞） */
+.outline-gap-hint {
+  margin: 0 0 8px;
+  font-size: var(--text-ui-caption);
+  color: var(--gold);
+}
+
+/* 回收站对话框（FR-006） */
+.trash-modal {
+  min-width: min(420px, 92vw);
+  max-height: 76vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.trash-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.trash-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md, 8px);
+  padding: 8px 10px;
+}
+
+.trash-item-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.trash-item-rel {
+  font-size: var(--text-ui-sm, 13px);
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trash-item-sub {
+  font-size: var(--text-ui-caption);
+  color: var(--muted);
+}
+
+.trash-restore-btn {
+  flex-shrink: 0;
+  padding: 4px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--teal);
+  font-size: var(--text-ui-caption);
+  cursor: pointer;
+}
+
+.trash-restore-btn:hover:not(:disabled) {
+  background: rgba(47, 158, 143, 0.08);
+}
+
+.trash-restore-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.trash-empty {
+  margin: 12px 0 0;
+  font-size: var(--text-ui-sm, 13px);
+  color: var(--muted);
+}
+
+.trash-empty.trash-error {
+  color: var(--danger);
+}
+
 /* 清单抽屉（FR-002/004） */
 .ann-drawer-overlay {
   position: fixed;

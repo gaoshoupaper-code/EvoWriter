@@ -164,6 +164,11 @@ def test_parse_relpath_roundtrip(tmp_path: Path) -> None:
     )
     assert parse_relpath("outline/总纲.md") is None  # 旧结构不归五段
     assert parse_relpath("随便.md") is None
+    # 标题组不收路径分隔符/反斜杠：经标题携带穿越段的 rel 一律不识别
+    # （删除重做 P0 修复，REQ-20261030-211446）
+    assert parse_relpath("正文/第001章/../../总纲.md") is None
+    assert parse_relpath("正文/第001章..\\..\\总纲.md") is None
+    assert parse_relpath("正文/第001章/sub/x.md") is None
 
 
 # ── scan + derive_stage（AC-003 阶段推导）──────────────────────────

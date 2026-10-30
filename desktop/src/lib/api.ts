@@ -865,7 +865,7 @@ export async function dispatchAnnotations(workspaceId: string) {
   );
 }
 
-/** 定稿产物删除重做（2026-10-28 修订）——仅最下游的总纲/卷纲。 */
+/** 定稿产物删除重做（REQ-20261030-211446 全量开放：六类产物，从下往上不级联）。 */
 export async function deleteArtifactForRedo(workspaceId: string, rel: string) {
   return _annotationRequest<{
     status: string;
@@ -879,6 +879,57 @@ export async function deleteArtifactForRedo(workspaceId: string, rel: string) {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ rel }),
+  });
+}
+
+export type ArtifactRedoBatchItemResult = {
+  rel: string;
+  status: string; // ok | failed
+  reason: string;
+  trash_rel: string | null;
+  removed_annotations: number;
+  stage_reset_to: string | null;
+  stage_label: string;
+};
+
+/** 同类产物批量删除重做（FR-005）：逐个独立校验，接受部分成功。 */
+export async function deleteArtifactsBatch(workspaceId: string, rels: string[]) {
+  return _annotationRequest<{
+    status: string;
+    deleted_count: number;
+    results: ArtifactRedoBatchItemResult[];
+    pipeline: import("./types").PipelineStatus;
+  }>(`${API_BASE_URL}/api/workspaces/${workspaceId}/artifact/delete-batch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rels }),
+  });
+}
+
+export type TrashEntry = {
+  trash_rel: string;
+  original_rel: string;
+  kind_label: string;
+  deleted_at: string;
+};
+
+/** 回收站列表（FR-006）：按删除时间倒序。 */
+export async function listTrash(workspaceId: string) {
+  return _annotationRequest<{ items: TrashEntry[] }>(
+    `${API_BASE_URL}/api/workspaces/${workspaceId}/trash`,
+  );
+}
+
+/** 回收站恢复（FR-006）：移回原位；原位被占时服务端 409，不覆盖。 */
+export async function restoreTrash(workspaceId: string, trashRel: string) {
+  return _annotationRequest<{
+    status: string;
+    restored: string;
+    pipeline: import("./types").PipelineStatus;
+  }>(`${API_BASE_URL}/api/workspaces/${workspaceId}/trash/restore`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ trash_rel: trashRel }),
   });
 }
 

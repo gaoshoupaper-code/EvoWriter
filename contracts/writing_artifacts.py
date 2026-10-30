@@ -76,7 +76,10 @@ TEXT_DIR = "正文"
 
 VOLUME_FILE_PATTERN = re.compile(r"^第(\d+)卷\.md$")
 CHAPTER_OUTLINE_PATTERN = re.compile(r"^第(\d+)章\.md$")
-TEXT_FILE_PATTERN = re.compile(r"^第(\d+)章(.*)\.md$")
+# 标题组排除路径分隔符与反斜杠：章名是单段文件名（目录扫描天然不含 / \），
+# 收紧堵死「正文/第001章/../../总纲.md」类经标题组携带穿越段的路径（删除
+# 重做 P0 修复，REQ-20261030-211446）；对合法文件名零行为变化。
+TEXT_FILE_PATTERN = re.compile(r"^第(\d+)章([^/\\]*)\.md$")
 
 # ── 路由状态文件（可重建加速层）──────────────────────────────────
 WRITING_STATE_SCHEMA_VERSION = 1
@@ -259,6 +262,23 @@ def validate_master_final(text: str) -> list[str]:
     return errors
 
 
+_VOLUME_RANGE_RE = re.compile(r"本卷章号范围\s*[:：]\s*(?:第\s*)?(\d+)\s*[-—–~～至]\s*(\d+)\s*章?")
+
+
+def parse_volume_chapter_range(text: str) -> tuple[int, int] | None:
+    """卷纲正文中的「本卷章号范围：第x-y章」——唯一一处且数值合法才有效。
+
+    删除重做的卷级下游判定（REQ-20261030-211446 FR-002）与进度扫描共用；
+    解析失败返回 None，调用方按 fail-safe 兜底。
+    """
+    ranges = _VOLUME_RANGE_RE.findall(text)
+    if len(ranges) == 1:
+        start, end = map(int, ranges[0])
+        if 1 <= start <= end and end - start <= 1000:
+            return start, end
+    return None
+
+
 def volume_draft_relpath(volume: int) -> str:
     """修订草稿不匹配正式卷纲文件名，现有列表仍可展示。"""
     if isinstance(volume, bool) or not isinstance(volume, int) or volume < 1:
@@ -419,14 +439,9 @@ def scan_writing_progress(workspace: Path) -> WritingProgress:
                 continue
             volume = int(m.group(1))
             prog.volumes.append(volume)
-            ranges = re.findall(
-                r"本卷章号范围\s*[:：]\s*(?:第\s*)?(\d+)\s*[-—–~～至]\s*(\d+)\s*章?",
-                text,
-            )
-            if len(ranges) == 1:
-                start, end = map(int, ranges[0])
-                if 1 <= start <= end and end - start <= 1000:
-                    prog.volume_chapter_ranges[volume] = (start, end)
+            rng = parse_volume_chapter_range(text)
+            if rng is not None:
+                prog.volume_chapter_ranges[volume] = rng
         prog.volumes.sort()
 
     co_dir = workspace / CHAPTER_OUTLINE_DIR

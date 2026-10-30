@@ -27,7 +27,6 @@ executor 管线层与 harness 工具共用本模块（跨端共享契约，零�
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -76,7 +75,6 @@ CHAPTER_OUTLINE_DIR = "章纲"
 TEXT_DIR = "正文"
 
 VOLUME_FILE_PATTERN = re.compile(r"^第(\d+)卷\.md$")
-VOLUME_PAYOFF_CHECKS_RELPATH = ".writing/volume-payoff-checks.json"
 CHAPTER_OUTLINE_PATTERN = re.compile(r"^第(\d+)章\.md$")
 TEXT_FILE_PATTERN = re.compile(r"^第(\d+)章(.*)\.md$")
 
@@ -261,16 +259,6 @@ def validate_master_final(text: str) -> list[str]:
     return errors
 
 
-def validate_volume_final(text: str) -> list[str]:
-    """卷纲定稿结构：落成模板四个必备小节（REQ-20261019-183150 FR-002）。"""
-    errors: list[str] = []
-    joined = "\n".join(_headings(text))
-    for h in ("发展阶段", "爽点节奏表", "爽点质检表", "卷末钩子"):
-        if h not in joined:
-            errors.append(f"[卷纲] 缺必备小节「{h}」")
-    return errors
-
-
 def volume_draft_relpath(volume: int) -> str:
     """修订草稿不匹配正式卷纲文件名，现有列表仍可展示。"""
     if isinstance(volume, bool) or not isinstance(volume, int) or volume < 1:
@@ -278,103 +266,30 @@ def volume_draft_relpath(volume: int) -> str:
     return f"{VOLUME_DIR}/第{volume:02d}卷-修订草稿.md"
 
 
-def _volume_payoff_journal(workspace: Path) -> dict:
-    path = Path(workspace) / VOLUME_PAYOFF_CHECKS_RELPATH
-    if not path.exists():
-        return {"schema_version": 1, "volumes": {}}
-    raw = json.loads(path.read_text(encoding="utf-8"))
-    if (not isinstance(raw, dict) or raw.get("schema_version") != 1
-            or not isinstance(raw.get("volumes"), dict)):
-        raise ValueError("卷纲检查记录格式无效")
-    return raw
+def volume_review_block_reason(workspace: Path, volume: int | None = None) -> str | None:
+    """最新卷未定稿（状态行＋占位行）时拦截交审与切段。
 
-
-def volume_payoff_receipt_valid(workspace: Path, volume: int, text: str) -> bool:
-    """未接管的历史卷不重算；已接管卷只能使用已接纳的内容。"""
+    REQ-20261030-200030：卷纲机械校验（payoff 清单/收据）已整体移除，
+    只保留「定稿状态行」这道段完成信号。
+    """
     try:
-        record = _volume_payoff_journal(workspace)["volumes"].get(str(volume))
-        if record is None:
-            return True
-        if not isinstance(record, dict):
-            return False
-        fingerprint = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        receipt = record.get("accepted_receipt") or {}
-        return bool(
-            isinstance(receipt, dict)
-            and receipt.get("content_hash") == fingerprint
-            and receipt.get("policy_hash")
-        ) or fingerprint in (
-            record.get("legacy_content_hash"), record.get("unconstrained_content_hash"),
-        )
-    except (OSError, UnicodeDecodeError, ValueError, TypeError):
-        return False
-
-
-def volume_review_block_reason(
-    workspace: Path, volume: int | None = None, operation_id: str | None = None,
-) -> str | None:
-    """核对待审卷的当前修改；不让别卷定稿或旧正式稿掩盖失败候选。"""
-    try:
-        journal = _volume_payoff_journal(workspace)
-        records = journal["volumes"]
-        bindings = journal.get("trace_operations", {})
-        if not isinstance(bindings, dict):
-            raise ValueError("修订任务绑定记录损坏")
-        binding = bindings.get(operation_id) if operation_id else None
-        pending_revision = False
-        if binding is not None:
-            if not isinstance(binding, dict) or not isinstance(binding.get("current"), str):
-                raise ValueError("修订任务绑定记录损坏")
-            pending_revision = binding["current"] != operation_id
-            operation_id = binding["current"]
-        if volume is None and operation_id is None:
-            directory = Path(workspace) / VOLUME_DIR
-            numbers = [
-                int(match.group(1)) for path in directory.iterdir()
-                if (match := VOLUME_FILE_PATTERN.match(path.name))
-            ] if directory.is_dir() else []
-            if not numbers:
-                numbers.extend(int(number) for number in records)
-            volume = max(numbers) if numbers else None
-        selected = [(str(volume), records.get(str(volume)))] if volume is not None else list(records.items())
-        found_operation = False
-        for number, record in selected:
-            if not isinstance(record, dict):
-                if record is not None:
-                    return "卷纲检查记录损坏，不能确认通过。"
-                text = _read(Path(workspace), artifact_relpath(KIND_VOLUME, volume=int(number)))
-                if text is not None and (not is_final_status(text) or validate_volume_final(text)):
-                    return f"第 {number} 卷尚未定稿。"
-                continue
-            operation = record.get("active_operation") or {}
-            if not isinstance(operation, dict):
-                return "卷纲修改记录损坏，不能确认通过。"
-            if operation_id and operation.get("operation_id") != operation_id:
-                if volume is not None and operation:
-                    return "该卷已有新的修改任务，请审查当前候选。"
-                continue
-            if operation_id and operation:
-                found_operation = True
-            for trace_id, current_binding in bindings.items():
-                if (isinstance(current_binding, dict)
-                        and isinstance(current_binding.get("revisions"), dict)
-                        and (operation.get("operation_id") == trace_id
-                             or operation.get("operation_id") in current_binding["revisions"].values())
-                        and operation.get("operation_id") != current_binding.get("current")):
-                    return "本次修订尚未通过爽点检查。"
-            if operation and operation.get("status") != "passed":
-                return f"第 {number} 卷尚未通过爽点检查：{operation.get('reason') or '仍有待修内容'}"
-            if operation:
-                text = _read(Path(workspace), artifact_relpath(KIND_VOLUME, volume=int(number)))
-                if text is None or not is_final_status(text) or validate_volume_final(text):
-                    return f"第 {number} 卷尚未定稿。"
-                if not volume_payoff_receipt_valid(workspace, int(number), text):
-                    return f"第 {number} 卷正式稿与通过记录不匹配。"
-        if pending_revision and not found_operation:
-            return "本次修订尚未通过爽点检查。"
+        directory = Path(workspace) / VOLUME_DIR
+        numbers = [
+            int(match.group(1)) for path in directory.iterdir()
+            if (match := VOLUME_FILE_PATTERN.match(path.name))
+        ] if directory.is_dir() else []
+        if numbers:
+            volume = volume or max(numbers)
+        if volume is None:
+            return None
+        text = _read(Path(workspace), artifact_relpath(KIND_VOLUME, volume=volume))
+        if text is None:
+            return None
+        if not is_final_status(text) or _placeholder_blocks_final(text):
+            return f"第 {volume} 卷尚未定稿。"
         return None
-    except (OSError, UnicodeDecodeError, ValueError, TypeError):
-        return "卷纲检查记录不可用，不能确认通过。"
+    except (OSError, UnicodeDecodeError):
+        return None
 
 
 # ── 定稿状态行（REQ-20261019-183150 FR-001：段完成信号）────────────
@@ -495,17 +410,12 @@ def scan_writing_progress(workspace: Path) -> WritingProgress:
             m = VOLUME_FILE_PATTERN.match(f.name)
             if not m:
                 continue
-            # 定稿闸（FR-002）：只统计定稿卷（状态行＋四小节结构）——
+            # 定稿闸（FR-002）：只统计定稿卷（状态行＋无占位行）——
             # 草稿卷不计入，段停留卷纲可继续编辑该卷。
             text = _read(workspace, f.relative_to(workspace).as_posix())
             if text is None:
                 continue
-            if not (
-                is_final_status(text)
-                and validate_volume_final(text) == []
-                and not _placeholder_blocks_final(text)
-                and volume_payoff_receipt_valid(workspace, int(m.group(1)), text)
-            ):
+            if not (is_final_status(text) and not _placeholder_blocks_final(text)):
                 continue
             volume = int(m.group(1))
             prog.volumes.append(volume)
@@ -768,7 +678,6 @@ __all__ = [
     "THEME_FILENAME",
     "VOLUME_DIR",
     "VOLUME_FILE_PATTERN",
-    "VOLUME_PAYOFF_CHECKS_RELPATH",
     "WRITING_STATE_RELPATH",
     "WRITING_STATE_SCHEMA_VERSION",
     "WritingProgress",
@@ -790,8 +699,6 @@ __all__ = [
     "text_batch_size",
     "validate_master_final",
     "validate_theme_final",
-    "validate_volume_final",
     "volume_draft_relpath",
-    "volume_payoff_receipt_valid",
     "volume_review_block_reason",
 ]

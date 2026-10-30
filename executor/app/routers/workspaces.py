@@ -470,11 +470,8 @@ async def advance_writing_stage(
             state.confirmed_stage if state.confirmed_stage in STAGE_LABELS
             else current_stage(workspace_path)
         )
-        reason = (
-            volume_review_block_reason(workspace_path, operation_id=payload.trace_id)
-            if payload.trace_id else None
-        )
-        if current == "volume" and not reason:
+        reason = None
+        if current == "volume":
             reason = volume_review_block_reason(workspace_path)
         if reason:
             raise HTTPException(status_code=409, detail=reason)

@@ -119,9 +119,6 @@ class RuntimeContext:
     # 一次 assemble 内共享（请求级，执行端每次生成新建 ctx）；None = 不共享
     # （子代理闸门各自为政，仅旧调用方兼容）。
     confirm_gate_state: object | None = None
-    # 卷纲清单检查服务（REQ-20261029-094930）：按目标产物触发，包含章纲回写。
-    # None 表示已确认没有卷纲技能；旧上下文缺此字段时新 harness 拒绝卷纲写入。
-    volume_write_guard: object | None = None
 
 
 __all__ = ["RuntimeContext"]

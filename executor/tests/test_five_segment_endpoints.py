@@ -300,7 +300,8 @@ def test_stage_advance_rejects_legacy_and_missing(client: TestClient, tmp_path: 
     assert resp.status_code == 409
 
 
-def test_failed_volume_revision_cannot_advance_using_old_final(client: TestClient, tmp_path: Path) -> None:
+def test_stale_payoff_journal_does_not_block_advance(client: TestClient, tmp_path: Path) -> None:
+    """REQ-20261030-200030：旧 payoff 日记不再拦截切段（防线已移除，定稿即放行）。"""
     import hashlib
     import json
     from contracts.writing_artifacts import load_writing_state
@@ -316,9 +317,8 @@ def test_failed_volume_revision_cannot_advance_using_old_final(client: TestClien
     }
     (tmp_path / ".writing/volume-payoff-checks.json").write_text(json.dumps(journal), encoding="utf-8")
     response = client.post("/workspaces/ws1/writing/stage/advance", json={"trace_id": "failed-trace"})
-    assert response.status_code == 409
-    assert "清单外爽点" in response.json()["detail"]
-    assert load_writing_state(tmp_path).confirmed_stage == "volume"
+    assert response.status_code == 200
+    assert load_writing_state(tmp_path).confirmed_stage == "chapter"
     assert (tmp_path / "卷纲/第02卷.md").read_text(encoding="utf-8") == original
 
 

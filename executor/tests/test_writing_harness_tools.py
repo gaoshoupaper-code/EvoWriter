@@ -603,7 +603,7 @@ def test_rhythm_table_section_replace(tmp_path: Path) -> None:
         "# 卷纲 · 第 1 卷\n> 状态：定稿\n\n## 爽点节奏\n旧表\n\n## 质检\n保留", encoding="utf-8"
     )
     tool = build_rewrite_rhythm_tool(tmp_path)
-    out = _call(tool, volume=1, table="| 章区间 | 爽点 | 级别 |\n|---|---|---|\n| 1-3 | 捡宝 | 小 |")
+    out = _call(tool, volume=1, table="本卷章号范围：1-3\n| 章区间 | 爽点 | 级别 |\n|---|---|---|\n| 1-3 | 捡宝 | 小 |")
     assert "已回写" in out
     updated = (vol / "第01卷.md").read_text(encoding="utf-8")
     assert "1-3" in updated and "旧表" not in updated and "保留" in updated
@@ -639,11 +639,11 @@ def test_tool_schemas_have_no_path_params(tmp_path: Path) -> None:
 
 _VOLUME = """# 卷纲 · 第 1 卷
 > 状态：定稿
-本卷章号范围：1-1
 
 ## 发展阶段
 保留阶段安排
 ## 爽点节奏表
+本卷章号范围：1-1
 | 章号 | 剧情安排 | 技能条目／组合成分 | 行为档位 | 节奏级别 |
 |---|---|---|---|---|
 | 1 | 原剧情 | 【爽】条目甲 | 小 | 小 |
@@ -654,107 +654,6 @@ _VOLUME = """# 卷纲 · 第 1 卷
 """
 
 
-class _FakeVolumeGuard:
-    def __init__(self, workspace, *, status="committed", actual_content=None):
-        self.workspace = workspace
-        self.status = status
-        self.actual_content = actual_content
-        self.calls = []
-
-    def commit(self, volume, base_text, candidate_text, source, **kwargs):
-        self.calls.append({
-            "volume": volume, "base_text": base_text,
-            "candidate_text": candidate_text, "source": source, **kwargs,
-        })
-        text = self.actual_content or candidate_text
-        rel = f"卷纲/第{volume:02d}卷.md"
-        if self.status != "committed":
-            rel = f"卷纲/第{volume:02d}卷-修订草稿.md"
-            text = text.replace("状态：定稿", "状态：起草中")
-        target = self.workspace / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(text, encoding="utf-8")
-        return {
-            "status": self.status, "path": rel, "content": text,
-            "reason": "通过" if self.status == "committed" else "存在清单外爽点",
-            "violations": [], "repair_attempts": 0,
-            "candidate_hash": "candidate", "policy_hash": "policy",
-        }
-
-
-def test_volume_guard_full_receives_candidate_and_captures_actual_result(tmp_path: Path) -> None:
-    actual = _VOLUME.replace("原剧情", "修正后的合规剧情")
-    guard = _FakeVolumeGuard(tmp_path, actual_content=actual)
-    recorder = _FakeRecorder()
-    save = build_save_artifact_tool(
-        tmp_path, {}, {}, recorder=recorder, trace_id="guarded",
-        volume_guard=guard,
-    )
-    out = _call(save, kind="volume_outline", volume=1, mode="full", content=_VOLUME)
-    assert "已落盘" in out
-    assert guard.calls[0]["candidate_text"] == _VOLUME
-    assert guard.calls[0]["base_text"] == ""
-    assert guard.calls[0]["source"] == "full"
-    assert "operation_id" not in guard.calls[0]
-    assert (tmp_path / "卷纲/第01卷.md").read_text(encoding="utf-8") == actual
-    assert recorder.calls[0]["content"] == actual
-
-
-def test_volume_guard_edit_checks_merged_whole_volume(tmp_path: Path) -> None:
-    path = tmp_path / "卷纲/第01卷.md"
-    path.parent.mkdir()
-    path.write_text(_VOLUME, encoding="utf-8")
-    guard = _FakeVolumeGuard(tmp_path)
-    registry = {}
-    _call(build_read_artifact_tool(tmp_path, registry), kind="volume_outline", volume=1)
-    save = build_save_artifact_tool(tmp_path, registry, {}, volume_guard=guard)
-    out = _call(save, kind="volume_outline", volume=1, anchor="原剧情", replacement="新剧情")
-    assert "已落盘" in out
-    call = guard.calls[0]
-    assert call["source"] == "edit" and call["base_text"] == _VOLUME
-    assert call["candidate_text"] == _VOLUME.replace("原剧情", "新剧情")
-    assert "保留钩子" in call["candidate_text"]
-    assert call.get("edit_scope") is None
-
-
-def test_guarded_rhythm_rewrite_checks_merged_whole_volume(tmp_path: Path) -> None:
-    path = tmp_path / "卷纲/第01卷.md"
-    path.parent.mkdir()
-    path.write_text(_VOLUME, encoding="utf-8")
-    guard = _FakeVolumeGuard(tmp_path)
-    tool = build_rewrite_rhythm_tool(tmp_path, volume_guard=guard)
-    out = _call(tool, volume=1, table="新节奏表")
-    assert "已回写" in out
-    call = guard.calls[0]
-    assert call["source"] == "rewrite" and call["base_text"] == _VOLUME
-    assert "新节奏表" in call["candidate_text"]
-    assert "保留阶段安排" in call["candidate_text"]
-    assert "保留钩子" in call["candidate_text"]
-    prefix, rest = _VOLUME.split("## 爽点节奏表\n", 1)
-    assert call["edit_scope"] == {
-        "prefix": prefix + "## 爽点节奏表\n",
-        "suffix": "## 爽点质检表" + rest.split("## 爽点质检表", 1)[1],
-    }
-
-
-def test_volume_guard_failure_keeps_formal_and_reports_draft(tmp_path: Path) -> None:
-    path = tmp_path / "卷纲/第01卷.md"
-    path.parent.mkdir()
-    path.write_text(_VOLUME, encoding="utf-8")
-    registry = {}
-    _call(build_read_artifact_tool(tmp_path, registry), kind="volume_outline", volume=1)
-    guard = _FakeVolumeGuard(tmp_path, status="blocked")
-    recorder = _FakeRecorder()
-    save = build_save_artifact_tool(
-        tmp_path, registry, {}, volume_guard=guard,
-        recorder=recorder, trace_id="guarded",
-    )
-    out = _call(save, kind="volume_outline", volume=1, anchor="原剧情", replacement="非法剧情")
-    assert "未定稿" in out and "清单外" in out
-    assert "已落盘" not in out
-    assert path.read_text(encoding="utf-8") == _VOLUME
-    assert recorder.calls[0]["file_path"] == "卷纲/第01卷-修订草稿.md"
-    assert "起草中" in recorder.calls[0]["content"]
 
 
 def test_volume_draft_reads_and_edits_own_baseline(tmp_path: Path) -> None:
@@ -770,14 +669,12 @@ def test_volume_draft_reads_and_edits_own_baseline(tmp_path: Path) -> None:
     assert "草稿剧情" in out
     assert not registry.get("卷纲/第01卷.md")
     assert registry.get("卷纲/第01卷-修订草稿.md")
-    guard = _FakeVolumeGuard(tmp_path)
-    save = build_save_artifact_tool(tmp_path, registry, {}, volume_guard=guard)
+    save = build_save_artifact_tool(tmp_path, registry, {})
     out = _call(save, kind="volume_outline", volume=1, draft=True,
                 anchor="草稿剧情", replacement="修订剧情")
     assert "已落盘" in out
-    assert guard.calls[0]["draft"] is True
-    assert guard.calls[0]["base_text"] == draft_text
-    assert "修订剧情" in guard.calls[0]["candidate_text"]
+    assert "修订剧情" in draft_path.read_text(encoding="utf-8")
+    assert path.read_text(encoding="utf-8") == _VOLUME
 
 
 def test_volume_draft_flag_cannot_redirect_other_artifact(tmp_path: Path) -> None:
@@ -791,57 +688,17 @@ def test_volume_draft_flag_cannot_redirect_other_artifact(tmp_path: Path) -> Non
     assert (tmp_path / "主题.md").read_text(encoding="utf-8") == "原主题"
 
 
-def test_build_missing_volume_guard_refuses_volume_write(tmp_path: Path) -> None:
-    from harness_current.tools.save_artifact import build as build_save
-
-    abc = SimpleNamespace(workspace_path=tmp_path, ctx=SimpleNamespace())
-    out = _call(build_save(abc), kind="volume_outline", volume=1,
-                mode="full", content=_VOLUME)
-    assert "检查能力" in out and "已落盘" not in out
-    assert not (tmp_path / "卷纲/第01卷.md").exists()
-    out = _call(build_save(abc), kind="theme", mode="full", content="主题")
-    assert "已落盘" in out
-
-
-def test_build_missing_volume_guard_refuses_rhythm_rewrite(tmp_path: Path) -> None:
-    from harness_current.tools.rewrite_rhythm_table import build as build_rewrite
-
-    path = tmp_path / "卷纲/第01卷.md"
-    path.parent.mkdir()
-    path.write_text(_VOLUME, encoding="utf-8")
-    abc = SimpleNamespace(workspace_path=tmp_path, ctx=SimpleNamespace())
-    out = _call(build_rewrite(abc), volume=1, table="不应写入")
-    assert "检查能力" in out and "已回写" not in out
-    assert path.read_text(encoding="utf-8") == _VOLUME
-
-
-def test_volume_guard_annotation_edit_freezes_unchanged_scope(tmp_path: Path) -> None:
-    import json
-    from harness_current.tools.save_artifact import build as build_save
-
-    path = tmp_path / "卷纲/第01卷.md"
-    path.parent.mkdir()
-    path.write_text(_VOLUME, encoding="utf-8")
-    state_dir = tmp_path / ".writing"
-    state_dir.mkdir()
-    (state_dir / "state.json").write_text(json.dumps({
-        "schema_version": 1, "stage": "chapter", "confirmed_stage": "chapter",
-    }), encoding="utf-8")
-    guard = _FakeVolumeGuard(tmp_path)
+def test_volume_write_lands_directly_without_checks(tmp_path: Path) -> None:
+    """REQ-20261030-200030：卷纲保存/回写不再做机械校验，直接落盘。"""
     registry = {}
-    _call(build_read_artifact_tool(tmp_path, registry), kind="volume_outline", volume=1)
-    abc = SimpleNamespace(workspace_path=tmp_path, ctx=SimpleNamespace(
-        volume_write_guard=guard, artifact_read_registry=registry,
-    ))
-    out = _call(build_save(abc), kind="volume_outline", volume=1,
-                anchor="原剧情", replacement="新剧情")
+    save = build_save_artifact_tool(tmp_path, registry, {})
+    out = _call(save, kind="volume_outline", volume=1, mode="full", content=_VOLUME)
     assert "已落盘" in out
-    prefix, suffix = _VOLUME.split("原剧情")
-    assert guard.calls[0]["edit_scope"] == {"prefix": prefix, "suffix": suffix}
+    assert (tmp_path / "卷纲/第01卷.md").read_text(encoding="utf-8") == _VOLUME
 
 
 @pytest.mark.parametrize("mode", ["full", "edit"])
-def test_volume_guard_detects_changes_since_read(tmp_path: Path, mode: str) -> None:
+def test_volume_detects_changes_since_read(tmp_path: Path, mode: str) -> None:
     path = tmp_path / "卷纲/第01卷.md"
     path.parent.mkdir()
     path.write_text(_VOLUME, encoding="utf-8")
@@ -849,146 +706,73 @@ def test_volume_guard_detects_changes_since_read(tmp_path: Path, mode: str) -> N
     _call(build_read_artifact_tool(tmp_path, registry), kind="volume_outline", volume=1)
     latest = _VOLUME.replace("保留钩子", "作者刚修改的钩子")
     path.write_text(latest, encoding="utf-8")
-    guard = _FakeVolumeGuard(tmp_path)
-    save = build_save_artifact_tool(tmp_path, registry, {}, volume_guard=guard)
+    save = build_save_artifact_tool(tmp_path, registry, {})
     out = _call(save, kind="volume_outline", volume=1, mode=mode,
                 content=_VOLUME, anchor="原剧情", replacement="新剧情")
     assert "已变化" in out and "重新" in out
     assert path.read_text(encoding="utf-8") == latest
-    assert guard.calls == []
 
 
-@pytest.mark.parametrize("source", ["full", "edit", "rewrite"])
-def test_volume_guard_real_tool_chain_repairs_and_rechecks(tmp_path: Path, source: str) -> None:
-    from app.domains.writing.volume_payoff_guard import VolumePayoffGuard
-    from contracts.payoff_constraints import (
-        PayoffCatalog, PayoffEntry, PayoffVerdict, SkillSource,
-        content_hash, parse_volume_payoffs, policy_hash,
-    )
-    from contracts.writing_artifacts import volume_payoff_receipt_valid
-
-    source_text = "| 小 | 条目甲 | 测试清单来源 |"
-    skill = SkillSource("test-skill", source_text, content_hash(source_text))
-    policy = PayoffCatalog(
-        "ready", policy_hash([skill]), [skill],
-        [PayoffEntry("entry-a", "条目甲", "test-skill", source_text, ["小"])],
-    )
-    checked = []
-
-    def check(text):
-        checked.append(text)
-        occurrences, violations = parse_volume_payoffs(text, policy)
-        return PayoffVerdict(content_hash(text), policy.policy_hash, occurrences, violations).to_dict()
-
-    guard = VolumePayoffGuard(
-        tmp_path, operation_id="server-task", policy_hash=policy.policy_hash,
-        check=check, repair=lambda text, errors: text.replace("金手指到手", "条目甲"),
-    )
+@pytest.mark.parametrize("old_heading", [False, True])
+def test_rhythm_rewrite_supports_new_and_old_section_anchors(tmp_path: Path, old_heading: bool) -> None:
+    """AC-004：新节名「剧情推进表」与旧节名「爽点节奏表」都能整节回写，其余节不动。"""
     path = tmp_path / "卷纲/第01卷.md"
-    registry = {}
-    recorded = []
-    if source != "full":
-        path.parent.mkdir()
-        path.write_text(_VOLUME, encoding="utf-8")
-        _call(build_read_artifact_tool(tmp_path, registry), kind="volume_outline", volume=1)
-    if source == "rewrite":
-        table = _VOLUME.split("## 爽点节奏表\n", 1)[1].split("## 爽点质检表", 1)[0]
-        tool = build_rewrite_rhythm_tool(
-            tmp_path, volume_guard=guard, capture=lambda rel, text: recorded.append((rel, text)),
-        )
-        out = _call(tool, volume=1, table=table.replace("条目甲", "金手指到手"))
-        assert "已回写" in out
-        assert recorded[0][1] == path.read_text(encoding="utf-8")
-    else:
-        tool = build_save_artifact_tool(tmp_path, registry, {}, volume_guard=guard)
-        out = _call(tool, kind="volume_outline", volume=1, mode=source,
-                    content=_VOLUME.replace("条目甲", "金手指到手"),
-                    anchor="条目甲", replacement="金手指到手")
-        assert "已落盘" in out
+    path.parent.mkdir()
+    text = _VOLUME if old_heading else _VOLUME.replace("爽点节奏表", "剧情推进表")
+    path.write_text(text, encoding="utf-8")
+    tool = build_rewrite_rhythm_tool(tmp_path)
+    out = _call(tool, volume=1, table="本卷章号范围：1-1\n新推进表内容")
+    assert "已回写" in out
     final = path.read_text(encoding="utf-8")
-    assert "金手指到手" not in final and "【爽】条目甲" in final
-    assert len(checked) == 2 and "金手指到手" in checked[0]
-    assert volume_payoff_receipt_valid(tmp_path, 1, final)
+    section = "爽点节奏表" if old_heading else "剧情推进表"
+    prefix = text.split(f"## {section}\n", 1)[0] + f"## {section}\n"
+    suffix = "## 爽点质检表" + text.split("## 爽点质检表", 1)[1]
+    assert final.startswith(prefix) and final.endswith(suffix)
+    assert "新推进表内容" in final
 
 
-def test_guarded_rhythm_capture_failure_does_not_undo_commit(tmp_path: Path) -> None:
+def test_rhythm_rewrite_missing_section_reports_failure(tmp_path: Path) -> None:
+    path = tmp_path / "卷纲/第01卷.md"
+    path.parent.mkdir()
+    path.write_text(_VOLUME.replace("## 爽点节奏表", "## 别的小节"), encoding="utf-8")
+    tool = build_rewrite_rhythm_tool(tmp_path)
+    out = _call(tool, volume=1, table="新表")
+    assert "失败" in out and "剧情推进表" in out
+    assert "## 别的小节" in path.read_text(encoding="utf-8")
+
+
+def test_rhythm_capture_failure_does_not_undo_write(tmp_path: Path) -> None:
     path = tmp_path / "卷纲/第01卷.md"
     path.parent.mkdir()
     path.write_text(_VOLUME, encoding="utf-8")
-    guard = _FakeVolumeGuard(tmp_path)
 
     def broken_capture(rel, text):
         raise RuntimeError("取证故障")
 
-    tool = build_rewrite_rhythm_tool(tmp_path, volume_guard=guard, capture=broken_capture)
-    out = _call(tool, volume=1, table="新节奏表")
+    tool = build_rewrite_rhythm_tool(tmp_path, capture=broken_capture)
+    out = _call(tool, volume=1, table="本卷章号范围：1-1\n新节奏表")
     assert "已回写" in out
     assert "新节奏表" in path.read_text(encoding="utf-8")
 
 
-def test_guarded_rhythm_build_uses_real_snapshot_callback_contract(tmp_path: Path) -> None:
+def test_rhythm_build_uses_real_snapshot_callback_contract(tmp_path: Path) -> None:
     from app.platform.agent.architecture import AgentBuildCtx
     from harness_current.tools.rewrite_rhythm_table import build as build_rewrite
 
     path = tmp_path / "卷纲/第01卷.md"
     path.parent.mkdir()
     path.write_text(_VOLUME, encoding="utf-8")
-    actual = _VOLUME.replace("原剧情", "守卫实际修订剧情")
     snapshots = []
     context = SimpleNamespace(
-        workspace_path=tmp_path, volume_write_guard=_FakeVolumeGuard(tmp_path, actual_content=actual),
+        workspace_path=tmp_path,
         trace_recorder=None, trace_id="snapshot-contract",
         artifact_snapshot_callback=snapshots.append,
     )
     abc = AgentBuildCtx(context, None, SimpleNamespace(name="author"), "harness_current", _HARNESS_DIR)
-    out = _call(build_rewrite(abc), volume=1, table="提交的节奏表")
+    out = _call(build_rewrite(abc), volume=1, table="本卷章号范围：1-1\n提交的推进表")
     assert "已回写" in out
+    final = path.read_text(encoding="utf-8")
     assert snapshots[0]["file_path"] == "卷纲/第01卷.md"
-    assert snapshots[0]["content"] == actual
+    assert snapshots[0]["content"] == final
+    assert "提交的推进表" in final
     assert snapshots[0]["tool"] == "rewrite_rhythm_table"
-
-
-@pytest.mark.parametrize("rewrite_other_section", [False, True])
-def test_rhythm_repair_is_limited_to_section_body(tmp_path: Path, rewrite_other_section: bool) -> None:
-    from app.domains.writing.volume_payoff_guard import VolumePayoffGuard
-    from contracts.payoff_constraints import content_hash
-
-    path = tmp_path / "卷纲/第01卷.md"
-    path.parent.mkdir()
-    path.write_text(_VOLUME, encoding="utf-8")
-    original = path.read_bytes()
-    checked = []
-
-    def check(text):
-        checked.append(text)
-        passed = "金手指到手" not in text
-        return {
-            "passed": passed, "candidate_hash": content_hash(text), "policy_hash": "scope-policy",
-            "violations": [] if passed else [{"code": "unknown_entry", "message": "清单外爽点"}],
-        }
-
-    def repair(text, errors):
-        revised = text.replace("金手指到手", "条目甲")
-        if rewrite_other_section:
-            revised = revised.replace("保留钩子", "未经授权修改的卷末钩子")
-        return revised
-
-    guard = VolumePayoffGuard(
-        tmp_path, operation_id="rhythm-scope-task", policy_hash="scope-policy",
-        check=check, repair=repair,
-    )
-    table = _VOLUME.split("## 爽点节奏表\n", 1)[1].split("## 爽点质检表", 1)[0]
-    tool = build_rewrite_rhythm_tool(tmp_path, volume_guard=guard)
-    out = _call(tool, volume=1, table=table.replace("条目甲", "金手指到手"))
-    if rewrite_other_section:
-        assert "未定稿" in out and "获准" in out
-        assert path.read_bytes() == original
-        assert len(checked) == 1
-    else:
-        assert "已回写" in out
-        final = path.read_text(encoding="utf-8")
-        prefix = _VOLUME.split("## 爽点节奏表\n", 1)[0] + "## 爽点节奏表\n"
-        suffix = "## 爽点质检表" + _VOLUME.split("## 爽点质检表", 1)[1]
-        assert final.startswith(prefix) and final.endswith(suffix)
-        assert "【爽】条目甲" in final and "金手指到手" not in final
-        assert len(checked) == 2

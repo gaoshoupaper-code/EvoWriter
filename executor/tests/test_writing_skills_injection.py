@@ -211,36 +211,18 @@ class TestVolumeConstraintSnapshot:
         text = svc._compose_user_writing_skills(ws_id, u1, ws_path, skills=snapshot)
         assert "冻结的原文" in text
 
-    def test_explicit_rejection_and_resume_share_server_bound_revision(self, svc, seeded):
-        u1, ws_id, ws_path, db = seeded
+    def test_volume_skill_load_failure_degrades_to_no_injection(self, svc, seeded, monkeypatch, caplog):
+        """REQ-20261030-200030：技能读取失败 fail-open——告警并跳过注入，不抛出。"""
+        import logging as _logging
+
+        u1, ws_id, ws_path, _ = seeded
         save_writing_state(ws_path, WritingState(confirmed_stage="volume", stage="volume"))
-        repo = WritingSkillRepository(db)
-        skill = repo.create(owner_id=u1, name="清单", description="定义", content="已有条目", stage="volume")["skill_id"]
-        repo.set_enabled(ws_id, u1, [skill])
-        svc.trace_recorder = None
-        original, _ = svc._volume_payoff_runtime(ws_path, ws_id, u1, "same-trace", object())
-        revised, _ = svc._volume_payoff_runtime(
-            ws_path, ws_id, u1, "same-trace", object(), message_id="author-message", new_revision=True,
-        )
-        resumed, _ = svc._volume_payoff_runtime(
-            ws_path, ws_id, u1, "same-trace", object(), message_id="ordinary-answer",
-        )
-        retried, _ = svc._volume_payoff_runtime(
-            ws_path, ws_id, u1, "same-trace", object(), message_id="author-message", new_revision=True,
-        )
-        assert original.operation_id != revised.operation_id
-        assert revised.operation_id == resumed.operation_id == retried.operation_id
 
-    def test_chapter_rejection_does_not_create_a_pending_volume_task(self, svc, seeded):
-        from contracts.writing_artifacts import volume_review_block_reason
+        def boom(*args, **kwargs):
+            raise RuntimeError("db down")
 
-        u1, ws_id, ws_path, db = seeded
-        repo = WritingSkillRepository(db)
-        skill = repo.create(owner_id=u1, name="清单", description="定义", content="已有条目", stage="volume")["skill_id"]
-        repo.set_enabled(ws_id, u1, [skill])
-        save_writing_state(ws_path, WritingState(confirmed_stage="chapter", stage="chapter"))
-        svc.trace_recorder = None
-        svc._volume_payoff_runtime(
-            ws_path, ws_id, u1, "chapter-only", object(), message_id="reject-chapter", new_revision=True,
-        )
-        assert volume_review_block_reason(ws_path, operation_id="chapter-only") is None
+        monkeypatch.setattr(svc, "_list_volume_constraint_skills", boom)
+        with caplog.at_level(_logging.WARNING, logger="app.domains.writing.agent"):
+            result = svc._safe_volume_skills(ws_id, u1, ws_path)
+        assert result is None
+        assert any("卷纲技能读取失败" in r.message for r in caplog.records)

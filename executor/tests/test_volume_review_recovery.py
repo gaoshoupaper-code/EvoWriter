@@ -1,21 +1,15 @@
-"""Transient validation failures remain drafts; only ready volumes may interrupt for review."""
+"""卷纲交审门槛：草稿卷不能打断交审；定稿卷按状态行放行（payoff 校验已移除）。"""
 from __future__ import annotations
 
 import importlib.util
-import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
-from app.domains.writing.payoff_validation import ValidationEngine
-from app.domains.writing.payoff_runtime import VolumePayoffRuntime
-from app.domains.writing.retry import WriterRetryError
-from app.domains.writing.volume_payoff_guard import VolumePayoffGuard, bind_volume_operation
-from contracts.payoff_constraints import PayoffCatalog, content_hash
 from contracts.writing_artifacts import (
-    WritingState, save_writing_state, scan_writing_progress, volume_draft_relpath, volume_review_block_reason,
+    WritingState, save_writing_state, volume_review_block_reason,
 )
 
 
@@ -28,105 +22,6 @@ def volume_text(payload="行动合规"):
     )
 
 
-def verdict(text):
-    return {
-        "passed": "违规" not in text,
-        "candidate_hash": content_hash(text), "policy_hash": "policy",
-        "violations": [] if "违规" not in text else [{"message": "内容违规"}],
-    }
-
-
-def temporary_failure(*, retryable=True, partial=False):
-    return WriterRetryError(
-        attempt_id="check-1", attempts_made=2, error_class="no_response",
-        error_message="Request timed out", is_retryable=retryable, had_partial_response=partial,
-    )
-
-
-def guard(workspace, *, check=verdict, repair=lambda text, errors: text.replace("违规", "合规")):
-    return VolumePayoffGuard(
-        workspace, operation_id="trace-1", policy_hash="policy", check=check, repair=repair,
-    )
-
-
-def test_transient_checker_failure_can_resume_without_accepting_draft(tmp_path):
-    candidate = volume_text()
-
-    def timeout(text):
-        raise temporary_failure()
-
-    failed = guard(tmp_path, check=timeout).commit(1, "", candidate, "full")
-    assert failed["status"] == "retryable"
-    assert failed["repair_attempts"] == 0
-    assert scan_writing_progress(tmp_path).volumes == []
-    assert volume_review_block_reason(tmp_path)
-    persisted = json.loads((tmp_path / ".writing/volume-payoff-checks.json").read_text())
-    assert persisted["volumes"]["1"]["active_operation"]["candidate_text"] == candidate
-    checked = []
-    resumed = guard(tmp_path, check=lambda text: checked.append(text) or verdict(text)).commit(
-        1, failed["content"], volume_text("新候选不得替换待复核内容"), "full",
-    )
-    assert resumed["status"] == "committed"
-    assert checked == [candidate]
-    assert scan_writing_progress(tmp_path).volumes == [1]
-    assert volume_review_block_reason(tmp_path) is None
-
-
-def test_transient_repair_failure_keeps_consumed_repair_budget(tmp_path):
-    def timeout(text, errors):
-        raise temporary_failure()
-
-    failed = guard(tmp_path, repair=timeout).commit(1, "", volume_text("违规"), "full")
-    assert failed["status"] == "retryable"
-    assert failed["repair_attempts"] == 1
-    calls = []
-    resumed = guard(
-        tmp_path, repair=lambda text, errors: calls.append(text) or text.replace("违规", "合规"),
-    ).commit(1, failed["content"], volume_text("违规"), "full")
-    assert resumed["status"] == "committed"
-    assert resumed["repair_attempts"] == 2
-    assert len(calls) == 1
-
-
-def test_failed_repair_retries_cannot_refresh_exhausted_budget(tmp_path):
-    def timeout(text, errors):
-        raise temporary_failure()
-
-    candidate = volume_text("违规")
-    first = guard(tmp_path, repair=timeout).commit(1, "", candidate, "full")
-    second = guard(tmp_path, repair=timeout).commit(1, first["content"], candidate, "full")
-    calls = []
-    third = guard(tmp_path, repair=lambda text, errors: calls.append(text) or text).commit(
-        1, second["content"], candidate, "full",
-    )
-    assert third["status"] == "blocked"
-    assert third["repair_attempts"] == 2
-    assert calls == []
-
-
-@pytest.mark.parametrize("retryable,partial", [(False, False), (True, True)])
-def test_non_retryable_or_partial_failure_stays_blocked(tmp_path, retryable, partial):
-    def timeout(text):
-        raise temporary_failure(retryable=retryable, partial=partial)
-
-    candidate = volume_text()
-    failed = guard(tmp_path, check=timeout).commit(1, "", candidate, "full")
-    assert failed["status"] == "blocked"
-    assert guard(tmp_path).commit(1, "", candidate, "full") == failed
-
-
-def test_transport_timeout_is_not_reported_as_content_violation(monkeypatch):
-    monkeypatch.setattr(
-        "app.domains.writing.payoff_validation.parse_volume_payoffs", lambda text, policy: ([], []),
-    )
-
-    def timeout(messages, purpose):
-        raise temporary_failure()
-
-    with pytest.raises(WriterRetryError):
-        ValidationEngine(timeout).check(volume_text(), PayoffCatalog("ready", "policy"))
-
-
 @pytest.fixture
 def review_module(monkeypatch):
     path = Path(__file__).resolve().parents[2] / "evolution/harnesses/repo/tools/request_review.py"
@@ -137,54 +32,14 @@ def review_module(monkeypatch):
     return module
 
 
-@pytest.fixture
-def save_module(monkeypatch):
-    path = Path(__file__).resolve().parents[2] / "evolution/harnesses/repo/tools/save_artifact.py"
-    spec = importlib.util.spec_from_file_location("recoverable_save_artifact", path)
-    module = importlib.util.module_from_spec(spec)
-    monkeypatch.setitem(sys.modules, spec.name, module)
-    spec.loader.exec_module(module)
-    return module
-
-
-@pytest.mark.parametrize("via_runtime", [False, True])
-@pytest.mark.parametrize("existing_final", [False, True])
-def test_save_tool_preserves_retryable_timeout_reason_and_draft_path(
-    tmp_path, save_module, via_runtime, existing_final,
-):
-    def timeout(*args):
-        raise temporary_failure()
-
-    service = guard(tmp_path, check=timeout)
-    if via_runtime:
-        service = VolumePayoffRuntime(
-            tmp_path, skills=[{"skill_id": "rule-1", "content": "来源规则"}],
-            operation_id="trace-1", engine=SimpleNamespace(
-                catalog=lambda skills: PayoffCatalog("ready", "policy"), check=timeout,
-            ),
-        )
-    registry = {}
-    original = volume_text("原有正式稿")
-    if existing_final:
-        path = tmp_path / "卷纲/第01卷.md"
-        path.parent.mkdir(parents=True)
-        path.write_text(original, encoding="utf-8")
-        registry["卷纲/第01卷.md"] = {"content_hash": content_hash(original)}
-    tool = save_module.build_save_artifact_tool(tmp_path, registry, {}, volume_guard=service)
-    message = tool.invoke({
-        "kind": "volume_outline", "volume": 1, "mode": "full", "content": volume_text(),
-    })
-    draft_path = volume_draft_relpath(1) if existing_final else "卷纲/第01卷.md"
-    if existing_final:
-        assert (tmp_path / "卷纲/第01卷.md").read_text(encoding="utf-8") == original
-    assert f"草稿：{draft_path}。" in message
-    assert "Request timed out" in message
-    assert "可稍后重试本次提交" in message
-    assert "沿用原候选与已用修复额度" in message
-    assert (tmp_path / draft_path).is_file()
-    operation = json.loads((tmp_path / ".writing/volume-payoff-checks.json").read_text())["volumes"]["1"]["active_operation"]
-    assert operation["status"] == "retryable"
-    assert operation["candidate_text"] == volume_text()
+def test_block_reason_follows_final_status_line(tmp_path):
+    """REQ-20261030-200030：门槛只看定稿状态行（结构/收据校验已移除）。"""
+    path = tmp_path / "卷纲/第01卷.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(volume_text().replace("状态：定稿", "状态：起草中"), encoding="utf-8")
+    assert volume_review_block_reason(tmp_path) == "第 1 卷尚未定稿。"
+    path.write_text(volume_text(), encoding="utf-8")
+    assert volume_review_block_reason(tmp_path) is None
 
 
 def test_stage_review_rejects_missing_or_draft_volume_without_interrupt(tmp_path, review_module, monkeypatch):
@@ -198,26 +53,6 @@ def test_stage_review_rejects_missing_or_draft_volume_without_interrupt(tmp_path
     assert "[交审失败]" in tool.func("stage", "卷纲好了")
 
 
-def test_probe_recorder_without_history_queries_keeps_first_review_check(tmp_path, review_module, monkeypatch):
-    save_writing_state(tmp_path, WritingState(confirmed_stage="volume"))
-    monkeypatch.setattr(review_module, "interrupt", lambda payload: pytest.fail("草稿不能交审"))
-    tool = review_module.build(SimpleNamespace(
-        workspace_path=tmp_path,
-        ctx=SimpleNamespace(trace_id="probe-trace", trace_recorder=SimpleNamespace(append_event=lambda *args: None)),
-    ))
-    assert "[交审失败]" in tool.func("stage", "卷纲好了")
-
-
-def test_failed_revision_cannot_be_reviewed_using_previous_accepted_volume(tmp_path, review_module, monkeypatch):
-    save_writing_state(tmp_path, WritingState(confirmed_stage="chapter"))
-    candidate = volume_text()
-    assert guard(tmp_path).commit(1, "", candidate, "full")["status"] == "committed"
-    guard(tmp_path, repair=lambda text, errors: text).commit(1, candidate, volume_text("违规"), "full")
-    monkeypatch.setattr(review_module, "interrupt", lambda payload: pytest.fail("失败修订不能交审"))
-    tool = review_module.build_request_review_tool(tmp_path, trace_id="trace-1")
-    assert "[交审失败]" in tool.func("stage", "修订好了")
-
-
 def test_ready_volume_review_carries_injected_tool_call_identity(tmp_path, review_module):
     from langchain_core.messages import AIMessage
     from langgraph.checkpoint.memory import InMemorySaver
@@ -225,7 +60,9 @@ def test_ready_volume_review_carries_injected_tool_call_identity(tmp_path, revie
     from langgraph.prebuilt import ToolNode
 
     save_writing_state(tmp_path, WritingState(confirmed_stage="volume"))
-    assert guard(tmp_path).commit(1, "", volume_text(), "full")["status"] == "committed"
+    path = tmp_path / "卷纲/第01卷.md"
+    path.parent.mkdir()
+    path.write_text(volume_text(), encoding="utf-8")
     tool = review_module.build_request_review_tool(tmp_path, trace_id="trace-1")
     graph = StateGraph(MessagesState)
     graph.add_node("tools", ToolNode([tool]))
@@ -242,71 +79,58 @@ def test_ready_volume_review_carries_injected_tool_call_identity(tmp_path, revie
     assert payload["review_id"] == "call-review-1"
 
 
-def test_reassembled_review_delivers_rejection_after_new_revision(tmp_path, review_module, monkeypatch):
+def test_resumed_review_delivers_opinion_without_second_interrupt(tmp_path, review_module):
+    """打回后的恢复会话：作者意见直接回给模型，不二次打断（resuming_review_ids 跳过门槛）。"""
     from langchain_core.messages import AIMessage
     from langgraph.checkpoint.memory import InMemorySaver
     from langgraph.graph import END, START, MessagesState, StateGraph
     from langgraph.prebuilt import ToolNode
     from langgraph.types import Command
 
-    from app.platform.trace.recorder import TraceRecorder
-    from app.schemas.screenplay import ThreadSummary
-
-    monkeypatch.setattr("app.platform.trace.recorder._notify_evolution", lambda *args, **kwargs: None)
-    thread = ThreadSummary(
-        thread_id="rejection-thread", workspace_id="rejection-workspace", session_name="review",
-        workspace_path=str(tmp_path), created_at="2026-10-29T00:00:00+00:00",
-        updated_at="2026-10-29T00:00:00+00:00",
-    )
-    recorder = TraceRecorder()
-    trace_id = recorder.create_run(thread, "screenplay.generate.stream").trace_id
-    operation = bind_volume_operation(tmp_path, trace_id)
-    service = VolumePayoffGuard(
-        tmp_path, operation_id=operation, policy_hash="policy", check=verdict,
-        repair=lambda text, errors: text,
-    )
     save_writing_state(tmp_path, WritingState(confirmed_stage="volume"))
-    assert service.commit(1, "", volume_text(), "full")["status"] == "committed"
-    saver = InMemorySaver()
+    path = tmp_path / "卷纲/第01卷.md"
+    path.parent.mkdir()
+    path.write_text(volume_text(), encoding="utf-8")
 
-    def assemble(active_recorder):
-        tool = review_module.build(SimpleNamespace(
-            workspace_path=tmp_path,
-            ctx=SimpleNamespace(trace_id=trace_id, trace_recorder=active_recorder),
-        ))
+    def compile_with(tool):
         graph = StateGraph(MessagesState)
         graph.add_node("tools", ToolNode([tool]))
         graph.add_edge(START, "tools")
         graph.add_edge("tools", END)
         return graph.compile(checkpointer=saver)
 
-    first_agent = assemble(recorder)
-    call = {"name": "request_review", "id": "review-before-reject",
+    call = {"name": "request_review", "id": "review-1",
             "args": {"review_kind": "stage", "question": "请审卷纲"}}
-    config = {"configurable": {"thread_id": "rejection-graph"}}
-    first = first_agent.invoke({"messages": [AIMessage(content="", tool_calls=[call])]}, config=config)
-    assert first["__interrupt__"][0].value["review_id"] == "review-before-reject"
-    recorder.append_event(trace_id, {
-        "type": "hitl", "status": "awaiting_input", "source": "runtime",
-        "tool_call_id": "review-before-reject", "tool_name": "request_review",
-    })
-    recorder.await_input_run(thread, trace_id)
-    bind_volume_operation(tmp_path, trace_id, "rejection-message", new_revision=True)
-    assert volume_review_block_reason(tmp_path, operation_id=trace_id)
+    config = {"configurable": {"thread_id": "resume-test"}}
+    saver = InMemorySaver()
 
-    second_agent = assemble(TraceRecorder())
-    opinion = "打回：调整开篇节奏，保留结尾。"
-    resumed = second_agent.invoke(Command(resume=opinion), config=config)
-    assert resumed["messages"][-1].content == opinion
-    assert not resumed.get("__interrupt__")
-
-    fresh_call = {**call, "id": "review-after-reject"}
-    fresh = second_agent.invoke(
-        {"messages": [AIMessage(content="", tool_calls=[fresh_call])]},
-        config={"configurable": {"thread_id": "fresh-review-graph"}},
+    first = compile_with(review_module.build_request_review_tool(tmp_path)).invoke(
+        {"messages": [AIMessage(content="", tool_calls=[call])]}, config=config,
     )
-    assert "[交审失败]" in fresh["messages"][-1].content
-    assert not fresh.get("__interrupt__")
+    assert first["__interrupt__"][0].value["review_kind"] == "stage"
+
+    # 作者打回后重修：卷纲回到起草中，恢复会话重组装（带 resuming_review_ids）
+    # 必须把意见送回模型，而不是被「尚未定稿」门槛再次拦下。
+    # ToolRuntime 注入在当前依赖组合下不可用（已知环境缺陷），包装层显式
+    # 传 tool_call_id，保证测试确定性。
+    path.write_text(volume_text().replace("状态：定稿", "状态：起草中"), encoding="utf-8")
+    from langchain_core.tools import StructuredTool
+
+    inner = review_module.build_request_review_tool(
+        tmp_path, resuming_review_ids={"review-1"},
+    ).func
+    resumed_tool = StructuredTool.from_function(
+        name="request_review", description="",
+        func=lambda review_kind, question, options=None: inner(
+            review_kind, question, options, SimpleNamespace(tool_call_id="review-1"),
+        ),
+        args_schema=review_module.RequestReviewInput, infer_schema=False,
+    )
+    resumed = compile_with(resumed_tool).invoke(
+        Command(resume="打回：调整开篇节奏"), config=config,
+    )
+    assert resumed["messages"][-1].content == "打回：调整开篇节奏"
+    assert not resumed.get("__interrupt__")
 
 
 def test_style_and_batch_reviews_do_not_require_volume_final(tmp_path, review_module, monkeypatch):

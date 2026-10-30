@@ -42,7 +42,7 @@
 | `read_artifact` | 起草或修订前读档案（kind+卷号/章号）；编辑落盘前必须先读 |
 | `save_artifact` | 落盘。默认 mode=edit（anchor+replacement 校验编辑：锚点须与原文逐字一致且唯一，带标题行等上下文）；新建文件、推翻重做大改用 mode=full 提交完整内容 |
 | `update_foreshadow_table` | 章纲段：更新总纲的伏笔登记表（埋的登记待收、收的改已收） |
-| `rewrite_rhythm_table` | 章纲段：摊章弹性变动后回写该卷节奏表 |
+| `rewrite_rhythm_table` | 章纲段：摊章弹性变动后回写该卷推进表（旧书节奏表节名同样支持） |
 | `append_chapter_deviation` | 正文段：某章人修定稿后，差异逐条回写章纲卡（参考级注记） |
 | `confirm_with_user` | 决策卡与定稿确认卡的唯一出口（见下） |
 

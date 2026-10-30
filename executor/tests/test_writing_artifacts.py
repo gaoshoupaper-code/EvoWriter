@@ -45,7 +45,6 @@ from contracts.writing_artifacts import (
     stage_allowed_kinds,
     validate_master_final,
     validate_theme_final,
-    validate_volume_final,
 )
 
 
@@ -352,14 +351,14 @@ def test_stage_volume_when_volume_draft(tmp_path: Path) -> None:
     assert derive_stage(prog) == STAGE_VOLUME
 
 
-def test_stage_volume_when_final_missing_sections(tmp_path: Path) -> None:
-    """AC-003：定稿状态行但缺必备小节 → 不计入 volumes（结构兜底）。"""
+def test_stage_volume_final_status_alone(tmp_path: Path) -> None:
+    """REQ-20261030-200030：定稿状态行即计入 volumes（小节结构校验已随 payoff 防线移除）。"""
     _touch(tmp_path, "主题.md", THEME_FINAL)
     _touch(tmp_path, "总纲.md", MASTER_FINAL)
     _touch(tmp_path, "卷纲/第01卷.md", "# 卷纲 · 第 1 卷\n> 状态：定稿｜2026-10-18\n\n## 发展阶段\n仅一节\n")
     prog = scan_writing_progress(tmp_path)
-    assert prog.volumes == []
-    assert derive_stage(prog) == STAGE_VOLUME
+    assert prog.volumes == [1]
+    assert derive_stage(prog) == STAGE_CHAPTER
 
 
 def test_stage_volumes_mixed_finality(tmp_path: Path) -> None:
@@ -394,13 +393,6 @@ def test_validate_master_final() -> None:
     assert validate_master_final(MASTER_FINAL) == []
     errs = validate_master_final("# 总纲 · 书\n")
     assert any("核心纲" in e for e in errs)
-
-
-def test_validate_volume_final() -> None:
-    assert validate_volume_final(VOLUME_FINAL) == []
-    errs = validate_volume_final("# 卷纲 · 第 1 卷\n> 状态：定稿\n\n## 发展阶段\n仅一节\n")
-    assert any("爽点节奏表" in e for e in errs)
-    assert any("卷末钩子" in e for e in errs)
 
 
 # ── WritingState（人工段指针载体，REQ-20261019-232617 FR-002）──────

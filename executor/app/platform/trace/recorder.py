@@ -51,7 +51,8 @@ _EVOLUTION_NOTIFY_TIMEOUT = 2.0
 
 # HITL cancelled 收尾的来源类型（D5：状态统一 cancelled，error 字段区分来源）。
 # cancel_timeout 是"10s 内无法确认收敛"的诚实告警态（EDGE-004/007），不当 cancelled。
-CancelReason = Literal["user_stop", "client_disconnect", "timeout", "cancel_timeout", "incompatible_resume"]
+CancelReason = Literal["user_stop", "client_disconnect", "timeout", "cancel_timeout", "incompatible_resume", "stage_advanced"]
+STAGE_ADVANCED_MESSAGE = "Stage review approved; continuation moved to a new conversation"
 _CANCEL_REASON_MESSAGES: dict[str, str] = {
     "user_stop": "User stopped",
     "client_disconnect": "Stream cancelled (client disconnected)",
@@ -59,6 +60,7 @@ _CANCEL_REASON_MESSAGES: dict[str, str] = {
     "cancel_timeout": "Cancel did not converge within deadline (process unconfirmed)",
     # FR-005（Phase A）：resume 兼容门禁拒绝后把 trace 收敛为终态，避免永久 awaiting_input
     "incompatible_resume": "Resume rejected: incompatible harness version (binding vs production)",
+    "stage_advanced": STAGE_ADVANCED_MESSAGE,
 }
 
 # 僵尸清理：awaiting_input 超 2h 未 resume → cancelled（需求决策）。

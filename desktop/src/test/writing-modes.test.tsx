@@ -134,7 +134,7 @@ describe("ReviewCard 段审确认循环推进（2026-10-27 卷纲连写 bug 修�
     useWorkspaceStore.setState({ activeWorkspaceId: "ws-1" } as never);
   });
 
-  it("段审卡确认通过：先切段推进，再续跑 resume", async () => {
+  it("段审卡确认通过：先完成会话切换，再提交新段开工", async () => {
     const advance = vi.fn().mockResolvedValue(true);
     useStageSessionStore.setState({ confirmStageReviewAdvance: advance });
     const props = baseProps();
@@ -149,11 +149,11 @@ describe("ReviewCard 段审确认循环推进（2026-10-27 卷纲连写 bug 修�
 
     view.unmount();
     const nextMessage = reviewMessage("stage");
-    nextMessage.traceId = "trace-shared";
+    nextMessage.traceId = "trace-chapter";
     nextMessage.awaitingInput!.review_id = "review-chapter";
     render(<ChatPanel {...props} messages={[nextMessage]} />);
     await userEvent.click(await screen.findByRole("button", { name: "确认通过" }));
-    expect(advance).toHaveBeenNthCalledWith(2, "ws-1", "trace-shared", "review-chapter");
+    expect(advance).toHaveBeenNthCalledWith(2, "ws-1", "trace-chapter", "review-chapter");
   });
 
   it("段审卡推进失败：不续跑，卡片解锁可重试", async () => {

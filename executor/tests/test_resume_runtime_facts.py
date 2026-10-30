@@ -114,3 +114,53 @@ def test_legacy_resume_keeps_original_answer(tmp_path, monkeypatch):
 def test_structured_resume_keeps_original_value(tmp_path, monkeypatch):
     answer = {"answer": "确认通过"}
     assert _resume(tmp_path, monkeypatch, "volume", answer) == answer
+
+
+@pytest.mark.parametrize("case", ["seal_pending", "sealed_restart", "later_advance"])
+def test_advanced_stage_trace_cannot_resume_or_degrade_to_a_new_run(tmp_path, monkeypatch, case):
+    from unittest.mock import Mock
+
+    monkeypatch.setattr("app.platform.trace.recorder._notify_evolution", lambda *a, **kw: None)
+    thread = ThreadSummary(
+        thread_id="old-stage-thread", workspace_id="stage-ws", session_name="旧段",
+        workspace_path=str(tmp_path), created_at="2026-10-29T00:00:00Z",
+        updated_at="2026-10-29T00:00:00Z",
+    )
+    recorder = TraceRecorder()
+    trace = recorder.create_run(thread, "screenplay.generate.stream")
+    recorder.await_input_run(thread, trace.trace_id)
+    state = load_writing_state(tmp_path)
+    state.confirmed_stage = "chapter"
+    state.active_threads["author"] = "old-stage-thread:author:1"
+    state.active_traces["author"] = trace.trace_id
+    state.last_stage_advance = {
+        "trace_id": trace.trace_id, "review_id": "old-review", "from": "volume", "to": "chapter",
+    }
+    if case != "seal_pending":
+        recorder.cancel_awaiting_run(thread, trace.trace_id, reason="stage_advanced")
+        state.active_traces.clear()
+    if case == "sealed_restart":
+        recorder = TraceRecorder()
+    if case == "later_advance":
+        state.last_stage_advance = {
+            "trace_id": "new-stage-trace", "review_id": "new-review", "from": "chapter", "to": "text",
+        }
+    save_writing_state(tmp_path, state)
+    service = MetaAgentService(SimpleNamespace(writer_agent_mode="live"), tmp_path, recorder, None, None)
+    monkeypatch.setattr(service, "_resolve_checkpointer", AsyncMock(return_value=None))
+    build_agent = Mock(side_effect=AssertionError("封存旧段不得装配或运行 agent"))
+    monkeypatch.setattr(service, "_agent_for_workspace", build_agent)
+    payload = ScreenplayGenerateRequest(
+        thread_id=thread.thread_id, trace_id=trace.trace_id, resume="确认通过", content="确认通过",
+    )
+
+    async def drive():
+        return [frame async for frame in service.generate_stream(payload, thread, owner_id="tester")]
+
+    frames = asyncio.run(drive())
+    assert any('"resume_rejected"' in frame for frame in frames)
+    assert not any('"started"' in frame for frame in frames)
+    build_agent.assert_not_called()
+    assert len(recorder.list_runs(thread)) == 1
+    messages = ConversationLog(tmp_path).read(thread.thread_id)
+    assert len(messages) == 1 and messages[0].status == "cancelled"

@@ -39,6 +39,14 @@ class _FakeRecorder:
         self.run: TraceRunSummary | None = None
         self.events: list[TraceLogEvent] = []
         self.lookups: list[tuple[str, str | None]] = []
+        self.cancelled: list[tuple[str, str]] = []
+
+    def cancel_awaiting_run(self, thread, trace_id: str, reason: str):
+        assert thread.thread_id == "t1"
+        assert self.run is not None and self.run.trace_id == trace_id
+        assert self.run.status == "awaiting_input"
+        self.cancelled.append((trace_id, reason))
+        self.run.status = "cancelled"
 
     def find_run_by_trace_id(self, trace_id: str, workspace_path: str | None = None):
         self.lookups.append((trace_id, workspace_path))
@@ -318,7 +326,7 @@ def test_failed_volume_revision_cannot_advance_using_old_final(client: TestClien
 def test_same_trace_advances_each_review_through_volume_cycle(
     client: TestClient, tmp_path: Path, recorder: _FakeRecorder, send_review_id: bool,
 ) -> None:
-    """真实 resume 复用 trace；新旧客户端都按每次工具调用推进。"""
+    """兼容既有 trace 多次交审；新旧客户端都按当前工具调用推进。"""
     from contracts.writing_artifacts import load_writing_state
 
     _seed_confirm_loop_book(tmp_path)
@@ -356,7 +364,7 @@ def test_same_trace_advances_each_review_through_volume_cycle(
     assert all(path == str(tmp_path) for _, path in recorder.lookups)
 
 
-def test_review_retry_after_resume_does_not_advance_twice(
+def test_review_retry_after_sealing_does_not_advance_twice(
     client: TestClient, tmp_path: Path, recorder: _FakeRecorder,
 ) -> None:
     from contracts.writing_artifacts import load_writing_state
@@ -367,7 +375,7 @@ def test_review_retry_after_resume_does_not_advance_twice(
     payload = {"trace_id": "trace-loop", "review_id": "volume-ready"}
     assert client.post("/workspaces/ws1/writing/stage/advance", json=payload).json()["phase"] == "chapter"
     assert recorder.run is not None
-    recorder.run.status = "running"
+    assert recorder.run.status == "cancelled"
     (tmp_path / "章纲/第004章.md").write_text("# 章纲\n", encoding="utf-8")
 
     response = client.post("/workspaces/ws1/writing/stage/advance", json=payload)
@@ -465,3 +473,147 @@ def test_new_confirmation_requires_an_awaiting_run(
     assert response.status_code == 409
     assert "没有等待审查" in response.json()["detail"]
     assert load_writing_state(tmp_path).confirmed_stage == "volume"
+
+
+@pytest.mark.parametrize("restarted", [False, True])
+def test_cross_stage_confirmation_seals_run_and_isolates_new_conversation(
+    client: TestClient, tmp_path: Path, monkeypatch, restarted: bool,
+) -> None:
+    from app.domains.writing.pipeline import route
+    from app.platform.trace.recorder import STAGE_ADVANCED_MESSAGE, TraceRecorder
+    from app.schemas.screenplay import ThreadSummary
+    from contracts.writing_artifacts import load_writing_state, save_writing_state
+
+    _seed_confirm_loop_book(tmp_path)
+    thread = ThreadSummary(
+        thread_id="t1", workspace_id="ws1", session_name="旧段",
+        workspace_path=str(tmp_path), created_at="2026-10-29T00:00:00Z",
+        updated_at="2026-10-29T00:00:00Z",
+    )
+    monkeypatch.setattr("app.platform.trace.recorder._notify_evolution", lambda *a, **kw: None)
+    recorder = TraceRecorder()
+    trace = recorder.create_run(thread, "screenplay.generate.stream")
+    recorder.append_event(trace.trace_id, {
+        "type": "tool_start", "status": "running", "source": "middleware",
+        "tool_name": "request_review", "tool_call_id": "volume-ready",
+        "tool_args": {"question": "卷纲已完成", "review_kind": "stage"},
+    })
+    recorder.record_hitl(trace.trace_id, "author", phase="tool", state="requested",
+                         tool_call_id="volume-ready")
+    recorder.await_input_run(thread, trace.trace_id)
+    state = load_writing_state(tmp_path)
+    state.confirmed_stage = "volume"
+    state.active_traces = {"author": trace.trace_id, "other": "unrelated-trace"}
+    state.active_threads = {"author": "t1:author:1"}
+    state.conversation_forks = {"t1": 1}
+    save_writing_state(tmp_path, state)
+    if restarted:
+        recorder = TraceRecorder()
+    monkeypatch.setattr(ws_router, "get_trace_recorder", lambda: recorder)
+    payload = {"trace_id": trace.trace_id, "review_id": "volume-ready"}
+
+    for _ in range(2):
+        response = client.post("/workspaces/ws1/writing/stage/advance", json=payload)
+        assert response.status_code == 200, response.text
+        assert response.json()["phase"] == "chapter"
+        assert response.json()["awaiting"] == {"other": "unrelated-trace"}
+    # 旧客户端不传 review_id，封存后重试也不重新推进。
+    assert client.post("/workspaces/ws1/writing/stage/advance", json={
+        "trace_id": trace.trace_id,
+    }).status_code == 200
+    run = recorder.find_run_by_trace_id(trace.trace_id, workspace_path=str(tmp_path))
+    assert run is not None and run.status == "cancelled"
+    assert run.error == STAGE_ADVANCED_MESSAGE
+    assert run.manifest is not None and run.trace_phase == "sealed"
+    events = recorder.read_trace_events(trace.trace_id)
+    assert sum(event.type == "run_cancelled" for event in events) == 1
+    assert recorder.get_active_queue(trace.trace_id) is None
+    state = load_writing_state(tmp_path)
+    assert state.active_traces == {"other": "unrelated-trace"}
+    assert state.active_threads == {"author": "t1:author:1"}
+    next_route = route(tmp_path, "new-base-thread", resume_trace=None)
+    assert next_route.new_session is True
+    assert next_route.thread_id == "new-base-thread:author:1"
+    assert next_route.thread_id != state.active_threads["author"]
+    assert next_route.resume_degraded is False
+    # 下一轮已经登记同一 agent 时，旧确认重试不能清掉新 trace。
+    state.active_traces["author"] = "new-stage-trace"
+    save_writing_state(tmp_path, state)
+    assert client.post("/workspaces/ws1/writing/stage/advance", json=payload).status_code == 200
+    assert load_writing_state(tmp_path).active_traces["author"] == "new-stage-trace"
+
+
+def test_same_stage_confirmation_keeps_review_resumable(
+    client: TestClient, tmp_path: Path, recorder: _FakeRecorder,
+) -> None:
+    from contracts.writing_artifacts import load_writing_state, save_writing_state
+
+    _seed_confirm_loop_book(tmp_path)
+    recorder.await_review("chapter-not-finished")
+    state = load_writing_state(tmp_path)
+    state.confirmed_stage = "chapter"
+    state.active_traces["author"] = "trace-loop"
+    state.active_threads["author"] = "t1:author:1"
+    save_writing_state(tmp_path, state)
+    for _ in range(2):
+        response = client.post("/workspaces/ws1/writing/stage/advance", json={
+            "trace_id": "trace-loop", "review_id": "chapter-not-finished",
+        })
+        assert response.status_code == 200
+        assert response.json()["phase"] == "chapter"
+    assert recorder.run.status == "awaiting_input"
+    assert recorder.cancelled == []
+    assert load_writing_state(tmp_path).active_traces == {"author": "trace-loop"}
+
+
+def test_stage_advance_retry_repairs_failed_seal_without_advancing_again(
+    client: TestClient, tmp_path: Path, recorder: _FakeRecorder, monkeypatch,
+) -> None:
+    from contracts.writing_artifacts import load_writing_state, save_writing_state
+
+    _seed_confirm_loop_book(tmp_path)
+    recorder.await_review("volume-ready")
+    state = load_writing_state(tmp_path)
+    state.confirmed_stage = "volume"
+    state.active_traces["author"] = "trace-loop"
+    save_writing_state(tmp_path, state)
+    cancel = recorder.cancel_awaiting_run
+
+    def fail_seal(*args, **kwargs):
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(recorder, "cancel_awaiting_run", fail_seal)
+    payload = {"trace_id": "trace-loop", "review_id": "volume-ready"}
+    response = client.post("/workspaces/ws1/writing/stage/advance", json=payload)
+    assert response.status_code == 503
+    assert load_writing_state(tmp_path).confirmed_stage == "chapter"
+    assert load_writing_state(tmp_path).active_traces == {"author": "trace-loop"}
+    (tmp_path / "章纲/第004章.md").write_text("# 章纲\n", encoding="utf-8")
+    monkeypatch.setattr(recorder, "cancel_awaiting_run", cancel)
+    response = client.post("/workspaces/ws1/writing/stage/advance", json=payload)
+    assert response.status_code == 200
+    assert response.json()["phase"] == "chapter"
+    assert load_writing_state(tmp_path).active_traces == {}
+    assert recorder.cancelled == [("trace-loop", "stage_advanced")]
+
+
+def test_stage_advance_retry_cannot_seal_another_owners_thread(
+    client: TestClient, tmp_path: Path, recorder: _FakeRecorder,
+) -> None:
+    from contracts.writing_artifacts import load_writing_state, save_writing_state
+
+    _seed_confirm_loop_book(tmp_path)
+    recorder.await_review("volume-ready")
+    recorder.run.thread_id = "someone-elses-thread"
+    state = load_writing_state(tmp_path)
+    state.confirmed_stage = "chapter"
+    state.last_stage_advance = {
+        "trace_id": "trace-loop", "review_id": "volume-ready", "from": "volume", "to": "chapter",
+    }
+    save_writing_state(tmp_path, state)
+    response = client.post("/workspaces/ws1/writing/stage/advance", json={
+        "trace_id": "trace-loop", "review_id": "volume-ready",
+    })
+    assert response.status_code == 409
+    assert recorder.cancelled == []
+    assert recorder.run.status == "awaiting_input"

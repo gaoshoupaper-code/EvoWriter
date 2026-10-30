@@ -1292,6 +1292,30 @@ class MetaAgentService(BaseAgentService):
             trace_id_in = getattr(payload, "trace_id", None)
             llm_override = None
             binding = None
+            if resume_value is not None and trace_id_in:
+                from contracts.writing_artifacts import load_writing_state
+                from app.platform.trace.recorder import STAGE_ADVANCED_MESSAGE
+
+                last_advance = load_writing_state(workspace_path).last_stage_advance
+                advanced = (
+                    last_advance.get("trace_id") == trace_id_in
+                    and last_advance.get("from") != last_advance.get("to")
+                )
+                resumed_run = self.trace_recorder.find_run_by_trace_id(
+                    trace_id_in, workspace_path=str(workspace_path),
+                )
+                sealed = (
+                    resumed_run is not None and resumed_run.status == "cancelled"
+                    and resumed_run.error == STAGE_ADVANCED_MESSAGE
+                )
+                if advanced or sealed:
+                    # 不能降级为普通消息：旧 checkpoint 仍留有段审 interrupt。
+                    conv_log.mark_user(conversation_id, user_msg_id, "cancelled")
+                    yield _sse("status", {
+                        "status": "resume_rejected", "trace_id": trace_id_in,
+                        "reason": "本段审查已确认切段，请在新对话中继续。",
+                    })
+                    return
 
             # 五段式管线路由（REQ-20261018-115508 FR-002 + REQ-20261019-222403 FR-001 粘性）：
             # 决定当前大段任务书与用哪个会话 thread；resume 沿未决拍板的原会话续跑；

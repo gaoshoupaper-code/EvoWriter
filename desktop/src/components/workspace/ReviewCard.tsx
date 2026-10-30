@@ -7,11 +7,9 @@
  * - style（文风卡）：确认通过 / 打回意见
  * - stage（段产物审）：确认通过 / 打回意见
  *
- * 提交走 resume 通道（与访谈拍板同一 submit 路径，带 trace_id）：
- * 「继续写 N 章」「确认通过」「打回：<意见>」——agent 按提示词语义消化。
+ * 段内提交走 resume；跨段确认先归档旧对话、开新会话，再发送确认开始新段。
  * N 通过 mode 端点一并回写服务端（DEC-007：批次大小持久化，directive 注入）。
- * stage 卡「确认通过」先走段审循环推进（服务端按一卷→章纲→正文→…循环切
- * 指针，resume 后 agent 即按新段规程开工），推进失败不续跑、卡片解锁可重试。
+ * 推进或新会话创建失败不续跑，卡片解锁可重试。
  */
 import { useState } from "react";
 import { useStageSessionStore } from "@/stores/stage-session";
@@ -58,10 +56,9 @@ export function ReviewCard({ reviewKind, onSubmit, disabled, traceId, reviewId }
         /* 回写失败不阻塞续跑（directive 兜底默认值） */
       }
     }
-    // stage 确认先切段（resume 装配读新指针）；失败解锁重试，不带旧段续跑
-    if (stageAdvance && workspaceId) {
-      const ok = await confirmStageAdvance(workspaceId, traceId ?? "", reviewId);
-      if (!ok) {
+    // 回调根据当前会话是否仍有停等卡选择 resume；跨段后必须已切到空会话。
+    if (stageAdvance) {
+      if (!workspaceId || !await confirmStageAdvance(workspaceId, traceId ?? "", reviewId)) {
         setSubmitted(false);
         return;
       }

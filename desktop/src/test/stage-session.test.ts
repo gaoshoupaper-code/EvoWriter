@@ -60,7 +60,7 @@ function thread(id: string): ThreadSummary {
 function resetStores() {
   useStageSessionStore.setState({ threadStageMeta: new Map(), pendingTransition: null, historyView: null, transitioning: false });
   useWorkspaceStore.setState({ activeWorkspaceId: WS, activeThreadId: "", threads: [] });
-  useExecutionStore.setState({ loading: false });
+  useExecutionStore.setState({ loading: false, messages: [], threadMessages: new Map() });
   useContentStore.setState({ outlinePipeline: null });
 }
 
@@ -149,15 +149,109 @@ describe("syncWithPipeline 阶段变化不变量（FR-004）", () => {
   });
 });
 
-describe("段审推进", () => {
-  it("转发本次审查编号，并同步新段与当前会话归属", async () => {
-    useWorkspaceStore.setState({ activeThreadId: "t1" });
-    advanceStageMock.mockResolvedValue({ kind: "five", phase: "chapter", next_unit: "章纲", awaiting: {} });
-    expect(await useStageSessionStore.getState().confirmStageReviewAdvance(WS, "trace-shared", "review-volume"))
-      .toBe(true);
-    expect(advanceStageMock).toHaveBeenCalledWith(WS, "trace-shared", "review-volume");
+describe("段审推进必须隔离会话", () => {
+  function prepare(stage = "volume", bind = true) {
+    useWorkspaceStore.setState({ activeThreadId: "t1", threads: [thread("t1")] });
+    useContentStore.setState({ outlinePipeline: { kind: "five", phase: stage, next_unit: stage, awaiting: {} } });
+    if (bind) useStageSessionStore.getState().bindThreadStage(WS, "t1", stage);
+    useExecutionStore.setState({ messages: [
+      { role: "user", content: "卷纲旧消息" },
+      { role: "assistant", content: "卷纲已完成", traceId: "trace-volume", awaitingInput: {
+        kind: "review", review_kind: "stage", review_id: "review-volume",
+        question: "请审查卷纲", options: null, multi_select: false,
+      } },
+    ] });
+    advanceStageMock.mockResolvedValue({ kind: "five", phase: "chapter", awaiting: {} });
+    createThreadMock.mockResolvedValue(thread("t2"));
+  }
+
+  it("卷纲确认开章纲新对话，旧消息和旧阶段保存在历史", async () => {
+    prepare();
+    const oldMeta = useStageSessionStore.getState().threadStageMeta.get("t1");
+    expect(await useStageSessionStore.getState().confirmStageReviewAdvance(WS, "trace-volume", "review-volume")).toBe(true);
+    expect(advanceStageMock).toHaveBeenCalledWith(WS, "trace-volume", "review-volume");
+    expect(createThreadMock).toHaveBeenCalledWith(WS, "章纲对话");
+    expect(useWorkspaceStore.getState().activeThreadId).toBe("t2");
     expect(useContentStore.getState().outlinePipeline?.phase).toBe("chapter");
-    expect(useStageSessionStore.getState().threadStageMeta.get("t1")?.stage).toBe("chapter");
+    expect(useStageSessionStore.getState().threadStageMeta.get("t1")).toBe(oldMeta);
+    expect(useStageSessionStore.getState().threadStageMeta.get("t2")?.stage).toBe("chapter");
+    expect(useExecutionStore.getState().messages.some((m) => m.content.includes("卷纲"))).toBe(false);
+    const archived = useExecutionStore.getState().threadMessages.get("t1")!;
+    expect(archived[0].content).toBe("卷纲旧消息");
+    expect(archived[1].awaitingInput).toBeUndefined();
+    expect(archived[1].status).toBe("answered");
+    expect(useStageSessionStore.getState().pendingTransition).toBeNull();
+  });
+
+  it("章纲与正文往返、下一卷推进，每次各开新会话", async () => {
+    prepare();
+    let i = 1;
+    createThreadMock.mockImplementation(async () => thread(`t${++i}`));
+    for (const phase of ["chapter", "text", "chapter", "volume"]) {
+      const oldId = useWorkspaceStore.getState().activeThreadId;
+      advanceStageMock.mockResolvedValue({ kind: "five", phase, awaiting: {} });
+      expect(await useStageSessionStore.getState().confirmStageReviewAdvance(WS, `trace-${i}`, `review-${i}`)).toBe(true);
+      expect(useWorkspaceStore.getState().activeThreadId).not.toBe(oldId);
+      expect(useStageSessionStore.getState().threadStageMeta.get(`t${i}`)?.stage).toBe(phase);
+    }
+    expect(createThreadMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("同段确认不建会话，保留停等供正常resume", async () => {
+    prepare("chapter");
+    const messages = useExecutionStore.getState().messages;
+    expect(await useStageSessionStore.getState().confirmStageReviewAdvance(WS, "trace-volume", "review-volume")).toBe(true);
+    expect(createThreadMock).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().activeThreadId).toBe("t1");
+    expect(useExecutionStore.getState().messages).toBe(messages);
+  });
+
+  it("新会话失败保留旧对话，重试仍隔离且不重绑旧段", async () => {
+    prepare("volume", false);
+    const messages = useExecutionStore.getState().messages;
+    createThreadMock.mockRejectedValueOnce(new Error("network down"));
+    expect(await useStageSessionStore.getState().confirmStageReviewAdvance(WS, "trace-volume", "review-volume")).toBe(false);
+    expect(useWorkspaceStore.getState().activeThreadId).toBe("t1");
+    expect(useExecutionStore.getState().messages).toBe(messages);
+    expect(useStageSessionStore.getState().threadStageMeta.get("t1")?.stage).toBe("volume");
+    expect(useStageSessionStore.getState().pendingTransition?.toStage).toBe("chapter");
+    expect(await useStageSessionStore.getState().confirmStageReviewAdvance(WS, "trace-volume", "review-volume")).toBe(true);
+    expect(useWorkspaceStore.getState().activeThreadId).toBe("t2");
+  });
+
+  it("推进失败不建会话、不动消息", async () => {
+    prepare();
+    const messages = useExecutionStore.getState().messages;
+    advanceStageMock.mockRejectedValue(new Error("review blocked"));
+    expect(await useStageSessionStore.getState().confirmStageReviewAdvance(WS, "trace-volume", "review-volume")).toBe(false);
+    expect(createThreadMock).not.toHaveBeenCalled();
+    expect(useExecutionStore.getState().messages).toBe(messages);
+    expect(useStageSessionStore.getState().transitioning).toBe(false);
+  });
+
+  it("连点确认不重复推进或建会话", async () => {
+    prepare();
+    let resolve!: (t: ThreadSummary) => void;
+    createThreadMock.mockReturnValue(new Promise((r) => { resolve = r; }));
+    const first = useStageSessionStore.getState().confirmStageReviewAdvance(WS, "trace-volume", "review-volume");
+    await vi.waitFor(() => expect(createThreadMock).toHaveBeenCalledTimes(1));
+    expect(await useStageSessionStore.getState().confirmStageReviewAdvance(WS, "trace-volume", "review-volume")).toBe(false);
+    expect(advanceStageMock).toHaveBeenCalledTimes(1);
+    resolve(thread("t2"));
+    expect(await first).toBe(true);
+  });
+
+  it("网络返回前切书，不覆盖另一作品或继续生成", async () => {
+    prepare();
+    let resolve!: (status: unknown) => void;
+    advanceStageMock.mockReturnValue(new Promise((r) => { resolve = r; }));
+    const first = useStageSessionStore.getState().confirmStageReviewAdvance(WS, "trace-volume", "review-volume");
+    useWorkspaceStore.setState({ activeWorkspaceId: "ws-2", activeThreadId: "other" });
+    resolve({ kind: "five", phase: "chapter", awaiting: {} });
+    expect(await first).toBe(false);
+    expect(useWorkspaceStore.getState().activeThreadId).toBe("other");
+    expect(createThreadMock).not.toHaveBeenCalled();
+    expect(useContentStore.getState().outlinePipeline?.phase).toBe("volume");
   });
 });
 
@@ -495,6 +589,21 @@ describe("jumpToStage（阶段条跳段/回退，FR-004 AC-006）", () => {
     expect(updateStageMock).toHaveBeenCalledWith(WS, "theme");
     expect(useWorkspaceStore.getState().activeThreadId).toBe("t-back");
     expect(useStageSessionStore.getState().threadStageMeta.get("t-back")?.stage).toBe("theme");
+  });
+
+  it("跳段建会话失败，指针已推进时仍能重试补开新对话", async () => {
+    useWorkspaceStore.setState({ activeThreadId: "t-old" });
+    useContentStore.setState({
+      outlinePipeline: { kind: "five", phase: "text", next_unit: "正文", awaiting: {} },
+    });
+    createThreadMock.mockRejectedValueOnce(new Error("network down")).mockResolvedValueOnce(thread("t-back"));
+    await useStageSessionStore.getState().jumpToStage("chapter");
+    expect(useContentStore.getState().outlinePipeline?.phase).toBe("chapter");
+    expect(useWorkspaceStore.getState().activeThreadId).toBe("t-old");
+    await useStageSessionStore.getState().jumpToStage("chapter");
+    expect(useWorkspaceStore.getState().activeThreadId).toBe("t-back");
+    expect(useStageSessionStore.getState().threadStageMeta.get("t-old")?.stage).toBe("text");
+    expect(useStageSessionStore.getState().threadStageMeta.get("t-back")?.stage).toBe("chapter");
   });
 
   it("已在目标段时 no-op（不建会话不写指针）", async () => {

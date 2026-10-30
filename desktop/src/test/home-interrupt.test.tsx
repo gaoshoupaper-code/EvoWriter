@@ -87,6 +87,7 @@ vi.mock("@/lib/api", () => ({
   fetchThreadTraces: vi.fn().mockResolvedValue([]),
   fetchTraceDetail: vi.fn().mockResolvedValue(null),
   createThread: vi.fn().mockResolvedValue({ thread_id: "thread-1", workspace_id: "ws-1", session_name: "测试会话", workspace_path: "/t", created_at: "", updated_at: "" }),
+  advanceWritingStage: vi.fn(),
   updateThread: vi.fn().mockResolvedValue({ thread_id: "thread-1" }),
   deleteThread: vi.fn().mockResolvedValue({}),
   createWorkspace: vi.fn(), deleteWorkspace: vi.fn(),
@@ -189,6 +190,54 @@ describe("T0b: HITL interrupt → resume", () => {
     expect(secondCall[1].body).toHaveProperty("trace_id", "trace-1");
     // resume 模式不应有 prompt 字段
     expect(secondCall[1].body).not.toHaveProperty("prompt");
+  });
+});
+
+describe("段审确认跨段后使用独立新会话", () => {
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const { resetStoresWithOutline } = await import("./helpers");
+    await resetStoresWithOutline();
+    const { useStageSessionStore } = await import("@/stores/stage-session");
+    useStageSessionStore.setState({ threadStageMeta: new Map(), pendingTransition: null, transitioning: false, historyView: null });
+    streams = [encode([
+      sseEvent("model_stream", { content: "章纲新消息" }),
+      sseEvent("final", { mode: "screenplay", thread_id: "thread-chapter", workspace_id: "ws-1", content: "章纲新消息" }),
+    ])];
+  });
+
+  it("点击确认后旧消息归档，新请求仅含新thread的prompt，没有旧trace或resume", async () => {
+    const { useExecutionStore } = await import("@/stores/execution");
+    const { useWorkspaceStore } = await import("@/stores/workspace");
+    const { useContentStore } = await import("@/stores/content");
+    const { useStageSessionStore } = await import("@/stores/stage-session");
+    const { advanceWritingStage, createThread } = await import("@/lib/api");
+    const { streamRequest } = await import("@/lib/stream");
+    vi.mocked(advanceWritingStage).mockResolvedValue({ kind: "five", phase: "chapter", next_unit: "章纲", awaiting: {} });
+    vi.mocked(createThread).mockResolvedValueOnce({ thread_id: "thread-chapter", workspace_id: "ws-1", session_name: "章纲对话", workspace_path: "/t", created_at: "", updated_at: "" });
+    render(<MemoryRouter initialEntries={["/"]}><Home /></MemoryRouter>);
+    await screen.findByRole("textbox", {}, { timeout: 10000 });
+    await waitFor(() => expect(useWorkspaceStore.getState().activeThreadId).toBe("thread-1"));
+    useContentStore.setState({ outlinePipeline: { kind: "five", phase: "volume", next_unit: "卷纲", awaiting: {} } });
+    useStageSessionStore.getState().bindThreadStage("ws-1", "thread-1", "volume");
+    useExecutionStore.setState({ messages: [
+      { role: "user", content: "只属于卷纲的旧消息" },
+      { role: "assistant", content: "卷纲待审", traceId: "trace-volume", awaitingInput: {
+        kind: "review", review_kind: "stage", review_id: "review-volume", question: "请审查卷纲",
+        options: null, multi_select: false,
+      } },
+    ] });
+    await userEvent.click(await screen.findByRole("button", { name: "确认通过" }));
+    await screen.findByText("章纲新消息");
+    expect(advanceWritingStage).toHaveBeenCalledWith("ws-1", "trace-volume", "review-volume");
+    expect(useWorkspaceStore.getState().activeThreadId).toBe("thread-chapter");
+    expect(screen.queryByText("只属于卷纲的旧消息")).not.toBeInTheDocument();
+    const body = vi.mocked(streamRequest).mock.calls[0][1]!.body;
+    expect(body).toMatchObject({ thread_id: "thread-chapter", prompt: "确认通过" });
+    expect(body).not.toHaveProperty("resume");
+    expect(body).not.toHaveProperty("trace_id");
+    expect(useExecutionStore.getState().threadMessages.get("thread-1")?.[0].content).toBe("只属于卷纲的旧消息");
+    expect(useStageSessionStore.getState().threadStageMeta.get("thread-1")?.stage).toBe("volume");
   });
 });
 

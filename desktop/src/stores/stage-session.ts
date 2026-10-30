@@ -33,6 +33,7 @@ import {
   updateWritingMode,
 } from "@/lib/api";
 import { notifyStageReady } from "@/lib/notify";
+import { finalizeAnsweredMessage } from "@/lib/hitl-finalize";
 import { PIPELINE_STEPS, stageLabel } from "@/lib/pipeline-steps";
 import {
   readStageMetas,
@@ -119,9 +120,8 @@ interface StageSessionState {
   /** 模式开关（唯一写通道）：写服务端并本地对齐；失败 toast 不改本地 */
   toggleStageMode: (workspaceId: string, stage: string) => Promise<void>;
   /**
-   * 段审确认循环推进（stage 审查卡「确认通过」时、resume 前调用）：
-   * 服务端按创作循环推导下一段写指针；本地对齐相位 + 重绑当前会话到新段
-   * （自动模式一条会话滚动跨段，不切新会话）。失败返回 false（不续跑可重试）。
+   * 段审确认：服务端推进指针，跨段必须先开新会话；同段才保留原审查续跑。
+   * 失败返回 false，保留旧对话供重试，不向旧会话发送新阶段消息。
    */
   confirmStageReviewAdvance: (workspaceId: string, traceId: string, reviewId?: string) => Promise<boolean>;
 
@@ -186,20 +186,46 @@ export const useStageSessionStore = create<StageSessionState>((set, get) => ({
   },
 
   confirmStageReviewAdvance: async (workspaceId, traceId, reviewId) => {
+    const ws = useWorkspaceStore.getState();
+    const activeThreadId = ws.activeThreadId;
+    if (get().transitioning || useExecutionStore.getState().loading
+      || ws.activeWorkspaceId !== workspaceId || !activeThreadId) return false;
+    const currentMeta = get().threadStageMeta.get(activeThreadId);
+    const fromStage = currentMeta?.stage ?? useContentStore.getState().outlinePipeline?.phase;
+    const stillCurrent = () => {
+      const current = useWorkspaceStore.getState();
+      return current.activeWorkspaceId === workspaceId && current.activeThreadId === activeThreadId;
+    };
+    set({ transitioning: true });
     try {
+      // 提前补绑旧段，保证推进成功、建会话失败后的重试仍能识别跨段。
+      if (!currentMeta && fromStage) get().bindThreadStage(workspaceId, activeThreadId, fromStage);
       const status = await advanceWritingStage(workspaceId, traceId, reviewId);
-      if (status) {
-        // 相位即时对齐（resume 装配读新指针，本地条形不能滞后）+ 就绪边沿重置
-        useContentStore.getState().setOutlinePipeline(status);
-        readyEdge.set(workspaceId, status.ready?.ready === true);
-        // 自动模式一条会话滚动跨段：重绑到新段，避免 syncWithPipeline 误挂恢复卡
-        const activeThreadId = useWorkspaceStore.getState().activeThreadId;
-        if (activeThreadId) get().bindThreadStage(workspaceId, activeThreadId, status.phase);
+      if (!stillCurrent()) return false;
+      if (!status || status.kind !== "five" || !stageLabel(status.phase)) {
+        throw new Error("未收到有效的目标阶段，请重试。");
       }
+      useContentStore.getState().setOutlinePipeline(status);
+      readyEdge.set(workspaceId, status.ready?.ready === true);
+      if (status.phase === fromStage) return true;
+      set({ pendingTransition: { fromStage: fromStage ?? "", toStage: status.phase } });
+      const thread = await createThreadRequest(workspaceId, newThreadName(status.phase));
+      get().bindThreadStage(workspaceId, thread.thread_id, status.phase);
+      if (!stillCurrent()) return false;
+      useExecutionStore.getState().setMessages((messages) => messages.map((message) =>
+        message.awaitingInput?.review_kind === "stage" && message.traceId === traceId
+          && (!reviewId || message.awaitingInput.review_id === reviewId)
+          ? finalizeAnsweredMessage(message) : message,
+      ));
+      useExecutionStore.getState().switchThread(thread.thread_id);
+      ws.setThreads((current) => [thread, ...current.filter((t) => t.thread_id !== thread.thread_id)]);
+      set({ pendingTransition: null, historyView: null, lastBatchUsage: null });
       return true;
     } catch (advanceError) {
       toast.error(advanceError instanceof Error ? advanceError.message : "段间推进失败，请重试。");
       return false;
+    } finally {
+      set({ transitioning: false });
     }
   },
 
@@ -363,9 +389,14 @@ export const useStageSessionStore = create<StageSessionState>((set, get) => ({
     const workspaceId = ws.activeWorkspaceId;
     if (!workspaceId || useExecutionStore.getState().loading || get().transitioning) return;
     const pipeline = useContentStore.getState().outlinePipeline;
-    if (pipeline?.kind === "five" && pipeline.phase === stage) return; // 已在该段
+    const currentMeta = ws.activeThreadId ? get().threadStageMeta.get(ws.activeThreadId) : undefined;
+    if (pipeline?.kind === "five" && pipeline.phase === stage
+      && (!currentMeta || currentMeta.stage === stage)) return;
     set({ transitioning: true });
     try {
+      if (ws.activeThreadId && !currentMeta && pipeline?.kind === "five") {
+        get().bindThreadStage(workspaceId, ws.activeThreadId, pipeline.phase);
+      }
       // FR-004：阶段条跳段/回退与确认切换同走人工段指针（唯一入口）
       const status = await updateWritingStage(workspaceId, stage);
       if (status) useContentStore.getState().setOutlinePipeline(status);

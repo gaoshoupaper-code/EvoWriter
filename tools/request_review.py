@@ -98,13 +98,13 @@ def build_request_review_tool(
                 volume_review_block_reason,
             )
 
-            reason = volume_review_block_reason(workspace_root, operation_id=trace_id) if trace_id else None
+            reason = None
             if resolve_confirmed_stage(workspace_root) == STAGE_VOLUME:
-                reason = reason or volume_review_block_reason(workspace_root)
+                reason = volume_review_block_reason(workspace_root)
                 if not reason and not scan_writing_progress(workspace_root).volumes:
                     reason = "本卷尚未定稿，请先完成卷纲。"
             if reason:
-                return f"[交审失败] {reason}请先修订并通过检查，再提交审查。"
+                return f"[交审失败] {reason}请先完成卷纲定稿，再提交审查。"
         payload = build_review_payload(
             review_kind, question, options or [],
             review_id=review_id,

@@ -1,12 +1,15 @@
-"""rewrite_rhythm_table 工具 — 卷纲节奏表分区回写（REQ-20261018-115508 FR-005，DEC-006）。
+"""rewrite_rhythm_table 工具 — 卷纲剧情推进表分区回写。
 
-摊章弹性回写（技能纪律：数量是预估、纪律为准，摊完回写节奏表）。分区替换
-目标卷卷纲的「节奏」小节；前置（章纲阶段）由 stage_gate 把关。
+摊章弹性回写（技能纪律：数量是预估、纪律为准，摊完回写推进表）。分区替换
+目标卷卷纲的推进表小节；前置（章纲阶段）由 stage_gate 把关。
+锚点兼容新旧两种节名（REQ-20261030-200030 DEC-006）：新格式「剧情推进表」、
+旧格式「爽点节奏表」均可整节替换，旧书不迁移。
 """
 from __future__ import annotations
 
 import hashlib
 import logging
+import re
 from pathlib import Path
 
 from langchain_core.tools import StructuredTool
@@ -17,15 +20,16 @@ from contracts.writing_artifacts import VOLUME_DIR
 
 logger = logging.getLogger(__name__)
 
-REWRITE_RHYTHM_TOOL_DESCRIPTION = """回写某卷卷纲的爽点节奏表（仅章纲阶段可用；分区更新，不动卷纲其余内容）。
+REWRITE_RHYTHM_TOOL_DESCRIPTION = """回写某卷卷纲的剧情推进表（仅章纲阶段可用；分区更新，不动卷纲其余内容）。
 
 摊章区间因弹性变动（某段占 5 章而非 4 章等）时，用 table 提交该卷完整的
-新节奏表（逐章排，爽点＋压抑双供给），整表替换卷纲的「节奏」小节并注明摊章日期。"""
+新推进表（逐章排，剧情＋爽点＋压抑双供给），整表替换卷纲的「剧情推进表」
+小节（旧书「爽点节奏表」节名同样支持）并注明摊章日期。"""
 
 
 class RewriteRhythmInput(BaseModel):
     volume: int = Field(ge=1, description="卷号")
-    table: str = Field(min_length=1, description="该卷完整的新节奏表 markdown（含摊章日期注记）")
+    table: str = Field(min_length=1, description="该卷完整的新推进表 markdown（含摊章日期注记）")
 
 
 def _atomic_write(path: Path, text: str) -> None:
@@ -36,28 +40,8 @@ def _atomic_write(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
-def _rhythm_edit_scope(text: str) -> dict[str, str]:
-    """整卷检查，但自动修复只获准修改节奏标题所辖正文。"""
-    lines = text.splitlines(keepends=True)
-    start, level = None, 0
-    for index, line in enumerate(lines):
-        heading = line.lstrip()
-        if not heading.startswith("#"):
-            continue
-        depth = len(heading) - len(heading.lstrip("#"))
-        if start is None and "节奏" in heading:
-            start, level = index, depth
-        elif start is not None and depth <= level:
-            return {"prefix": "".join(lines[:start + 1]), "suffix": "".join(lines[index:])}
-    if start is None:
-        raise ValueError("卷纲中找不到节奏小节")
-    return {"prefix": "".join(lines[:start + 1]), "suffix": ""}
-
-
-def build_rewrite_rhythm_tool(workspace_root: Path, *, volume_guard=None,
-                              capture=None) -> StructuredTool:
+def build_rewrite_rhythm_tool(workspace_root: Path, *, capture=None) -> StructuredTool:
     from .update_foreshadow_table import replace_section
-    from .save_artifact import _guard_volume_write, _volume_write_message
 
     def _rewrite(volume: int, table: str) -> str:
         rel = artifact_relpath(KIND_VOLUME, volume=volume)
@@ -68,21 +52,26 @@ def build_rewrite_rhythm_tool(workspace_root: Path, *, volume_guard=None,
             current = path.read_text(encoding="utf-8")
         except (OSError, UnicodeDecodeError) as exc:
             return f"[rewrite_rhythm_table 失败] 读取失败：{type(exc).__name__}"
-        updated = replace_section(current, "节奏", table)
+        # 新节名「剧情推进表」优先；旧书按「节奏」锚定「爽点节奏表」，不迁移。
+        updated = replace_section(current, "剧情推进", table)
         if updated is None:
-            return f"[rewrite_rhythm_table 失败] 第 {volume} 卷卷纲中找不到「节奏」小节。"
-        guarded = _guard_volume_write(
-            volume_guard, volume=volume, base_text=current,
-            candidate_text=updated, source="rewrite", capture=capture,
-            edit_scope=_rhythm_edit_scope(current),
-        )
-        if guarded is not None:
-            return _volume_write_message(guarded, volume, rewrite=True)
+            updated = replace_section(current, "节奏", table)
+        if updated is None:
+            return f"[rewrite_rhythm_table 失败] 第 {volume} 卷卷纲中找不到「剧情推进表／节奏表」小节。"
+        # 章号范围行是切段状态机的消费不变量（缺/重都会让 ranges 失配），
+        # 只守这一行，不恢复内容校验。
+        if len(re.findall(r"本卷章号范围", updated)) != 1:
+            return "[rewrite_rhythm_table 失败] 提交的表须且只须包含一行「本卷章号范围：起始章-结束章」。"
         try:
             _atomic_write(path, updated)
         except OSError as exc:
             return f"[rewrite_rhythm_table 失败] 写入失败：{type(exc).__name__}"
-        return f"第 {volume} 卷节奏表已回写（分区替换，卷纲其余内容不变）。"
+        if capture is not None:
+            try:
+                capture(rel, updated)
+            except Exception:  # noqa: BLE001 — 取证失败不影响已完成的回写
+                logger.warning("rewrite_rhythm_table 取证失败（已降级）", exc_info=True)
+        return f"第 {volume} 卷推进表已回写（分区替换，卷纲其余内容不变）。"
 
     return StructuredTool.from_function(
         name="rewrite_rhythm_table",
@@ -94,8 +83,6 @@ def build_rewrite_rhythm_tool(workspace_root: Path, *, volume_guard=None,
 
 
 def build(abc):
-    from .save_artifact import _MISSING_VOLUME_GUARD
-
     callback = getattr(abc, "artifact_callback", None)
 
     def capture(rel: str, text: str) -> None:
@@ -109,7 +96,6 @@ def build(abc):
 
     return build_rewrite_rhythm_tool(
         abc.workspace_path,
-        volume_guard=getattr(abc.ctx, "volume_write_guard", _MISSING_VOLUME_GUARD),
         capture=capture if callback is not None else None,
     )
 

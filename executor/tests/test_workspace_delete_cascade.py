@@ -7,10 +7,14 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
+from app.auth import current_user
 from app.platform.core.security import generate_master_key, load_master_key
 from app.platform.core.db import (
     Database,
@@ -21,6 +25,7 @@ from app.platform.core.db import (
     WritingSkillRepository,
     init_database,
 )
+from app.routers import workspaces as ws_router
 
 
 @pytest.fixture()
@@ -63,3 +68,32 @@ def test_delete_workspace_cascades_child_tables(env):
 def test_delete_workspace_missing_returns_false(env):
     """删不存在的作品返回 False（走 404），不抛异常。"""
     assert WorkspaceRepository(env["db"]).delete("no-such-ws", env["owner_id"]) is False
+
+
+class _BrokenCheckpointService:
+    """delete_thread_checkpoint 一律失败（模拟 no such table / 库损坏）。"""
+
+    async def delete_thread_checkpoint(self, thread_id, *, owner_id=None):
+        raise RuntimeError("checkpoint cleanup exploded")
+
+
+class _FakeThreadStore:
+    """delete_workspace 直接成功并返回一个待清理 thread。"""
+
+    def delete_workspace(self, owner_id, workspace_id):
+        return ["t1"]
+
+
+def test_delete_workspace_survives_checkpoint_cleanup_failure(monkeypatch):
+    """checkpoint 清理失败不阻断删除：元数据已删成功，应返回 200（线上
+    曾因全局 checkpoints.db 缺表 no such table → 删作品 500）。"""
+    app = FastAPI()
+    app.include_router(ws_router.router, prefix="/api")
+    app.dependency_overrides[current_user] = lambda: SimpleNamespace(user_id="u1")
+    monkeypatch.setattr(ws_router, "get_thread_store", lambda: _FakeThreadStore())
+    monkeypatch.setattr(ws_router, "get_agent_service", lambda: _BrokenCheckpointService())
+    monkeypatch.setattr(ws_router, "get_character_service", lambda: _BrokenCheckpointService())
+
+    resp = TestClient(app).delete("/api/workspaces/anything")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "ok"

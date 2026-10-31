@@ -94,6 +94,10 @@ image_agent_service = None  # ImageAgentService 实例（Phase 3）
 async def _lifespan(application: FastAPI):
     global agent_service, character_service, image_agent_service
     checkpointer = await _checkpointer_cm.__aenter__()
+    # 幂等建表：from_conn_string 不建 checkpoints 表，首次读写（含
+    # adelete_thread）会报 no such table——分库池（CheckpointPool.get）已
+    # setup()，全局库这里补齐（线上热修：删作品时全局库缺表 500）。
+    await checkpointer.setup()
     if agent_service is None:
         agent_service = MetaAgentService(settings, workspace_root, trace_recorder, style_store, checkpointer)
     if character_service is None:

@@ -908,10 +908,15 @@ async def delete_workspace(workspace_id: str, user: CurrentUser = Depends(curren
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     if deleted_thread_ids is None:
         raise HTTPException(status_code=404, detail="Workspace not found")
-    # T2.9：清理 checkpoint（分库）+ trace
+    # T2.9：清理 checkpoint（分库）+ trace。
+    # best-effort：此时元数据/目录已删成功，checkpoint 清理失败不应把整个
+    # 删除打成 500——用户重试只会得到 404，残留 checkpoint 反而永远清不掉。
     agent_service = get_agent_service()
     character_service = get_character_service()
     for thread_id in deleted_thread_ids:
-        await agent_service.delete_thread_checkpoint(thread_id, owner_id=user.user_id)
-        await character_service.delete_thread_checkpoint(thread_id)
+        try:
+            await agent_service.delete_thread_checkpoint(thread_id, owner_id=user.user_id)
+            await character_service.delete_thread_checkpoint(thread_id)
+        except Exception:
+            logger.warning("checkpoint 清理失败: workspace=%s thread=%s", workspace_id, thread_id, exc_info=True)
     return {"status": "ok", "deleted": workspace_id, "deleted_threads": deleted_thread_ids}

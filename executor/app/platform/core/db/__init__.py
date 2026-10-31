@@ -1079,11 +1079,14 @@ class WorkspaceRepository:
 
     def delete(self, workspace_id: str, owner_id: str) -> bool:
         with self.db.transaction() as conn:
-            # 级联删 threads（外键虽设了，但显式删更稳）
-            conn.execute(
-                "DELETE FROM threads WHERE workspace_id = ? AND owner_id = ?",
-                (workspace_id, owner_id),
-            )
+            # 级联删引用 workspaces 的子表（外键虽设了，但显式删更稳）：
+            # threads、images（DD7a）、workspace_writing_skills（REQ-20261023）。
+            # 漏删任一子表会使 DELETE workspaces 触发外键约束 → API 500。
+            for table in ("threads", "images", "workspace_writing_skills"):
+                conn.execute(
+                    f"DELETE FROM {table} WHERE workspace_id = ? AND owner_id = ?",
+                    (workspace_id, owner_id),
+                )
             cur = conn.execute(
                 "DELETE FROM workspaces WHERE workspace_id = ? AND owner_id = ?",
                 (workspace_id, owner_id),

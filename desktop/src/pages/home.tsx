@@ -62,7 +62,6 @@ export default function Home() {
   const deletingWorkspace = useWorkspaceStore((s) => s.deletingWorkspace);
   const workspaceCreateOpen = useWorkspaceStore((s) => s.workspaceCreateOpen);
   const newWorkspaceName = useWorkspaceStore((s) => s.newWorkspaceName);
-  const newWorkspaceDomain = useWorkspaceStore((s) => s.newWorkspaceDomain);
   const workspaceDeleteOpen = useWorkspaceStore((s) => s.workspaceDeleteOpen);
   const pendingDeleteWorkspaceId = useWorkspaceStore((s) => s.pendingDeleteWorkspaceId);
 
@@ -85,11 +84,9 @@ export default function Home() {
   const activeOutlineRel = useContentStore((s) => s.activeOutlineRel);
 
   const aiDisabled = !hasApiKey;
-  const writingDomain = activeWorkspace?.domain !== "image";
   // 技能分组仅五段制写作书显示（REQ-20261025-205943 DEC-011）：用管线 kind
   // 判定（five|legacy），legacy 只读工作区不显示；管线未加载时也不闪现
-  const showSidebarSkills =
-    !!activeWorkspace && writingDomain && outlinePipeline?.kind === "five";
+  const showSidebarSkills = !!activeWorkspace && outlinePipeline?.kind === "five";
 
   // ── 注入 executionDeps（连接三个 store）──
   // 只在首次挂载时注入一次。deps 引用的是 store 的 getState/setState，始终拿到最新值。
@@ -107,10 +104,6 @@ export default function Home() {
       getActiveThreadWorkspacePath: () => {
         const ws = useWorkspaceStore.getState();
         return ws.threads.find((t) => t.thread_id === ws.activeThreadId)?.workspace_path ?? "";
-      },
-      getActiveWorkspaceDomain: () => {
-        const ws = useWorkspaceStore.getState();
-        return ws.workspaces.find((w) => w.workspace_id === ws.activeWorkspaceId)?.domain ?? "writing";
       },
       setActiveThreadId: (id) => useWorkspaceStore.getState().setActiveThreadId(id),
       setThreads: (updater) => useWorkspaceStore.getState().setThreads(updater as any),
@@ -309,38 +302,12 @@ export default function Home() {
       return;
     }
     try {
-      if (activeWorkspace?.domain === "image") {
-        // 图片域新书没有会话时先自动建一个（旧「新建会话」按钮已随 FR-001 移除）
-        if (!activeThreadId) {
-          const created = await ensureThreadForWorkspace();
-          if (!created) return;
-        }
-        await useExecutionStore.getState().submitImage({ prompt });
-        useExecutionStore.getState().setPrompt("");
-        return;
-      }
       // 段间切换人工闸（REQ-20261019-232617 FR-002，AC-002）：打字发送不再
       // 隐式切换——消息一律发到当前会话所在段，切段只走就绪卡片/阶段条确认。
       await useExecutionStore.getState().submit(prompt);
       useExecutionStore.getState().setPrompt("");
     } catch {
       /* performSubmit 内部已处理 UI + toast */
-    }
-  }
-
-  /** 确保当前工作区有会话（图片域新书首轮提交用）；失败返回 false。 */
-  async function ensureThreadForWorkspace(): Promise<boolean> {
-    const ws = useWorkspaceStore.getState();
-    if (!ws.activeWorkspaceId) return false;
-    try {
-      const { createThread } = await import("@/lib/api");
-      const thread = await createThread(ws.activeWorkspaceId, "图片对话");
-      ws.setThreads((current) => [thread, ...current.filter((t) => t.thread_id !== thread.thread_id)]);
-      ws.setActiveThreadId(thread.thread_id);
-      return true;
-    } catch (createError) {
-      toast.error(createError instanceof Error ? createError.message : "无法开启新对话。");
-      return false;
     }
   }
 
@@ -433,7 +400,7 @@ export default function Home() {
             }
           />
         }
-        rail={writingDomain && activeWorkspaceId ? <WorkRail /> : null}
+        rail={activeWorkspaceId ? <WorkRail /> : null}
       >
         {safePanel === "chat" ? (
           <ChatPanel
@@ -445,10 +412,6 @@ export default function Home() {
             onPromptChange={(p) => useExecutionStore.getState().setPrompt(p)}
             onSubmit={handleSubmit}
             onResumeSubmit={handleResumeSubmit}
-            onImageReviewSubmit={async (resume) => {
-              if (aiDisabled) { toast.error("请先在设置页填写你的 API Key，才能使用 AI 生成。"); return; }
-              await useExecutionStore.getState().submitImage({ resume });
-            }}
             onStop={handleStopGeneration}
             stageFlows={stageFlows}
             onRetry={handleRetry}
@@ -473,26 +436,16 @@ export default function Home() {
         <div className="modal-overlay" role="presentation">
           <section className="modal-content" role="dialog" aria-modal="true" aria-labelledby="workspace-create-title">
             <h2 className="modal-title" id="workspace-create-title">新建工作目录</h2>
-            <p className="modal-description">选择类型并输入名称，创建后会直接切换。</p>
+            <p className="modal-description">输入名称，创建后会直接切换。</p>
             <form
               className="workspace-create-form"
               onSubmit={(event) => { event.preventDefault(); handleCreateWorkspace(); }}
             >
-              <div className="workspace-domain-select">
-                <label className={`domain-option${newWorkspaceDomain === "writing" ? " selected" : ""}`}>
-                  <input type="radio" name="workspace-domain" value="writing" checked={newWorkspaceDomain === "writing"} onChange={() => useWorkspaceStore.setState({ newWorkspaceDomain: "writing" })} disabled={creatingWorkspace} />
-                  <span className="domain-option-body"><strong>✍️ 写作</strong><small>小说/剧本创作</small></span>
-                </label>
-                <label className={`domain-option${newWorkspaceDomain === "image" ? " selected" : ""}`}>
-                  <input type="radio" name="workspace-domain" value="image" checked={newWorkspaceDomain === "image"} onChange={() => useWorkspaceStore.setState({ newWorkspaceDomain: "image" })} disabled={creatingWorkspace} />
-                  <span className="domain-option-body"><strong>🎨 文生图</strong><small>图片生成与优化</small></span>
-                </label>
-              </div>
               <input
                 className="thread-input workspace-create-input"
                 value={newWorkspaceName}
                 onChange={(event) => useWorkspaceStore.setState({ newWorkspaceName: event.target.value })}
-                placeholder={newWorkspaceDomain === "image" ? "请输入图片主题名" : "请输入新剧本名"}
+                placeholder="请输入新剧本名"
                 autoFocus disabled={creatingWorkspace}
               />
               <div className="modal-actions">

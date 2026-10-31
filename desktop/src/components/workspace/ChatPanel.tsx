@@ -6,7 +6,6 @@ import { markdownTableComponents } from "../../lib/markdown-components";
 import type { ChatMessage } from "../../lib/types";
 import type { StageFlow } from "../../lib/stage";
 import { InterviewOptions } from "./InterviewOptions";
-import { ImageReviewCard } from "./ImageReviewCard";
 import { ReviewCard } from "./ReviewCard";
 import { ModeToggle } from "./ModeToggle";
 import { ExecutionView } from "./ExecutionView";
@@ -28,7 +27,6 @@ type ChatPanelProps = {
   onPromptChange: (prompt: string) => void;
   onSubmit: (event: React.FormEvent<HTMLFormElement>) => void;
   onResumeSubmit: (resume: string) => Promise<void>;
-  onImageReviewSubmit: (resume: import("../../lib/api").ImageReviewResume) => Promise<void>;
   onStop: () => void;
   stageFlows?: (StageFlow | null)[];
   onRetry?: () => void;
@@ -44,7 +42,6 @@ export function ChatPanel({
   onPromptChange,
   onSubmit,
   onResumeSubmit,
-  onImageReviewSubmit,
   onStop,
   stageFlows,
   onRetry,
@@ -202,7 +199,6 @@ export function ChatPanel({
               ) : null}
               {/* HITL：按 awaitingInput.kind 路由渲染（DD4）。
                   choice → InterviewOptions（写作访谈）
-                  image_review → ImageReviewCard（文生图评审）
                   review → ReviewCard（审查停等点，REQ-20261026-191719）
                   D3 防御：仅最后一条 assistant 渲染，历史 HITL 残留不渲染。*/}
               {message.role === "assistant" &&
@@ -212,7 +208,6 @@ export function ChatPanel({
                     {/* FR-004（REQ-20260918-235653）：行模式下提问文案随 HITL 卡展示
                         （正文不被提问覆盖，旧管线提问仍写在 content 里，不重复渲染） */}
                     {message.rows?.length &&
-                    message.awaitingInput.kind !== "image_review" &&
                     message.awaitingInput.question ? (
                       /* 提问是完整 markdown 文档（段落/表格/加粗），与正文同一套渲染管线；
                          message-content 复用其 markdown 排版作用域 */
@@ -228,13 +223,7 @@ export function ChatPanel({
                         </ReactMarkdown>
                       </div>
                     ) : null}
-                    {message.awaitingInput.kind === "image_review" ? (
-                      <ImageReviewCard
-                        payload={message.awaitingInput as unknown as import("../../lib/api").ImageReviewInterrupt}
-                        onSubmit={onImageReviewSubmit}
-                        disabled={loading}
-                      />
-                    ) : message.awaitingInput.kind === "review" ? (
+                    {message.awaitingInput.kind === "review" ? (
                       <ReviewCard
                         reviewKind={message.awaitingInput.review_kind ?? "stage"}
                         onSubmit={onResumeSubmit}

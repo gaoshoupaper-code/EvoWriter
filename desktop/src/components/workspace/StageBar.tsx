@@ -12,7 +12,6 @@
 import { useState } from "react";
 import { useContentStore } from "@/stores/content";
 import { useExecutionStore } from "@/stores/execution";
-import { useWorkspaceStore } from "@/stores/workspace";
 import { PIPELINE_STEPS } from "@/lib/pipeline-steps";
 
 type StageBarProps = {
@@ -22,21 +21,14 @@ type StageBarProps = {
 
 export function StageBar({ onOpenStageHistory, onRestart }: StageBarProps) {
   const pipeline = useContentStore((s) => s.outlinePipeline);
-  const domain = useWorkspaceStore((s) => s.activeWorkspaceDomain);
   const loading = useExecutionStore((s) => s.loading);
   const [restartBusy, setRestartBusy] = useState(false);
 
   const isFive = pipeline?.kind === "five";
   const awaiting = isFive && Object.keys(pipeline.awaiting ?? {}).length > 0;
   const phase = isFive ? pipeline.phase : "";
-  // FR-002 失败语义：写作域管线未就绪显示中性占位（bootstrap 期间/拉取失败），
-  // 不误标「图片创作」；图片域与 legacy 各自占位
-  const placeholder =
-    pipeline?.kind === "legacy"
-      ? "旧版工作区"
-      : domain === "image"
-        ? "图片创作"
-        : "准备中…";
+  // FR-002 失败语义：管线未就绪显示中性占位（bootstrap 期间/拉取失败）
+  const placeholder = pipeline?.kind === "legacy" ? "旧版工作区" : "准备中…";
 
   async function handleRestart() {
     if (loading || restartBusy) return;

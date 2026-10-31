@@ -1,7 +1,7 @@
 """app/routers/context.py —— 路由层共享的 service 实例 + 诊断工具（PR-14）。
 
 main.py 在 lifespan 启动时通过 init_router_context() 注入 service 实例，
-各 domain router 通过 get_*() 访问。沿用 image_router 的注入模式但集中管理。
+各 domain router 通过 get_*() 访问。
 
 同时提供横切诊断工具（_log / active_generations 计数），供 SSE 生成端点共享。
 """
@@ -18,7 +18,6 @@ if TYPE_CHECKING:
     from app.platform.trace import TraceRecorder
     from app.domains.writing.agent import MetaAgentService
     from app.domains.writing.expert_agent.services.character import CharacterService
-    from app.domains.image.agent import ImageAgentService
 
 # 模块级单例（main.py 注入前为 None）
 _thread_store: "ThreadStore | None" = None
@@ -26,10 +25,9 @@ _style_store: "CreateTypeStore | None" = None
 _trace_recorder: "TraceRecorder | None" = None
 _agent_service: "MetaAgentService | None" = None
 _character_service: "CharacterService | None" = None
-_image_agent_service: "ImageAgentService | None" = None
 _style_optimizer = None
 
-# 横切诊断：SSE 活跃连接计数（screenplay + image 共享）
+# 横切诊断：SSE 活跃连接计数（各生成端点共享）
 _active_generations = 0
 
 
@@ -63,18 +61,16 @@ def init_router_context(
     trace_recorder: "TraceRecorder",
     agent_service: "MetaAgentService",
     character_service: "CharacterService",
-    image_agent_service: "ImageAgentService",
     style_optimizer,
 ) -> None:
     """main.py 启动时注入全部 service 实例。"""
     global _thread_store, _style_store, _trace_recorder
-    global _agent_service, _character_service, _image_agent_service, _style_optimizer
+    global _agent_service, _character_service, _style_optimizer
     _thread_store = thread_store
     _style_store = style_store
     _trace_recorder = trace_recorder
     _agent_service = agent_service
     _character_service = character_service
-    _image_agent_service = image_agent_service
     _style_optimizer = style_optimizer
 
 
@@ -101,11 +97,6 @@ def get_agent_service() -> "MetaAgentService":
 def get_character_service() -> "CharacterService":
     assert _character_service is not None, "router context 未初始化"
     return _character_service
-
-
-def get_image_agent_service() -> "ImageAgentService":
-    assert _image_agent_service is not None, "router context 未初始化"
-    return _image_agent_service
 
 
 def get_style_optimizer():

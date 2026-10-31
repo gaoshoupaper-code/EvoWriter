@@ -42,7 +42,6 @@ function rowMessage(rows: TimelineRow[], phase: ChatMessage["executionPhase"] = 
 
 beforeEach(() => {
   vi.restoreAllMocks();
-  useExecutionStore.setState({ activeStreamKind: "writing" });
   useWorkrailStore.setState({
     floatMode: "mini",
     pollError: false,

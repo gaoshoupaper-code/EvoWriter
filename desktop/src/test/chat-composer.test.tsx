@@ -7,7 +7,7 @@ function props(loading = false) {
   return {
     messages: [], prompt: "继续写作", loading, activeThreadId: "t1", hasActiveWorkspace: true,
     onPromptChange: vi.fn(), onSubmit: vi.fn((event: React.FormEvent) => event.preventDefault()),
-    onResumeSubmit: vi.fn(), onImageReviewSubmit: vi.fn(), onStop: vi.fn(), onDeleteThread: vi.fn(),
+    onResumeSubmit: vi.fn(), onStop: vi.fn(), onDeleteThread: vi.fn(),
   };
 }
 

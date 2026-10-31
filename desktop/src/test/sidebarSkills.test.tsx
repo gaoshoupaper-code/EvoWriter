@@ -206,7 +206,7 @@ describe("Sidebar 集成（FR-004/DEC-011 / AC-005/006）", () => {
     expect(within(tree).getByText("主题")).toBeInTheDocument();
   });
 
-  it("showSkills=false 节点消失（文生图/legacy 书）", () => {
+  it("showSkills=false 节点消失（legacy 书）", () => {
     render(
       <Sidebar
         activePanel="chat" onPanelChange={() => {}} workspaces={BOOK}

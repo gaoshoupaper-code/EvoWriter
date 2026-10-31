@@ -89,7 +89,6 @@ vi.mock("@/components/workspace/CharactersPanel", () => ({ CharactersPanel: () =
 vi.mock("@/components/workspace/WorldviewPanel", () => ({ WorldviewPanel: () => null }));
 vi.mock("@/components/workspace/StorylinePanel", () => ({ StorylinePanel: () => null }));
 vi.mock("@/components/workspace/InterviewOptions", () => ({ InterviewOptions: () => null }));
-vi.mock("@/components/workspace/ImageReviewCard", () => ({ ImageReviewCard: () => null }));
 
 // 阶段制（REQ-20261018-175526）：用户可见的会话切换 UI 已移除（FR-001），
 // 切会话由阶段自动驱动（confirmTransition/restartThread → setActiveThreadId）。

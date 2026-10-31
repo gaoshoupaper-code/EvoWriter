@@ -103,8 +103,7 @@ website/  = 官网（Astro 静态站）—— 项目介绍 + 桌面端下载页
     （如 `screenplay.py` 管"生成剧本"、`character.py` 管"角色"）。
   - `app/platform/` = 公共底座，所有业务域共用的基础设施（运行时、追踪、鉴权等）。
   - `app/domains/writing/` = **写作流水线**（本套文档的重点，见下钻）。
-  - `app/domains/image/` = 图像域（待补）。
-- **状态**：writing 域已详写 ✅，其余待补。
+- **状态**：writing 域已详写 ✅。
 
 ### 3. evolution/ — 进化系统（诊断 + 优化 + 回灌）
 - **是什么**：一个独立的服务，**用户不直接用**，通过 HTTP 与 executor 联动。

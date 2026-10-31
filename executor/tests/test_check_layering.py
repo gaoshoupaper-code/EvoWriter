@@ -100,12 +100,12 @@ def test_linter_detects_new_violation(linter, tmp_path, monkeypatch):
 def test_same_domain_internal_import_not_flagged(linter, tmp_path, monkeypatch):
     """同 domain 内部子模块引用不应被误判（R3 误报防护）。"""
     fake_app = tmp_path / "app"
-    (fake_app / "domains" / "image").mkdir(parents=True)
+    (fake_app / "domains" / "writing").mkdir(parents=True)
     (fake_app / "domains" / "__init__.py").write_text("")
-    (fake_app / "domains" / "image" / "__init__.py").write_text("")
-    (fake_app / "domains" / "image" / "store.py").write_text("x = 1\n")
-    (fake_app / "domains" / "image" / "agent.py").write_text(
-        "from app.domains.image.store import x\n"
+    (fake_app / "domains" / "writing" / "__init__.py").write_text("")
+    (fake_app / "domains" / "writing" / "store.py").write_text("x = 1\n")
+    (fake_app / "domains" / "writing" / "agent.py").write_text(
+        "from app.domains.writing.store import x\n"
     )
 
     monkeypatch.setattr(linter, "BACKEND_APP", fake_app)

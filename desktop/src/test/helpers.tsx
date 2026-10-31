@@ -145,11 +145,11 @@ export async function resetStores() {
   useWorkspaceStore.setState({
     authChecked: false, authUser: null, hasApiKey: false,
     theme: "light", themeReady: false, activePanel: "chat",
-    workspaces: [], activeWorkspaceId: "", activeWorkspaceDomain: "writing",
+    workspaces: [], activeWorkspaceId: "",
     bootstrapping: false, creatingWorkspace: false, deletingWorkspace: false,
     threads: [], activeThreadId: "", deleting: false,
     styles: [], styleModalOpen: false, creatingStyle: false,
-    workspaceCreateOpen: false, newWorkspaceName: "失忆编剧大纲", newWorkspaceDomain: "writing",
+    workspaceCreateOpen: false, newWorkspaceName: "失忆编剧大纲",
     workspaceDeleteOpen: false, pendingDeleteWorkspaceId: "",
   });
   useTraceStore.setState({

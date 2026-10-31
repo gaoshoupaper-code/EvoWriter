@@ -51,14 +51,14 @@ let activeStreamCount = 0;
 const activeReaders = new Set<{ cancel: () => Promise<void> }>();
 let messageIdSeq = 0;
 
-function beginStream(set: (partial: Partial<ExecutionState>) => void, kind: "writing" | "image") {
+function beginStream(set: (partial: Partial<ExecutionState>) => void) {
   activeStreamCount += 1;
-  set({ loading: true, activeStreamKind: kind });
+  set({ loading: true });
 }
 
 function endStream(set: (partial: Partial<ExecutionState>) => void) {
   activeStreamCount = Math.max(0, activeStreamCount - 1);
-  if (activeStreamCount === 0) set({ loading: false, activeStreamKind: "" });
+  if (activeStreamCount === 0) set({ loading: false });
 }
 
 /** 用户消息台账键（FR-005）：断连补跑按同一 id 重发，服务端幂等入队。 */
@@ -315,7 +315,6 @@ export interface ExecutionDeps {
   getActiveWorkspaceId: () => string;
   getActiveThreadSessionName: () => string;
   getActiveThreadWorkspacePath: () => string;
-  getActiveWorkspaceDomain: () => string;
   // workspace actions
   setActiveThreadId: (id: string) => void;
   setThreads: (updater: (current: any[]) => any[]) => void;
@@ -351,7 +350,6 @@ interface ExecutionState {
 
   // ── 瞬态（运行中，不持久）──
   hasHistory: boolean; // T18: 当前会话是否已有历史交互（驱动记忆感开场白）
-  activeStreamKind: "" | "writing" | "image"; // FR-007: 当前流类型（图片流思考态选专属文案池）
 
   // ── 内部 ref 等价物 ──
   streamReader: { read: () => Promise<{ done: boolean; value: Uint8Array | undefined }>; cancel: () => Promise<void> } | null;
@@ -370,7 +368,6 @@ interface ExecutionState {
   resume: (resumeText: string) => Promise<void>;
   stop: () => void;
   retry: () => void;
-  submitImage: (opts: { prompt: string } | { resume: import("@/lib/api").ImageReviewResume }) => Promise<void>;
 }
 
 export const useExecutionStore = create<ExecutionState>((set, get) => ({
@@ -379,7 +376,6 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   loading: false,
   result: null,
   hasHistory: false,
-  activeStreamKind: "",
   streamReader: null,
   threadMessages: new Map(),
 
@@ -479,10 +475,6 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
 
   retry: () => {
     handleRetry(set, get);
-  },
-
-  submitImage: async (opts) => {
-    await performImageStream(set, get, opts);
   },
 }));
 
@@ -669,11 +661,6 @@ async function performSubmit(
 ) {
   const trimmedPrompt = promptText.trim();
   if (!trimmedPrompt) return;
-  // 图像流没有排队通道：生成中拦截文字提交（写作流已放开并发排队，FR-006）。
-  if (get().activeStreamKind === "image") {
-    toast.error("图像生成中，请稍后再发送文字消息。");
-    return;
-  }
   // DEC-009：先把排队中断未发的消息按序补跑（isResend 内层不再递归预处理）。
   if (!opts.isResend) await resendPausedMessages(set, get);
   const d = requireDeps();
@@ -704,7 +691,7 @@ async function performSubmit(
     return;
   }
 
-  beginStream(set, "writing");
+  beginStream(set);
   set({ result: null });
 
   if (resumeTraceId) {
@@ -883,7 +870,7 @@ async function performSubmit(
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
-      // 按完整 SSE 帧（\n\n 分隔）解析，与 performImageStream 对齐。
+      // 按完整 SSE 帧（\n\n 分隔）解析。
       // 大帧（interrupt 提案 / final / tool_output）超过一个 TCP 分段时，
       // event: 行与 data: 行会落在不同 chunk——旧实现按行切分且 eventType 每
       // chunk 重置，data: 行因 eventType 为空被静默丢帧（线上 interrupt 从未
@@ -1067,7 +1054,6 @@ async function performSubmit(
               kind?: string; question?: string; options?: AskUserOption[] | null; multi_select?: boolean; source?: string;
               review_kind?: "batch" | "style" | "stage";
               review_id?: string;
-              round?: number; versions?: unknown[];
             };
             gotInterrupt = true;
             const interruptKind = iv.kind ?? "choice";
@@ -1088,14 +1074,12 @@ async function performSubmit(
                 // 已输出行原样保留，提问由 HITL 卡展示；旧管线维持提问写正文的既有行为。
                 content: rowMode
                   ? message.content
-                  : interruptKind === "image_review"
-                    ? `第 ${iv.round ?? "?"} 轮图像评审：3 版 6 图已生成，请打分`
-                    : iv.question || "等待你的输入",
+                  : iv.question || "等待你的输入",
                 ...(rowSegments.length ? { rows: rowSegments } : {}),
                 thoughts: thoughtSegments,
                 awaitingInput: {
                   kind: interruptKind, question: iv.question || "", options: iv.options ?? null,
-                  multi_select: iv.multi_select ?? false, source: iv.source, round: iv.round, versions: iv.versions,
+                  multi_select: iv.multi_select ?? false, source: iv.source,
                   ...(interruptKind === "review" ? { review_kind: iv.review_kind ?? "stage", review_id: iv.review_id } : {}),
                   askedAt: new Date().toISOString(),
                 },
@@ -1306,132 +1290,3 @@ function handleRetry(set: any, get: () => ExecutionState) {
   }
 }
 
-async function performImageStream(
-  set: (partial: Partial<ExecutionState> | ((s: ExecutionState) => Partial<ExecutionState>)) => void,
-  get: () => ExecutionState,
-  opts: { prompt: string } | { resume: import("@/lib/api").ImageReviewResume },
-) {
-  const d = requireDeps();
-  const activeThreadId = d.getActiveThreadId();
-  if (!activeThreadId || get().loading) return;
-  const isResume = "resume" in opts;
-
-  if (isResume) {
-    const lastAssistant = [...get().messages].reverse().find((m) => m.role === "assistant");
-    if (!lastAssistant?.awaitingInput) return;
-    set((state) => {
-      const idx = state.messages.findIndex((m) => m === lastAssistant);
-      if (idx < 0) return {};
-      const next = [...state.messages];
-      next[idx] = { ...lastAssistant, awaitingInput: undefined };
-      return { messages: next };
-    });
-  }
-
-  beginStream(set, "image");
-  set({ streamReader: null });
-
-  if (!isResume) {
-    set((state) => ({ messages: [...state.messages, { role: "user", content: opts.prompt, contentFormat: "text" }] }));
-  }
-  set((state) => ({
-    messages: [...state.messages, { role: "assistant", content: isResume ? "正在优化..." : "正在生成...", contentFormat: "markdown", tools: [] }],
-  }));
-
-  let reader: StreamReader | null = null;
-  try {
-    const body = isResume ? { thread_id: activeThreadId, prompt: "", resume: opts.resume } : { thread_id: activeThreadId, prompt: opts.prompt };
-    reader = (await streamRequest("/api/image/generate/stream", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body,
-    })) as StreamReader;
-    activeReaders.add(reader);
-    set({ streamReader: reader });
-
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let streamedText = "";
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const events = buffer.split("\n\n");
-      buffer = events.pop() ?? "";
-
-      for (const evt of events) {
-        const lines = evt.split("\n");
-        let eventType = "";
-        let eventData = "";
-        for (const line of lines) {
-          if (line.startsWith("event: ")) eventType = line.slice(7);
-          else if (line.startsWith("data: ")) eventData += line.slice(6);
-        }
-        if (!eventType) continue;
-        try {
-          const event = { type: eventType, data: JSON.parse(eventData) };
-          if (event.type === "model_stream") {
-            streamedText += (event.data as { content?: string }).content ?? "";
-            set((state) => ({
-              messages: updateAssistantMessage(state.messages, state.messages.length - 1, (m) => ({ ...m, content: streamedText, contentFormat: "markdown" })),
-            }));
-          } else if (event.type === "interrupt") {
-            const iv = event.data as { kind?: string; round?: number; versions?: unknown[]; question?: string; options?: AskUserOption[] | null; multi_select?: boolean; source?: string };
-            const interruptKind = iv.kind ?? "choice";
-            set((state) => ({
-              messages: updateAssistantMessage(state.messages, state.messages.length - 1, (m) => ({
-                ...m,
-                content: interruptKind === "image_review" ? `第 ${iv.round ?? "?"} 轮图像评审：请打分` : iv.question || "等待输入",
-                awaitingInput: {
-                  kind: interruptKind, question: iv.question || "", options: iv.options ?? null,
-                  multi_select: iv.multi_select ?? false, source: iv.source, round: iv.round, versions: iv.versions,
-                  askedAt: new Date().toISOString(),
-                } as typeof m.awaitingInput,
-              })),
-            }));
-            return;
-          } else if (event.type === "final") {
-            const data = event.data as { content?: string };
-            set((state) => ({
-              messages: updateAssistantMessage(state.messages, state.messages.length - 1, (m) => ({
-                ...m, status: "completed", content: data.content ?? "完成", contentFormat: "markdown",
-              })),
-            }));
-            return;
-          } else if (event.type === "error") {
-            const errText = (event.data as { error?: string }).error ?? "image stream 出错";
-            toast.error(errText);
-            set((state) => ({
-              messages: updateAssistantMessage(state.messages, state.messages.length - 1, (m) => ({
-                ...m, status: "failed", content: `⚠️ ${errText}`, contentFormat: "markdown",
-              })),
-            }));
-            return;
-          }
-        } catch {
-          // partial JSON
-        }
-      }
-    }
-
-    // FR-003 图片流断流兜底：循环正常结束（无 final/interrupt/error 提前 return）→
-    // 落 failed 终态，不停留在「正在生成...」占位（booting 永挂变体）。
-    const brokenMessage = "⚠️ 连接中断（未收到完成信号），可以重试。";
-    toast.error(brokenMessage);
-    set((state) => ({
-      messages: updateAssistantMessage(state.messages, state.messages.length - 1, (m) => ({
-        ...m,
-        status: "failed",
-        content: m.content === "正在生成..." || m.content === "正在优化..."
-          ? brokenMessage
-          : `${m.content}\n\n${brokenMessage}`,
-        contentFormat: "markdown",
-      })),
-    }));
-  } catch (err) {
-    toast.error(err instanceof Error ? err.message : "image stream 失败");
-  } finally {
-    if (reader) activeReaders.delete(reader);
-    endStream(set);
-    set({ streamReader: null });
-  }
-}

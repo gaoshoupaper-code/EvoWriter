@@ -119,7 +119,6 @@ vi.mock("@/components/workspace/InterviewOptions", () => ({
     </div>
   ),
 }));
-vi.mock("@/components/workspace/ImageReviewCard", () => ({ ImageReviewCard: () => null }));
 
 const { MemoryRouter } = await import("react-router-dom");
 const { render } = await import("@testing-library/react");

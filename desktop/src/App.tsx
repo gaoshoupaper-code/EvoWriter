@@ -7,7 +7,6 @@ import Home from "@/pages/home";
 import Login from "@/pages/login";
 import Register from "@/pages/register";
 import Settings from "@/pages/settings";
-import Skills from "@/pages/skills";
 
 /// 401 跳转处理：api.ts 检测到 401 → 触发此 handler → 跳 /login。
 /// 用组件内 hook（而非模块级 navigate），确保 Router context 可用。
@@ -39,7 +38,6 @@ function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/register" element={<Register />} />
         <Route path="/settings" element={<Settings />} />
-        <Route path="/skills" element={<Skills />} />
         {/* 兜底：未知路由回首页 */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

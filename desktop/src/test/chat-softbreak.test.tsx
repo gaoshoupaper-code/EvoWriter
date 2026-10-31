@@ -27,7 +27,6 @@ function renderPanel(messages: ChatMessage[]) {
       onPromptChange={NOOP}
       onSubmit={NOOP}
       onResumeSubmit={NOOP}
-      onImageReviewSubmit={NOOP}
       onStop={NOOP}
       onDeleteThread={NOOP}
     />,

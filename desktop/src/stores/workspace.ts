@@ -72,7 +72,6 @@ interface WorkspaceState {
   // 工作区
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string;
-  activeWorkspaceDomain: string;
   bootstrapping: boolean;
   creatingWorkspace: boolean;
   deletingWorkspace: boolean;
@@ -91,7 +90,6 @@ interface WorkspaceState {
   // 弹窗
   workspaceCreateOpen: boolean;
   newWorkspaceName: string;
-  newWorkspaceDomain: "writing" | "image";
   workspaceDeleteOpen: boolean;
   pendingDeleteWorkspaceId: string;
 
@@ -129,7 +127,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   activePanel: "chat",
   workspaces: [],
   activeWorkspaceId: "",
-  activeWorkspaceDomain: "writing",
   bootstrapping: false,
   creatingWorkspace: false,
   deletingWorkspace: false,
@@ -141,7 +138,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   creatingStyle: false,
   workspaceCreateOpen: false,
   newWorkspaceName: "失忆编剧大纲",
-  newWorkspaceDomain: "writing",
   workspaceDeleteOpen: false,
   pendingDeleteWorkspaceId: "",
 
@@ -206,7 +202,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
     set({ creatingWorkspace: true });
     try {
-      const workspace = await createWorkspaceRequest(title, get().newWorkspaceDomain);
+      const workspace = await createWorkspaceRequest(title);
       set({
         threads: [], activeThreadId: "",
         storylineMarkdown: "", storylineEntries: [], activeStorylineFilename: "",
@@ -215,8 +211,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         workspaces: [workspace, ...get().workspaces],
         activeWorkspaceId: workspace.workspace_id,
         newWorkspaceName: "失忆编剧大纲",
-        newWorkspaceDomain: "writing",
-        workspaceCreateOpen: false,
+              workspaceCreateOpen: false,
       } as any); // 部分 content 字段由 contentStore 接管，这里只清 workspace 域
     } catch (createError) {
       toast.error(createError instanceof Error ? createError.message : "无法创建工作目录。");
@@ -363,7 +358,6 @@ async function loadWorkspaceData(
     set({
       threads: data.threads,
       activeThreadId,
-      activeWorkspaceDomain: get().workspaces.find((w) => w.workspace_id === workspaceId)?.domain || "writing",
     });
     // FR-001：有效选择落位后记忆（回退到 threads[0] 也记，作为新的上次位置）
     if (activeThreadId) void saveLastPosition(workspaceId, activeThreadId);

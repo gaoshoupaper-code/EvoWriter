@@ -13,7 +13,6 @@ import {
   BookOpen,
   Compass,
   Feather,
-  Image as ImageIcon,
   Layers,
   ListTree,
   MessageCircle,
@@ -171,13 +170,8 @@ export function Sidebar({
                       onClick={() => onSelectWorkspace(w.workspace_id)}
                       title={w.title}
                     >
-                      {w.domain === "image" ? (
-                        <ImageIcon size={15} className="sidebar-book-icon sidebar-book-icon--image" aria-hidden="true" />
-                      ) : (
-                        /* 统一书本图标（REQ-20261025-210512 FR-003/DEC-003）：全部书同款同色，
-                           不再按书名哈希取随机色；图文书用图片图标区分 domain */
-                        <BookOpen size={15} className="sidebar-book-icon" aria-hidden="true" />
-                      )}
+                      {/* 统一书本图标（REQ-20261025-210512 FR-003/DEC-003）：全部书同款同色 */}
+                      <BookOpen size={15} className="sidebar-book-icon" aria-hidden="true" />
                       <span className="sidebar-book-title">{w.title}</span>
                     </button>
                     {/* 删除入口：每行常驻 DOM，悬停/键盘聚焦浮现（FR-003/AC-004），

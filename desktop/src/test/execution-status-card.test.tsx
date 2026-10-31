@@ -25,7 +25,6 @@ function thinkingMessage(): ChatMessage {
 
 beforeEach(() => {
   vi.restoreAllMocks();
-  useExecutionStore.setState({ activeStreamKind: "writing" });
   useWorkrailStore.setState({
     floatMode: "mini",
     pollError: false,

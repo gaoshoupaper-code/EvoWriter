@@ -19,7 +19,6 @@ from app.domains.writing.styling.router import router as style_router
 from app.domains.writing.styling.store import CreateTypeStore
 from app.domains.writing.expert_agent.services.character import CharacterService
 from app.domains.writing.agent import MetaAgentService
-from app.platform.agent.middleware import TraceCallbackHandler  # noqa: F401 — image router 用
 from app.platform.core.checkpoint_pool import (
     CheckpointPool,
     get_checkpoint_pool,
@@ -88,11 +87,10 @@ _checkpointer_cm = AsyncSqliteSaver.from_conn_string(str(_global_checkpoint_db_p
 
 agent_service: MetaAgentService | None = None
 character_service: CharacterService | None = None
-image_agent_service = None  # ImageAgentService 实例（Phase 3）
 
 
 async def _lifespan(application: FastAPI):
-    global agent_service, character_service, image_agent_service
+    global agent_service, character_service
     checkpointer = await _checkpointer_cm.__aenter__()
     # 幂等建表：from_conn_string 不建 checkpoints 表，首次读写（含
     # adelete_thread）会报 no such table——分库池（CheckpointPool.get）已
@@ -102,17 +100,24 @@ async def _lifespan(application: FastAPI):
         agent_service = MetaAgentService(settings, workspace_root, trace_recorder, style_store, checkpointer)
     if character_service is None:
         character_service = CharacterService(settings, workspace_root, trace_recorder, checkpointer)
-    if image_agent_service is None:
-        from app.domains.image.agent import ImageAgentService
-        image_agent_service = ImageAgentService(settings, workspace_root, trace_recorder, checkpointer)
-        from app.domains.image.router import init_image_routes
-        init_image_routes(image_agent_service, thread_store, trace_recorder)
+    # 文生图域下线：一次性清掉存量 image 工作区（DB 行 + 线程 + 工作区目录 +
+    # checkpoint）。幂等——清完后 domain='image' 恒为空集，此后启动为 no-op。
+    for ws in thread_store.workspaces.list_by_domain("image"):
+        owner_id, workspace_id = ws["owner_id"], ws["workspace_id"]
+        deleted_thread_ids = thread_store.delete_workspace(owner_id, workspace_id) or []
+        # checkpoint 清理 best-effort：行与目录已删，失败不影响启动
+        for thread_id in deleted_thread_ids:
+            try:
+                await agent_service.delete_thread_checkpoint(thread_id, owner_id=owner_id)
+                await character_service.delete_thread_checkpoint(thread_id)
+            except Exception as exc:
+                print(f"checkpoint 清理失败: workspace={workspace_id} thread={thread_id}: {exc}", flush=True)
     # PR-14：注入 router 共享 context（screenplay/character router 通过 get_*() 访问）
     from app.routers.context import init_router_context
     init_router_context(
         thread_store=thread_store, style_store=style_store, trace_recorder=trace_recorder,
         agent_service=agent_service, character_service=character_service,
-        image_agent_service=image_agent_service, style_optimizer=style_optimizer,
+        style_optimizer=style_optimizer,
     )
     # 多用户：引导管理员账号（幂等）
     bootstrap_admin()
@@ -171,9 +176,6 @@ app.include_router(style_router)
 app.include_router(auth_router)
 app.include_router(me_router)
 app.include_router(admin_router)
-# image domain 路由（Phase 3：图片服务端点 + Skill 管理）
-from app.domains.image.router import router as image_router
-app.include_router(image_router)
 # PR-14：生成端点 router（从 main.py 抽出，路径前缀 /api）
 from app.routers.screenplay import router as screenplay_router
 from app.routers.character import router as character_router

@@ -133,7 +133,6 @@ vi.mock("@/components/workspace/InterviewOptions", () => ({
     <div data-testid="interview-options">{options.map((o) => <span key={o.label}>{o.label}</span>)}</div>
   ),
 }));
-vi.mock("@/components/workspace/ImageReviewCard", () => ({ ImageReviewCard: () => null }));
 
 const { MemoryRouter } = await import("react-router-dom");
 const { render } = await import("@testing-library/react");

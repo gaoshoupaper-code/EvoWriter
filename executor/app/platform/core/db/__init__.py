@@ -128,37 +128,6 @@ CREATE TABLE IF NOT EXISTS styles (
     created_at            TEXT NOT NULL
 );
 
--- 文生图产物元数据（DD7a：单表 images，字段内嵌评估数据）
-CREATE TABLE IF NOT EXISTS images (
-    image_id        TEXT PRIMARY KEY,
-    workspace_id    TEXT NOT NULL REFERENCES workspaces(workspace_id),
-    owner_id        TEXT NOT NULL REFERENCES users(user_id),
-    round           INTEGER NOT NULL,
-    version_id      TEXT NOT NULL,
-    sample_index    INTEGER NOT NULL,
-    direction       TEXT,
-    prompt          TEXT,
-    file_path       TEXT NOT NULL,
-    is_final        INTEGER NOT NULL DEFAULT 0,
-    agent_analysis  TEXT,
-    user_score      INTEGER,
-    user_note       TEXT,
-    created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL
-);
-
--- Skills 自进化系统元数据（DD7b：DB 存元数据，文件存 SKILL.md 正文）
-CREATE TABLE IF NOT EXISTS skills (
-    skill_id        TEXT PRIMARY KEY,
-    owner_id        TEXT NOT NULL REFERENCES users(user_id),
-    name            TEXT NOT NULL,
-    scene_tag       TEXT,
-    description     TEXT NOT NULL DEFAULT '',
-    revision_count  INTEGER NOT NULL DEFAULT 0,
-    created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL
-);
-
 -- 用户自定义写作技能（REQ-20261023-000000：三字段卡片；阶段归属见
 -- REQ-20261025-205943——stage 四选一，存量默认 'text'）
 CREATE TABLE IF NOT EXISTS writing_skills (
@@ -190,11 +159,6 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_invite_codes_created_by ON invite_codes(created_by);
 CREATE INDEX IF NOT EXISTS idx_provider_configs_owner ON provider_configs(owner_id);
-CREATE INDEX IF NOT EXISTS idx_images_workspace ON images(workspace_id);
-CREATE INDEX IF NOT EXISTS idx_images_round ON images(workspace_id, round);
-CREATE INDEX IF NOT EXISTS idx_images_final ON images(workspace_id, is_final);
-CREATE INDEX IF NOT EXISTS idx_images_owner ON images(owner_id);
-CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id);
 CREATE INDEX IF NOT EXISTS idx_writing_skills_owner ON writing_skills(owner_id);
 CREATE INDEX IF NOT EXISTS idx_workspace_writing_skills_skill
     ON workspace_writing_skills(skill_id);
@@ -282,8 +246,8 @@ class Database:
         ``PRAGMA table_info`` 探测后再补。``RENAME COLUMN`` 同理先探测旧列名是否存在。
 
         workspace 补列（DD2）：
-        - ``outline_name`` → ``title``：字段语义通用化（image workspace 非"大纲名"）
-        - ``domain``：能力域隔离（writing/image/...），存量默认 'writing'
+        - ``outline_name`` → ``title``：字段语义通用化
+        - ``domain``：能力域隔离，存量默认 'writing'
 
         积分制补列（D1-D28）：
         - users.credits_balance / is_super_admin
@@ -327,6 +291,10 @@ class Database:
             self._conn.execute(
                 "ALTER TABLE writing_skills ADD COLUMN stage TEXT NOT NULL DEFAULT 'text'"
             )
+
+        # 文生图域下线：废弃域专属表清理（幂等，仅存量旧库有这两张表）
+        self._conn.execute("DROP TABLE IF EXISTS images")
+        self._conn.execute("DROP TABLE IF EXISTS skills")
 
         # 积分暗调参数初始播种（AD11：首次启动写入默认值，之后管理页在线改）
         self._seed_credit_config()
@@ -1051,6 +1019,14 @@ class WorkspaceRepository:
             result.append(d)
         return result
 
+    def list_by_domain(self, domain: str) -> list[dict]:
+        """跨 owner 列指定能力域的全部工作区（废弃域下线清理用）。"""
+        rows = self.db.conn.execute(
+            "SELECT * FROM workspaces WHERE domain = ?",
+            (domain,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     def list_all(self) -> list[dict]:
         """跨 owner 列全部作品（evolution 内部绑定选择用，REQ-20261001-131018 DEC-008）。
 
@@ -1080,9 +1056,9 @@ class WorkspaceRepository:
     def delete(self, workspace_id: str, owner_id: str) -> bool:
         with self.db.transaction() as conn:
             # 级联删引用 workspaces 的子表（外键虽设了，但显式删更稳）：
-            # threads、images（DD7a）、workspace_writing_skills（REQ-20261023）。
+            # threads、workspace_writing_skills（REQ-20261023）。
             # 漏删任一子表会使 DELETE workspaces 触发外键约束 → API 500。
-            for table in ("threads", "images", "workspace_writing_skills"):
+            for table in ("threads", "workspace_writing_skills"):
                 conn.execute(
                     f"DELETE FROM {table} WHERE workspace_id = ? AND owner_id = ?",
                     (workspace_id, owner_id),
@@ -1307,196 +1283,6 @@ class StyleRepository:
             cur = conn.execute(
                 "DELETE FROM styles WHERE style_id = ? AND owner_id = ?",
                 (style_id, owner_id),
-            )
-            return cur.rowcount > 0
-
-
-class ImageRepository:
-    """文生图产物元数据访问层（DD7a）。所有读写带 owner_id。"""
-
-    def __init__(self, db: Database) -> None:
-        self.db = db
-
-    def create(
-        self, *, image_id: str, workspace_id: str, owner_id: str,
-        round: int, version_id: str, sample_index: int,
-        direction: str | None, prompt: str | None, file_path: str,
-    ) -> dict:
-        now = _now()
-        with self.db.transaction() as conn:
-            conn.execute(
-                "INSERT INTO images (image_id, workspace_id, owner_id, round, version_id, "
-                "sample_index, direction, prompt, file_path, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (image_id, workspace_id, owner_id, round, version_id,
-                 sample_index, direction, prompt, file_path, now, now),
-            )
-        return self.get(image_id, owner_id)  # type: ignore[return-value]
-
-    def get(self, image_id: str, owner_id: str) -> dict | None:
-        row = self.db.conn.execute(
-            "SELECT * FROM images WHERE image_id = ? AND owner_id = ?",
-            (image_id, owner_id),
-        ).fetchone()
-        return dict(row) if row else None
-
-    def get_any(self, image_id: str) -> dict | None:
-        """不过滤 owner（图片服务端点鉴权后用，已确认归属）。"""
-        row = self.db.conn.execute(
-            "SELECT * FROM images WHERE image_id = ?", (image_id,)
-        ).fetchone()
-        return dict(row) if row else None
-
-    def list_by_workspace(self, workspace_id: str, owner_id: str) -> list[dict]:
-        rows = self.db.conn.execute(
-            "SELECT * FROM images WHERE workspace_id = ? AND owner_id = ? ORDER BY round, version_id, sample_index",
-            (workspace_id, owner_id),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def list_by_round(self, workspace_id: str, owner_id: str, round: int) -> list[dict]:
-        rows = self.db.conn.execute(
-            "SELECT * FROM images WHERE workspace_id = ? AND owner_id = ? AND round = ? "
-            "ORDER BY version_id, sample_index",
-            (workspace_id, owner_id, round),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def list_final(self, workspace_id: str, owner_id: str) -> list[dict]:
-        rows = self.db.conn.execute(
-            "SELECT * FROM images WHERE workspace_id = ? AND owner_id = ? AND is_final = 1 "
-            "ORDER BY round, version_id, sample_index",
-            (workspace_id, owner_id),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def update_evaluation(
-        self, image_id: str, owner_id: str, *,
-        agent_analysis: str | None = None, user_score: int | None = None,
-        user_note: str | None = None,
-    ) -> dict | None:
-        sets, vals = [], []
-        if agent_analysis is not None:
-            sets.append("agent_analysis = ?"); vals.append(agent_analysis)
-        if user_score is not None:
-            sets.append("user_score = ?"); vals.append(user_score)
-        if user_note is not None:
-            sets.append("user_note = ?"); vals.append(user_note)
-        if not sets:
-            return self.get(image_id, owner_id)
-        sets.append("updated_at = ?"); vals.append(_now())
-        vals.extend([image_id, owner_id])
-        with self.db.transaction() as conn:
-            conn.execute(
-                f"UPDATE images SET {', '.join(sets)} WHERE image_id = ? AND owner_id = ?",
-                vals,
-            )
-        return self.get(image_id, owner_id)
-
-    def set_final(self, image_id: str, owner_id: str, is_final: bool) -> dict | None:
-        with self.db.transaction() as conn:
-            conn.execute(
-                "UPDATE images SET is_final = ?, updated_at = ? WHERE image_id = ? AND owner_id = ?",
-                (1 if is_final else 0, _now(), image_id, owner_id),
-            )
-        return self.get(image_id, owner_id)
-
-    def delete_non_final(self, workspace_id: str, owner_id: str) -> int:
-        """删除某 workspace 的非定稿图（D11 废弃清理）。返回删除行数。"""
-        with self.db.transaction() as conn:
-            cur = conn.execute(
-                "DELETE FROM images WHERE workspace_id = ? AND owner_id = ? AND is_final = 0",
-                (workspace_id, owner_id),
-            )
-            return cur.rowcount
-
-    def delete_by_workspace(self, workspace_id: str, owner_id: str) -> int:
-        """删除某 workspace 的所有图（D11 workspace 删除连带）。返回删除行数。"""
-        with self.db.transaction() as conn:
-            cur = conn.execute(
-                "DELETE FROM images WHERE workspace_id = ? AND owner_id = ?",
-                (workspace_id, owner_id),
-            )
-            return cur.rowcount
-
-
-class SkillRepository:
-    """Skills 自进化系统元数据访问层（DD7b）。所有读写带 owner_id。
-
-    SKILL.md 正文存文件系统（skills/<owner>/<skill_id>/SKILL.md），
-    本表只存管理用元数据（name/scene_tag/description/revision_count）。
-    """
-
-    def __init__(self, db: Database) -> None:
-        self.db = db
-
-    def create(
-        self, *, owner_id: str, name: str, scene_tag: str | None = None,
-        description: str = "",
-    ) -> dict:
-        skill_id = uuid4().hex
-        now = _now()
-        with self.db.transaction() as conn:
-            conn.execute(
-                "INSERT INTO skills (skill_id, owner_id, name, scene_tag, description, "
-                "revision_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
-                (skill_id, owner_id, name, scene_tag, description, now, now),
-            )
-        return self.get(skill_id, owner_id)  # type: ignore[return-value]
-
-    def get(self, skill_id: str, owner_id: str) -> dict | None:
-        row = self.db.conn.execute(
-            "SELECT * FROM skills WHERE skill_id = ? AND owner_id = ?",
-            (skill_id, owner_id),
-        ).fetchone()
-        return dict(row) if row else None
-
-    def list_by_owner(self, owner_id: str) -> list[dict]:
-        rows = self.db.conn.execute(
-            "SELECT * FROM skills WHERE owner_id = ? ORDER BY updated_at DESC",
-            (owner_id,),
-        ).fetchall()
-        return [dict(r) for r in rows]
-
-    def update(
-        self, skill_id: str, owner_id: str, *,
-        name: str | None = None, scene_tag: str | None = None,
-        description: str | None = None,
-    ) -> dict | None:
-        sets, vals = [], []
-        for k, v in [("name", name), ("scene_tag", scene_tag), ("description", description)]:
-            if v is not None:
-                sets.append(f"{k} = ?"); vals.append(v)
-        if not sets:
-            return self.get(skill_id, owner_id)
-        sets.append("updated_at = ?"); vals.append(_now())
-        vals.extend([skill_id, owner_id])
-        with self.db.transaction() as conn:
-            cur = conn.execute(
-                f"UPDATE skills SET {', '.join(sets)} WHERE skill_id = ? AND owner_id = ?",
-                vals,
-            )
-            if cur.rowcount == 0:
-                return None
-        return self.get(skill_id, owner_id)
-
-    def bump_revision(self, skill_id: str, owner_id: str) -> dict | None:
-        """进化次数 +1（D8 持久化 Skill 时调用）。"""
-        with self.db.transaction() as conn:
-            cur = conn.execute(
-                "UPDATE skills SET revision_count = revision_count + 1, updated_at = ? "
-                "WHERE skill_id = ? AND owner_id = ?",
-                (_now(), skill_id, owner_id),
-            )
-            if cur.rowcount == 0:
-                return None
-        return self.get(skill_id, owner_id)
-
-    def delete(self, skill_id: str, owner_id: str) -> bool:
-        with self.db.transaction() as conn:
-            cur = conn.execute(
-                "DELETE FROM skills WHERE skill_id = ? AND owner_id = ?",
-                (skill_id, owner_id),
             )
             return cur.rowcount > 0
 

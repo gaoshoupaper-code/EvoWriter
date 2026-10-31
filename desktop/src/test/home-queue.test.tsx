@@ -184,7 +184,6 @@ vi.mock("@/components/workspace/CharactersPanel", () => ({ CharactersPanel: () =
 vi.mock("@/components/workspace/WorldviewPanel", () => ({ WorldviewPanel: () => null }));
 vi.mock("@/components/workspace/StorylinePanel", () => ({ StorylinePanel: () => null }));
 vi.mock("@/components/workspace/InterviewOptions", () => ({ InterviewOptions: () => null }));
-vi.mock("@/components/workspace/ImageReviewCard", () => ({ ImageReviewCard: () => null }));
 
 const { MemoryRouter } = await import("react-router-dom");
 const { render } = await import("@testing-library/react");

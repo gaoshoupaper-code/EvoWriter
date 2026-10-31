@@ -1,11 +1,11 @@
 # Domain 组织规约
 
-执行端（executor）领域层的组织规范。新增 domain 时照此建立结构，保证 writing/image 及未来 domain 的组织一致性。
+执行端（executor）领域层的组织规范。新增 domain 时照此建立结构，保证 writing 及未来 domain 的组织一致性。
 
 ## 核心原则
 
 - **domain = 领域知识的集合**。放领域专属逻辑（业务规则、领域服务、领域 LLM、领域数据模型）。不放领域无关的平台基础设施（那些在 `platform/`）。
-- **核心文件固定，可选子目录按复杂度伸缩**。简单 domain（image）扁平几文件即可；复杂 domain（writing）允许多层子目录。
+- **核心文件固定，可选子目录按复杂度伸缩**。简单 domain 扁平几文件即可；复杂 domain（writing）允许多层子目录。
 - **两种 domain 模式并存**：进化型（装配外包到 harness 包）和独立型（executor 内自装配）。
 
 ## 核心文件（必有）
@@ -25,7 +25,7 @@ domains/<name>/
 ## 可选文件
 
 ```
-  store.py      # 持久化（如有独立 artifact store，如 image 的 ImageArtifactStore）
+  store.py      # 持久化（如有独立 artifact store）
   events.py     # 领域 EventSink（如 SSE 事件分发有领域逻辑，如 writing 的 WritingEventSink）
 ```
 
@@ -33,7 +33,7 @@ domains/<name>/
 
 ```
   prompts/      # prompt 文件（独立型 domain 用；进化型的 prompt 在 harness 包内）
-  providers/    # 外部服务适配（如 image 的 bytedance/ 图像供应商）
+  providers/    # 外部服务适配（如图像/语音等外部 API 供应商）
   tools/        # 领域专属工具
   services/     # 子服务（如 writing 的 CharacterService / storyline_graph）
   <子系统>/      # 领域子系统（如 writing 的 styling/ 风格优化子系统）
@@ -60,7 +60,7 @@ domains/writing/        # 进化型
   # 无 prompts/（在 harness 包内）
 ```
 
-### 独立型 domain（如 image）
+### 独立型 domain
 
 agent 装配在 executor 内，不参与进化。
 
@@ -68,15 +68,15 @@ agent 装配在 executor 内，不参与进化。
 - **特征**：domain 内有 prompts/（prompt 文件在本域）；可能有 providers/（外部服务适配）。
 
 ```
-domains/image/          # 独立型
+domains/<name>/         # 独立型
   agent.py              # 完整装配：create_deep_agent + SSE
-  models.py             # build_image_model
-  router.py             # 文生图端点 + Skill 管理
-  store.py              # ImageArtifactStore
-  prompts/              # system.md + image_workflow.md
-  providers/bytedance/  # 图像供应商适配
-  tools/                # generate_images / analyze_image
-  skills/               # image-workflow SKILL.md
+  models.py             # build_<name>_model
+  router.py             # 领域端点
+  store.py              # 领域 artifact store（如有）
+  prompts/              # system.md + 领域工作流 prompt
+  providers/<vendor>/   # 外部服务适配（如有）
+  tools/                # 领域专属工具
+  skills/               # 领域 SKILL.md（如有）
 ```
 
 ## 模式选择判据

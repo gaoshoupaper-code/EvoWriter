@@ -1,14 +1,13 @@
 """删作品级联删除测试：workspaces 行的子表必须全部清掉。
 
-背景（bug 复现）：images（DD7a）与 workspace_writing_skills（REQ-20261023）
-都带 REFERENCES workspaces(workspace_id) 外键。删作品只删 threads + workspaces，
-生成过图或启用过写作技能的书触发 FOREIGN KEY constraint failed → API 500。
+背景（bug 复现）：workspace_writing_skills（REQ-20261023）带
+REFERENCES workspaces(workspace_id) 外键。删作品只删 threads + workspaces，
+启用过写作技能的书触发 FOREIGN KEY constraint failed → API 500。
 """
 
 from __future__ import annotations
 
 from types import SimpleNamespace
-from uuid import uuid4
 
 import pytest
 from fastapi import FastAPI
@@ -18,7 +17,6 @@ from app.auth import current_user
 from app.platform.core.security import generate_master_key, load_master_key
 from app.platform.core.db import (
     Database,
-    ImageRepository,
     ThreadRepository,
     UserRepository,
     WorkspaceRepository,
@@ -39,22 +37,17 @@ def env(tmp_path):
 
 
 def test_delete_workspace_cascades_child_tables(env):
-    """有图 + 有技能绑定的作品能删干净，不留子表残留。"""
+    """有线程 + 有技能绑定的作品能删干净，不留子表残留。"""
     db, owner_id, ws_id = env["db"], env["owner_id"], env["workspace_id"]
 
     ThreadRepository(db).create(workspace_id=ws_id, owner_id=owner_id, session_name="s1")
-    ImageRepository(db).create(
-        image_id=uuid4().hex, workspace_id=ws_id, owner_id=owner_id,
-        round=1, version_id="v1", sample_index=0,
-        direction=None, prompt=None, file_path="/images/r1_v1_s0.png",
-    )
     skills = WritingSkillRepository(db)
     skill = skills.create(owner_id=owner_id, name="节奏", description="", content="x")
     skills.set_enabled(ws_id, owner_id, [skill["skill_id"]])
 
     assert WorkspaceRepository(db).delete(ws_id, owner_id) is True
 
-    for table in ("threads", "images", "workspace_writing_skills"):
+    for table in ("threads", "workspace_writing_skills"):
         n = db.conn.execute(
             f"SELECT COUNT(*) AS c FROM {table} WHERE workspace_id = ?", (ws_id,)
         ).fetchone()["c"]

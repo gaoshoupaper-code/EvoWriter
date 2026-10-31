@@ -370,102 +370,14 @@ export async function fetchWorkspaceBootstrap(workspaceId: string) {
   return parseJsonResponse<WorkspaceBootstrapResponse>(response);
 }
 
-export async function createWorkspace(title: string, domain: string = "writing") {
+export async function createWorkspace(title: string) {
   const response = await apiFetch(`${API_BASE_URL}/api/workspaces`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ title, domain }),
+    body: JSON.stringify({ title }),
   });
 
   return parseJsonResponse<WorkspaceSummary>(response);
-}
-
-// ── 文生图（Phase 3/4）────────────────────────────────────
-
-/** 图片 URL（DD8b：按 image_id 取图，后端鉴权）。 */
-export function imageUrl(imageId: string): string {
-  return `${API_BASE_URL}/api/images/${imageId}`;
-}
-
-export type ImageVersion = {
-  version_id: string;
-  direction: string;
-  prompt: string;
-  images: { image_id: string; url: string }[];
-  agent_analysis: string;
-};
-
-export type ImageReviewInterrupt = {
-  kind: "image_review";
-  round: number;
-  versions: ImageVersion[];
-};
-
-export type ImageReviewResume = {
-  kind: "image_review";
-  round: number;
-  ratings: { version_id: string; score: number; note: string }[];
-  overall_direction: string;
-  action: "continue" | "stop";
-};
-
-// ── Skill 管理（D18）──────────────────────────────────────
-
-export type SkillSummary = {
-  skill_id: string;
-  name: string;
-  scene_tag: string | null;
-  description: string;
-  revision_count: number;
-  created_at: string;
-  updated_at: string;
-};
-
-export type SkillDetail = SkillSummary & { content: string };
-
-export async function listSkills() {
-  return apiJson<SkillSummary[]>(`${API_BASE_URL}/api/skills`);
-}
-
-export async function readSkill(skillId: string) {
-  return apiJson<SkillDetail>(`${API_BASE_URL}/api/skills/${skillId}`);
-}
-
-export async function updateSkill(
-  skillId: string,
-  data: { name?: string; scene_tag?: string; description?: string },
-) {
-  return apiJson<SkillSummary>(`${API_BASE_URL}/api/skills/${skillId}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-}
-
-export async function deleteSkill(skillId: string) {
-  return apiJson<{ status: string }>(`${API_BASE_URL}/api/skills/${skillId}`, {
-    method: "DELETE",
-  });
-}
-
-export async function mergeSkills(
-  skillId1: string,
-  skillId2: string,
-  newName: string,
-  newContent: string,
-  newSceneTag: string = "",
-) {
-  return apiJson<SkillSummary>(`${API_BASE_URL}/api/skills/merge`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      skill_id_1: skillId1,
-      skill_id_2: skillId2,
-      new_name: newName,
-      new_content: newContent,
-      new_scene_tag: newSceneTag,
-    }),
-  });
 }
 
 export async function deleteWorkspace(workspaceId: string) {

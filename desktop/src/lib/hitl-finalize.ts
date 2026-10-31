@@ -21,8 +21,7 @@ import type { ChatMessage } from "./types";
 export function finalizeAnsweredMessage(message: ChatMessage, now: number = Date.now()): ChatMessage {
   if (!message.awaitingInput) return message;
   const hitl = message.awaitingInput;
-  // image_review 的提问为空（描述文案在 content），choice 才有 markdown 提问正文
-  const shouldSettle = !!message.rows?.length && hitl.kind !== "image_review" && !!hitl.question;
+  const shouldSettle = !!message.rows?.length && !!hitl.question;
   const rows = shouldSettle ? appendQuestionRow(message.rows!, hitl.question, now) : message.rows;
   const next: ChatMessage = {
     ...message,

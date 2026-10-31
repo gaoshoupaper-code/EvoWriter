@@ -7,7 +7,6 @@
  *
  * REQ-20261010-182114 沿袭：
  * - 写作域思考态走 ThinkingTimeline（作为状态卡的展开内容）
- * - 图片流（activeStreamKind=image）维持拟人 ThinkingView（DEC-006）
  * - asking/终态保留思考时间线可回看（DEC-003/007）
  *
  * REQ-20261018-235653（FR-003/FR-007/FR-008）：
@@ -18,9 +17,7 @@
 import type { ChatMessage, ExecutionPhase } from "@/lib/types";
 import type { StageFlow } from "@/lib/stage";
 import { derivePhaseFromMessage } from "@/lib/execution-phase";
-import { useExecutionStore } from "@/stores/execution";
 import { BootingView } from "./execution/BootingView";
-import { ThinkingView } from "./execution/ThinkingView";
 import { ThinkingTimeline } from "./execution/ThinkingTimeline";
 import { RowTimeline } from "./execution/RowTimeline";
 import { DeliveryCeremony } from "./execution/DeliveryCeremony";
@@ -50,9 +47,6 @@ function completedSummary(stageFlow: StageFlow | null): string {
 export function ExecutionView({ message, loading, isLastAssistant, stageFlow, onRetry }: ExecutionViewProps) {
   // T17: 优先用 message.executionPhase（store 写入），兜底用临时派生
   const phase: ExecutionPhase = message.executionPhase ?? derivePhaseFromMessage(message);
-  // DEC-006：图片流思考态维持拟人 ThinkingView，不进思考时间线
-  const activeStreamKind = useExecutionStore((s) => s.activeStreamKind);
-  const imageStream = activeStreamKind === "image";
 
   // 行消息（FR-003）：末个正文块外置常显（对齐 ZCode 的 visibleAssistantText——
   // 状态卡收起时最终回答仍可见，不随工作过程折进卡里）；其余行进卡内时间线。
@@ -82,7 +76,6 @@ export function ExecutionView({ message, loading, isLastAssistant, stageFlow, on
       // FR-002：reasoning/行先于首个 tool_call 到达时直接进时间线，不停留在黑屏期
       return timeline ?? <BootingView />;
     case "thinking":
-      if (imageStream) return <ThinkingView message={message} stageFlow={stageFlow} />;
       return (
         <>
           <ExecutionStatusCard message={message} loading={loading} {...rowCardProps}>
@@ -92,7 +85,7 @@ export function ExecutionView({ message, loading, isLastAssistant, stageFlow, on
         </>
       );
     case "asking":
-      // asking 态的 HITL UI 由 ChatPanel 外层渲染（InterviewOptions/ImageReviewCard）
+      // asking 态的 HITL UI 由 ChatPanel 外层渲染（InterviewOptions/ReviewCard）
       // 状态卡保留思考时间线到中断点（DEC-007）
       return (
         <>

@@ -132,10 +132,10 @@ def test_awaiting_reconstructs_question_and_options():
 
 
 def test_awaiting_without_question_degrades_to_none():
-    """tool_args 无 question（图像评审等形态）→ awaiting=None，不误渲染拍板卡。"""
+    """tool_args 无 question（非访谈形态）→ awaiting=None，不误渲染拍板卡。"""
     events = [
         _event(3, "tool_start", status="running", tool_call_id="call-y",
-               tool_name="ask_image_review",
+               tool_name="ask_feedback",
                tool_args={"round": 1, "versions": []}),
         _event(4, "hitl", status="awaiting_input", tool_call_id="call-y"),
     ]

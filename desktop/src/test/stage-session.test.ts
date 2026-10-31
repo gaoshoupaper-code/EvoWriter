@@ -84,7 +84,6 @@ beforeEach(() => {
     getActiveWorkspaceId: () => useWorkspaceStore.getState().activeWorkspaceId,
     getActiveThreadSessionName: () => "",
     getActiveThreadWorkspacePath: () => "",
-    getActiveWorkspaceDomain: () => "writing",
     setActiveThreadId: (id) => useWorkspaceStore.getState().setActiveThreadId(id),
     setThreads: (updater) => useWorkspaceStore.getState().setThreads(updater as any),
     addThread: (t) => useWorkspaceStore.getState().setThreads((cur) => [t, ...cur.filter((x) => x.thread_id !== t.thread_id)]),

@@ -23,7 +23,6 @@ function baseProps() {
     onPromptChange: vi.fn(),
     onSubmit: vi.fn(),
     onResumeSubmit: vi.fn(),
-    onImageReviewSubmit: vi.fn(),
     onStop: vi.fn(),
     onDeleteThread: vi.fn(),
   };

@@ -119,7 +119,6 @@ vi.mock("@/components/workspace/InterviewOptions", () => ({
     </div>
   ),
 }));
-vi.mock("@/components/workspace/ImageReviewCard", () => ({ ImageReviewCard: () => null }));
 
 const { MemoryRouter } = await import("react-router-dom");
 const { render } = await import("@testing-library/react");
@@ -553,7 +552,6 @@ function panelRender(props: Partial<Parameters<typeof ChatPanel>[0]> = {}) {
     onPromptChange: () => {},
     onSubmit: (() => {}) as unknown as React.FormEventHandler<HTMLFormElement>,
     onResumeSubmit: vi.fn(async () => {}),
-    onImageReviewSubmit: vi.fn(async () => {}),
     onStop: () => {},
     onDeleteThread: () => {},
     ...props,

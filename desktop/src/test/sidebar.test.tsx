@@ -194,23 +194,13 @@ describe("作品侧栏（FR-011）", () => {
 });
 
 describe("书图标（REQ-20261025-210512 FR-003/DEC-003）", () => {
-  const IMAGE_BOOK = {
-    workspace_id: "ws-img",
-    title: "图文混排示范",
-    domain: "image",
-    created_at: "",
-    session_count: 0,
-    thread_count: 0,
-  } as unknown as WorkspaceSummary;
-
-  it("所有书统一书本图标、无随机色块；图文书用图片图标（AC-003）", () => {
-    render(<Sidebar {...baseProps({ workspaces: [...BOOKS, IMAGE_BOOK] })} />);
+  it("所有书统一书本图标、无随机色块（AC-003）", () => {
+    render(<Sidebar {...baseProps()} />);
     const rows = document.querySelectorAll(".sidebar-books li");
-    expect(rows).toHaveLength(3);
-    // 小说行：统一书本图标；图文书行：图片图标
+    expect(rows).toHaveLength(2);
+    // 小说行：统一书本图标
     expect(rows[0].querySelector(".sidebar-book-icon")).not.toBeNull();
     expect(rows[1].querySelector(".sidebar-book-icon")).not.toBeNull();
-    expect(rows[2].querySelector(".sidebar-book-icon--image")).not.toBeNull();
     // 随机取色书脊机制整体退役：色块、色档类名、首字母都不再渲染
     expect(document.querySelectorAll(".sidebar-book-spine")).toHaveLength(0);
     expect(document.querySelectorAll(".sidebar-spine-letter")).toHaveLength(0);

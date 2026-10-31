@@ -1,9 +1,9 @@
 """Platform 基座包（DD1）。
 
-领域无关的共享基础设施，各能力域（writing/image/未来 video/game）在此之上构建。
+领域无关的共享基础设施，各能力域（writing、未来 video/game）在此之上构建。
 
 工程纪律（DD1）：
-- platform **不 import** 任何 domain（domains/writing、domains/image）。
+- platform **不 import** 任何 domain（如 domains/writing）。
   基座对能力域一无所知，只提供抽象。
 - domain **可以 import** platform。
 - main.py 是唯一组装点：实例化 platform 组件 + 挂载 domain router。

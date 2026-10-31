@@ -51,7 +51,6 @@ vi.mock("@/components/workspace/CharactersPanel", () => ({ CharactersPanel: () =
 vi.mock("@/components/workspace/WorldviewPanel", () => ({ WorldviewPanel: () => null }));
 vi.mock("@/components/workspace/StorylinePanel", () => ({ StorylinePanel: () => null }));
 vi.mock("@/components/workspace/InterviewOptions", () => ({ InterviewOptions: () => null }));
-vi.mock("@/components/workspace/ImageReviewCard", () => ({ ImageReviewCard: () => null }));
 
 // ── Import（在所有 mock 之后）──
 const { MemoryRouter } = await import("react-router-dom");

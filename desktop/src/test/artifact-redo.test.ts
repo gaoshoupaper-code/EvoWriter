@@ -67,6 +67,24 @@ describe("redoEligibility", () => {
     expect(redoEligibility("文风.md", full)).toEqual({ eligible: true, reason: "" });
   });
 
+  it("人物卡：叶级产物全产物在场也可删（REQ-20261031-183257）", () => {
+    const full = f(
+      ["主题.md"],
+      ["总纲.md"],
+      ["文风.md"],
+      ["人物/主角.md"],
+      ["人物/BOSS·卷一·恶霸工头.md"],
+      ["人物/老陈.md"],
+      ...[vol(1)],
+      ["章纲/第001章.md"],
+      ["正文/第001章.md"]
+    );
+    expect(redoTargetKind("人物/主角.md")).toBe("character");
+    expect(redoTargetKind("人物/BOSS·卷一·恶霸工头.md")).toBe("character");
+    expect(redoEligibility("人物/主角.md", full)).toEqual({ eligible: true, reason: "" });
+    expect(redoEligibility("人物/老陈.md", full)).toEqual({ eligible: true, reason: "" });
+  });
+
   it("不可删时给出人话原因（按钮 tooltip 用）", () => {
     const r = redoEligibility("总纲.md", f(["总纲.md"], ...[vol(1)]));
     expect(r.reason).toContain("卷纲");

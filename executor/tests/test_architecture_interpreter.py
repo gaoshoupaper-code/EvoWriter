@@ -91,10 +91,10 @@ def test_manifest_shape_single_agent():
     assert main.disable_file_tools is True  # 路径收权（FR-003）
     assert main.write_permissions == []
     assert set(main.tools) == {
-        "read_artifact", "save_artifact", "update_foreshadow_table",
+        "read_artifact", "list_characters", "save_artifact", "update_foreshadow_table",
         "rewrite_rhythm_table", "append_chapter_deviation",
         "confirm_with_user", "request_review",
-    }  # handoff 已移除（REQ-20261019-232617 FR-004：跳段权收归界面）；request_review=设计内审查停等口（REQ-20261026-191719 TD-003，auto 模式也停）
+    }  # list_characters=在册人物卡清单（REQ-20261031-183257）；handoff 已移除（REQ-20261019-232617 FR-004：跳段权收归界面）；request_review=设计内审查停等口（REQ-20261026-191719 TD-003，auto 模式也停）
     review = manifest.agent("review")
     assert review.role == "sub"
     assert review.delegated_by == "author"

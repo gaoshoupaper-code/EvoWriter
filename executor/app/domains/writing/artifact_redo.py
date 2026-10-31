@@ -33,6 +33,7 @@ from contracts.writing_artifacts import (
     CHAPTER_OUTLINE_DIR,
     CHAPTER_OUTLINE_PATTERN,
     KIND_CHAPTER,
+    KIND_CHARACTER,
     KIND_OUTLINE,
     KIND_STYLE,
     KIND_TEXT,
@@ -66,6 +67,8 @@ _KIND_STAGE = {
     KIND_CHAPTER: STAGE_CHAPTER,
     KIND_STYLE: STAGE_CHAPTER,
     KIND_TEXT: STAGE_TEXT,
+    # 人物卡是跨段支线产物：挂最高段使删除永不回落段指针（删卡不动写作流程）
+    KIND_CHARACTER: STAGE_TEXT,
 }
 
 _TRASH_DIR = ".writing/trash"
@@ -147,6 +150,11 @@ def redo_eligibility(workspace: Path, rel: str) -> tuple[bool, str]:
 
     # 正文（无下游）与文风（DEC-002 特例）：随时可删
     if ref.kind in (KIND_TEXT, KIND_STYLE):
+        return True, ""
+
+    # 人物卡（跨段支线产物，叶级）：随时可删；删除主角卡等于本书退回
+    # 未启用人物卡状态（分流判定按主角卡存在与否），由用户显式决定。
+    if ref.kind == KIND_CHARACTER:
         return True, ""
 
     return False, "删除重做只支持五段产物文件（主题/总纲/卷纲/章纲/文风/正文）。"

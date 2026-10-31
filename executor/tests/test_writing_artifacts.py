@@ -19,6 +19,7 @@ import pytest
 
 from contracts.writing_artifacts import (
     KIND_CHAPTER,
+    KIND_CHARACTER,
     KIND_OUTLINE,
     KIND_STYLE,
     KIND_TEXT,
@@ -423,12 +424,13 @@ def test_writing_state_corruption_tolerant(tmp_path: Path) -> None:
 
 
 def test_stage_allowed_kinds() -> None:
+    # 人物卡放行总纲/卷纲/正文三段（REQ-20261031-183257 建卡＋滚轨迹）
     assert stage_allowed_kinds(STAGE_THEME) == {KIND_THEME}
-    assert stage_allowed_kinds(STAGE_OUTLINE) == {KIND_OUTLINE}
-    assert stage_allowed_kinds(STAGE_VOLUME) == {KIND_VOLUME}
+    assert stage_allowed_kinds(STAGE_OUTLINE) == {KIND_OUTLINE, KIND_CHARACTER}
+    assert stage_allowed_kinds(STAGE_VOLUME) == {KIND_VOLUME, KIND_CHARACTER}
     # 文风卡在章纲段起草（DEC-009）
     assert stage_allowed_kinds(STAGE_CHAPTER) == {KIND_CHAPTER, KIND_STYLE}
-    assert stage_allowed_kinds(STAGE_TEXT) == {KIND_TEXT}
+    assert stage_allowed_kinds(STAGE_TEXT) == {KIND_TEXT, KIND_CHARACTER}
 
 
 # ── 阶段切换人工闸（REQ-20261019-232617 FR-001/002/005）────────────
@@ -525,3 +527,100 @@ def test_stage_labels() -> None:
     assert len(STAGE_LABELS) == 5
     assert LABEL_THEME == "题材"
     assert LABEL_CHAPTER == "章纲"
+
+
+# ── 人物卡产物（REQ-20261031-183257 FR-001/002/012）───────────────
+
+
+def test_character_relpath_mapping() -> None:
+    """character kind：name → 人物/<name>.md 唯一映射（DEC-001 一人一卡）。"""
+    from contracts.writing_artifacts import KIND_CHARACTER
+
+    assert artifact_relpath(KIND_CHARACTER, name="主角") == "人物/主角.md"
+    assert artifact_relpath(KIND_CHARACTER, name="林晚") == "人物/林晚.md"
+    assert artifact_relpath(KIND_CHARACTER, name="BOSS·卷一·恶霸工头") == "人物/BOSS·卷一·恶霸工头.md"
+
+
+def test_character_relpath_rejects_invalid() -> None:
+    """缺 name / 非法 name / 其他 kind 带 name 一律拒绝（路径收权）。"""
+    import pytest as _pytest
+
+    from contracts.writing_artifacts import KIND_CHARACTER
+
+    with _pytest.raises(ValueError):
+        artifact_relpath(KIND_CHARACTER)  # 缺 name
+    for bad in ("", "a/b", "a\b", "../x", ".", "  ", "a:b", "a<b", 'a"b', "a|b", "a?b", "a*b", "名字" * 25):
+        with _pytest.raises(ValueError):
+            artifact_relpath(KIND_CHARACTER, name=bad)
+    # 其他 kind 不吃 name（沿用既有严格口径）
+    with _pytest.raises(ValueError):
+        artifact_relpath(KIND_OUTLINE, name="主角")
+    with _pytest.raises(ValueError):
+        artifact_relpath(KIND_CHARACTER, name="主角", volume=1)
+
+
+def test_parse_relpath_character() -> None:
+    """人物/ 目录反解：合法人名过；穿越段、子目录、非法名一律 None。"""
+    from contracts.writing_artifacts import KIND_CHARACTER
+
+    ref = parse_relpath("人物/主角.md")
+    assert ref is not None and ref.kind == KIND_CHARACTER and ref.title == "主角"
+    assert parse_relpath("人物/林晚.md") is not None
+    assert parse_relpath("人物/BOSS·卷一·恶霸工头.md") is not None
+    # 穿越与非法形态
+    assert parse_relpath("人物/../总纲.md") is None
+    assert parse_relpath("人物/子/林晚.md") is None
+    assert parse_relpath("人物/.md") is None
+    assert parse_relpath("人物/a:b.md") is None
+    assert parse_relpath("人物x/林晚.md") is None
+
+
+def test_stage_allowed_kinds_character() -> None:
+    """character 放行总纲/卷纲/正文三段（建卡＋滚轨迹）；题材/章纲不放行。"""
+    from contracts.writing_artifacts import KIND_CHARACTER
+
+    assert KIND_CHARACTER in stage_allowed_kinds(STAGE_OUTLINE)
+    assert KIND_CHARACTER in stage_allowed_kinds(STAGE_VOLUME)
+    assert KIND_CHARACTER in stage_allowed_kinds(STAGE_TEXT)
+    assert KIND_CHARACTER not in stage_allowed_kinds(STAGE_THEME)
+    assert KIND_CHARACTER not in stage_allowed_kinds(STAGE_CHAPTER)
+
+
+def test_scan_characters_and_mode_flag(tmp_path: Path) -> None:
+    """人物目录扫描：人名清单＋主角卡存在＝启用人物卡机制（DEC-017 分流）。"""
+    from contracts.writing_artifacts import (
+        KIND_CHARACTER,
+        PROTAGONIST_CARD_RELPATH,
+        is_character_mode,
+    )
+
+    # 无人物目录：不启用
+    prog = scan_writing_progress(tmp_path)
+    assert prog.characters == []
+    assert prog.character_mode is False
+    assert is_character_mode(tmp_path) is False
+
+    # 只有配角卡（无主角卡）：扫描得到但不启用
+    _touch(tmp_path, "人物/林晚.md")
+    prog = scan_writing_progress(tmp_path)
+    assert prog.characters == ["林晚"]
+    assert prog.character_mode is False
+    assert is_character_mode(tmp_path) is False
+
+    # 主角卡落盘：启用
+    _touch(tmp_path, PROTAGONIST_CARD_RELPATH)
+    prog = scan_writing_progress(tmp_path)
+    assert sorted(prog.characters) == ["主角", "林晚"]
+    assert prog.character_mode is True
+    assert is_character_mode(tmp_path) is True
+
+
+def test_character_files_do_not_affect_stage_derivation(tmp_path: Path) -> None:
+    """人物卡不参与切段：有无人物目录，阶段推导不变（FR-012 老书零影响）。"""
+    _touch(tmp_path, "主题.md", THEME_FINAL)
+    _touch(tmp_path, "总纲.md", MASTER_FINAL)
+    before = derive_stage(scan_writing_progress(tmp_path))
+    _touch(tmp_path, "人物/主角.md")
+    _touch(tmp_path, "人物/林晚.md")
+    after = derive_stage(scan_writing_progress(tmp_path))
+    assert before == after

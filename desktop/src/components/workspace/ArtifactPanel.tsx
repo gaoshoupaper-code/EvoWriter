@@ -308,7 +308,7 @@ export function ArtifactPanel({
             {batchMode ? (
               <div className="batch-bar">
                 <span className="batch-bar-count">
-                  已选 {batchSel.size} 项{batchKind ? `（${batchKind === "theme" ? "主题" : batchKind === "outline" ? "总纲" : batchKind === "volume" ? "卷纲" : batchKind === "chapter" ? "章纲" : batchKind === "style" ? "文风" : "正文"}）` : ""}
+                  已选 {batchSel.size} 项{batchKind ? `（${batchKind === "theme" ? "主题" : batchKind === "outline" ? "总纲" : batchKind === "volume" ? "卷纲" : batchKind === "chapter" ? "章纲" : batchKind === "style" ? "文风" : batchKind === "character" ? "人物" : "正文"}）` : ""}
                 </span>
                 <button
                   type="button"

@@ -65,6 +65,7 @@ KIND_VOLUME = "volume_outline"
 KIND_CHAPTER = "chapter_outline"
 KIND_TEXT = "chapter_text"
 KIND_STYLE = "style"
+KIND_CHARACTER = "character"
 
 # ── 文件形态（五段产物树）────────────────────────────────────────
 THEME_FILENAME = "主题.md"
@@ -73,6 +74,17 @@ STYLE_FILENAME = "文风.md"
 VOLUME_DIR = "卷纲"
 CHAPTER_OUTLINE_DIR = "章纲"
 TEXT_DIR = "正文"
+
+# ── 人物卡（REQ-20261031-183257：一人一卡，DEC-001）───────────────
+# 主角卡文件名固定「主角」（标题行写真实姓名）：新旧作品分流判定
+# （DEC-017）＝人物/主角.md 存在，固定名免去解析卡内容。
+CHARACTER_DIR = "人物"
+PROTAGONIST_CARD_NAME = "主角"
+PROTAGONIST_CARD_RELPATH = f"{CHARACTER_DIR}/{PROTAGONIST_CARD_NAME}.md"
+# 人名即文件名：首字符为字母/中文/数字/下划线，全长 1-24；· 与 - 放行
+# （BOSS·卷一·恶霸工头 / 欧阳-锋）；路径分隔符与 Windows 保留字符全拒。
+CHARACTER_NAME_PATTERN = re.compile(r"^\w[\w·\-]{0,23}$")
+CHARACTER_FILE_PATTERN = re.compile(r"^([^/\\]+)\.md$")
 
 VOLUME_FILE_PATTERN = re.compile(r"^第(\d+)卷\.md$")
 CHAPTER_OUTLINE_PATTERN = re.compile(r"^第(\d+)章\.md$")
@@ -86,13 +98,16 @@ WRITING_STATE_SCHEMA_VERSION = 1
 WRITING_STATE_RELPATH = ".writing/state.json"
 
 # ── 阶段 → 可写产物 kind 集（FR-006 阶段闸唯一依据）──────────────
+# 人物卡放行总纲/卷纲/正文三段（REQ-20261031-183257）：总纲段建主角卡与
+# 各卷 BOSS 卡，卷纲段建配角卡＋滚弧光轨迹，正文段按审稿触发回写轨迹；
+# 题材/章纲段不写人物卡（章纲段的人物信息内嵌在章纲卡，不落人物卡）。
 _STAGE_KINDS: dict[str, set[str]] = {
     STAGE_THEME: {KIND_THEME},
-    STAGE_OUTLINE: {KIND_OUTLINE},
-    STAGE_VOLUME: {KIND_VOLUME},
+    STAGE_OUTLINE: {KIND_OUTLINE, KIND_CHARACTER},
+    STAGE_VOLUME: {KIND_VOLUME, KIND_CHARACTER},
     # 文风卡在章纲段起草（DEC-009：无文风.md 时 agent 起草+一次拍板）
     STAGE_CHAPTER: {KIND_CHAPTER, KIND_STYLE},
-    STAGE_TEXT: {KIND_TEXT},
+    STAGE_TEXT: {KIND_TEXT, KIND_CHARACTER},
 }
 
 
@@ -109,13 +124,24 @@ def artifact_relpath(
     *,
     volume: int | None = None,
     chapter: int | None = None,
+    name: str | None = None,
 ) -> str:
-    """kind+序号 → 相对路径（唯一映射；agent 不见路径）。
+    """kind+序号/人名 → 相对路径（唯一映射；agent 不见路径）。
 
     正文文件名不带章名（一章一文件不变式，C1 修复）：章名只活在文件头
     标题行「# 第NNN章 · <章名>」。read 端（parse_relpath/查找）对带章名
     的历史形态保持容忍，创建端只产规范名。
     """
+    if kind not in (KIND_THEME, KIND_OUTLINE, KIND_STYLE, KIND_VOLUME, KIND_CHAPTER, KIND_TEXT, KIND_CHARACTER):
+        raise ValueError(f"未知产物 kind: {kind!r}")
+    if kind == KIND_CHARACTER:
+        if volume is not None or chapter is not None:
+            raise ValueError("character 产物不带卷号/章号")
+        if not name or not CHARACTER_NAME_PATTERN.match(name):
+            raise ValueError(f"非法人物卡名: {name!r}（1-24 字，字母/中文/数字与 · -）")
+        return f"{CHARACTER_DIR}/{name}.md"
+    if name is not None:
+        raise ValueError(f"{kind} 产物不接收 name（仅 character 用）")
     if kind == KIND_THEME:
         if volume is not None or chapter is not None:
             raise ValueError("theme 产物不带卷号/章号")
@@ -192,6 +218,10 @@ def parse_relpath(rel: str | Path) -> ArtifactRef | None:
         if m:
             title = m.group(2) or None
             return ArtifactRef(kind=KIND_TEXT, chapter=int(m.group(1)), title=title, rel=p)
+    elif d == CHARACTER_DIR:
+        m = CHARACTER_FILE_PATTERN.match(name)
+        if m and CHARACTER_NAME_PATTERN.match(m.group(1)):
+            return ArtifactRef(kind=KIND_CHARACTER, title=m.group(1), rel=p)
     return None
 
 
@@ -385,6 +415,15 @@ class WritingProgress:
     chapter_outlines: list[int] = field(default_factory=list)
     chapter_texts: dict[int, ManuscriptState] = field(default_factory=dict)
     style_ready: bool = False
+    # 人物卡（REQ-20261031-183257）：人名清单＋启用标志。人物卡不参与
+    # 切段（derive_stage 不读这两项），仅供进度摘要与新旧分流判定。
+    characters: list[str] = field(default_factory=list)
+    character_mode: bool = False
+
+
+def is_character_mode(workspace: Path) -> bool:
+    """人物卡机制启用判定（DEC-017）：人物/主角.md 存在＝新作品走人物卡流程。"""
+    return (Path(workspace) / PROTAGONIST_CARD_RELPATH).is_file()
 
 
 def _read(workspace: Path, rel: str) -> str | None:
@@ -464,6 +503,15 @@ def scan_writing_progress(workspace: Path) -> WritingProgress:
                 rel=f.relative_to(workspace).as_posix(),
                 finalized=parse_manuscript_status(text) == "finalized",
             )
+
+    ch_dir = workspace / CHARACTER_DIR
+    if ch_dir.is_dir():
+        for f in ch_dir.iterdir():
+            m = CHARACTER_FILE_PATTERN.match(f.name)
+            if m and CHARACTER_NAME_PATTERN.match(m.group(1)):
+                prog.characters.append(m.group(1))
+        prog.characters.sort()
+        prog.character_mode = (ch_dir / f"{PROTAGONIST_CARD_NAME}.md").is_file()
     return prog
 
 
@@ -667,7 +715,11 @@ __all__ = [
     "WRITING_MODES",
     "CHAPTER_OUTLINE_DIR",
     "CHAPTER_OUTLINE_PATTERN",
+    "CHARACTER_DIR",
+    "CHARACTER_FILE_PATTERN",
+    "CHARACTER_NAME_PATTERN",
     "KIND_CHAPTER",
+    "KIND_CHARACTER",
     "KIND_OUTLINE",
     "KIND_STYLE",
     "KIND_TEXT",
@@ -680,6 +732,8 @@ __all__ = [
     "LABEL_VOLUME",
     "MASTER_FILENAME",
     "ManuscriptState",
+    "PROTAGONIST_CARD_NAME",
+    "PROTAGONIST_CARD_RELPATH",
     "STAGE_CHAPTER",
     "STAGE_LABELS",
     "STAGE_LEGACY",
@@ -700,6 +754,7 @@ __all__ = [
     "artifact_relpath",
     "classify_writing_workspace",
     "derive_stage",
+    "is_character_mode",
     "is_final_status",
     "load_writing_state",
     "next_stage_on_confirm",

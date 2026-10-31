@@ -79,6 +79,7 @@ _REQUIRED_FILES = [
     "middleware/stage_gate.py",
     "tools/read_artifact.py",
     "tools/save_artifact.py",
+    "tools/list_characters.py",
     "tools/update_foreshadow_table.py",
     "tools/rewrite_rhythm_table.py",
     "tools/append_chapter_deviation.py",
@@ -392,3 +393,63 @@ class TestFiveSegmentAssemble(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCharacterCardPrompts(unittest.TestCase):
+    """人物卡体系（REQ-20261031-183257）：提示词资产特征断言。"""
+
+    def test_zonggang_builds_character_cards(self):
+        """总纲段：主角卡双区＋BOSS 卡七要素＋无感情线。"""
+        text = (_HARNESS_DIR / "prompts" / "stage_zonggang.md").read_text(encoding="utf-8")
+        for marker in ("kind=character", "脸谱区", "弧光区", "Want", "Need", "Lie", "默认平弧",
+                       "共情点", "手段越线", "BOSS 弧光", "不写感情线", "name 固定「主角」"):
+            self.assertIn(marker, text, f"stage_zonggang.md 缺人物卡特征「{marker}」")
+
+    def test_juangang_step0_and_columns(self):
+        """卷纲段：第 0 步人物定位＋主角选择列＋双层偿付＋人物对账＋分流。"""
+        text = (_HARNESS_DIR / "prompts" / "stage_juangang.md").read_text(encoding="utf-8")
+        for marker in ("第 0 步 · 人物定位", "人物卡分流", "主角选择", "双层偿付", "人物对账",
+                       "本卷人物定位", "弧光节点章", "脸谱区任何情况下不得触碰"):
+            self.assertIn(marker, text, f"stage_juangang.md 缺人物卡特征「{marker}」")
+
+    def test_zhanggang_feeds_character_block(self):
+        """章纲段：五锚＋出场人物＋人物提示块＋压缩优先级。"""
+        text = (_HARNESS_DIR / "prompts" / "stage_zhanggang.md").read_text(encoding="utf-8")
+        for marker in ("五锚", "出场人物", "人物提示", "说话特征与口头禅", "≤400 字"):
+            self.assertIn(marker, text, f"stage_zhanggang.md 缺喂卡特征「{marker}」")
+
+    def test_zhengwen_arc_writeback(self):
+        """正文段：分流＋出场人物上限＋弧光轨迹回写＋脸谱区冻结。"""
+        text = (_HARNESS_DIR / "prompts" / "stage_zhengwen.md").read_text(encoding="utf-8")
+        for marker in ("人物卡分流", "人物提示", "出场人物", "弧光轨迹回写", "章节轨迹", "脸谱区一个字不许动"):
+            self.assertIn(marker, text, f"stage_zhengwen.md 缺弧光回写特征「{marker}」")
+
+    def test_volume_qc_fourth_layer(self):
+        """质检员：第四层人物判据（两机判＋两抽查）＋总结行含人物。"""
+        text = (_HARNESS_DIR / "prompts" / "volume_qc.md").read_text(encoding="utf-8")
+        for marker in ("四、人物层", "建卡完整性", "主角选择列", "双层偿付", "成长没毁脸谱", "人物 W 条"):
+            self.assertIn(marker, text, f"volume_qc.md 缺人物层特征「{marker}」")
+
+    def test_review_character_criteria(self):
+        """审稿人：人物对卡三条（撞腔/漂移/无卡新角色）＋人物卡分流。"""
+        text = (_HARNESS_DIR / "prompts" / "review.md").read_text(encoding="utf-8")
+        for marker in ("人物对卡", "千人一面有对照", "行为对卡", "无卡新角色", "人物卡分流"):
+            self.assertIn(marker, text, f"review.md 缺人物判据特征「{marker}」")
+
+    def test_author_base_character_stewardship(self):
+        """常驻骨架：人物卡支线产物职责＋工具表＋阶段闸放行段＋无感情线。"""
+        text = (_HARNESS_DIR / "prompts" / "author_base.md").read_text(encoding="utf-8")
+        for marker in ("kind=character", "list_characters", "人物卡（支线产物", "不写感情线",
+                       "人物卡在总纲/卷纲/正文三段放行"):
+            self.assertIn(marker, text, f"author_base.md 缺人物卡职责特征「{marker}」")
+
+    def test_neutral_variants_carry_character_flow(self):
+        """neutral 变体与正式版同构携带人物卡机制（总纲段是建卡源头，无分流节）。"""
+        for filename in ("stage_juangang_neutral.md", "stage_zhanggang_neutral.md",
+                         "stage_zhengwen_neutral.md", "author_base_neutral.md"):
+            text = (_HARNESS_DIR / "prompts" / filename).read_text(encoding="utf-8")
+            self.assertIn("人物卡分流", text, f"{filename} 缺人物卡分流")
+            self.assertIn("kind=character", text, f"{filename} 缺 character kind")
+        text = (_HARNESS_DIR / "prompts" / "stage_zonggang_neutral.md").read_text(encoding="utf-8")
+        self.assertIn("kind=character", text, "stage_zonggang_neutral.md 缺 character kind")
+        self.assertIn("本段输入是**主题三件套**", text, "stage_zonggang_neutral.md 头部输入描述被破坏")

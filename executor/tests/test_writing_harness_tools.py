@@ -613,7 +613,7 @@ def test_rhythm_table_section_replace(tmp_path: Path) -> None:
 # ── 工具 schema 无路径参数（AC-005）───────────────────────────────
 
 _ALLOWED_PROPS = {
-    "kind", "volume", "chapter", "title", "mode", "anchor", "replacement",
+    "kind", "volume", "chapter", "name", "title", "mode", "anchor", "replacement",
     "content", "section", "entries", "table", "note", "draft",
     "question", "options", "multi_select",
 }
@@ -776,3 +776,56 @@ def test_rhythm_build_uses_real_snapshot_callback_contract(tmp_path: Path) -> No
     assert snapshots[0]["content"] == final
     assert "提交的推进表" in final
     assert snapshots[0]["tool"] == "rewrite_rhythm_table"
+
+
+# ── 人物卡工具（REQ-20261031-183257 FR-001/004/010）────────────────
+
+
+def test_character_save_read_roundtrip(tmp_path: Path) -> None:
+    """character kind：save(name)→read(name) 往返；edit 同受先读后改保险。"""
+    registry: dict = {}
+    failures: dict = {}
+    save = build_save_artifact_tool(tmp_path, registry, failures)
+    reader = build_read_artifact_tool(tmp_path, registry)
+
+    out = save.invoke({"kind": "character", "name": "主角", "mode": "full",
+                       "content": "# 人物卡 · 主角 · 林晚\n> 状态：定稿｜2026-10-31\n\n## 脸谱区\n嘴硬心软\n"})
+    assert "已落盘" in out
+    text = reader.invoke({"kind": "character", "name": "主角"})
+    assert "脸谱区" in text
+
+    # 先读后改：未读直接 edit 已存在卡 → 拒绝；共享 registry 读后可改
+    registry2: dict = {}
+    save2 = build_save_artifact_tool(tmp_path, registry2, {})
+    out = save2.invoke({"kind": "character", "name": "主角", "mode": "edit",
+                        "anchor": "嘴硬心软", "replacement": "嘴硬心软谨慎"})
+    assert "拒绝" in out
+    build_read_artifact_tool(tmp_path, registry2).invoke({"kind": "character", "name": "主角"})
+    out = save2.invoke({"kind": "character", "name": "主角", "mode": "edit",
+                        "anchor": "嘴硬心软", "replacement": "嘴硬心软谨慎"})
+    assert "已落盘" in out
+
+
+def test_character_invalid_name_rejected(tmp_path: Path) -> None:
+    """非法人名（路径分隔符等）在工具层即被拒，不触盘。"""
+    save = build_save_artifact_tool(tmp_path, {}, {})
+    out = save.invoke({"kind": "character", "name": "../evil", "mode": "full", "content": "x"})
+    assert "失败" in out
+    out = save.invoke({"kind": "character", "mode": "full", "content": "x"})
+    assert "失败" in out
+
+
+def test_list_characters_tool(tmp_path: Path) -> None:
+    """list_characters：空目录提示无卡；建卡后按人名列出（FR-004c 在册清单）。"""
+    from harness_current.tools.list_characters import build_list_characters_tool
+
+    lister = build_list_characters_tool(tmp_path)
+    assert "没有人物卡" in lister.invoke({})
+
+    save = build_save_artifact_tool(tmp_path, {}, {})
+    save.invoke({"kind": "character", "name": "主角", "mode": "full",
+                 "content": "# 人物卡 · 主角 · 林晚\n> 状态：定稿｜日期\n"})
+    save.invoke({"kind": "character", "name": "老陈", "mode": "full",
+                 "content": "# 人物卡 · 重要配角 · 老陈\n> 状态：定稿｜日期\n"})
+    out = lister.invoke({})
+    assert "主角" in out and "老陈" in out

@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 
 from contracts.writing_artifacts import (
     KIND_CHAPTER,
+    KIND_CHARACTER,
     KIND_OUTLINE,
     KIND_STYLE,
     KIND_TEXT,
@@ -47,7 +48,7 @@ _EDIT_FAILURE_CAP = 3
 
 SAVE_ARTIFACT_TOOL_DESCRIPTION = """按产物种类落盘（不接触文件路径）。每个点被作者确认后立即落盘。
 
-kind 取值：theme / outline / style / volume_outline(+volume) / chapter_outline(+chapter) / chapter_text(+chapter)。
+kind 取值：theme / outline / style / volume_outline(+volume) / chapter_outline(+chapter) / chapter_text(+chapter) / character(+name 人名，主角卡固定 name="主角")。
 正文文件名由章号决定（不带章名——章名写进文件头标题行「# 第NNN章 · <章名>」）。
 
 两种模式：
@@ -64,7 +65,8 @@ kind 取值：theme / outline / style / volume_outline(+volume) / chapter_outlin
 
 
 class SaveArtifactInput(BaseModel):
-    kind: str = Field(description="产物种类：theme/outline/style/volume_outline/chapter_outline/chapter_text")
+    kind: str = Field(description="产物种类：theme/outline/style/volume_outline/chapter_outline/chapter_text/character")
+    name: str | None = Field(default=None, description="人名（character 必填；主角卡固定「主角」）")
     volume: int | None = Field(default=None, ge=1, description="卷号（volume_outline 必填）")
     chapter: int | None = Field(default=None, ge=1, description="章号（chapter_outline/chapter_text 必填）")
     mode: str = Field(default="edit", description='"edit"（默认，锚点校验编辑）| "full"（整文件替换）')
@@ -146,7 +148,9 @@ def _atomic_write(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
-def _describe(kind: str, volume: int | None, chapter: int | None) -> str:
+def _describe(kind: str, volume: int | None, chapter: int | None, name: str | None = None) -> str:
+    if name:
+        return f"{kind}（{name}）"
     if volume:
         return f"{kind}（第 {volume} 卷）"
     if chapter:
@@ -205,14 +209,15 @@ def build_save_artifact_tool(
                     pass
             logger.warning("save_artifact 产物取证失败（已降级）：%s：%s", rel, exc)
 
-    def _save(kind: str, volume: int | None = None, chapter: int | None = None,
+    def _save(kind: str, name: str | None = None, volume: int | None = None,
+              chapter: int | None = None,
               mode: str = "edit",
               anchor: str | None = None, replacement: str | None = None,
               content: str | None = None, draft: bool = False) -> str:
         if draft and kind != KIND_VOLUME:
             return "[save_artifact 失败] draft 仅卷纲可用。"
         try:
-            rel = artifact_relpath(kind, volume=volume, chapter=chapter)
+            rel = artifact_relpath(kind, volume=volume, chapter=chapter, name=name)
             if draft:
                 from contracts.writing_artifacts import volume_draft_relpath
 
@@ -257,7 +262,7 @@ def build_save_artifact_tool(
             _capture_revision(rel, content)
             failures.pop(rel, None)
             lines = len(content.splitlines())
-            return f"已落盘 {_describe(kind, volume, chapter)}（全量 {lines} 行）。"
+            return f"已落盘 {_describe(kind, volume, chapter, name)}（全量 {lines} 行）。"
 
         # ── mode=edit ──
         if failures.get(rel, 0) >= _EDIT_FAILURE_CAP:
@@ -279,7 +284,7 @@ def build_save_artifact_tool(
             return f"[save_artifact 失败] 写入失败：{type(exc).__name__}"
         _capture_revision(rel, new_text)
         failures.pop(rel, None)
-        return f"已落盘 {_describe(kind, volume, chapter)}（校验编辑：替换 {hits} 处，仅目标区段变更）。"
+        return f"已落盘 {_describe(kind, volume, chapter, name)}（校验编辑：替换 {hits} 处，仅目标区段变更）。"
 
     return StructuredTool.from_function(
         name="save_artifact",

@@ -350,3 +350,18 @@ class EvolveAgentsApiTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ── 人物卡产物可见性（REQ-20261031-183257 FR-001/AC-006）───────────
+
+
+def test_character_card_paths_are_five_segment_visible():
+    """人物/ 一人一卡路径：五段白名单可见；穿越/子目录不可见。"""
+    from app.evolve.agents_api import _is_five_segment_path, _is_visible_artifact_path
+
+    assert _is_five_segment_path("人物/主角.md")
+    assert _is_five_segment_path("人物/BOSS·卷一·恶霸工头.md")
+    assert _is_visible_artifact_path("人物/林晚.md")
+    assert not _is_five_segment_path("人物/../总纲.md")
+    assert not _is_visible_artifact_path("人物/子/林晚.md")
+    assert not _is_visible_artifact_path(".writing/state.json")

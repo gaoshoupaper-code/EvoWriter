@@ -22,6 +22,7 @@ from pathlib import Path
 
 from contracts.writing_artifacts import (
     KIND_CHAPTER,
+    KIND_CHARACTER,
     KIND_OUTLINE,
     KIND_STYLE,
     KIND_TEXT,
@@ -49,6 +50,7 @@ _KIND_LABELS = {
     KIND_CHAPTER: "章纲",
     KIND_STYLE: "文风",
     KIND_TEXT: "正文",
+    KIND_CHARACTER: "人物卡",
 }
 
 

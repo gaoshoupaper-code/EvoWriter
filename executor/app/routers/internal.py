@@ -145,7 +145,7 @@ def internal_get_workspace_artifacts(workspace_id: str) -> dict[str, Any]:
 
 
 _WRITING_ARTIFACT_CATEGORIES = {
-    "theme", "outline", "style", "volume_outline", "chapter_outline", "chapter_text",
+    "theme", "outline", "style", "volume_outline", "chapter_outline", "chapter_text", "character",
 }
 
 
@@ -190,7 +190,7 @@ def internal_list_workspace_writing_artifacts(
 ) -> dict[str, Any]:
     """列绑定作品的五段式文本产物路径；只返回白名单 Markdown 文件。"""
     from contracts.writing_artifacts import (
-        CHAPTER_OUTLINE_DIR, MASTER_FILENAME, STYLE_FILENAME, TEXT_DIR,
+        CHAPTER_OUTLINE_DIR, CHARACTER_DIR, MASTER_FILENAME, STYLE_FILENAME, TEXT_DIR,
         THEME_FILENAME, VOLUME_DIR, classify_writing_workspace, parse_relpath,
     )
 
@@ -199,7 +199,7 @@ def internal_list_workspace_writing_artifacts(
     row, root = _workspace_writing_artifact_root(workspace_id)
     kind = classify_writing_workspace(root)
     candidates = [root / THEME_FILENAME, root / MASTER_FILENAME, root / STYLE_FILENAME]
-    for directory in (VOLUME_DIR, CHAPTER_OUTLINE_DIR, TEXT_DIR):
+    for directory in (VOLUME_DIR, CHAPTER_OUTLINE_DIR, TEXT_DIR, CHARACTER_DIR):
         parent = root / directory
         if parent.is_dir():
             candidates.extend(parent.glob("*.md"))

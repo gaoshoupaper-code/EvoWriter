@@ -23,6 +23,7 @@ const CATEGORY_OPTIONS: { value: WritingArtifactCategory | ""; label: string }[]
   { value: "volume_outline", label: "卷纲" },
   { value: "chapter_outline", label: "章纲" },
   { value: "chapter_text", label: "正文" },
+  { value: "character", label: "人物" },
 ];
 
 function formatDate(value: string): string {

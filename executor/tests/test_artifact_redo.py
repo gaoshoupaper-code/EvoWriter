@@ -487,3 +487,35 @@ def test_trash_rejects_traversal_and_unknown_names(client: TestClient, tmp_path:
     trash_dir.mkdir(parents=True)
     (trash_dir / "设定__角色.md.20261028-120000.md").write_text("x", encoding="utf-8")
     assert client.get("/workspaces/ws1/trash").json()["items"] == []
+
+
+# ── 人物卡删除资格（REQ-20261031-183257 FR-001）────────────────────
+
+
+def test_character_card_delete_eligibility(tmp_path):
+    """人物卡为叶级产物随时可删；删除不回落段指针（跨段支线产物）。"""
+    from app.domains.writing.artifact_redo import (
+        delete_artifact_for_redo,
+        redo_eligibility,
+        redo_target_stage,
+    )
+    from contracts.writing_artifacts import KIND_CHARACTER, STAGE_TEXT
+
+    card = tmp_path / "人物" / "主角.md"
+    card.parent.mkdir(parents=True)
+    card.write_text("# 人物卡 · 主角 · 林晚\n> 状态：定稿｜日期\n", encoding="utf-8")
+
+    ok, reason = redo_eligibility(tmp_path, "人物/主角.md")
+    assert ok and reason == ""
+    assert redo_target_stage("人物/主角.md") == STAGE_TEXT
+
+    # 段指针在总纲段（上游）时删除人物卡不拉指针
+    from contracts.writing_artifacts import STAGE_OUTLINE, load_writing_state, save_writing_state
+
+    state = load_writing_state(tmp_path)
+    state.confirmed_stage = STAGE_OUTLINE
+    save_writing_state(tmp_path, state)
+    result = delete_artifact_for_redo(tmp_path, "人物/主角.md")
+    assert result["status"] == "ok"
+    assert result["stage_reset_to"] is None
+    assert not card.exists()

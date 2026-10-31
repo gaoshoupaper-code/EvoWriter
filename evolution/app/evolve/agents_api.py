@@ -170,6 +170,7 @@ _FIVE_SEGMENT_ARTIFACT_PATTERNS = (
     re.compile(r"卷纲/第\d+卷\.md"),
     re.compile(r"章纲/第\d+章\.md"),
     re.compile(r"正文/第\d+章[^/]*\.md"),
+    re.compile(r"人物/[^/]+\.md"),
 )
 _INTERNAL_ARTIFACT_DIRS = {".writing", ".git", ".zcode", ".agents", "config", "configs"}
 _LEGACY_ARTIFACT_PATTERNS = (

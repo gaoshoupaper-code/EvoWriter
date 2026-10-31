@@ -9,6 +9,7 @@
  * - 章纲第N章：第N章正文不存在才可删
  * - 正文：无下游，随时可删
  * - 文风：特例随时可删（DEC-002：重写文风不等于重写正文）
+ * - 人物卡：叶级随时可删（REQ-20261031-183257：跨段支线产物；删主角卡＝退回未启用状态）
  * 任意位置可删（DEC-003）：中间卷/章可删，不要求最末。
  */
 
@@ -17,8 +18,10 @@ const _CHAPTER_RE = /^章纲\/第(\d+)章\.md$/;
 // 标题组排除分隔符（与服务端 contracts.TEXT_FILE_PATTERN 收紧同口径）
 const _TEXT_RE = /^正文\/第(\d+)章[^/\\]*\.md$/;
 const _VOLUME_RANGE_RE = /本卷章号范围\s*[:：]\s*(?:第\s*)?(\d+)\s*[-—–~～至]\s*(\d+)\s*章?/g;
+// 人物卡：人物/<人名>.md（与服务端 contracts.CHARACTER_NAME_PATTERN 同口径收紧）
+const _CHARACTER_RE = /^人物\/[^/\\]+\.md$/;
 
-export type RedoKind = "theme" | "outline" | "volume" | "chapter" | "style" | "text";
+export type RedoKind = "theme" | "outline" | "volume" | "chapter" | "style" | "text" | "character";
 export type RedoEligibility = { eligible: boolean; reason: string };
 
 export function redoTargetKind(rel: string): RedoKind | null {
@@ -28,6 +31,7 @@ export function redoTargetKind(rel: string): RedoKind | null {
   if (_VOLUME_RE.test(rel)) return "volume";
   if (_CHAPTER_RE.test(rel)) return "chapter";
   if (_TEXT_RE.test(rel)) return "text";
+  if (_CHARACTER_RE.test(rel)) return "character";
   return null;
 }
 
@@ -52,7 +56,7 @@ function _volumeRange(markdown: string): [number, number] | null {
 
 export function redoEligibility(rel: string, files: { rel: string; markdown: string }[]): RedoEligibility {
   const kind = redoTargetKind(rel);
-  if (!kind) return { eligible: false, reason: "删除重做只支持五段产物（主题/总纲/卷纲/章纲/文风/正文）" };
+  if (!kind) return { eligible: false, reason: "删除重做只支持五段产物与人物卡（主题/总纲/卷纲/章纲/文风/正文/人物）" };
   const rels = files.map((f) => f.rel);
   const chapters = _numbers(rels, _CHAPTER_RE);
   const texts = _numbers(rels, _TEXT_RE);
@@ -96,7 +100,7 @@ export function redoEligibility(rel: string, files: { rel: string; markdown: str
     }
     return { eligible: true, reason: "" };
   }
-  // 正文（无下游）与文风（DEC-002 特例）：随时可删
+  // 正文（无下游）、文风（DEC-002 特例）与人物卡（叶级支线产物）：随时可删
   return { eligible: true, reason: "" };
 }
 

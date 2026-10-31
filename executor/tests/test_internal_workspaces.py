@@ -144,6 +144,10 @@ class TestInternalWorkspaceWritingArtifacts:
         workspace = get_thread_store().get_workspace(owner["user_id"], workspace_id)
         return Path(workspace.workspace_path)
 
+
+    def test_lists_character_cards_by_category(self, client):
+        """人物分区：人物/ 目录卡片按 category=character 列出；非法路径不入列。"""
+        from pathlib import Path
     def test_lists_five_segment_files_by_category_and_page(self, client):
         workspace = _make_workspace("writer", "五段作品")
         root = self._workspace_path(workspace["workspace_id"])
@@ -257,3 +261,27 @@ class TestInternalWorkspaceWritingArtifacts:
 if __name__ == "__main__":
     import unittest
     unittest.main()
+
+
+# ── 人物卡产物列表（REQ-20261031-183257 FR-001/AC-006）─────────────
+
+
+
+    workspace_root = Path(client_with_five_workspace["workspace_path"])
+    ch_dir = workspace_root / "人物"
+    ch_dir.mkdir(parents=True, exist_ok=True)
+    (ch_dir / "主角.md").write_text("# 人物卡 · 主角 · 林晚\n", encoding="utf-8")
+    (ch_dir / "林晚的随从.md").write_text("# 人物卡 · 工具配角\n", encoding="utf-8")
+    (ch_dir / "子目录.md").mkdir(exist_ok=True)  # 不应是文件——跳过
+    (ch_dir / "bad:name.md").write_text("x", encoding="utf-8")
+
+    resp = client_with_five_workspace["client"].get(
+        f"/internal/workspaces/{client_with_five_workspace['workspace_id']}/writing-artifacts",
+        params={"category": "character"},
+    )
+    assert resp.status_code == 200
+    files = resp.json()["files"]
+    paths = [f["path"] for f in files]
+    assert "人物/主角.md" in paths
+    assert "人物/林晚的随从.md" in paths
+    assert all("bad:" not in p for p in paths)

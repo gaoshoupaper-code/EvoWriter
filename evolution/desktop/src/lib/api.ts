@@ -632,7 +632,8 @@ export type WritingArtifactCategory =
   | "style"
   | "volume_outline"
   | "chapter_outline"
-  | "chapter_text";
+  | "chapter_text"
+  | "character";
 
 export interface EvolveWritingArtifactFile {
   path: string;

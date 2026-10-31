@@ -617,3 +617,28 @@ def test_stage_advance_retry_cannot_seal_another_owners_thread(
     assert response.status_code == 409
     assert recorder.cancelled == []
     assert recorder.run.status == "awaiting_input"
+
+
+def test_outline_tree_includes_character_cards(client: TestClient, tmp_path: Path) -> None:
+    """人物卡随产物全集下发（REQ-20261031-183257 客户端人物模块数据源）。
+
+    合法人名卡进列表（主角卡排组内首位）；非法名文件不下发。
+    """
+    _seed_book(tmp_path)
+    ws = tmp_path
+    ch = ws / "人物"
+    ch.mkdir()
+    (ch / "主角.md").write_text("# 人物卡 · 主角 · 林晚\n", encoding="utf-8")
+    (ch / "老陈.md").write_text("# 人物卡 · 重要配角 · 老陈\n", encoding="utf-8")
+    (ch / "bad:name.md").write_text("x", encoding="utf-8")
+
+    resp = client.get("/workspaces/ws1/outline")
+    assert resp.status_code == 200
+    rels = [f["rel"] for f in resp.json()["files"]]
+    # 五段产物在前（顺序不变），人物卡追加在尾部（人名字典序，主角自然居首）
+    assert rels[:6] == [
+        "主题.md", "总纲.md", "文风.md",
+        "卷纲/第01卷.md", "章纲/第001章.md", "正文/第001章开局.md",
+    ]
+    assert rels[6:] == ["人物/主角.md", "人物/老陈.md"]
+    assert all("bad:" not in r for r in rels)

@@ -80,6 +80,8 @@ def _read_outline_content(workspace_path: Path) -> WorkspaceOutlineContent:
     from app.domains.writing.pipeline import classify_workspace, pipeline_status
     from contracts.writing_artifacts import (
         CHAPTER_OUTLINE_DIR,
+        CHARACTER_DIR,
+        CHARACTER_NAME_PATTERN,
         MASTER_FILENAME,
         STYLE_FILENAME,
         TEXT_DIR,
@@ -100,6 +102,14 @@ def _read_outline_content(workspace_path: Path) -> WorkspaceOutlineContent:
                   workspace_path / TEXT_DIR):
             if d.is_dir():
                 candidates.extend(sorted(d.glob("*.md"), key=lambda p: p.as_posix()))
+        # 人物卡（REQ-20261031-183257）：一人一卡随产物全集下发（客户端侧栏
+        # 人物模块的数据源）；只吐合法人名文件，非法名不进列表
+        char_dir = workspace_path / CHARACTER_DIR
+        if char_dir.is_dir():
+            for f in sorted(char_dir.glob("*.md"), key=lambda p: p.as_posix()):
+                stem = f.stem
+                if CHARACTER_NAME_PATTERN.match(stem):
+                    candidates.append(f)
         for f in candidates:
             if not f.is_file() or len(files) >= cap:
                 continue

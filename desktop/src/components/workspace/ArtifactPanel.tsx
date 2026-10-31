@@ -43,6 +43,18 @@ function relLabel(rel: string): string {
   return rel.replace(/\.md$/, "");
 }
 
+/** 人物卡 tab 标签：去目录前缀只显示人名（人物/主角.md → 主角）。 */
+function characterLabel(rel: string): string {
+  return rel.replace(/^人物\//, "").replace(/\.md$/, "");
+}
+
+const CHARACTER_REL_PREFIX = "人物/";
+const PROTAGONIST_REL = "人物/主角.md";
+
+function isCharacterRel(rel: string): boolean {
+  return rel.startsWith(CHARACTER_REL_PREFIX);
+}
+
 /** 正文 rel → 章号（正文/第007章一百级回家.md → 7） */
 function chapterOfTextRel(rel: string): number | null {
   const m = /^正文\/第(\d+)章.*\.md$/.exec(rel);
@@ -87,6 +99,22 @@ export function ArtifactPanel({
   );
   // 回收站（FR-006）
   const [trashOpen, setTrashOpen] = useState(false);
+  // 人物卡专门分组（REQ-20261031-183257 客户端人物模块）：一人一卡独立成组，
+  // 主角卡置顶；老书无人物目录时该组不渲染（files 里没有 人物/ 前缀条目）
+  const { mainFiles, characterFiles } = useMemo(
+    () => {
+      const mainFiles = files.filter((f) => !isCharacterRel(f.rel));
+      const characterFiles = files
+        .filter((f) => isCharacterRel(f.rel))
+        .sort((a, b) => {
+          const ka = a.rel === PROTAGONIST_REL ? 0 : 1;
+          const kb = b.rel === PROTAGONIST_REL ? 0 : 1;
+          return ka - kb || a.rel.localeCompare(b.rel, "zh");
+        });
+      return { mainFiles, characterFiles };
+    },
+    [files],
+  );
   // 缺号空档提示（FR-004：删哪补哪，只报内部洞）
   const gaps = useMemo(
     () => (fiveKind ? findArtifactGaps(files) : { outline: [], text: [] }),
@@ -197,6 +225,31 @@ export function ArtifactPanel({
     }
   };
 
+  /** 单个产物 tab（主产物组与人物组共用一套选中/批量勾选逻辑）。 */
+  const renderFileTab = (f: OutlineFileEntry, label: string) => {
+    const fileKind = redoTargetKind(f.rel);
+    const selected = batchSel.has(f.rel);
+    const locked = batchMode && batchKind !== null && fileKind !== batchKind;
+    return (
+      <button
+        key={f.rel}
+        type="button"
+        role="tab"
+        aria-selected={!batchMode && f.rel === active?.rel}
+        className={
+          batchMode
+            ? `outline-file-tab batch${selected ? " picked" : ""}${locked ? " locked" : ""}`
+            : `outline-file-tab${f.rel === active?.rel ? " active" : ""}`
+        }
+        disabled={locked}
+        title={locked ? "只能批量勾选同类产物（先勾的是其他类型）" : undefined}
+        onClick={() => (batchMode ? toggleBatchSel(f.rel) : onSelect(f.rel))}
+      >
+        {batchMode ? `${selected ? "✓ " : ""}${label}` : label}
+      </button>
+    );
+  };
+
   return (
     <section className="panel-surface content-panel" aria-label="作品产物">
       <div className="panel-heading">
@@ -281,30 +334,16 @@ export function ArtifactPanel({
         ) : (
           <>
             <div className="outline-file-tabs" role="tablist" aria-label="产物文件">
-              {files.map((f) => {
-                const fileKind = redoTargetKind(f.rel);
-                const selected = batchSel.has(f.rel);
-                const locked = batchMode && batchKind !== null && fileKind !== batchKind;
-                return (
-                  <button
-                    key={f.rel}
-                    type="button"
-                    role="tab"
-                    aria-selected={!batchMode && f.rel === active?.rel}
-                    className={
-                      batchMode
-                        ? `outline-file-tab batch${selected ? " picked" : ""}${locked ? " locked" : ""}`
-                        : `outline-file-tab${f.rel === active?.rel ? " active" : ""}`
-                    }
-                    disabled={locked}
-                    title={locked ? "只能批量勾选同类产物（先勾的是其他类型）" : undefined}
-                    onClick={() => (batchMode ? toggleBatchSel(f.rel) : onSelect(f.rel))}
-                  >
-                    {batchMode ? `${selected ? "✓ " : ""}${relLabel(f.rel)}` : relLabel(f.rel)}
-                  </button>
-                );
-              })}
+              {mainFiles.map((f) => renderFileTab(f, relLabel(f.rel)))}
             </div>
+            {characterFiles.length > 0 ? (
+              <div className="character-file-group" role="group" aria-label="人物卡">
+                <span className="character-group-title">人物卡</span>
+                <div className="outline-file-tabs character" role="tablist" aria-label="人物卡">
+                  {characterFiles.map((f) => renderFileTab(f, characterLabel(f.rel)))}
+                </div>
+              </div>
+            ) : null}
             {batchMode ? (
               <div className="batch-bar">
                 <span className="batch-bar-count">

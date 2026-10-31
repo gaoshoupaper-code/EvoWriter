@@ -7574,6 +7574,24 @@ html[data-theme="dark"] .admin-outline {
   border-color: var(--teal, #2f9e8f);
 }
 
+/* 人物卡专门分组（REQ-20261031-183257）：一人一卡独立成组，主角卡置顶 */
+.character-file-group {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.character-group-title {
+  flex: none;
+  margin-top: 14px;
+  font-size: var(--text-ui-sm, 12px);
+  color: var(--muted, #888);
+  letter-spacing: 2px;
+}
+.outline-file-tabs.character {
+  margin: 5px 0 10px;
+}
+
 /* 需求表单赛道双列 */
 .demand-field-row {
   display: grid;

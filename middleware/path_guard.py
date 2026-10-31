@@ -83,7 +83,7 @@ class FilesystemPathGuardMiddleware(AgentMiddleware):
             allowed_write_paths: 额外允许的精确写入路径列表（运行时动态扩展白名单）
             allowed_patterns:    允许的写入路径正则模式元组（DD6a 参数化）。
                                  None 时用 WRITING_WRITE_PATTERNS（向后兼容写作默认）。
-                                 各 domain 传自己的模式：image 传 images/skills 白名单。
+                                 各 domain 传自己的模式。
             allowed_globs:       允许的写入路径 glob 元组（清单 write_permissions，
                                  wcmatch BRACE|GLOBSTAR 语义）。非 None 时取代
                                  allowed_patterns 作为白名单（清单是唯一真相源）。

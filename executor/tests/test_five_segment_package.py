@@ -215,6 +215,9 @@ class TestFiveSegmentPackageContent(unittest.TestCase):
             "所属阶段", "五列", "卷末超大爽点", "阶段表", "【压·小", "【压·大",
             "蓄水对象", "偿付出口",
         ]
+        zonggang_forbidden = [
+            "关键节点", "小目标", "节点卡", "卷末超大爽点", "五步",
+        ]
         for filename in ("stage_juangang.md", "stage_juangang_neutral.md"):
             text = (_HARNESS_DIR / "prompts" / filename).read_text(encoding="utf-8")
             for term in juangang_forbidden:
@@ -222,6 +225,10 @@ class TestFiveSegmentPackageContent(unittest.TestCase):
         for filename in ("stage_zhanggang.md", "stage_zhanggang_neutral.md"):
             text = (_HARNESS_DIR / "prompts" / filename).read_text(encoding="utf-8")
             for term in zhanggang_forbidden:
+                self.assertNotIn(term, text, f"{filename} 残留旧术语「{term}」")
+        for filename in ("stage_zonggang.md", "stage_zonggang_neutral.md"):
+            text = (_HARNESS_DIR / "prompts" / filename).read_text(encoding="utf-8")
+            for term in zonggang_forbidden:
                 self.assertNotIn(term, text, f"{filename} 残留旧术语「{term}」")
 
     def test_volume_qc_prompt_carries_three_layers(self):
@@ -290,10 +297,14 @@ class TestFiveSegmentAssemble(unittest.TestCase):
         """包级段规程装配口（executor 按段注入的读取入口，DEC-002）。"""
         pkg = self._load_pkg()
         self.assertIn("## 一句话主题", pkg.stage_prompt("theme") or "")
-        self.assertIn("核心纲", pkg.stage_prompt("outline") or "")
+        outline_prompt = pkg.stage_prompt("outline") or ""
+        self.assertIn("核心纲", outline_prompt)
+        self.assertIn("主角想要", outline_prompt, "核心纲应含卷级主角想要列")
+        self.assertIn("本卷矛盾", outline_prompt, "核心纲应含卷级本卷矛盾列")
         volume_prompt = pkg.stage_prompt("volume") or ""
         self.assertIn("衔接词", volume_prompt, "卷纲段规程应含因果衔接词规则")
         self.assertIn("主角想要", volume_prompt, "卷纲段规程应含驱动两要素")
+        self.assertIn("20-25", volume_prompt, "卷纲段章数默认估算应为 20-25 章")
         self.assertIn("指令卡", pkg.stage_prompt("chapter") or "")
         self.assertIn("章纲是宪法", pkg.stage_prompt("text") or "")
         self.assertIsNone(pkg.stage_prompt("不存在"))

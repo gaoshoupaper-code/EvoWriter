@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { FileText } from "lucide-react";
+import { useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
 import BlueprintTab from "@/components/evolve/BlueprintTab";
 import HistoryTab from "@/components/evolve/HistoryTab";
-import WorkbenchTab from "@/components/evolve/WorkbenchTab";
+import WorkArtifactsTab from "@/components/evolve/WorkArtifactsTab";
+import WorkbenchTab, { AGENT_STORAGE_KEY } from "@/components/evolve/WorkbenchTab";
 import type { EvolveSession } from "@/lib/api";
 
 /**
@@ -23,13 +25,22 @@ import type { EvolveSession } from "@/lib/api";
  *   prop → useEffect 自动 selectSession。session 对象经 initialSession 透传，
  *   避免 WorkbenchTab 重复拉取 status。
  */
-type Tab = "workbench" | "history" | "blueprint";
+type Tab = "workbench" | "history" | "artifacts" | "blueprint";
 
-const VALID_TABS: ReadonlySet<Tab> = new Set(["workbench", "history", "blueprint"]);
+const VALID_TABS: ReadonlySet<Tab> = new Set(["workbench", "history", "artifacts", "blueprint"]);
 
 export default function EvolvePage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const navigate = useNavigate();
+  const { isSuperAdmin } = useOutletContext<{ isSuperAdmin: boolean }>();
+  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() =>
+    localStorage.getItem(AGENT_STORAGE_KEY),
+  );
+  const selectAgent = useCallback((agentId: string | null) => {
+    setSelectedAgentId(agentId);
+    if (agentId) localStorage.setItem(AGENT_STORAGE_KEY, agentId);
+    else localStorage.removeItem(AGENT_STORAGE_KEY);
+  }, []);
 
   // tab：非法值兜底 workbench
   const tabParam = searchParams.get("tab");
@@ -113,6 +124,15 @@ export default function EvolvePage() {
         <button
           type="button"
           role="tab"
+          className={`evolve-tab${tab === "artifacts" ? " active" : ""}`}
+          aria-selected={tab === "artifacts"}
+          onClick={() => switchTab("artifacts")}
+        >
+          <FileText size={15} aria-hidden="true" /> 作品产物
+        </button>
+        <button
+          type="button"
+          role="tab"
           className={`evolve-tab${tab === "blueprint" ? " active" : ""}`}
           aria-selected={tab === "blueprint"}
           onClick={() => switchTab("blueprint")}
@@ -126,10 +146,18 @@ export default function EvolvePage() {
           <WorkbenchTab
             initialSessionId={sessionIdFromUrl}
             initialSession={initialSession}
+            onSelectedAgentChange={selectAgent}
           />
         )}
         {tab === "history" && (
           <HistoryTab onSelect={selectFromHistory} onReview={openReviewFromHistory} />
+        )}
+        {tab === "artifacts" && (
+          <WorkArtifactsTab
+            selectedAgentId={selectedAgentId}
+            onSelectedAgentChange={selectAgent}
+            canReadContent={isSuperAdmin}
+          />
         )}
         {tab === "blueprint" && <BlueprintTab />}
       </div>

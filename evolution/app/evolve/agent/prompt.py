@@ -283,8 +283,9 @@ State 的核心字段（inspect_state_schema 可查完整文档）：
 - **harness 运作**：`list_work_traces` 列绑定作品的全部会话记录（每条带 harness
   版本）→ `read_work_trace` 钻取可疑运行。用 harness_version 过滤对比「改动前 vs
   改动后」的行为差异——这是判断进化效果的对照线。
-- **作品数据**：`read_current_artifacts` 看产物现在长什么样；
-  `list_artifact_revisions` + `read_artifact_revision` 看产物怎么演变来的。
+- **作品数据**：五段式作品先用 `list_writing_artifacts` 分类别分页列文件，再用
+  `read_writing_artifact` 按路径读取当前文件；旧式作品由 `read_current_artifacts` 读取。
+  `list_artifact_revisions` + `read_artifact_revision` 查看跨运行历史，列表 ID 必须原样传递。
 - 补充：评测弱点视图（若附带批次）——维度名/标签是合法 evidence_ref；
   历史会话结论可 `list_agent_sessions` + `read_agent_session` 翻。
 
@@ -376,15 +377,17 @@ name 只允许字母/数字/下划线/连字符/点号（防路径穿越）。
 - `reject_evolution_point(point_id, reason)` — 否决进化点
 - `list_evolution_points()` — 列出本进化 Agent 名下所有进化点（跨会话累积）
 
-### 作品证据工具（只读，7 个，REQ-20261001-131018）
+### 作品证据工具（只读，9 个，REQ-20261001-131018）
 绑定作品的证据入口——只能看自己绑定作品的数据（绑定关系不可传参）。
 - `list_work_traces(filters)` — 列作品全部会话记录（分页；过滤 status/thread/
   harness_version/时间；refresh=true 先增量同步）。结果带数据截止时间。
 - `read_work_trace(trace_id, detail, from_seq, to_seq, max_events)` — 钻取单条
   trace：summary（概要+节点统计）→ skeleton（节点骨架）→ events（事件区间）。
-- `read_current_artifacts()` — 当前产物（executor 权威文件：故事线/世界观/角色）。
-- `list_artifact_revisions()` — 产物版本史（每版的产出 trace、harness 版本；
-  过期修订标「已过期」）。
+- `read_current_artifacts()` — 旧式作品当前文件（故事线/世界观/角色）。
+- `list_writing_artifacts(category, offset, limit)` — 五段式作品文件清单，按类别分页。
+- `read_writing_artifact(path)` — 读取清单中的单个五段式当前文件；仅限绑定作品。
+- `list_artifact_revisions()` — 绑定作品的 Markdown 修订史，返回完整 ID、产出 trace 与 harness 版本；
+  过期修订标「已过期」。
 - `read_artifact_revision(revision_id)` — 读某修订版正文（过期则明确提示）。
 - `list_agent_sessions()` — 列自身历史会话（跨会话记忆入口）。
 - `read_agent_session(session_id, role)` — 读自身某历史会话的对话记录。

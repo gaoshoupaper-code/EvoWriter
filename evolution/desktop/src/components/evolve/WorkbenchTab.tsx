@@ -57,7 +57,7 @@ import PointsDrawer from "./PointsDrawer";
  *   - 浮窗点击进化点 → highlightedPointId（滚动对话到该点讨论位置）
  *   - 对话区 hover/点击卡片 → 同一 state 反向高亮浮窗
  */
-const AGENT_STORAGE_KEY = "evolve.selectedAgentId";
+export const AGENT_STORAGE_KEY = "evolve.selectedAgentId";
 
 // SSE 空闲看门狗：3 个心跳周期（服务端 15s/跳）无 chunk 视为死流
 const READ_IDLE_TIMEOUT_MS = 45_000;
@@ -65,9 +65,11 @@ const READ_IDLE_TIMEOUT_MS = 45_000;
 export default function WorkbenchTab({
   initialSessionId,
   initialSession,
+  onSelectedAgentChange,
 }: {
   initialSessionId: string | null;
   initialSession: EvolveSession | null;
+  onSelectedAgentChange?: (agentId: string | null) => void;
 }) {
   const navigate = useNavigate();
 
@@ -153,6 +155,10 @@ export default function WorkbenchTab({
     if (agentId) localStorage.setItem(AGENT_STORAGE_KEY, agentId);
     else localStorage.removeItem(AGENT_STORAGE_KEY);
   }, []);
+
+  useEffect(() => {
+    onSelectedAgentChange?.(selectedAgentId);
+  }, [onSelectedAgentChange, selectedAgentId]);
 
   // ── 拉取会话详情（messages + points）────────────────────────
   // 拉取进化点（独立于消息——proposal 事件时只刷进化点，避免覆盖流式 token）

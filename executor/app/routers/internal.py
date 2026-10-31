@@ -144,6 +144,116 @@ def internal_get_workspace_artifacts(workspace_id: str) -> dict[str, Any]:
     }
 
 
+_WRITING_ARTIFACT_CATEGORIES = {
+    "theme", "outline", "style", "volume_outline", "chapter_outline", "chapter_text",
+}
+
+
+def _workspace_writing_artifact_root(workspace_id: str) -> tuple[dict[str, Any], Path]:
+    from app.platform.core.db import WorkspaceRepository, get_database
+
+    row = WorkspaceRepository(get_database()).get_any(workspace_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    workspace = get_thread_store().get_workspace(row["owner_id"], workspace_id)
+    if workspace is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return row, Path(workspace.workspace_path).resolve()
+
+
+def _writing_artifact_path(root: Path, rel: str) -> Path:
+    from contracts.writing_artifacts import parse_relpath
+
+    if not rel or "\\" in rel or Path(rel).is_absolute() or Path(rel).as_posix() != rel:
+        raise HTTPException(status_code=400, detail="Invalid writing artifact path")
+    if parse_relpath(rel) is None:
+        raise HTTPException(status_code=400, detail="Path is not a writing artifact")
+    candidate = root / rel
+    try:
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Writing artifact not found") from None
+    except (OSError, ValueError):
+        raise HTTPException(status_code=400, detail="Writing artifact path escapes workspace") from None
+    if not resolved.is_file():
+        raise HTTPException(status_code=404, detail="Writing artifact not found")
+    return resolved
+
+
+@router.get("/workspaces/{workspace_id}/writing-artifacts")
+def internal_list_workspace_writing_artifacts(
+    workspace_id: str,
+    category: str | None = Query(None),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+) -> dict[str, Any]:
+    """列绑定作品的五段式文本产物路径；只返回白名单 Markdown 文件。"""
+    from contracts.writing_artifacts import (
+        CHAPTER_OUTLINE_DIR, MASTER_FILENAME, STYLE_FILENAME, TEXT_DIR,
+        THEME_FILENAME, VOLUME_DIR, classify_writing_workspace, parse_relpath,
+    )
+
+    if category is not None and category not in _WRITING_ARTIFACT_CATEGORIES:
+        raise HTTPException(status_code=422, detail="Unknown writing artifact category")
+    row, root = _workspace_writing_artifact_root(workspace_id)
+    kind = classify_writing_workspace(root)
+    candidates = [root / THEME_FILENAME, root / MASTER_FILENAME, root / STYLE_FILENAME]
+    for directory in (VOLUME_DIR, CHAPTER_OUTLINE_DIR, TEXT_DIR):
+        parent = root / directory
+        if parent.is_dir():
+            candidates.extend(parent.glob("*.md"))
+
+    files: list[dict[str, Any]] = []
+    for candidate in candidates:
+        rel = candidate.relative_to(root).as_posix()
+        if kind != "five":
+            continue
+        artifact = parse_relpath(rel)
+        if artifact is None or (category is not None and artifact.kind != category):
+            continue
+        try:
+            resolved = candidate.resolve(strict=True)
+            resolved.relative_to(root)
+        except (OSError, ValueError):
+            continue
+        if not resolved.is_file():
+            continue
+        files.append({"path": rel, "category": artifact.kind, "size_bytes": resolved.stat().st_size})
+    files.sort(key=lambda item: item["path"])
+    return {
+        "workspace_id": workspace_id,
+        "title": row["title"],
+        "kind": kind,
+        "category": category,
+        "total": len(files),
+        "offset": offset,
+        "limit": limit,
+        "files": files[offset:offset + limit],
+    }
+
+
+@router.get("/workspaces/{workspace_id}/writing-artifacts/content")
+def internal_read_workspace_writing_artifact(
+    workspace_id: str,
+    path: str = Query(..., min_length=1, max_length=500),
+) -> dict[str, Any]:
+    """读取绑定作品中的单个五段式文本产物，不接受任意工作区路径。"""
+    from contracts.writing_artifacts import classify_writing_workspace
+
+    _, root = _workspace_writing_artifact_root(workspace_id)
+    if classify_writing_workspace(root) != "five":
+        raise HTTPException(status_code=409, detail="Workspace is not a five-segment writing workspace")
+    resolved = _writing_artifact_path(root, path)
+    try:
+        content = resolved.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=422, detail="Writing artifact is not valid UTF-8 text") from None
+    except OSError:
+        raise HTTPException(status_code=404, detail="Writing artifact not found") from None
+    return {"workspace_id": workspace_id, "path": path, "content": content}
+
+
 # ── Phase 3 T3.1：A/B 回放端点 ──────────────────────────────
 
 

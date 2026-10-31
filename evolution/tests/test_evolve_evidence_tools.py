@@ -114,6 +114,42 @@ def _mk_artifacts():
         (pid_old, pid_fresh, pid_fresh2))
 
 
+class WritingArtifactExecutorClientTest(unittest.TestCase):
+    def test_list_and_read_send_workspace_scoped_queries(self):
+        response = mock.Mock(status_code=200)
+        response.json.return_value = {"files": [], "total": 0}
+        with mock.patch.object(executor_client.httpx, "get", return_value=response) as get:
+            executor_client.fetch_workspace_writing_artifacts(
+                WS, category="chapter_text", offset=200, limit=73
+            )
+        self.assertEqual(get.call_args.kwargs["params"], {
+            "category": "chapter_text", "offset": 200, "limit": 73,
+        })
+        response.json.return_value = {"content": "正文"}
+        with mock.patch.object(executor_client.httpx, "get", return_value=response) as get:
+            self.assertEqual(
+                executor_client.fetch_workspace_writing_artifact(WS, "正文/第001章.md"),
+                "正文",
+            )
+        self.assertEqual(get.call_args.kwargs["params"], {"path": "正文/第001章.md"})
+
+    def test_read_classifies_workspace_file_path_and_service_failures(self):
+        cases = (
+            (404, {"detail": "Writing artifact not found"}, executor_client.WritingArtifactNotFoundError),
+            (400, {"detail": "Path is not a writing artifact"}, executor_client.InvalidWritingArtifactPathError),
+            (409, {"detail": "Workspace is not a five-segment writing workspace"}, executor_client.WritingWorkspaceNotFiveSegmentError),
+            (404, {"detail": "Workspace not found"}, executor_client.WorkNotFoundError),
+            (503, {"detail": "unavailable"}, executor_client.ExecutorUnavailableError),
+        )
+        for status, body, expected in cases:
+            with self.subTest(status=status, detail=body["detail"]):
+                response = mock.Mock(status_code=status)
+                response.json.return_value = body
+                with mock.patch.object(executor_client.httpx, "get", return_value=response):
+                    with self.assertRaises(expected):
+                        executor_client.fetch_workspace_writing_artifact(WS, "主题.md")
+
+
 class EvidenceToolsTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -228,18 +264,81 @@ class EvidenceToolsTest(unittest.TestCase):
             out2 = self._invoke("read_current_artifacts")
         self.assertIn("作品已删除", out2)
 
-    def test_revision_history_grouped_with_expired_flag(self):
+    def test_five_segment_file_tools_are_bound_paginated_and_read_only(self):
+        with mock.patch.object(
+            executor_client,
+            "fetch_workspace_writing_artifacts",
+            return_value={
+                "workspace_id": WS,
+                "total": 202,
+                "files": [
+                    {"path": "正文/第101章.md", "category": "chapter_text", "size_bytes": 10},
+                    {"path": "正文/第102章.md", "category": "chapter_text", "size_bytes": 12},
+                ],
+            },
+        ) as listing:
+            out = self._invoke("list_writing_artifacts", {
+                "category": "chapter_text", "offset": 100, "limit": 25
+            })
+        listing.assert_called_once_with(WS, category="chapter_text", offset=100, limit=25)
+        self.assertIn("正文/第101章.md", out)
+        self.assertIn("offset=102", out)
+
+        with mock.patch.object(
+            executor_client, "fetch_workspace_writing_artifact", return_value="当前章节正文"
+        ) as reader:
+            content = self._invoke(
+                "read_writing_artifact", {"path": "正文/第001章.md"}
+            )
+        reader.assert_called_once_with(WS, "正文/第001章.md")
+        self.assertIn("当前章节正文", content)
+
+        with mock.patch.object(
+            executor_client,
+            "fetch_workspace_writing_artifact",
+            side_effect=executor_client.InvalidWritingArtifactPathError("../other/secret.md"),
+        ):
+            rejected = self._invoke(
+                "read_writing_artifact", {"path": "../other/secret.md"}
+            )
+        self.assertIn("不允许", rejected)
+
+    def test_read_revision_rejects_internal_path_even_if_id_is_guessed(self):
+        payload_id = _store_payload("secret state")
+        db.execute(
+            "INSERT INTO artifacts (artifact_id, artifact_type, workspace_id, logical_key, created_at) "
+            "VALUES ('artifact-hidden', 'workspace_file', ?, '/.writing/state.json', '2026-10-01')",
+            (WS,),
+        )
+        db.execute(
+            "INSERT INTO artifact_revisions "
+            "(artifact_revision_id, artifact_id, payload_id, content_hash, created_at) "
+            "VALUES ('revision-hidden', 'artifact-hidden', ?, 'hash-hidden', '2026-10-01')",
+            (payload_id,),
+        )
+        result = self._invoke("read_artifact_revision", {"revision_id": "revision-hidden"})
+        self.assertIn("不存在", result)
+        self.assertNotIn("secret state", result)
+
+    def test_revision_history_uses_full_ids_and_only_five_segment_text(self):
         _mk_artifacts()
+        db.execute(
+            "INSERT INTO artifacts (artifact_id, artifact_type, workspace_id, logical_key, created_at)"
+            " VALUES ('art-internal', 'workspace_file', ?, '/.writing/state.json', '2026-10-01')",
+            (WS,),
+        )
         out = self._invoke("list_artifact_revisions")
         self.assertIn("storyline.md", out)
         self.assertIn("2 版", out)
         self.assertIn("character/林零.md", out)
+        self.assertIn("rev-old", out)
+        self.assertIn("rev-new", out)
+        self.assertNotIn("/.writing/state.json", out)
         self.assertIn("已过期", out)
         # 过期修订不可读正文
         out_old = self._invoke("read_artifact_revision", {"revision_id": "rev-old"})
         self.assertIn("已过期", out_old)
         self.assertNotIn("旧内容", out_old)
-        # 可读修订返回正文
         out_new = self._invoke("read_artifact_revision", {"revision_id": "rev-new"})
         self.assertIn("故事线 v2 内容", out_new)
 

@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -35,6 +36,32 @@ logger = logging.getLogger("evolution.evolve.agent.tools.evidence")
 # 单条工具结果的正文截断上限（字符）。进化分析要的是结构与关键证据，
 # 全文阅读靠分段钻取（events 区间 / 分页）。
 _MAX_TEXT = 8000
+_INTERNAL_ARTIFACT_DIRS = {".writing", ".git", ".zcode", ".agents", "config", "configs"}
+_FIVE_SEGMENT_ARTIFACT_PATHS = (
+    re.compile(r"卷纲/第\d+卷\.md"),
+    re.compile(r"章纲/第\d+章\.md"),
+    re.compile(r"正文/第\d+章[^/]*\.md"),
+)
+_LEGACY_ARTIFACT_PATHS = (
+    re.compile(r"(?:character|characters|outline|detail|chapter|review)/.+\.md"),
+)
+
+
+def _visible_artifact_path(path: str) -> bool:
+    if "\\" in path:
+        return False
+    normalized = path[1:] if path.startswith("/") else path
+    parts = normalized.split("/")
+    if any(part in {"", ".", ".."} for part in parts):
+        return False
+    if any(part.startswith(".") or part.lower() in _INTERNAL_ARTIFACT_DIRS for part in parts):
+        return False
+    if normalized in {"主题.md", "总纲.md", "文风.md", "storyline.md", "worldview.md"}:
+        return True
+    return any(
+        pattern.fullmatch(normalized)
+        for pattern in (*_FIVE_SEGMENT_ARTIFACT_PATHS, *_LEGACY_ARTIFACT_PATHS)
+    )
 
 
 class TraceFilter(BaseModel):
@@ -47,6 +74,19 @@ class TraceFilter(BaseModel):
     limit: int = Field(20, description="单页条数（1-100）")
     offset: int = Field(0, description="分页偏移")
     refresh: bool = Field(False, description="先向 executor 增量拉取再查询（怀疑有更新记录时用）")
+
+
+class WritingArtifactListInput(BaseModel):
+    category: str | None = Field(
+        None,
+        description="可选类别：theme/outline/style/volume_outline/chapter_outline/chapter_text",
+    )
+    offset: int = Field(0, ge=0, description="分页偏移，目录很长时用下一页 offset")
+    limit: int = Field(100, ge=1, le=200, description="单页数量（1-200）")
+
+
+class WritingArtifactReadInput(BaseModel):
+    path: str = Field(min_length=1, max_length=500, description="list_writing_artifacts 返回的完整相对路径")
 
 
 def _require_binding() -> tuple[Any, str, str] | None:
@@ -284,10 +324,10 @@ def make_evidence_tools() -> list:
 
     @tool
     def read_current_artifacts() -> str:
-        """读绑定作品的当前产物（executor 权威文件，永远最新）。
+        """读旧式作品的故事线、世界观与角色档案当前文件。
 
-        返回故事线(storyline)、世界观(worldview)、角色档案(characters)的
-        当前全文（超长截断）。查「产物怎么演变来的」调 list_artifact_revisions。
+        五段式作品请先用 list_writing_artifacts 分页列文件，再调
+        read_writing_artifact 读取当前文件。查历史修订调 list_artifact_revisions。
         """
         bound = _require_binding()
         if bound is None:
@@ -327,6 +367,80 @@ def make_evidence_tools() -> list:
             parts.append("〔角色〕（尚未产出）")
         return "\n\n".join(parts)
 
+    # ── FR-006：五段式当前文件（列表分页 + 按需读单文件）────────────
+
+    @tool(args_schema=WritingArtifactListInput)
+    def list_writing_artifacts(
+        category: str | None = None, offset: int = 0, limit: int = 100,
+    ) -> str:
+        """分页列出绑定作品的五段式文本文件路径。先列目录，再按需读取单个文件。
+
+        Args:
+            category: 可选类别 theme/outline/style/volume_outline/chapter_outline/chapter_text
+            offset: 从第几项开始；结果注明下一页 offset
+            limit: 每页数量，最大 200
+        """
+        bound = _require_binding()
+        if bound is None:
+            return "错误：本会话未绑定作品（旧会话），无作品证据可查"
+        _, _, workspace_id = bound
+        offset = max(0, offset)
+        limit = max(1, min(limit, 200))
+        try:
+            from app.evolve.executor_client import fetch_workspace_writing_artifacts
+            result = fetch_workspace_writing_artifacts(
+                workspace_id, category=category, offset=offset, limit=limit
+            )
+        except Exception as exc:
+            from app.evolve.executor_client import ExecutorUnavailableError
+            if isinstance(exc, ExecutorUnavailableError):
+                return f"错误：绑定作品文件清单读取失败（executor 不可达）：{exc}"
+            return f"错误：绑定作品文件清单读取失败：{exc}"
+
+        files = result.get("files") or []
+        total = int(result.get("total") or 0)
+        if not files:
+            return f"绑定作品暂无该类别的五段式文本产物（总数 {total}）。"
+        lines = [f"绑定作品文件（{offset + 1}-{offset + len(files)} / {total}）："]
+        for item in files:
+            lines.append(
+                f"  {item['path']} [{item['category']}] {item.get('size_bytes', 0)} bytes"
+            )
+        next_offset = offset + len(files)
+        if next_offset < total:
+            lines.append(f"下一页：list_writing_artifacts(category={category!r}, offset={next_offset}, limit={limit})")
+        lines.append("读取单个当前文件调 read_writing_artifact(path)。")
+        return "\n".join(lines)
+
+    @tool(args_schema=WritingArtifactReadInput)
+    def read_writing_artifact(path: str) -> str:
+        """读取 list_writing_artifacts 返回的一个绑定作品当前文件。"""
+        bound = _require_binding()
+        if bound is None:
+            return "错误：本会话未绑定作品（旧会话），无作品证据可查"
+        _, _, workspace_id = bound
+        from app.evolve.executor_client import (
+            ExecutorUnavailableError,
+            InvalidWritingArtifactPathError,
+            WorkNotFoundError,
+            WritingWorkspaceNotFiveSegmentError,
+            WritingArtifactNotFoundError,
+            fetch_workspace_writing_artifact,
+        )
+        try:
+            content = fetch_workspace_writing_artifact(workspace_id, path)
+        except WorkNotFoundError:
+            return "作品已删除：executor 报告该作品不存在。历史 trace 与版本史仍可用。"
+        except WritingArtifactNotFoundError:
+            return f"当前文件不存在：{path!r}；没有使用历史修订替代当前文件。"
+        except InvalidWritingArtifactPathError:
+            return f"错误：不允许读取该路径 {path!r}；请先列出绑定作品的文件清单。"
+        except WritingWorkspaceNotFiveSegmentError:
+            return "当前作品不是五段式工作区；可查询已摄入的历史修订。"
+        except ExecutorUnavailableError as exc:
+            return f"错误：当前文件读取失败（executor 不可达）：{exc}；历史修订仍可查询。"
+        return f"当前文件：{path}\n\n{_truncate(content)}"
+
     # ── FR-006 / DEC-007：产物版本史 ──────────────────────────
 
     @tool
@@ -355,12 +469,19 @@ def make_evidence_tools() -> list:
             (workspace_id,),
         )
         if not rows:
-            return "绑定作品暂无产物修订记录（捕获白名单内的写入才会产生修订）。"
+            return "绑定作品暂无产物修订记录（捕获的文本 Markdown 文件才会产生修订）。"
         from app.trace_payloads import _expired
         grouped: dict[str, list[dict[str, Any]]] = {}
         for r in rows:
-            grouped.setdefault(r["logical_key"], []).append(r)
-        lines = [f"产物版本史（{len(grouped)} 个产物，共 {len(rows)} 个修订）："]
+            key = str(r["logical_key"] or "")
+            normalized = key[1:] if key.startswith("/") else key
+            if not _visible_artifact_path(normalized):
+                continue
+            grouped.setdefault(key, []).append(r)
+        if not grouped:
+            return "绑定作品暂无产物修订记录（捕获的文本 Markdown 文件才会产生修订）。"
+        total_revisions = sum(len(revisions) for revisions in grouped.values())
+        lines = [f"产物版本史（{len(grouped)} 个产物，共 {total_revisions} 个修订）："]
         for key, revisions in grouped.items():
             lines.append(f"── {key}（{revisions[0]['artifact_type']}，{len(revisions)} 版）")
             for r in revisions:
@@ -368,7 +489,7 @@ def make_evidence_tools() -> list:
                 flag = "已过期" if expired else "可读"
                 hv = str(r.get("harness_version") or "?")[:8]
                 lines.append(
-                    f"  {r['artifact_revision_id'][:12]}… {r['created_at']} "
+                    f"  {r['artifact_revision_id']} {r['created_at']} "
                     f"harness@{hv} 产出:{r['producer_trace_id'] or '?'} [{flag}]"
                 )
         lines.append("读正文调 read_artifact_revision(revision_id)。")
@@ -395,6 +516,10 @@ def make_evidence_tools() -> list:
         )
         if row is None or row.get("workspace_id") != workspace_id:
             return f"修订 {revision_id} 不存在或不属于绑定作品"
+        logical_key = str(row.get("logical_key") or "")
+        normalized = logical_key[1:] if logical_key.startswith("/") else logical_key
+        if not _visible_artifact_path(normalized):
+            return f"修订 {revision_id} 不存在或不属于绑定作品"
 
         from app.trace_payloads import read_payload
         content = read_payload(row["payload_id"])
@@ -403,6 +528,8 @@ def make_evidence_tools() -> list:
                 f"修订 {revision_id}（{row['logical_key']}）正文已过期，不可读。"
                 f"元数据仍在版本史中（DEC-007：正文 90 天过期）。"
             )
+        if isinstance(content, dict) and isinstance(content.get("content"), str):
+            content = content["content"]
         return (
             f"修订 {revision_id}（{row['logical_key']}，{row['created_at']}，"
             f"hash {str(row['content_hash'])[:12]}）：\n{_truncate(str(content))}"
@@ -472,6 +599,8 @@ def make_evidence_tools() -> list:
         list_work_traces,
         read_work_trace,
         read_current_artifacts,
+        list_writing_artifacts,
+        read_writing_artifact,
         list_artifact_revisions,
         read_artifact_revision,
         list_agent_sessions,

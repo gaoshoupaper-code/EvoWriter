@@ -626,6 +626,107 @@ export async function getEvolveAgent(agentId: string): Promise<EvolveAgentDetail
   return evoJson<EvolveAgentDetail>(`/api/evolve/agents/${agentId}`, { method: "GET" });
 }
 
+export type WritingArtifactCategory =
+  | "theme"
+  | "outline"
+  | "style"
+  | "volume_outline"
+  | "chapter_outline"
+  | "chapter_text";
+
+export interface EvolveWritingArtifactFile {
+  path: string;
+  category: WritingArtifactCategory;
+  size_bytes: number;
+}
+
+export interface EvolveArtifactRevision {
+  artifact_revision_id: string;
+  content_hash: string;
+  producer_trace_id: string | null;
+  producer_event_id: string | null;
+  harness_version: string | null;
+  created_at: string;
+  artifact_type: string;
+  size_bytes: number | null;
+  expires_at: string | null;
+  deleted_at: string | null;
+}
+
+export interface EvolveArtifactRevisionGroup {
+  logical_key: string;
+  revision_count: number;
+  head_revision_id: string;
+  revisions: EvolveArtifactRevision[];
+}
+
+export interface EvolveAgentArtifactsResponse {
+  agent_id: string;
+  workspace_id: string;
+  current: {
+    kind: "five" | "legacy" | "missing" | "unreachable";
+    category: WritingArtifactCategory | null;
+    offset: number;
+    limit: number;
+    total: number;
+    files: EvolveWritingArtifactFile[];
+    error?: string;
+  };
+  revisions: EvolveArtifactRevisionGroup[];
+  revision_total: number;
+  revision_offset: number;
+  revision_limit: number;
+  can_read_content: boolean;
+}
+
+export async function getEvolveAgentArtifacts(
+  agentId: string,
+  params?: {
+    category?: WritingArtifactCategory;
+    offset?: number;
+    limit?: number;
+    revisionOffset?: number;
+    revisionLimit?: number;
+  },
+): Promise<EvolveAgentArtifactsResponse> {
+  const query = new URLSearchParams();
+  if (params?.category) query.set("category", params.category);
+  query.set("offset", String(params?.offset ?? 0));
+  query.set("limit", String(params?.limit ?? 100));
+  query.set("revision_offset", String(params?.revisionOffset ?? 0));
+  query.set("revision_limit", String(params?.revisionLimit ?? 100));
+  return evoJson<EvolveAgentArtifactsResponse>(
+    `/api/evolve/agents/${encodeURIComponent(agentId)}/artifacts?${query.toString()}`,
+    { method: "GET" },
+  );
+}
+
+export async function getEvolveAgentArtifactContent(
+  agentId: string,
+  path: string,
+): Promise<{ agent_id: string; workspace_id: string; path: string; content: string }> {
+  return evoJson(
+    `/api/evolve/agents/${encodeURIComponent(agentId)}/artifacts/content?path=${encodeURIComponent(path)}`,
+    { method: "GET" },
+  );
+}
+
+export async function getEvolveAgentArtifactRevisionContent(
+  agentId: string,
+  revisionId: string,
+): Promise<{
+  artifact_revision_id: string;
+  logical_key: string;
+  created_at: string;
+  content_hash: string;
+  content: string;
+}> {
+  return evoJson(
+    `/api/evolve/agents/${encodeURIComponent(agentId)}/artifacts/revisions/${encodeURIComponent(revisionId)}/content`,
+    { method: "GET" },
+  );
+}
+
 /** 创建进化 Agent。作品已被绑定时后端 409，detail 含占用方信息（DEC-009）。 */
 export async function createEvolveAgent(
   name: string,

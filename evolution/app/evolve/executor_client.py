@@ -31,10 +31,22 @@ class ExecutorUnavailableError(Exception):
     """executor 不可达或异常响应——明确报错，不误标作品删除。"""
 
 
-def _get(url: str) -> httpx.Response:
+class WritingArtifactNotFoundError(Exception):
+    """作品存在，但请求的五段式文件不存在。"""
+
+
+class InvalidWritingArtifactPathError(Exception):
+    """请求路径不是允许读取的五段式文本产物。"""
+
+
+class WritingWorkspaceNotFiveSegmentError(Exception):
+    """作品存在，但不是五段式工作区。"""
+
+
+def _get(url: str, *, params: dict[str, Any] | None = None) -> httpx.Response:
     """GET with 统一超时与错误分类。连接类错误/5xx → ExecutorUnavailableError。"""
     try:
-        resp = httpx.get(url, timeout=10.0)
+        resp = httpx.get(url, params=params, timeout=10.0)
     except httpx.HTTPError as exc:
         raise ExecutorUnavailableError(f"executor 不可达: {exc}") from exc
     if resp.status_code == 404:
@@ -82,10 +94,55 @@ def fetch_workspace_artifacts(workspace_id: str) -> dict[str, Any]:
     return resp.json()
 
 
+def fetch_workspace_writing_artifacts(
+    workspace_id: str,
+    *,
+    category: str | None = None,
+    offset: int = 0,
+    limit: int = 100,
+) -> dict[str, Any]:
+    """分页读取五段式作品文件目录，不返回文件正文。"""
+    resp = _get(
+        f"{settings.executor_url}/internal/workspaces/{workspace_id}/writing-artifacts",
+        params={"category": category, "offset": offset, "limit": limit},
+    )
+    return resp.json()
+
+
+def fetch_workspace_writing_artifact(workspace_id: str, path: str) -> str:
+    """读取绑定作品中的一个五段式文本文件。"""
+    url = f"{settings.executor_url}/internal/workspaces/{workspace_id}/writing-artifacts/content"
+    try:
+        resp = httpx.get(url, params={"path": path}, timeout=10.0)
+    except httpx.HTTPError as exc:
+        raise ExecutorUnavailableError(f"executor 不可达: {exc}") from exc
+    if resp.status_code == 404:
+        try:
+            detail = resp.json().get("detail")
+        except ValueError:
+            detail = None
+        if detail == "Workspace not found":
+            raise WorkNotFoundError(workspace_id)
+        raise WritingArtifactNotFoundError(path)
+    if resp.status_code == 400:
+        raise InvalidWritingArtifactPathError(path)
+    if resp.status_code == 409:
+        raise WritingWorkspaceNotFiveSegmentError(workspace_id)
+    if resp.status_code >= 500:
+        raise ExecutorUnavailableError(f"executor 异常响应 {resp.status_code}: {url}")
+    resp.raise_for_status()
+    return str(resp.json()["content"])
+
+
 __all__ = [
     "WorkNotFoundError",
     "ExecutorUnavailableError",
+    "WritingArtifactNotFoundError",
+    "InvalidWritingArtifactPathError",
+    "WritingWorkspaceNotFiveSegmentError",
     "fetch_workspaces",
     "fetch_workspace",
     "fetch_workspace_artifacts",
+    "fetch_workspace_writing_artifacts",
+    "fetch_workspace_writing_artifact",
 ]

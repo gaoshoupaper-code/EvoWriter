@@ -50,7 +50,8 @@ description: 需求追问纪律。用户说出的进化想法只是起点——�
    - **事实类**（harness 现状、trace 行为、产物演变、既有进化点、历史会话结论）：自己查，凡自己能查到的一律不问用户。工具映射：
      - harness 结构与源码 → `list_elements` / `read_source` / `read_assemble` / `inspect_state_schema` / `inspect_middleware_protocol`
      - 作品实际运行 → `list_work_traces`（按 harness_version 过滤做改动前后对照）/ `read_work_trace`
-     - 产物现状与演变 → `read_current_artifacts` / `list_artifact_revisions` / `read_artifact_revision`
+     - 五段式产物现状 → `list_writing_artifacts`（按类别分页）/ `read_writing_artifact`（按路径按需读）
+     - 旧式产物现状与演变 → `read_current_artifacts` / `list_artifact_revisions` / `read_artifact_revision`
      - 历史会话结论 → `list_agent_sessions` / `read_agent_session`
      - 评测弱点（若附带批次）→ 已注入的弱点视图，维度名 / 标签是合法证据引用
 

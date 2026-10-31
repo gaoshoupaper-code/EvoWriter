@@ -15,6 +15,7 @@ import os
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest import mock
 
@@ -28,6 +29,7 @@ os.environ["EXECUTOR_URL"] = "http://127.0.0.1:0"
 from fastapi.testclient import TestClient
 
 import app.core.db as db
+from app.evolve import agents_repo
 import app.evolve.agents_api as agents_api
 from app.core.settings import settings
 from app.evolve import executor_client
@@ -73,6 +75,9 @@ class EvolveAgentsApiTest(unittest.TestCase):
         self.client = TestClient(app)
         # 清表：每个用例独立
         with db.transaction() as conn:
+            conn.execute("DELETE FROM artifact_revisions")
+            conn.execute("DELETE FROM artifacts")
+            conn.execute("DELETE FROM payload_objects")
             conn.execute("DELETE FROM evolve_agents")
             conn.execute("DELETE FROM evolve_sessions")
 
@@ -187,6 +192,160 @@ class EvolveAgentsApiTest(unittest.TestCase):
         self.assertEqual(r.json()["total"], 1)
         self.assertEqual(r.json()["workspaces"][0]["owner_username"], "alice")
         pw.assert_called_once()
+
+    def test_agent_artifact_summary_uses_bound_workspace_and_hides_payload(self):
+        agent = agents_repo.create("产物Agent", WORK["workspace_id"])
+        request = SimpleNamespace(state=SimpleNamespace(is_super_admin=False, user_id="reader"))
+        current = {
+            "workspace_id": "untrusted-id",
+            "total": 1,
+            "files": [{"path": "正文/第001章.md", "category": "chapter_text"}],
+        }
+        db.execute(
+            "INSERT INTO artifacts (artifact_id, artifact_type, workspace_id, logical_key, created_at)"
+            " VALUES ('artifact-ours', 'workspace_file', ?, '/正文/第001章.md', '2026-10-01')",
+            (WORK["workspace_id"],),
+        )
+        db.execute(
+            "INSERT INTO payload_objects "
+            "(payload_id, content_hash, kind, size_bytes, sensitivity, expires_at, storage_path, created_at) "
+            "VALUES ('payload-api', 'hash-api', 'text', 4, 'normal', '2099-01-01', '/unused', '2026-10-01')"
+        )
+        db.execute(
+            "INSERT INTO artifact_revisions "
+            "(artifact_revision_id, artifact_id, payload_id, content_hash, producer_trace_id, created_at) "
+            "VALUES ('revision-api', 'artifact-ours', 'payload-api', 'hash-api', 'trace-1', '2026-10-01')"
+        )
+        db.execute(
+            "INSERT INTO artifacts (artifact_id, artifact_type, workspace_id, logical_key, created_at)"
+            " VALUES ('artifact-internal', 'workspace_file', ?, '/.writing/state.md', '2026-10-01')",
+            (WORK["workspace_id"],),
+        )
+        db.execute(
+            "INSERT INTO artifacts (artifact_id, artifact_type, workspace_id, logical_key, created_at)"
+            " VALUES ('artifact-theirs', 'workspace_file', 'other-work', '/秘密.md', '2026-10-01')"
+        )
+        with mock.patch.object(agents_api, "fetch_workspace_writing_artifacts", return_value=current) as fetch:
+            result = agents_api.list_agent_artifacts(
+                agent["agent_id"], request, category=None, offset=0, limit=100,
+                revision_offset=0, revision_limit=100,
+            )
+        fetch.assert_called_once_with(
+            WORK["workspace_id"], category=None, offset=0, limit=100
+        )
+        self.assertEqual(result["workspace_id"], WORK["workspace_id"])
+        self.assertFalse(result["can_read_content"])
+        self.assertEqual([group["logical_key"] for group in result["revisions"]], ["/正文/第001章.md"])
+        self.assertEqual(result["revision_total"], 1)
+        self.assertNotIn("payload_id", str(result))
+        self.assertNotIn("/.writing/state.md", str(result))
+
+    def test_agent_artifact_revision_pages_are_stable_and_scoped(self):
+        agent = agents_repo.create("修订分页Agent", WORK["workspace_id"])
+        db.execute(
+            "INSERT INTO payload_objects "
+            "(payload_id, content_hash, kind, size_bytes, sensitivity, expires_at, storage_path, created_at) "
+            "VALUES ('payload-pages', 'hash-pages', 'text', 1, 'normal', '2099-01-01', '/unused', '2026-10-01')"
+        )
+        db.execute(
+            "INSERT INTO artifacts (artifact_id, artifact_type, workspace_id, logical_key, created_at) "
+            "VALUES ('artifact-page', 'workspace_file', ?, '/正文/第001章.md', '2026-10-01')",
+            (WORK["workspace_id"],),
+        )
+        for number in range(3):
+            db.execute(
+                "INSERT INTO artifact_revisions "
+                "(artifact_revision_id, artifact_id, payload_id, content_hash, created_at) "
+                "VALUES (?, 'artifact-page', 'payload-pages', ?, ?)",
+                (f"revision-page-{number}", f"hash-{number}", f"2026-10-0{number + 1}"),
+            )
+        request = SimpleNamespace(state=SimpleNamespace(is_super_admin=False, user_id="reader"))
+        with mock.patch.object(agents_api, "fetch_workspace_writing_artifacts", return_value={
+            "workspace_id": WORK["workspace_id"], "kind": "five", "total": 0, "files": [],
+        }):
+            first = agents_api.list_agent_artifacts(
+                agent["agent_id"], request, revision_offset=0, revision_limit=2
+            )
+            second = agents_api.list_agent_artifacts(
+                agent["agent_id"], request, revision_offset=2, revision_limit=2
+            )
+        first_ids = [r["artifact_revision_id"] for g in first["revisions"] for r in g["revisions"]]
+        second_ids = [r["artifact_revision_id"] for g in second["revisions"] for r in g["revisions"]]
+        self.assertEqual(first["revision_total"], 3)
+        self.assertEqual(len(first_ids), 2)
+        self.assertEqual(second_ids, ["revision-page-2"])
+        self.assertTrue(set(first_ids).isdisjoint(second_ids))
+
+    def test_agent_revision_content_requires_admin_scope_and_preserves_expiry(self):
+        from contracts.trace.payload import ContentAddressedPayloadStore
+
+        agent = agents_repo.create("历史正文Agent", WORK["workspace_id"])
+        payload_ref = ContentAddressedPayloadStore(settings.trace_payload_path).put("历史修订正文")
+        db.execute(
+            "INSERT INTO payload_objects "
+            "(payload_id, content_hash, kind, size_bytes, sensitivity, expires_at, storage_path, created_at) "
+            "VALUES (?, ?, ?, ?, 'restricted', ?, ?, '2026-10-01')",
+            (payload_ref.payload_id, payload_ref.content_hash, payload_ref.kind,
+             payload_ref.size_bytes, payload_ref.expires_at,
+             str(settings.trace_payload_path / f"{payload_ref.payload_id}.json")),
+        )
+        for artifact_id, workspace_id, path in (
+            ("artifact-rev-owned", WORK["workspace_id"], "/正文/第001章.md"),
+            ("artifact-rev-other", "other-work", "/正文/第002章.md"),
+        ):
+            db.execute(
+                "INSERT INTO artifacts (artifact_id, artifact_type, workspace_id, logical_key, created_at) "
+                "VALUES (?, 'workspace_file', ?, ?, '2026-10-01')",
+                (artifact_id, workspace_id, path),
+            )
+        for revision_id, artifact_id in (
+            ("revision-owned", "artifact-rev-owned"),
+            ("revision-other", "artifact-rev-other"),
+        ):
+            db.execute(
+                "INSERT INTO artifact_revisions "
+                "(artifact_revision_id, artifact_id, payload_id, content_hash, created_at) "
+                "VALUES (?, ?, ?, ?, '2026-10-01')",
+                (revision_id, artifact_id, payload_ref.payload_id, payload_ref.content_hash),
+            )
+        reader = SimpleNamespace(state=SimpleNamespace(is_super_admin=False, user_id="reader"))
+        with self.assertRaises(agents_api.HTTPException) as denied:
+            agents_api.read_agent_artifact_revision(agent["agent_id"], "revision-owned", reader)
+        self.assertEqual(denied.exception.status_code, 403)
+
+        admin = SimpleNamespace(state=SimpleNamespace(is_super_admin=True, user_id="admin"))
+        owned = agents_api.read_agent_artifact_revision(agent["agent_id"], "revision-owned", admin)
+        self.assertEqual(owned["content"], "历史修订正文")
+        with self.assertRaises(agents_api.HTTPException) as foreign:
+            agents_api.read_agent_artifact_revision(agent["agent_id"], "revision-other", admin)
+        self.assertEqual(foreign.exception.status_code, 404)
+        audit = db.query_one(
+            "SELECT actor_user_id, object_type FROM access_audit WHERE object_id='revision-owned'"
+        )
+        self.assertEqual(audit["actor_user_id"], "admin")
+        self.assertEqual(audit["object_type"], "artifact_revision")
+
+    def test_agent_artifact_content_requires_super_admin_before_fetch(self):
+        agent = agents_repo.create("正文权限Agent", WORK["workspace_id"])
+        request = SimpleNamespace(state=SimpleNamespace(is_super_admin=False, user_id="reader"))
+        with mock.patch.object(agents_api, "fetch_workspace_writing_artifact") as fetch:
+            with self.assertRaises(agents_api.HTTPException) as denied:
+                agents_api.read_agent_artifact(agent["agent_id"], request, "主题.md")
+        self.assertEqual(denied.exception.status_code, 403)
+        fetch.assert_not_called()
+
+    def test_agent_artifact_content_uses_bound_workspace_and_audits(self):
+        agent = agents_repo.create("正文读取Agent", WORK["workspace_id"])
+        request = SimpleNamespace(state=SimpleNamespace(is_super_admin=True, user_id="admin"))
+        with mock.patch.object(
+            agents_api, "fetch_workspace_writing_artifact", return_value="当前主题"
+        ) as fetch:
+            result = agents_api.read_agent_artifact(agent["agent_id"], request, "主题.md")
+        fetch.assert_called_once_with(WORK["workspace_id"], "主题.md")
+        self.assertEqual(result["content"], "当前主题")
+        audit = db.query_one("SELECT actor_user_id, object_type FROM access_audit")
+        self.assertEqual(audit["actor_user_id"], "admin")
+        self.assertEqual(audit["object_type"], "workspace_artifact")
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@
    "skills": [],
    "tools": [
     "read_artifact",
+    "list_characters",
     "save_artifact",
     "update_foreshadow_table",
     "rewrite_rhythm_table",

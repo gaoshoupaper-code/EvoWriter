@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from contracts.writing_artifacts import (
     KIND_CHAPTER,
+    KIND_CHARACTER,
     KIND_OUTLINE,
     KIND_STYLE,
     KIND_TEXT,
@@ -34,16 +35,18 @@ kind 取值：
 - volume_outline（卷纲，需 volume 卷号）
 - chapter_outline（章纲指令卡，需 chapter 章号）
 - chapter_text（正文章节，需 chapter 章号）
+- character（人物卡，需 name 人名；主角卡固定 name="主角"）
 
 section 可选：只取包含该关键词的小节（如 section="伏笔登记表"）。
 draft=true 仅卷纲可用：显式读取修订草稿，之后编辑草稿也须传 draft=true。
 每次起草或修订前先读对应档案；编辑落盘（save_artifact mode=edit）前必须先读本产物。"""
 
-_KINDS = (KIND_THEME, KIND_OUTLINE, KIND_STYLE, KIND_VOLUME, KIND_CHAPTER, KIND_TEXT)
+_KINDS = (KIND_THEME, KIND_OUTLINE, KIND_STYLE, KIND_VOLUME, KIND_CHAPTER, KIND_TEXT, KIND_CHARACTER)
 
 
 class ReadArtifactInput(BaseModel):
-    kind: str = Field(description="产物种类：theme/outline/style/volume_outline/chapter_outline/chapter_text")
+    kind: str = Field(description="产物种类：theme/outline/style/volume_outline/chapter_outline/chapter_text/character")
+    name: str | None = Field(default=None, description="人名（character 必填；主角卡固定「主角」）")
     volume: int | None = Field(default=None, ge=1, description="卷号（volume_outline 必填）")
     chapter: int | None = Field(default=None, ge=1, description="章号（chapter_outline/chapter_text 必填）")
     section: str | None = Field(default=None, description="可选：只取包含该关键词的小节")
@@ -88,12 +91,13 @@ def build_read_artifact_tool(workspace_root: Path, registry: dict) -> Structured
         registry:       读取登记容器（与 save_artifact 共享，先读后改保险）。
     """
 
-    def _read(kind: str, volume: int | None = None, chapter: int | None = None,
+    def _read(kind: str, name: str | None = None, volume: int | None = None,
+              chapter: int | None = None,
               section: str | None = None, draft: bool = False) -> str:
         if draft and kind != KIND_VOLUME:
             return "[read_artifact 失败] draft 仅卷纲可用。"
         try:
-            rel = artifact_relpath(kind, volume=volume, chapter=chapter)
+            rel = artifact_relpath(kind, volume=volume, chapter=chapter, name=name)
             if draft:
                 from contracts.writing_artifacts import volume_draft_relpath
 
@@ -104,6 +108,7 @@ def build_read_artifact_tool(workspace_root: Path, registry: dict) -> Structured
         if not path.is_file():
             return (
                 f"[read_artifact] 产物不存在：{kind}"
+                + (f"（{name}）" if name else "")
                 + (f"（第 {volume} 卷）" if volume else "")
                 + (f"（第 {chapter} 章）" if chapter else "")
                 + "。当前进度以指令头部的进度摘要为准；上游产物未落盘时先推进上游。"

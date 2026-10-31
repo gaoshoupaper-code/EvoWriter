@@ -153,7 +153,7 @@ Writer 的创作 Agent 打成一个自包含的 **harness 包**（`harnesses/rep
 | **常驻骨架** | `prompts/author_base.md` | 访谈铁律 / 工具纪律 / 表达铁律 | 全段通用的人格与纪律底座 |
 | **段规程 ×5** | `prompts/stage_theme.md` … `stage_zhengwen.md` | 各段流程规程 | executor 按当前段经 `styles["author"]` 注入（包级 `stage_prompt(stage)` 读取） |
 | **domain middleware** | `middleware/stage_gate.py` | 阶段闸（L1 硬闸） | 越段写产物全拦（正文段只放行 chapter_text 与偏差注记） |
-| **清单声明** | `architecture.json` 的 `author` 条目 | 该 agent 的静态挂载真相 | role=main、delegates=["review"]、语义工具六件套（含 confirm_with_user）、无写权限、路径收权（disable_file_tools） |
+| **清单声明** | `architecture.json` 的 `author` 条目 | 该 agent 的静态挂载真相 | role=main、delegates=["review","volume_qc"]、语义工具六件套（含 confirm_with_user）、无写权限、路径收权（disable_file_tools） |
 
 ### 审稿子代理（review，sub）
 
@@ -165,6 +165,17 @@ Writer 的创作 Agent 打成一个自包含的 **harness 包**（`harnesses/rep
 正文段每章落盘后由 author 经 task 委托 review，意见回 author 自动修订一轮
 （清单 max_revisions=1，RevisionLimit 平台护栏拦第二次委托）；用户激活的
 写作技能由 executor 经 `styles["review"]` 注入为审查约束（运行时数据，不进包）。
+
+### 卷纲质检子代理（volume_qc，sub）
+
+| 要素 | 位置 | 是什么 |
+|------|------|--------|
+| **prompt** | `prompts/volume_qc.md` | 三层审查判据：因果链（衔接词语义/无空转/主角驱动/通向卷末）/ 驱动（想要矛盾贴章/类型如实/矛盾有压力）/ 爽点（来源合法/落点兑现/释放对位）；意见逐条带章号，只审不改 |
+| **挂载** | `architecture.json` 的 `volume_qc` 条目（delegated_by=author） | 只读质检：仅 read_artifact、无写权限、路径收权 |
+
+卷纲段爽点卡确认后由 author 经 task 委托 volume_qc 质检剧情推进表，意见回
+author 修订后复审，循环到通过（REQ-20261031-142504；清单 max_revisions=2 即
+质检循环硬上限，RevisionLimit 平台护栏拦第三次委托）。
 
 ### 通用底座（解释器基础链，全 agent 统一、不可清单化）
 
@@ -196,7 +207,7 @@ executor 调 assemble(ctx)
    - 基础中间件链（解释器固有，全 agent 统一）+ Trace 注入
    - domain middleware 按清单有序列表逐模块 build(abc)（参数化逻辑在模块内）
    - prompt 文件 + 风格 SUFFIX（ctx.styles[agent 名]）
-   - 有委托的 agent：RevisionLimit（清单 max_revisions）
+   - 有委托的 agent：RevisionLimit（按委托目标分别限额：review 取主清单 max_revisions，其余目标取子代理清单自己的 max_revisions）
      + ArtifactValidation（清单 artifact_paths）+ ContextAssembler（清单 context_files）
    → create_deep_agent(system_prompt, subagents=[委托子代理], middleware, skills)
 ③ 审稿子代理（role=sub 且自身无委托）按清单构建 SubAgent 规格，挂进 author 的 task 委托
@@ -226,7 +237,7 @@ executor 调 assemble(ctx)
 │   AI 决定：调工具 / 委托 review / 结束？
 │     ↓
 │   ├─ 读写产物 → wrap_tool_call 护栏（阶段闸/写串行化/快照取证）
-│   ├─ task(review) → RevisionLimit 计数 → 审稿子代理跑一轮 → 按意见修订
+│   ├─ task(review/volume_qc) → RevisionLimit 按目标计数 → 子代理跑一轮 → 按意见修订
 │   └─ 结束 → 返回 State
 │
 │ Middleware 通过 hook 返回 dict 改 State（如注入消息、跳转 jump_to）。
@@ -238,7 +249,7 @@ executor 调 assemble(ctx)
 **关键认知**：
 - middleware 在 LLM 调用前后 + 工具调用前后都有 hook，能拦截、改请求、注入消息。
 - middleware 不直接改 State——返回 dict 由 reducer 合并，或用 request.override() 改请求。
-- review 通过 `task` 工具被 author 委托调用，独立跑一轮；RevisionLimit 强制每轮创作最多审一次
+- review/volume_qc 通过 `task` 工具被 author 委托调用，独立跑一轮；RevisionLimit 按目标计数（review 每轮创作 1 次、volume_qc 每轮 2 次）
   （正文段每章：审稿 → 修订一轮 → 交付，无复审）。
 - ContextAssembler 按清单 context_files 注入运行时文件（当前 author 未声明，机制保留）。
 

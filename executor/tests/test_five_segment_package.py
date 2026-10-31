@@ -75,6 +75,7 @@ _REQUIRED_FILES = [
     "prompts/stage_zhanggang.md",
     "prompts/stage_zhengwen.md",
     "prompts/review.md",
+    "prompts/volume_qc.md",
     "middleware/stage_gate.py",
     "tools/read_artifact.py",
     "tools/save_artifact.py",
@@ -111,19 +112,19 @@ class TestFiveSegmentPackageContent(unittest.TestCase):
             self.assertTrue((_HARNESS_DIR / rel).exists(), f"记忆要素冻结保留: {rel}")
 
     def test_manifest_declares_author_and_review(self):
-        """五段制单 main（author）+ review 审稿子代理（REQ-20261025-230811 FR-001）。"""
+        """五段制单 main（author）+ review 审稿 + volume_qc 质检子代理（REQ-20261031-142504）。"""
         from contracts.architecture_manifest import load_and_validate
 
         manifest, result = load_and_validate(_HARNESS_DIR)
         self.assertTrue(result.ok, result.errors)
         mains = [a.name for a in manifest.main_agents]
         self.assertEqual(mains, ["author"])
-        self.assertEqual([a.name for a in manifest.sub_agents], ["review"])
+        self.assertEqual([a.name for a in manifest.sub_agents], ["review", "volume_qc"])
         main = manifest.agent("author")
-        # 语义工具六件套（含 confirm）；委托审稿；路径收权；修订上限 1（一轮修订无复审）
+        # 语义工具六件套（含 confirm）；委托审稿＋卷纲质检；路径收权；修订上限 1（一轮修订无复审）
         self.assertIn("save_artifact", main.tools)
         self.assertIn("confirm_with_user", main.tools)
-        self.assertEqual(main.delegates, ["review"])
+        self.assertEqual(main.delegates, ["review", "volume_qc"])
         self.assertEqual(main.write_permissions, [])
         self.assertTrue(main.disable_file_tools)
         self.assertEqual(main.max_revisions, 1)
@@ -136,6 +137,14 @@ class TestFiveSegmentPackageContent(unittest.TestCase):
         self.assertNotIn("save_artifact", review.tools)
         self.assertEqual(review.write_permissions, [])
         self.assertTrue(review.disable_file_tools)
+        # 质检子代理（REQ-20261031-142504）：同款只读收权；max_revisions=2 即质检循环硬上限
+        qc = manifest.agent("volume_qc")
+        self.assertEqual(qc.role, "sub")
+        self.assertEqual(qc.delegated_by, "author")
+        self.assertEqual(qc.delegates, [])
+        self.assertEqual(qc.tools, ["read_artifact"])
+        self.assertEqual(qc.max_revisions, 2)
+        self.assertTrue(qc.disable_file_tools)
 
     def test_base_prompt_carries_interview_discipline(self):
         """常驻骨架含访谈纪律与工具纪律（FR-001：批次推进、必停、确认出口、表达铁律）。"""
@@ -179,6 +188,59 @@ class TestFiveSegmentPackageContent(unittest.TestCase):
             text = (_HARNESS_DIR / "prompts" / filename).read_text(encoding="utf-8")
             self.assertNotIn("审稿", text, f"{filename} 不应含审稿委托")
             self.assertNotIn("review", text, f"{filename} 不应含 review 委托")
+
+    def test_qc_delegation_pins(self):
+        """REQ-20261031-142504：卷纲段（含 neutral 变体）委托 volume_qc 质检；正文段仍委托 review；其余段零子代理委托。"""
+        for filename in ("stage_juangang.md", "stage_juangang_neutral.md"):
+            text = (_HARNESS_DIR / "prompts" / filename).read_text(encoding="utf-8")
+            self.assertIn('subagent_type="volume_qc"', text, f"{filename} 应委托 volume_qc 质检")
+            self.assertIn("上限 2 轮", text, f"{filename} 应声明质检循环上限 2 轮")
+        zhengwen = (_HARNESS_DIR / "prompts" / "stage_zhengwen.md").read_text(encoding="utf-8")
+        self.assertIn('subagent_type="review"', zhengwen, "正文段应保持 review 审稿委托")
+        for filename in (
+            "stage_theme.md", "stage_zonggang.md", "stage_zhanggang.md",
+            "stage_theme_neutral.md", "stage_zonggang_neutral.md", "stage_zhanggang_neutral.md",
+        ):
+            text = (_HARNESS_DIR / "prompts" / filename).read_text(encoding="utf-8")
+            self.assertNotIn("volume_qc", text, f"{filename} 不应委托 volume_qc")
+            self.assertNotIn("subagent_type=", text, f"{filename} 不应含任何子代理委托")
+
+    def test_old_four_step_terms_purged(self):
+        """REQ-20261031-142504 AC-001/003：卷纲/章纲（含 neutral 变体）旧结构术语零残留。"""
+        juangang_forbidden = [
+            "卷末超大爽点", "发展阶段", "压抑标注", "【压·小", "【压·大",
+            "爽点质检表", "与此同时", "定拍", "双出口",
+        ]
+        zhanggang_forbidden = [
+            "所属阶段", "五列", "卷末超大爽点", "阶段表", "【压·小", "【压·大",
+            "蓄水对象", "偿付出口",
+        ]
+        for filename in ("stage_juangang.md", "stage_juangang_neutral.md"):
+            text = (_HARNESS_DIR / "prompts" / filename).read_text(encoding="utf-8")
+            for term in juangang_forbidden:
+                self.assertNotIn(term, text, f"{filename} 残留旧术语「{term}」")
+        for filename in ("stage_zhanggang.md", "stage_zhanggang_neutral.md"):
+            text = (_HARNESS_DIR / "prompts" / filename).read_text(encoding="utf-8")
+            for term in zhanggang_forbidden:
+                self.assertNotIn(term, text, f"{filename} 残留旧术语「{term}」")
+
+    def test_volume_qc_prompt_carries_three_layers(self):
+        """REQ-20261031-142504 AC-002：质检员提示词含三层判据、只审不改与通过暗号。"""
+        text = (_HARNESS_DIR / "prompts" / "volume_qc.md").read_text(encoding="utf-8")
+        for marker in ("因果链", "驱动贴章", "释放对位", "只审不改", "通过，无修改意见", "人际", "环境"):
+            self.assertIn(marker, text, f"volume_qc.md 缺判据特征「{marker}」")
+
+    def test_volume_qc_architecture_registration(self):
+        """REQ-20261031-142504：architecture.json 注册 volume_qc 子代理并挂进 author 委托。"""
+        manifest = json.loads((_HARNESS_DIR / "architecture.json").read_text(encoding="utf-8"))
+        agents = {a["name"]: a for a in manifest["agents"]}
+        self.assertIn("volume_qc", agents, "volume_qc 子代理未注册")
+        qc = agents["volume_qc"]
+        self.assertEqual(qc["role"], "sub")
+        self.assertEqual(qc["prompt"], "prompts/volume_qc.md")
+        self.assertEqual(qc["max_revisions"], 2, "质检循环硬上限应为 2 轮")
+        self.assertEqual(qc["tools"], ["read_artifact"], "质检员只读不写")
+        self.assertIn("volume_qc", agents["author"]["delegates"], "author 应委托 volume_qc")
 
     def test_registry_mirror_sanity(self):
         registry = json.loads((_HARNESS_DIR / "registry.json").read_text(encoding="utf-8"))
@@ -229,7 +291,9 @@ class TestFiveSegmentAssemble(unittest.TestCase):
         pkg = self._load_pkg()
         self.assertIn("## 一句话主题", pkg.stage_prompt("theme") or "")
         self.assertIn("核心纲", pkg.stage_prompt("outline") or "")
-        self.assertIn("卷末超大爽点", pkg.stage_prompt("volume") or "")
+        volume_prompt = pkg.stage_prompt("volume") or ""
+        self.assertIn("衔接词", volume_prompt, "卷纲段规程应含因果衔接词规则")
+        self.assertIn("主角想要", volume_prompt, "卷纲段规程应含驱动两要素")
         self.assertIn("指令卡", pkg.stage_prompt("chapter") or "")
         self.assertIn("章纲是宪法", pkg.stage_prompt("text") or "")
         self.assertIsNone(pkg.stage_prompt("不存在"))

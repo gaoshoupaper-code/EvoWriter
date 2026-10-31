@@ -34,6 +34,46 @@ def _build_budget(
     ))
 
 
+def test_build_gives_non_review_delegates_their_own_manifest_cap(tmp_path: Path) -> None:
+    """REQ-20261031-142504：非 review 委托目标的上限取子代理清单自己的 max_revisions（volume_qc=2）。"""
+    state = load_writing_state(tmp_path)
+    state.confirmed_stage = "text"
+    state.stage_modes["text"] = "auto"
+    save_writing_state(tmp_path, state)
+    sub_caps = {"volume_qc": 2}
+
+    middleware = build(SimpleNamespace(
+        workspace_path=tmp_path,
+        agent=SimpleNamespace(
+            name="author", max_revisions=1, delegates=["review", "volume_qc"],
+        ),
+        manifest=SimpleNamespace(agent=lambda n: SimpleNamespace(max_revisions=sub_caps[n])),
+    ))
+
+    assert middleware.limits["volume_qc"] == 2
+    assert middleware.limits["review"] == middleware.max_revisions
+
+
+def test_build_derives_limits_from_real_harness_manifest(tmp_path: Path) -> None:
+    """真实清单派生（装配输入级）：author 的委托目标从 harness 包 architecture.json
+    读出 delegates 与子代理 max_revisions——review=1（清单默认）、volume_qc=2（质检循环上限）。"""
+    from contracts.architecture_manifest import load_architecture_manifest
+
+    harness_dir = Path(__file__).resolve().parents[2] / "evolution" / "harnesses" / "repo"
+    manifest = load_architecture_manifest(harness_dir)
+    state = load_writing_state(tmp_path)
+    state.confirmed_stage = "volume"
+    save_writing_state(tmp_path, state)
+
+    middleware = build(SimpleNamespace(
+        workspace_path=tmp_path,
+        agent=manifest.agent("author"),
+        manifest=manifest,
+    ))
+
+    assert middleware.limits == {"review": 1, "volume_qc": 2}
+
+
 @pytest.mark.parametrize("stock,batch,expected", [(3, 5, 3), (8, 5, 5), (0, 5, 1)])
 def test_auto_text_budget_uses_only_this_batch(
     tmp_path: Path, stock: int, batch: int, expected: int,

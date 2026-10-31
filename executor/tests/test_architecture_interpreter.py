@@ -76,15 +76,15 @@ def test_assemble_from_manifest_produces_graph(build_ctx):
 
 
 def test_manifest_shape_single_agent():
-    """清单形态 = 单 main（author）+ review 审稿子代理（REQ-20261025-230811 FR-001）。"""
+    """清单形态 = 单 main（author）+ review 审稿 + volume_qc 质检子代理（REQ-20261031-142504）。"""
     from contracts.architecture_manifest import load_architecture_manifest
 
     manifest = load_architecture_manifest(HARNESS_PKG)
-    assert [a.name for a in manifest.agents] == ["author", "review"]
+    assert [a.name for a in manifest.agents] == ["author", "review", "volume_qc"]
     main = manifest.agent("author")
     assert main.role == "main"
-    assert main.delegates == ["review"]
-    assert [a.name for a in manifest.sub_agents] == ["review"]
+    assert main.delegates == ["review", "volume_qc"]
+    assert [a.name for a in manifest.sub_agents] == ["review", "volume_qc"]
     # 阶段闸（L1 硬闸）是唯一 domain middleware
     assert main.middleware == ["stage_gate"]
     assert main.skills == []

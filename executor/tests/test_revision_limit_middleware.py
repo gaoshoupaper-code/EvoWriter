@@ -105,6 +105,67 @@ class RevisionLimitMiddlewareTest(unittest.TestCase):
         self.assertEqual(mw._revision_count, 1)
         self.assertEqual(tracker.calls, 2)
 
+    def test_multi_target_limits_count_independently(self) -> None:
+        """多目标限额（REQ-20261031-142504）：volume_qc 上限 2 与 review 上限 1 各自独立计数。"""
+        mw = RevisionLimitMiddleware(limits={"review": 1, "volume_qc": 2})
+        tracker = _CallTracker()
+
+        # volume_qc 第 1、2 次放行，第 3 次拦截
+        self.assertEqual(mw.wrap_tool_call(_request("task", "volume_qc", "q1"), tracker), "passed-through")
+        self.assertEqual(mw.wrap_tool_call(_request("task", "volume_qc", "q2"), tracker), "passed-through")
+        blocked = mw.wrap_tool_call(_request("task", "volume_qc", "q3"), tracker)
+        self.assertIsInstance(blocked, ToolMessage)
+        self.assertIn("审查上限（2 次", blocked.content)
+        self.assertIn("volume_qc", blocked.content)
+        self.assertEqual(tracker.calls, 2)
+
+        # review 目标独立计数，不受 volume_qc 消耗影响
+        self.assertEqual(mw.wrap_tool_call(_request("task", "review", "r1"), tracker), "passed-through")
+        blocked_review = mw.wrap_tool_call(_request("task", "review", "r2"), tracker)
+        self.assertIsInstance(blocked_review, ToolMessage)
+        self.assertEqual(tracker.calls, 3)
+
+    def test_target_not_in_limits_passes_unlimited(self) -> None:
+        """不在限额表内的委托目标不计数、不拦截（上限仅约束登记过上限的目标）。"""
+        mw = RevisionLimitMiddleware(limits={"review": 1})
+        tracker = _CallTracker()
+
+        for _ in range(3):
+            self.assertEqual(
+                mw.wrap_tool_call(_request("task", "volume_qc"), tracker),
+                "passed-through",
+            )
+        self.assertEqual(tracker.calls, 3)
+        self.assertEqual(mw._revision_count, 0)
+
+    def test_multi_target_async_path_and_reset(self) -> None:
+        """异步拦截路径与调用周期重置同样按目标计数（生产执行走异步链）。"""
+        import asyncio
+
+        mw = RevisionLimitMiddleware(limits={"volume_qc": 2})
+
+        async def handler(request: object) -> str:
+            return "passed-through"
+
+        async def scenario() -> list[object]:
+            results = []
+            for call_id in ("q1", "q2", "q3"):
+                results.append(
+                    await mw.awrap_tool_call(_request("task", "volume_qc", call_id), handler)
+                )
+            return results
+
+        results = asyncio.run(scenario())
+        self.assertEqual(results[:2], ["passed-through", "passed-through"])
+        self.assertIsInstance(results[2], ToolMessage)
+        self.assertIn("volume_qc", results[2].content)
+
+        # 调用周期重置：before_agent 清零全部目标计数，重新享有额度
+        mw.before_agent(state={}, runtime=None)
+        tracker = _CallTracker()
+        self.assertEqual(mw.wrap_tool_call(_request("task", "volume_qc", "q4"), tracker), "passed-through")
+        self.assertEqual(mw._counts.get("volume_qc"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

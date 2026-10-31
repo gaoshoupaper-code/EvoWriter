@@ -160,3 +160,46 @@ deep-dives/_旧版备份_*/
 
 # harness 镜像推送 deploy key（私钥绝不入库；公钥注册在 GitHub 仓库 deploy keys）
 evolution/secrets/
+
+# ══ 2026-10-31 仓库整理：私有文件与项目无关文件，仅本地保留 ══
+
+# 本地会话凭据（curl cookie 文件，含登录会话，严禁上库）
+/cj.txt
+
+# 编辑器/AI 工具本地配置
+.claudian/
+.obsidian/
+
+# 第三方项目副本与个人工具笔记（与本项目无关）
+/ZCode/
+/zcode系统提示词.md
+
+# 求职材料（简历各版本、拆解产物、排版调研、求职调研）
+/简历项目*.md
+/面试/
+/resume_*
+/resume_extracted/
+/resume_typography/
+/card-resume-page-*.png
+/generate_resume.py
+
+# deep-research 调研产物（个人研究底料，不上库；同 agent_evo_research/ 先例）
+agent_runtime_research_*/
+hangzhou_agent_jobs/
+obsidian_research/
+vertical-agent-research/
+vertical_writing_agent_niches/
+写作节拍场景调研/
+
+# 个人写作技能草稿与本地验收笔记（线上另有备份）
+正文技能/
+/写作全流程验收_*.md
+
+# 本地临时/调试工作目录（任意层级）
+.tmp_*
+
+# evolution 运行时 payload 存储（内容寻址运行产物，同 traces/ 先例）
+evolution/data/trace_payloads/
+
+# eval_agent 模块已在 82e257b 物理裁撤；本地残留旧文件不上库
+evolution/app/eval_agent/

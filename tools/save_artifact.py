@@ -16,6 +16,13 @@
 强制引导 mode=full 提交完整内容（工具无法凭空补全全文，退化以「堵 edit、
 导流 full」实现）；成功落盘后计数清零。
 
+追加模式（正文分段生长）：mode="append" 把本批正文直接追加到文件末尾，不做
+锚点匹配——正文一段 50 字上下，拿短段当锚点极易撞到重复句，撞车累积会触发
+上面的重试上限、被强制退回整篇重写，分段落盘就此失效。append 落盘成功后
+回执带本批序号与正文本体累计字数，给执笔人明确的节奏感与收束信号。full /
+append 落盘成功后把该产物登记进读取登记——内容刚由本工具写出，后续
+append/edit 视为已读，不必为此重读整章。
+
 每次「锚点→替换」经既有 TraceMiddleware 进 trace（L4 审计，DEC-008）。
 落盘成功后经 ctx.trace_recorder 冻结 ArtifactRevision——进化侧产物库的唯一
 摄入源（REQ-20261019-203500 FR-001）：内容在手直记，不重读文件；取证失败
@@ -51,8 +58,12 @@ SAVE_ARTIFACT_TOOL_DESCRIPTION = """按产物种类落盘（不接触文件路�
 kind 取值：theme / outline / style / volume_outline(+volume) / chapter_outline(+chapter) / chapter_text(+chapter) / character(+name 人名，主角卡固定 name="主角")。
 正文文件名由章号决定（不带章名——章名写进文件头标题行「# 第NNN章 · <章名>」）。
 
-两种模式：
+三种模式：
 - mode="full"：content = 该产物的完整新内容（新建文件、推翻重做大改用）。
+- mode="append"：content = 本批要追加到文件末尾的正文片段——正文分段生长专用：
+  第 1 批用 full 建文件（标题行+状态行+进度行），第 2 批起每批 append 一批，
+  回执带「第 N 批 / 正文本体累计约 X 字」。append 不做锚点匹配，短段锚点在
+  文件里容易撞重复句、撞车会累积失败计数被强制退回整篇重写，append 绕开这条路径。
 - mode="edit"（默认，推荐）：anchor + replacement——anchor 是文件里的原文片段
   （须逐字一致且在文件中唯一，建议带上标题行等上下文）；replacement 是替换后
   的文本（新增一张卡 = anchor 所在区块末尾 + 新卡片内容；状态行变更同理）。
@@ -69,10 +80,13 @@ class SaveArtifactInput(BaseModel):
     name: str | None = Field(default=None, description="人名（character 必填；主角卡固定「主角」）")
     volume: int | None = Field(default=None, ge=1, description="卷号（volume_outline 必填）")
     chapter: int | None = Field(default=None, ge=1, description="章号（chapter_outline/chapter_text 必填）")
-    mode: str = Field(default="edit", description='"edit"（默认，锚点校验编辑）| "full"（整文件替换）')
+    mode: str = Field(
+        default="edit",
+        description='"edit"（默认，锚点校验编辑）| "full"（整文件替换）| "append"（追加到文件末尾，正文分批落盘用）',
+    )
     anchor: str | None = Field(default=None, description="edit 模式：要替换的原文片段（须唯一）")
     replacement: str | None = Field(default=None, description="edit 模式：替换后的文本")
-    content: str | None = Field(default=None, description="full 模式：完整新内容")
+    content: str | None = Field(default=None, description="full 模式：完整新内容；append 模式：本批要追加的正文片段")
     draft: bool = Field(default=False, description="仅卷纲：以修订草稿为编辑基线")
 
 
@@ -148,6 +162,17 @@ def _atomic_write(path: Path, text: str) -> None:
     tmp.replace(path)
 
 
+def _body_char_count(text: str) -> int:
+    """正文本体字数估算：排除标题行、状态/进度行（> 开头）与空行。"""
+    total = 0
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#") or s.startswith(">"):
+            continue
+        total += len(s)
+    return total
+
+
 def _describe(kind: str, volume: int | None, chapter: int | None, name: str | None = None) -> str:
     if name:
         return f"{kind}（{name}）"
@@ -166,6 +191,7 @@ def build_save_artifact_tool(
     workspace_root: Path, registry: dict, failures: dict,
     *, recorder=None, trace_id: str | None = None,
     agent_name: str = "author-subagent",
+    append_batches: dict | None = None,
 ) -> StructuredTool:
     """构建落盘工具。
 
@@ -176,7 +202,21 @@ def build_save_artifact_tool(
         recorder:        TraceRecorder（取证用；None = 无追踪场景，跳过取证）。
         trace_id:        当前追踪会话标识（None = 无追踪场景）。
         agent_name:      取证事件的 agent 名（用 trace 埋点名，如 author-subagent）。
+        append_batches:  追加批次计数（正文分段生长回执用；None = 工具自持）。
     """
+    append_batches = append_batches if append_batches is not None else {}
+
+    def _register(rel: str, text: str, kind: str) -> None:
+        """落盘成功后登记读取状态：内容刚由本工具写出，后续 append/edit 视为已读。
+
+        正文分段生长（每 6 段 append 一批）依赖这一点——每批落盘后不必为了
+        下一批 append 而重读整章；不登记的话 append 会被上面的「先读后改」拦死。
+        卷纲仍登记内容指纹（save 侧的卷纲变动复核口径不变）。
+        """
+        registry[rel] = (
+            {"content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+            if kind == KIND_VOLUME else True
+        )
 
     def _capture_revision(rel: str, text: str) -> None:
         """落盘成功后冻结 ArtifactRevision（进化侧产物库摄入源）。
@@ -224,8 +264,8 @@ def build_save_artifact_tool(
                 rel = volume_draft_relpath(volume)
         except ValueError as exc:
             return f"[save_artifact 失败] {exc}"
-        if mode not in ("edit", "full"):
-            return "[save_artifact 失败] mode 只能是 edit 或 full。"
+        if mode not in ("edit", "full", "append"):
+            return "[save_artifact 失败] mode 只能是 edit、full 或 append。"
         path = workspace_root / rel
         exists = path.is_file()
         current = ""
@@ -260,9 +300,39 @@ def build_save_artifact_tool(
             except OSError as exc:
                 return f"[save_artifact 失败] 写入失败：{type(exc).__name__}"
             _capture_revision(rel, content)
+            _register(rel, content, kind)
             failures.pop(rel, None)
             lines = len(content.splitlines())
             return f"已落盘 {_describe(kind, volume, chapter, name)}（全量 {lines} 行）。"
+
+        # ── mode=append：正文分段生长（每批一段落一批）──
+        # 追加到文件末尾，不做锚点匹配——50 字短段当锚点在文件里极易撞到重复句，
+        # 撞车累积 3 次会被上面的重试上限强制退回 mode=full 整章重写，分段落盘
+        # 就此失效。append 从机制上绕开这条路径。
+        if mode == "append":
+            if content is None or not content.strip():
+                return "[save_artifact 失败] mode=append 需要 content（本批要追加的正文片段）。"
+            body = content.strip("\n").rstrip()
+            if not body:
+                return "[save_artifact 失败] mode=append 的 content 是空内容。"
+            if exists and current.strip():
+                new_text = current.rstrip("\n") + "\n\n" + body + "\n"
+            else:
+                new_text = body + "\n"
+            try:
+                _atomic_write(path, new_text)
+            except OSError as exc:
+                return f"[save_artifact 失败] 写入失败：{type(exc).__name__}"
+            _capture_revision(rel, new_text)
+            _register(rel, new_text, kind)
+            batch = append_batches.get(rel, 0) + 1
+            append_batches[rel] = batch
+            chars = _body_char_count(new_text)
+            return (
+                f"已追加落盘 {_describe(kind, volume, chapter, name)}：第 {batch} 批，"
+                f"正文本体累计约 {chars} 字。"
+                "落盘后把文件头进度行改为本批实际批次数，再进入下一批规划（每批 6 段）。"
+            )
 
         # ── mode=edit ──
         if failures.get(rel, 0) >= _EDIT_FAILURE_CAP:
@@ -283,6 +353,7 @@ def build_save_artifact_tool(
         except OSError as exc:
             return f"[save_artifact 失败] 写入失败：{type(exc).__name__}"
         _capture_revision(rel, new_text)
+        _register(rel, new_text, kind)
         failures.pop(rel, None)
         return f"已落盘 {_describe(kind, volume, chapter, name)}（校验编辑：替换 {hits} 处，仅目标区段变更）。"
 
@@ -315,12 +386,20 @@ def build(abc):
             abc.ctx.artifact_edit_failures = failures
         except Exception:  # noqa: BLE001
             pass
+    append_batches = getattr(abc.ctx, "artifact_append_batches", None)
+    if append_batches is None:
+        append_batches = {}
+        try:
+            abc.ctx.artifact_append_batches = append_batches
+        except Exception:  # noqa: BLE001 — 不可写时工具自持（回执序号从第 1 批重数）
+            pass
     ctx = getattr(abc, "ctx", None)
     return build_save_artifact_tool(
         abc.workspace_path, registry, failures,
         recorder=getattr(ctx, "trace_recorder", None),
         trace_id=getattr(ctx, "trace_id", None),
         agent_name=getattr(abc, "trace_name", None) or "author-subagent",
+        append_batches=append_batches,
     )
 
 

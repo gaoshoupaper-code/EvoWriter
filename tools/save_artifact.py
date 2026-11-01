@@ -331,7 +331,7 @@ def build_save_artifact_tool(
             return (
                 f"已追加落盘 {_describe(kind, volume, chapter, name)}：第 {batch} 批，"
                 f"正文本体累计约 {chars} 字。"
-                "落盘后把文件头进度行改为本批实际批次数，再进入下一批规划（每批 6 段）。"
+                "落盘后把文件头进度行改为本批实际批次数，再进入下一批规划（每批 300-400 字）。"
             )
 
         # ── mode=edit ──

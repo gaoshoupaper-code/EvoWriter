@@ -223,6 +223,29 @@ describe("工作台铺满窗口 + 字号基准（对齐 ZCode）", () => {
   });
 });
 
+describe("技能弹窗布局", () => {
+  it("编辑弹窗的遮罩层高于技能管理弹窗", () => {
+    const managerLayer = Number(block(".modal-overlay").match(/z-index:\s*(\d+)/)?.[1]);
+    const editorLayer = Number(block(".skill-editor-overlay").match(/z-index:\s*(\d+)/)?.[1]);
+    expect(editorLayer).toBeGreaterThan(managerLayer);
+  });
+
+  it("两个弹窗解除通用限宽，编辑区更宽且小窗口可滚动", () => {
+    const baseWidth = Number(block(".modal-content").match(/max-width:\s*(\d+)px/)?.[1]);
+    const manager = block(".writing-skills-dialog");
+    const editor = block(".skill-dialog");
+    const managerWidth = Number(manager.match(/width:\s*min\((\d+)px,\s*\d+vw\)/)?.[1]);
+    const editorWidth = Number(editor.match(/width:\s*min\((\d+)px,\s*\d+vw\)/)?.[1]);
+    expect(managerWidth).toBeGreaterThan(baseWidth);
+    expect(editorWidth).toBeGreaterThan(managerWidth);
+    for (const dialog of [manager, editor]) {
+      expect(dialog).toMatch(/max-width:\s*none/);
+      expect(dialog).toMatch(/max-height:\s*\d+dvh/);
+      expect(dialog).toMatch(/overflow-y:\s*auto/);
+    }
+  });
+});
+
 describe("极窄断点（≤920px）", () => {
   it("隐藏作品浮窗与唤回按钮的同时网格退回单列", () => {
     const narrow = css.match(/@media\s*\(max-width:\s*920px\)\s*{([\s\S]*?)\n}/);

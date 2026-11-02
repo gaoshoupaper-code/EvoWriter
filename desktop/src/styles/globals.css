@@ -7741,7 +7741,7 @@ html[data-theme="dark"] .admin-outline {
 .character-repair-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; padding: 9px 12px; border-left: 2px solid var(--teal); background: var(--panel-soft); font-size: var(--text-ui-sm); }
 .character-repair-banner p { margin: 0; }
 .character-repair-banner button { flex-shrink: 0; }
-.writing-skills-dialog { width: min(680px, 94vw); max-height: 84dvh; overflow-y: auto; }
+.writing-skills-dialog { width: min(760px, 94vw); max-width: none; max-height: 86dvh; overflow-y: auto; }
 .writing-skills-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 .writing-skills-tab { display: flex; flex: 1 1 120px; align-items: center; gap: 6px; padding: 9px 10px; border: 0; border-radius: var(--radius-md); color: var(--muted); background: transparent; text-align: left; font-size: var(--text-ui-base); cursor: pointer; }
 .writing-skills-tab small { margin-left: auto; font-size: var(--text-ui-xs); }
@@ -7755,7 +7755,7 @@ html[data-theme="dark"] .admin-outline {
 .writing-skills-error { margin-top: 12px; color: var(--danger); font-size: var(--text-ui-sm); }
 .writing-skills-item-copy { display: grid; gap: 3px; min-width: 0; }
 .writing-skills-dialog .sidebar-skill-entry-actions { opacity: 1; }
-.skill-editor-overlay { z-index: 110; }
+.skill-editor-overlay { z-index: 1100; }
 
 .sidebar-skill-entry {
   display: flex;
@@ -7827,7 +7827,10 @@ html[data-theme="dark"] .admin-outline {
 
 /* 写作技能新建/编辑弹窗。 */
 .skill-dialog {
-  width: min(480px, 92vw);
+  width: min(960px, 94vw);
+  max-width: none;
+  max-height: 90dvh;
+  overflow-y: auto;
 }
 
 .skill-dialog-head {
@@ -7938,7 +7941,7 @@ html[data-theme="dark"] .admin-outline {
 
 .wskill-content {
   width: 100%;
-  min-height: 9em;
+  min-height: min(320px, 40dvh);
   resize: vertical;
 }
 

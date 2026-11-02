@@ -103,4 +103,23 @@ describe("全局技能独立管理弹窗（AC-004/005）", () => {
     expect(deleteWritingSkill).toHaveBeenCalledWith("伏笔");
     vi.unstubAllGlobals();
   });
+
+  it("编辑弹窗接收键盘输入，Escape 只关闭编辑并保留管理弹窗", async () => {
+    vi.mocked(listWritingSkills).mockResolvedValue([skill("伏笔")]);
+    const onClose = vi.fn();
+    render(<WritingSkillsDialog onClose={onClose} />);
+    await userEvent.click(await screen.findByRole("button", { name: "编辑 伏笔" }));
+    const editor = await screen.findByRole("dialog", { name: "编辑「伏笔」" });
+    const content = within(editor).getByLabelText("指令正文");
+    await userEvent.click(content);
+    await userEvent.type(content, "补充要求");
+    expect(content).toHaveFocus();
+    expect(content).toHaveValue("指令补充要求");
+    await userEvent.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "编辑「伏笔」" })).not.toBeInTheDocument());
+    expect(screen.getByRole("dialog", { name: "写作技能" })).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "新建总纲技能" }));
+    expect(await screen.findByRole("dialog", { name: "新建写作技能" })).toBeInTheDocument();
+  });
 });

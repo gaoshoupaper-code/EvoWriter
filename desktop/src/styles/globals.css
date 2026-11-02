@@ -7754,7 +7754,11 @@ html[data-theme="dark"] .admin-outline {
 .writing-style-save { display: grid; gap: 12px; margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--line); }
 .writing-style-rename { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin-top: 14px; }
 .writing-style-rename .auth-field { flex: 1; min-width: 160px; }
-@media (max-width: 560px) { .writing-styles-browser { grid-template-columns: 1fr; } .writing-styles-list { max-height: 18dvh; } .writing-style-preview { border-left: 0; padding: 0; } }
+@media (max-width: 560px) {
+  .writing-styles-browser { grid-template-columns: 1fr; }
+  .writing-styles-list { max-height: 18dvh; }
+  .writing-style-preview { border-left: 0; padding: 0; }
+}
 .writing-skills-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
 .writing-skills-tab { display: flex; flex: 1 1 120px; align-items: center; gap: 6px; padding: 9px 10px; border: 0; border-radius: var(--radius-md); color: var(--muted); background: transparent; text-align: left; font-size: var(--text-ui-base); cursor: pointer; }
 .writing-skills-tab small { margin-left: auto; font-size: var(--text-ui-xs); }

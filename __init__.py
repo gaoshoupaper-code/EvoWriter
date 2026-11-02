@@ -144,6 +144,13 @@ def character_repair_prompt() -> str | None:
     return _read_prompt("character_repair.md")
 
 
+
+def workspace_style_prompt(content: str) -> str:
+    """完整作品文风快照，正文和审稿共用。"""
+    template = (PACKAGE_DIR / "prompts" / "workspace_style.md").read_text(encoding="utf-8")
+    return template.replace("{style_card}", content)
+
+
 def assemble(ctx: RuntimeContext, agent_name: str | None = None):
     """清单驱动装配：薄委托架构清单解释器（读 architecture.json 实例化）。
 

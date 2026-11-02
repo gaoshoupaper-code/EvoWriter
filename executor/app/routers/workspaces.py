@@ -18,6 +18,7 @@ from fastapi.responses import StreamingResponse
 from watchfiles import awatch
 
 from app.auth import CurrentUser, current_user
+from app.domains.writing.run_gate import get_workspace_mutation_lock
 from app.domains.writing.expert_agent.services.storyline_graph import (
     build_panorama_events,
     build_rhythm_data,
@@ -763,6 +764,17 @@ def dispatch_annotations(
     )
 
 
+def _assert_character_deletions_idle(workspace_id: str, rels: list[str]) -> None:
+    """人物卡可能被当前生成读取或回写，运行中拒删，避免边生成边丢卡。"""
+    from contracts.writing_artifacts import KIND_CHARACTER, parse_relpath
+
+    if not any((ref := parse_relpath(rel)) is not None and ref.kind == KIND_CHARACTER for rel in rels):
+        return
+    if any(run.get("workspace_id") == workspace_id and run.get("status") == "running"
+           for run in get_trace_recorder().list_active_runs()):
+        raise HTTPException(status_code=409, detail="作品正在生成，请停止或等待生成结束后再删除人物卡。")
+
+
 @router.post("/workspaces/{workspace_id}/artifact/delete", response_model=ArtifactRedoDeleteResponse)
 def delete_artifact_for_redo(
     workspace_id: str, payload: ArtifactRedoDeleteRequest,
@@ -784,10 +796,15 @@ def delete_artifact_for_redo(
     workspace_path = Path(workspace.workspace_path)
     if classify_workspace(workspace_path) == "legacy":
         raise HTTPException(status_code=409, detail="旧版工作区只读，不支持删除重做")
-    try:
-        result = _delete(workspace_path, payload.rel)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    with get_workspace_mutation_lock(workspace_path):
+        _assert_character_deletions_idle(workspace_id, [payload.rel])
+        try:
+            result = _delete(workspace_path, payload.rel)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except OSError as exc:
+            logger.warning("产物删除失败 %s: %s", payload.rel, exc)
+            raise HTTPException(status_code=409, detail="删除未完成，请刷新后重试。") from exc
     result["pipeline"] = pipeline_status(workspace_path)
     return ArtifactRedoDeleteResponse(**result)
 
@@ -813,24 +830,26 @@ def delete_artifacts_for_redo_batch(
     if classify_workspace(workspace_path) == "legacy":
         raise HTTPException(status_code=409, detail="旧版工作区只读，不支持删除重做")
     results: list[ArtifactRedoBatchItemResult] = []
-    for rel in payload.rels:
-        try:
-            r = _delete(workspace_path, rel)
-        except ValueError as exc:
-            results.append(ArtifactRedoBatchItemResult(rel=rel, status="failed", reason=str(exc)))
-            continue
-        except OSError as exc:
-            # 并发删除/文件系统异常同样按条记失败（FR-005 失败语义：
-            # trash 移动失败的条目无变化，其余条目不受影响），不打断整批
-            reason = "产物可能已被并发删除或移动失败，请刷新后重试"
-            logger.warning("批量删除条目异常 %s: %s", rel, exc)
-            results.append(ArtifactRedoBatchItemResult(rel=rel, status="failed", reason=reason))
-            continue
-        results.append(ArtifactRedoBatchItemResult(
-            rel=rel, status="ok", trash_rel=r["trash_rel"],
-            removed_annotations=r["removed_annotations"],
-            stage_reset_to=r["stage_reset_to"], stage_label=r["stage_label"],
-        ))
+    with get_workspace_mutation_lock(workspace_path):
+        _assert_character_deletions_idle(workspace_id, payload.rels)
+        for rel in payload.rels:
+            try:
+                r = _delete(workspace_path, rel)
+            except ValueError as exc:
+                results.append(ArtifactRedoBatchItemResult(rel=rel, status="failed", reason=str(exc)))
+                continue
+            except OSError as exc:
+                # 并发删除/文件系统异常同样按条记失败（FR-005 失败语义：
+                # trash 移动失败的条目无变化，其余条目不受影响），不打断整批
+                reason = "产物可能已被并发删除或移动失败，请刷新后重试"
+                logger.warning("批量删除条目异常 %s: %s", rel, exc)
+                results.append(ArtifactRedoBatchItemResult(rel=rel, status="failed", reason=reason))
+                continue
+            results.append(ArtifactRedoBatchItemResult(
+                rel=rel, status="ok", trash_rel=r["trash_rel"],
+                removed_annotations=r["removed_annotations"],
+                stage_reset_to=r["stage_reset_to"], stage_label=r["stage_label"],
+            ))
     return ArtifactRedoBatchDeleteResponse(
         deleted_count=sum(1 for r in results if r.status == "ok"),
         results=results,

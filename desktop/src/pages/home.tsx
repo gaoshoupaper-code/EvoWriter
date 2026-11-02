@@ -9,7 +9,7 @@ import { Sidebar } from "@/components/workspace/Sidebar";
 import { SidebarFooter } from "@/components/workspace/SidebarFooter";
 import { WorkRail } from "@/components/workspace/WorkRail";
 import { TopBar } from "@/components/workspace/TopBar";
-import { usePanelPolling } from "@/lib/usePanelPolling";
+import { refreshWorkspaceContent, usePanelPolling } from "@/lib/usePanelPolling";
 import { projectStageFlow } from "@/lib/stage";
 import type { StageFlow } from "@/lib/stage";
 import type { WorkspacePanel } from "@/lib/types";
@@ -22,6 +22,12 @@ import { useWorkrailStore } from "@/stores/workrail";
 import { applyUiFontSize, loadUiFontSize } from "@/components/ui/UiFontSizeControl";
 
 const WORKSPACE_PANELS = ["chat", "artifacts"] as const;
+
+function reportContentLoadError(workspaceId: string, message: string) {
+  if (useWorkspaceStore.getState().activeWorkspaceId === workspaceId) {
+    useContentStore.getState().setOutlineError(`人物卡加载失败：${message}`);
+  }
+}
 
 /** 作品栏瞬态重置（review 修复）：跨工作区不携带失败标记/高亮/基线 */
 function resetWorkrailTransient() {
@@ -69,6 +75,9 @@ export default function Home() {
   const messages = useExecutionStore((s) => s.messages);
   const prompt = useExecutionStore((s) => s.prompt);
   const loading = useExecutionStore((s) => s.loading);
+  const repairEnabled = useExecutionStore((s) => s.characterRepair);
+  const repairWorkspaceId = useExecutionStore((s) => s.characterRepairWorkspaceId);
+  const characterRepair = repairEnabled && repairWorkspaceId === activeWorkspaceId;
   const liveTraceId = useTraceStore((s) => s.liveTraceId);
 
   // traceStore
@@ -82,11 +91,11 @@ export default function Home() {
   const outlinePipeline = useContentStore((s) => s.outlinePipeline);
   const outlineFiles = useContentStore((s) => s.outlineFiles);
   const activeOutlineRel = useContentStore((s) => s.activeOutlineRel);
+  const outlineWorkspaceId = useContentStore((s) => s.outlineWorkspaceId);
+  const outlineError = useContentStore((s) => s.outlineError);
+  const visibleOutlineFiles = outlineWorkspaceId === activeWorkspaceId ? outlineFiles : [];
 
   const aiDisabled = !hasApiKey;
-  // 技能分组仅五段制写作书显示（REQ-20261025-205943 DEC-011）：用管线 kind
-  // 判定（five|legacy），legacy 只读工作区不显示；管线未加载时也不闪现
-  const showSidebarSkills = !!activeWorkspace && outlinePipeline?.kind === "five";
 
   // ── 注入 executionDeps（连接三个 store）──
   // 只在首次挂载时注入一次。deps 引用的是 store 的 getState/setState，始终拿到最新值。
@@ -173,15 +182,18 @@ export default function Home() {
     let ignore = false;
     (async () => {
       resetWorkrailTransient();
-      const content = await useWorkspaceStore.getState().bootstrap();
+      const content = await useWorkspaceStore.getState().bootstrap(reportContentLoadError);
       if (ignore || !content) return;
-      useContentStore.getState().setContentData(content);
+      const workspaceId = useWorkspaceStore.getState().activeWorkspaceId;
+      if (content.workspaceId && content.workspaceId !== workspaceId) return;
+      useContentStore.getState().setContentData(content, workspaceId);
     })();
     return () => { ignore = true; };
   }, []);
 
   // ── 后续切换工作区 ──
   useEffect(() => {
+    useExecutionStore.getState().setCharacterRepair(false);
     if (!activeWorkspaceId) return;
     if (!initialBootDone.current) { initialBootDone.current = true; return; }
     if (skipNextBootstrap.current) { skipNextBootstrap.current = false; return; }
@@ -189,11 +201,10 @@ export default function Home() {
     (async () => {
       // 瞬态随工作区重置：上一个工作区的失败标记/高亮/基线不得泄漏到新工作区
       resetWorkrailTransient();
-      useContentStore.setState({
-      });
-      const content = await useWorkspaceStore.getState().switchWorkspace(activeWorkspaceId);
-      if (ignore || !content) return;
-      useContentStore.getState().setContentData(content);
+      useContentStore.getState().clearContent();
+      const content = await useWorkspaceStore.getState().switchWorkspace(activeWorkspaceId, reportContentLoadError);
+      if (ignore || !content || (content.workspaceId && content.workspaceId !== activeWorkspaceId)) return;
+      useContentStore.getState().setContentData(content, activeWorkspaceId);
     })();
     return () => { ignore = true; };
   }, [activeWorkspaceId]);
@@ -258,7 +269,7 @@ export default function Home() {
       setStorylinePanorama: (v) => useContentStore.getState().setStorylinePanorama(v),
       setStorylineRhythm: (v) => useContentStore.getState().setStorylineRhythm(v),
       setStorylineFormat: (v) => useContentStore.getState().setStorylineFormat(v),
-      setOutline: (v) => useContentStore.getState().setOutline(v),
+      setOutline: (v, workspaceId) => useContentStore.getState().setOutline(v, workspaceId),
     },
   });
 
@@ -377,18 +388,30 @@ export default function Home() {
             activeWorkspaceId={activeWorkspaceId}
             creatingWorkspace={creatingWorkspace}
             deletingWorkspace={deletingWorkspace}
-            onSelectWorkspace={(id) => useWorkspaceStore.getState().setActiveWorkspaceId(id)}
+            onSelectWorkspace={(id) => {
+              if (id === activeWorkspaceId) return;
+              useExecutionStore.getState().setCharacterRepair(false);
+              useContentStore.getState().clearContent();
+              useWorkspaceStore.getState().setActiveWorkspaceId(id);
+            }}
             onCreateWorkspace={() => useWorkspaceStore.setState({ workspaceCreateOpen: true })}
             onDeleteWorkspace={(workspaceId) =>
               useWorkspaceStore.setState({ pendingDeleteWorkspaceId: workspaceId, workspaceDeleteOpen: true })
             }
-            files={outlineFiles}
+            files={visibleOutlineFiles}
+            filesLoading={bootstrapping}
+            filesError={outlineError}
+            onRetryFiles={() => { void refreshWorkspaceContent(activeWorkspaceId); }}
+            onRepairCharacters={() => {
+              useExecutionStore.getState().setCharacterRepair(true);
+              useStageSessionStore.setState({ historyView: null });
+              useWorkspaceStore.setState({ activePanel: "chat" });
+            }}
             activeRel={activeOutlineRel}
             onSelectArtifact={(rel) => {
               useContentStore.getState().setActiveOutlineRel(rel);
               useWorkspaceStore.setState({ activePanel: "artifacts" });
             }}
-            showSkills={showSidebarSkills}
             footer={
               <SidebarFooter
                 theme={theme}
@@ -416,6 +439,8 @@ export default function Home() {
             stageFlows={stageFlows}
             onRetry={handleRetry}
             onDeleteThread={handleDeleteThread}
+            characterRepair={characterRepair}
+            onExitCharacterRepair={() => useExecutionStore.getState().setCharacterRepair(false)}
           />
         ) : null}
 
@@ -423,7 +448,7 @@ export default function Home() {
           <ArtifactPanel
             kind={outlineKind}
             pipeline={outlinePipeline}
-            files={outlineFiles}
+            files={visibleOutlineFiles}
             activeRel={activeOutlineRel}
             onSelect={(rel) => useContentStore.getState().setActiveOutlineRel(rel)}
             workspaceId={activeWorkspaceId}

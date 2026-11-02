@@ -427,6 +427,8 @@ export type ChatMessage = {
   // 会话消息台账键（REQ-20261019-222403 FR-005/DEC-009）：用户消息的稳定 id，
   // 服务端日志按 id 幂等入队；排队消息断连后按此 id 补跑。
   messageId?: string;
+  /** 人物卡独立补卡对话；重试、拍板续跑和排队补发必须保留。 */
+  characterRepair?: boolean;
   // 排队消息断连待补跑标记（DEC-009）：下一次提交/重试时自动按序补发。
   queuedInterrupted?: boolean;
   // T17: 体验阶段（驱动 ExecutionView 子视图切换）。

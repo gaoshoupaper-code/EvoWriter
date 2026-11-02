@@ -9,6 +9,8 @@ import { renderHook } from "@testing-library/react";
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { usePanelPolling, type PanelPollingSetters } from "@/lib/usePanelPolling";
 import { useWorkrailStore } from "@/stores/workrail";
+import { useWorkspaceStore } from "@/stores/workspace";
+import { useContentStore } from "@/stores/content";
 import {
   fetchWorkspaceCharacters,
   fetchWorkspaceOutline,
@@ -61,6 +63,7 @@ const CHARACTERS: CharacterMarkdownFile[] = [
 describe("usePanelPolling 生成中全量轮询（FR-005）", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    useWorkspaceStore.setState({ activeWorkspaceId: "ws-1" });
     useWorkrailStore.setState({ pollError: false });
     mockedStoryline.mockResolvedValue({
       index_markdown: "# 大纲",
@@ -72,6 +75,24 @@ describe("usePanelPolling 生成中全量轮询（FR-005）", () => {
     mockedObjects.mockResolvedValue({ objects: [] } as any);
     mockedWorldview.mockResolvedValue({ markdown: "# 世界观" } as any);
     mockedOutline.mockResolvedValue({ kind: "pipeline", pipeline: {}, files: [] } as any);
+  });
+
+  it("切书后的迟到人物列表不覆盖当前作品，也不清除当前失败标记", async () => {
+    let release!: (value: Awaited<ReturnType<typeof fetchWorkspaceOutline>>) => void;
+    mockedOutline.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const setters = makeSetters();
+    const hook = renderHook(() => usePanelPolling({ activeWorkspaceId: "ws-1", loading: true, bootstrapping: false, setters }));
+    await vi.waitFor(() => expect(mockedOutline).toHaveBeenCalledWith("ws-1"));
+    useWorkspaceStore.setState({ activeWorkspaceId: "ws-2" });
+    useContentStore.getState().setOutline({ kind: "five", pipeline: {} as any, files: [{ rel: "人物/乙.md", markdown: "乙" }] }, "ws-2");
+    useWorkrailStore.setState({ pollError: true });
+    release({ kind: "five", pipeline: {} as any, files: [{ rel: "人物/甲.md", markdown: "甲" }] });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(setters.setOutline).not.toHaveBeenCalled();
+    expect(useContentStore.getState().outlineWorkspaceId).toBe("ws-2");
+    expect(useContentStore.getState().outlineFiles[0].rel).toBe("人物/乙.md");
+    expect(useWorkrailStore.getState().pollError).toBe(true);
+    hook.unmount();
   });
 
   it("生成中（loading=true）立即全量拉取——用户停在对话也不缺席（AC-007）", async () => {

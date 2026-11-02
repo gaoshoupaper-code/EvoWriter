@@ -31,6 +31,8 @@ type ChatPanelProps = {
   stageFlows?: (StageFlow | null)[];
   onRetry?: () => void;
   onDeleteThread: (threadId: string) => void | Promise<void>;
+  characterRepair?: boolean;
+  onExitCharacterRepair?: () => void;
 };
 
 export function ChatPanel({
@@ -46,6 +48,8 @@ export function ChatPanel({
   stageFlows,
   onRetry,
   onDeleteThread,
+  characterRepair = false,
+  onExitCharacterRepair,
 }: ChatPanelProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -60,7 +64,7 @@ export function ChatPanel({
 
   // HITL 选项化（DEC-005 单输入面）：最后一条 assistant 处于 awaitingInput 且
   // 带选项时，禁用底部 composer（提交改走拍板卡；卡内补充框是唯一塞料通道）
-  const lastMessage = messages[messages.length - 1];
+  const lastMessage = [...messages].reverse().find((message) => message.role === "assistant" && !!message.characterRepair === characterRepair);
   const awaitingWithOptions =
     lastMessage?.role === "assistant" &&
     (!!lastMessage?.awaitingInput?.options?.length ||
@@ -105,7 +109,7 @@ export function ChatPanel({
   }
 
   // ── 历史浏览态：整个对话区（消息+输入）换成只读历史面板（FR-008）──
-  if (historyView) {
+  if (historyView && !characterRepair) {
     return (
       <section className="conversation-panel panel-surface" aria-label="创作对话">
         <div className="panel-heading conversation-heading">
@@ -120,7 +124,7 @@ export function ChatPanel({
   }
 
   // 引导语显示条件（FR-003）：还没有任何 user 消息（新会话空页面），非生成中
-  const showGuide = !loading && !messages.some((m) => m.role === "user");
+  const showGuide = !characterRepair && !loading && !messages.some((m) => m.role === "user");
 
   return (
     <section
@@ -202,7 +206,7 @@ export function ChatPanel({
                   review → ReviewCard（审查停等点，REQ-20261026-191719）
                   D3 防御：仅最后一条 assistant 渲染，历史 HITL 残留不渲染。*/}
               {message.role === "assistant" &&
-                index === messages.length - 1 &&
+                message === lastMessage &&
                 message.awaitingInput ? (
                   <>
                     {/* FR-004（REQ-20260918-235653）：行模式下提问文案随 HITL 卡展示
@@ -265,7 +269,7 @@ export function ChatPanel({
           );
         })}
         {/* 完成卡片（FR-004/DEC-003）：阶段已变的缓冲，挂在旧对话末尾 */}
-        {pendingTransition ? (
+        {pendingTransition && !characterRepair ? (
           <StageTransitionCard onOpenStageHistory={(stage) => openStageHistory(stage)} />
         ) : null}
       </div>
@@ -273,8 +277,9 @@ export function ChatPanel({
       {/* composer：无卡时输入框是唯一输入（DEC-005 单输入面）；
           完成卡片挂起时输入框保持可用——直接发送即隐式切换（DEC-012） */}
       <form className="chat-composer" onSubmit={onSubmit}>
+        {characterRepair ? <div className="character-repair-banner"><p role="status">正在重做人物卡。请说明人物和重做要求。</p><button className="sidebar-skill-new" type="button" onClick={onExitCharacterRepair}>返回写作</button></div> : null}
         <div className={`chat-input-wrap${expanded ? " expanded" : ""}`}>
-          <ModeToggle />
+          {!characterRepair ? <ModeToggle /> : null}
           <textarea
             ref={inputRef}
             className="chat-input"
@@ -288,7 +293,7 @@ export function ChatPanel({
                 ? "请在上方拍板卡选择并提交"
                 : loading
                   ? "生成中，可以直接输入并回车排队发送"
-                  : undefined
+                  : characterRepair ? "请输入人物姓名和重做要求" : undefined
             }
           />
           {canExpand ? (
@@ -303,7 +308,7 @@ export function ChatPanel({
             </button>
           ) : null}
           <div className="composer-actions">
-            {/* 写作技能入口已收敛到作品侧栏技能模块（REQ-20261025-205943 FR-005/DEC-007） */}
+            {/* 写作技能在左下角个人菜单中管理。 */}
             {loading ? (
               <button className="stop-button" type="button" onClick={onStop} aria-label="停止" title="停止">
                 <Square size={14} fill="currentColor" aria-hidden="true" />

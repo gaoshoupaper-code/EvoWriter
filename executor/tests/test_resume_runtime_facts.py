@@ -17,6 +17,15 @@ from app.schemas.screenplay import ScreenplayGenerateRequest, ThreadSummary
 from contracts.writing_artifacts import load_writing_state, save_writing_state
 
 
+@pytest.fixture(autouse=True)
+def empty_account_skill_settings(monkeypatch):
+    # 本文件隔离恢复时序；账号迁移与生成门禁由真实数据库专项测试覆盖。
+    monkeypatch.setattr(
+        "app.platform.core.db.WritingSkillRepository.get_global_state",
+        lambda self, owner_id: {"enabled": [], "pending_stages": [], "candidates": []},
+    )
+
+
 def _resume(tmp_path: Path, monkeypatch, stage: str, answer, *, legacy=False):
     monkeypatch.setattr("app.platform.trace.recorder._notify_evolution", lambda *args, **kwargs: None)
     thread = ThreadSummary(

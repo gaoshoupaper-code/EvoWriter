@@ -4,14 +4,15 @@
  * 上半：书列表（选择/切换/新建/删除）——「一本书一个文件夹」的书架；
  * 超过 5 本默认折叠（REQ-20261025-210512 FR-002），选中的书始终可见。
  * 下半：当前书五段产物树（主题/总纲/文风 + 卷纲逐卷 + 章纲逐章 + 正文逐章），
- * 树顶是可折叠「技能」节点（REQ-20261025-205943，2026-10-26 修订迁入）；
+ * 人物卡常驻总纲与文风之间；技能移至个人菜单（REQ-20261102-135406）。
  * 点条目切到产物面板查看；正文条目进入人修编辑（FR-009）。
  * 旧「作品资料」分组（大纲/人物/物品/世界观）随旧机制退役。
  */
-import { useMemo, useState, type ReactNode } from "react";
+import { useId, useMemo, useState, type ReactNode } from "react";
 import {
   BookOpen,
   Compass,
+  ChevronRight,
   Feather,
   Layers,
   ListTree,
@@ -19,10 +20,10 @@ import {
   Plus,
   ScrollText,
   Trash2,
+  Users,
   type LucideIcon,
 } from "lucide-react";
 import type { OutlineFileEntry, WorkspacePanel, WorkspaceSummary } from "../../lib/types";
-import { SidebarSkills } from "./SidebarSkills";
 
 type SidebarProps = {
   activePanel: WorkspacePanel;
@@ -37,33 +38,38 @@ type SidebarProps = {
   files: OutlineFileEntry[];
   activeRel: string;
   onSelectArtifact: (rel: string) => void;
-  /** 技能分组可见性（REQ-20261025-205943 DEC-011）：仅五段制写作书显示 */
-  showSkills?: boolean;
+  filesLoading?: boolean;
+  filesError?: string;
+  onRetryFiles?: () => void;
+  onRepairCharacters?: () => void;
   footer?: ReactNode;
 };
 
-/** rel → 树分组（顺序即五段流程序；空组不显示） */
+/** rel → 树分组；人物卡空组常驻，其余空组不显示。 */
 function treeGroups(files: OutlineFileEntry[]): { id: string; label: string; rels: string[] }[] {
   const label = (rel: string) => rel.split("/").pop()!.replace(/\.md$/, "");
   const groups: Record<string, string[]> = {
-    theme: [], master: [], style: [], volume: [], chapter: [], text: [],
+    theme: [], master: [], character: [], style: [], volume: [], chapter: [], text: [],
   };
   for (const f of files) {
     if (f.rel === "主题.md") groups.theme.push(label(f.rel));
     else if (f.rel === "总纲.md") groups.master.push(label(f.rel));
+    else if (/^人物\/[^/\\]+\.md$/.test(f.rel)) groups.character.push(label(f.rel));
     else if (f.rel === "文风.md") groups.style.push(label(f.rel));
     else if (f.rel.startsWith("卷纲/")) groups.volume.push(label(f.rel));
     else if (f.rel.startsWith("章纲/")) groups.chapter.push(label(f.rel));
     else if (f.rel.startsWith("正文/")) groups.text.push(label(f.rel));
   }
+  groups.character.sort((a, b) => Number(b === "主角") - Number(a === "主角") || a.localeCompare(b, "zh"));
   return [
     { id: "theme", label: "主题", rels: groups.theme },
     { id: "master", label: "总纲", rels: groups.master },
+    { id: "character", label: "人物卡", rels: groups.character },
     { id: "style", label: "文风", rels: groups.style },
     { id: "volume", label: "卷纲", rels: groups.volume },
     { id: "chapter", label: "章纲", rels: groups.chapter },
     { id: "text", label: "正文", rels: groups.text },
-  ].filter((g) => g.rels.length > 0);
+  ].filter((g) => g.id === "character" || g.rels.length > 0);
 }
 
 function relOfLabel(dir: string | null, label: string): string {
@@ -72,6 +78,7 @@ function relOfLabel(dir: string | null, label: string): string {
 
 const GROUP_DIR: Record<string, string | null> = {
   theme: null, master: null, style: null,
+  character: "人物",
   volume: "卷纲", chapter: "章纲", text: "正文",
 };
 
@@ -82,6 +89,7 @@ const FOLD_LIMIT = 5;
 const GROUP_ICON: Record<string, LucideIcon> = {
   theme: Compass,
   master: ScrollText,
+  character: Users,
   style: Feather,
   volume: Layers,
   chapter: ListTree,
@@ -101,11 +109,16 @@ export function Sidebar({
   files,
   activeRel,
   onSelectArtifact,
-  showSkills = true,
+  filesLoading = false,
+  filesError = "",
+  onRetryFiles,
+  onRepairCharacters,
   footer,
 }: SidebarProps) {
   const groups = treeGroups(files);
   const [booksExpanded, setBooksExpanded] = useState(false);
+  const [charactersExpanded, setCharactersExpanded] = useState(true);
+  const characterListId = useId();
 
   /* 可见集（REQ-20261025-210512 FR-002/DEC-002）：默认前 5 本；
      选中的书不在前 5 时追加到末尾——用户始终能看到自己在哪本书上 */
@@ -206,14 +219,27 @@ export function Sidebar({
         {/* ── 五段产物树：点条目进产物面板查看 ── */}
         <div className="sidebar-group sidebar-tree">
           <span className="sidebar-group-label">产物</span>
-          {/* 技能节点（REQ-20261025-205943；2026-10-26 修订）：迁入产物树、
-              主题上方，可折叠——仅五段制写作书显示 */}
-          {showSkills ? <SidebarSkills /> : null}
-          {groups.length === 0 ? (
+          {files.length === 0 && !filesLoading && !filesError ? (
             <p className="sidebar-empty">开始对话后，产物会在这里出现。</p>
-          ) : (
+          ) : null}
+          {(
             groups.map((g) => {
               const Icon = GROUP_ICON[g.id];
+              if (g.id === "character") return (
+                <div className="sidebar-tree-group sidebar-characters" key={g.id} role="group" aria-label="人物卡">
+                  <button className="sidebar-tree-group-label sidebar-character-toggle" type="button" aria-label="人物卡" aria-expanded={charactersExpanded} aria-controls={characterListId} onClick={() => setCharactersExpanded((v) => !v)}>
+                    <ChevronRight size={12} className={charactersExpanded ? "sidebar-character-chevron open" : "sidebar-character-chevron"} aria-hidden="true" />
+                    <Users size={13} aria-hidden="true" />人物卡
+                  </button>
+                  {charactersExpanded ? <div id={characterListId}>
+                    {filesLoading ? <p className="sidebar-empty" role="status">人物卡加载中…</p> : filesError ? <div className="sidebar-character-error"><p role="alert">{filesError}</p><button type="button" className="sidebar-skill-new" onClick={onRetryFiles}>重试加载人物卡</button></div> : g.rels.length ? <ul>{g.rels.map((label) => {
+                      const rel = relOfLabel("人物", label);
+                      return <li key={rel}><button type="button" className={`sidebar-tree-item${rel === activeRel && activePanel === "artifacts" ? " active" : ""}`} onClick={() => onSelectArtifact(rel)} title={label}>{label}</button></li>;
+                    })}</ul> : <p className="sidebar-empty">暂无人物卡<br /><span>通过对话创建人物卡。</span></p>}
+                    <button type="button" className="sidebar-skill-new sidebar-character-repair" disabled={!activeWorkspaceId} onClick={onRepairCharacters}>重做人物卡</button>
+                  </div> : null}
+                </div>
+              );
               /* 单条目组（REQ-20261025-210512 FR-005）：组头折叠进条目——
                  主题/总纲/文风各只有一份文档，组标签+同名条目是冗余的两层 */
               const solo = g.rels.length === 1;

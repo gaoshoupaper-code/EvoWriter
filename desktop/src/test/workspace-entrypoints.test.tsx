@@ -74,6 +74,25 @@ afterEach(() => {
 });
 
 describe("左下入口迁移（AC-001/003/006）", () => {
+  it("初始A加载的迟到null，不把已成功切到B的人物列表标成失败", async () => {
+    let finishInitial!: (value: null) => void;
+    useWorkspaceStore.setState({
+      workspaces: [BOOK, { ...BOOK, workspace_id: "ws-2", title: "作品乙" }],
+      bootstrap: vi.fn(() => new Promise<null>((resolve) => { finishInitial = resolve; })),
+      switchWorkspace: vi.fn(async () => ({
+        workspaceId: "ws-2", storylineMarkdown: "", storylineEntries: [], storylinePanorama: [], storylineRhythm: null, storylineFormat: "v2", activeStorylineFilename: "",
+        worldviewMarkdown: "", characters: [], activeCharacterFilename: "", objects: [], activeObjectFilename: "",
+        outlineKind: "five", outlinePipeline: null, outlineFiles: [{ rel: "人物/乙.md", markdown: "乙" }], activeOutlineRel: "人物/乙.md",
+      })),
+    });
+    renderHome();
+    await userEvent.click(screen.getByRole("button", { name: "作品乙" }));
+    await screen.findByRole("button", { name: "乙" });
+    await act(async () => { finishInitial(null); });
+    expect(useContentStore.getState().outlineError).toBe("");
+    expect(screen.getByRole("button", { name: "乙" })).toBeInTheDocument();
+    expect(screen.queryByText("人物卡加载失败，请重试。")).not.toBeInTheDocument();
+  });
   it("顶栏只留品牌，账户和独立齿轮位于侧栏导航外", () => {
     renderHome();
     const topbar = screen.getByRole("banner");
@@ -97,7 +116,7 @@ describe("左下入口迁移（AC-001/003/006）", () => {
     const sidebar = screen.getByRole("complementary", { name: "作品侧栏" });
     await userEvent.click(within(sidebar).getByRole("button", { name: "用户菜单" }));
     expect(screen.getByText(hasApiKey ? "Key 已配置" : "Key 未配置")).toBeInTheDocument();
-    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["主题", "修改密码", "退出登录"]);
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["主题", "技能", "修改密码", "退出登录"]);
     expect(screen.queryByRole("menuitem", { name: "设置（API Key）" })).not.toBeInTheDocument();
   });
 

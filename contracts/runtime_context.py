@@ -119,6 +119,8 @@ class RuntimeContext:
     # 一次 assemble 内共享（请求级，执行端每次生成新建 ctx）；None = 不共享
     # （子代理闸门各自为政，仅旧调用方兼容）。
     confirm_gate_state: object | None = None
+    # REQ-20261102-135406：人物卡原地重建只放行人物产物，不改变写作阶段。
+    character_repair: bool = False
 
 
 __all__ = ["RuntimeContext"]

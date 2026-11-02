@@ -151,6 +151,23 @@ CREATE TABLE IF NOT EXISTS workspace_writing_skills (
     PRIMARY KEY (workspace_id, skill_id)
 );
 
+-- 账号全局启用（REQ-20261102-135406）：四阶段状态也是一次性迁移标记。
+-- 保留旧作品绑定供回滚；超额清单只存候选，不作为已启用技能使用。
+CREATE TABLE IF NOT EXISTS user_writing_skill_stages (
+    owner_id        TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    stage           TEXT NOT NULL,
+    needs_selection INTEGER NOT NULL DEFAULT 0 CHECK (needs_selection IN (0, 1)),
+    PRIMARY KEY (owner_id, stage)
+);
+
+CREATE TABLE IF NOT EXISTS user_writing_skills (
+    owner_id     TEXT NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
+    skill_id     TEXT NOT NULL REFERENCES writing_skills(skill_id) ON DELETE CASCADE,
+    position     INTEGER NOT NULL DEFAULT 0,
+    is_candidate INTEGER NOT NULL DEFAULT 0 CHECK (is_candidate IN (0, 1)),
+    PRIMARY KEY (owner_id, skill_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_workspaces_owner ON workspaces(owner_id);
 CREATE INDEX IF NOT EXISTS idx_threads_owner ON threads(owner_id);
 CREATE INDEX IF NOT EXISTS idx_threads_workspace ON threads(workspace_id);
@@ -1055,6 +1072,13 @@ class WorkspaceRepository:
 
     def delete(self, workspace_id: str, owner_id: str) -> bool:
         with self.db.transaction() as conn:
+            if conn.execute(
+                "SELECT 1 FROM workspaces WHERE workspace_id = ? AND owner_id = ?",
+                (workspace_id, owner_id),
+            ).fetchone() is None:
+                return False
+            # 删旧绑定前完成一次性迁移，否则尚未打开全局设置的作者会丢启用清单。
+            WritingSkillRepository(self.db)._ensure_global(conn, owner_id)
             # 级联删引用 workspaces 的子表（外键虽设了，但显式删更稳）：
             # threads、workspace_writing_skills（REQ-20261023）。
             # 漏删任一子表会使 DELETE workspaces 触发外键约束 → API 500。
@@ -1297,9 +1321,8 @@ _database: Database | None = None
 class WritingSkillRepository:
     """用户自定义写作技能访问层（REQ-20261023-000000 / REQ-20261025-205943）。
 
-    完全私有，所有读写带 owner_id；书级启用绑定同库维护。阶段归属
-    stage ∈ STAGE_VALUES（四选一），启用上限按段计数（DEC-005：每段
-    ≤ MAX_PER_STAGE 条，跨段不挤占，全书最多 4×5=20 条）。
+    完全私有，所有读写带 owner_id；启用状态按账号和阶段保存。
+    旧作品绑定仅供一次性迁移与回滚；每阶段最多启用 5 条。
     """
 
     STAGE_VALUES = ("outline", "volume", "chapter", "text")
@@ -1307,6 +1330,106 @@ class WritingSkillRepository:
 
     def __init__(self, db: Database) -> None:
         self.db = db
+
+    def _ensure_global(self, conn: sqlite3.Connection, owner_id: str) -> None:
+        """在调用方事务内初始化，空清单也持久记录，避免反复导入旧配置。"""
+        if conn.execute(
+            "SELECT 1 FROM user_writing_skill_stages WHERE owner_id = ? LIMIT 1",
+            (owner_id,),
+        ).fetchone():
+            return
+        rows = conn.execute(
+            "SELECT s.* FROM writing_skills s "
+            "JOIN workspace_writing_skills b ON b.skill_id = s.skill_id "
+            "JOIN workspaces w ON w.workspace_id = b.workspace_id "
+            "WHERE s.owner_id = ? AND b.owner_id = ? AND w.owner_id = ? "
+            "GROUP BY s.skill_id ORDER BY MIN(b.created_at), MIN(b.position), s.skill_id",
+            (owner_id, owner_id, owner_id),
+        ).fetchall()
+        for stage in self.STAGE_VALUES:
+            skills = [row for row in rows if row["stage"] == stage]
+            pending = int(len(skills) > self.MAX_PER_STAGE)
+            conn.execute(
+                "INSERT INTO user_writing_skill_stages (owner_id, stage, needs_selection) "
+                "VALUES (?, ?, ?)", (owner_id, stage, pending),
+            )
+            conn.executemany(
+                "INSERT INTO user_writing_skills (owner_id, skill_id, position, is_candidate) "
+                "VALUES (?, ?, ?, ?)",
+                [(owner_id, skill["skill_id"], position, pending)
+                 for position, skill in enumerate(skills)],
+            )
+
+    def _global_state(self, conn: sqlite3.Connection, owner_id: str) -> dict:
+        pending = {row["stage"] for row in conn.execute(
+            "SELECT stage FROM user_writing_skill_stages "
+            "WHERE owner_id = ? AND needs_selection = 1", (owner_id,),
+        )}
+        rows = conn.execute(
+            "SELECT s.*, b.is_candidate FROM writing_skills s "
+            "JOIN user_writing_skills b ON b.skill_id = s.skill_id "
+            "WHERE s.owner_id = ? AND b.owner_id = ? "
+            "ORDER BY b.position, s.skill_id", (owner_id, owner_id),
+        ).fetchall()
+        enabled, candidates = [], []
+        for stage in self.STAGE_VALUES:
+            for row in rows:
+                if row["stage"] != stage:
+                    continue
+                skill = dict(row)
+                candidate = skill.pop("is_candidate")
+                if stage in pending:
+                    candidates.append(skill)
+                elif not candidate:
+                    enabled.append(skill)
+        return {
+            "enabled": enabled,
+            "pending_stages": [stage for stage in self.STAGE_VALUES if stage in pending],
+            "candidates": candidates,
+        }
+
+    def get_global_state(self, owner_id: str) -> dict:
+        with self.db.transaction() as conn:
+            self._ensure_global(conn, owner_id)
+            return self._global_state(conn, owner_id)
+
+    def list_enabled_for_owner(self, owner_id: str) -> list[dict]:
+        return self.get_global_state(owner_id)["enabled"]
+
+    def set_enabled_for_stage(self, owner_id: str, stage: str, skill_ids: list[str]) -> dict:
+        """仅替换一个阶段；失败不改变任何阶段的已保存状态。"""
+        if stage not in self.STAGE_VALUES:
+            raise ValueError("无效的技能阶段")
+        if len(set(skill_ids)) != len(skill_ids):
+            raise ValueError("技能列表含重复项")
+        if len(skill_ids) > self.MAX_PER_STAGE:
+            raise ValueError(f"每个阶段最多同时启用 {self.MAX_PER_STAGE} 条写作技能")
+        with self.db.transaction() as conn:
+            self._ensure_global(conn, owner_id)
+            for skill_id in skill_ids:
+                skill = conn.execute(
+                    "SELECT stage FROM writing_skills WHERE skill_id = ? AND owner_id = ?",
+                    (skill_id, owner_id),
+                ).fetchone()
+                if skill is None:
+                    raise ValueError(f"Skill not found: {skill_id}")
+                if skill["stage"] != stage:
+                    raise ValueError("只能选择当前阶段的技能")
+            conn.execute(
+                "DELETE FROM user_writing_skills WHERE owner_id = ? AND skill_id IN "
+                "(SELECT skill_id FROM writing_skills WHERE owner_id = ? AND stage = ?)",
+                (owner_id, owner_id, stage),
+            )
+            conn.executemany(
+                "INSERT INTO user_writing_skills (owner_id, skill_id, position, is_candidate) "
+                "VALUES (?, ?, ?, 0)",
+                [(owner_id, skill_id, position) for position, skill_id in enumerate(skill_ids)],
+            )
+            conn.execute(
+                "UPDATE user_writing_skill_stages SET needs_selection = 0 "
+                "WHERE owner_id = ? AND stage = ?", (owner_id, stage),
+            )
+            return self._global_state(conn, owner_id)
 
     def create(
         self, *, owner_id: str, name: str, description: str, content: str,
@@ -1353,6 +1476,45 @@ class WritingSkillRepository:
         if not sets:
             return self.get(skill_id, owner_id)
         with self.db.transaction() as conn:
+            if stage is not None:
+                existing = conn.execute(
+                    "SELECT stage FROM writing_skills WHERE skill_id = ? AND owner_id = ?",
+                    (skill_id, owner_id),
+                ).fetchone()
+                if existing is None:
+                    return None
+                if stage not in self.STAGE_VALUES:
+                    raise ValueError("无效的技能阶段")
+                if stage != existing["stage"]:
+                    self._ensure_global(conn, owner_id)
+                    binding = conn.execute(
+                        "SELECT is_candidate FROM user_writing_skills "
+                        "WHERE owner_id = ? AND skill_id = ?", (owner_id, skill_id),
+                    ).fetchone()
+                    target = conn.execute(
+                        "SELECT needs_selection FROM user_writing_skill_stages "
+                        "WHERE owner_id = ? AND stage = ?", (owner_id, stage),
+                    ).fetchone()
+                    if binding and target["needs_selection"]:
+                        conn.execute(
+                            "UPDATE user_writing_skills SET is_candidate = 1 "
+                            "WHERE owner_id = ? AND skill_id = ?", (owner_id, skill_id),
+                        )
+                    elif binding and binding["is_candidate"]:
+                        # 待选项改段并不等于作者确认启用新阶段。
+                        conn.execute(
+                            "DELETE FROM user_writing_skills WHERE owner_id = ? AND skill_id = ?",
+                            (owner_id, skill_id),
+                        )
+                    elif binding:
+                        count = conn.execute(
+                            "SELECT COUNT(*) FROM user_writing_skills b "
+                            "JOIN writing_skills s ON s.skill_id = b.skill_id "
+                            "WHERE b.owner_id = ? AND s.owner_id = ? AND s.stage = ? "
+                            "AND b.is_candidate = 0", (owner_id, owner_id, stage),
+                        ).fetchone()[0]
+                        if count >= self.MAX_PER_STAGE:
+                            raise ValueError(f"改阶段会超过每阶段 {self.MAX_PER_STAGE} 条启用上限")
             cur = conn.execute(
                 f"UPDATE writing_skills SET {', '.join(sets)}, updated_at = ? "
                 "WHERE skill_id = ? AND owner_id = ?",
@@ -1363,8 +1525,12 @@ class WritingSkillRepository:
         return self.get(skill_id, owner_id)
 
     def delete(self, skill_id: str, owner_id: str) -> bool:
-        """删除技能并联动清除所有书的启用绑定（FR-005，无孤儿行）。"""
+        """删除技能并清除全局启用、候选及旧作品绑定。"""
         with self.db.transaction() as conn:
+            conn.execute(
+                "DELETE FROM user_writing_skills WHERE skill_id = ? AND owner_id = ?",
+                (skill_id, owner_id),
+            )
             conn.execute(
                 "DELETE FROM workspace_writing_skills WHERE skill_id = ? AND owner_id = ?",
                 (skill_id, owner_id),
@@ -1375,32 +1541,12 @@ class WritingSkillRepository:
             )
             return cur.rowcount > 0
 
-    def stage_change_overflow(
-        self, skill_id: str, owner_id: str, new_stage: str,
-    ) -> list[str]:
-        """改阶段前置检查（FR-002 不变量）：该技能已启用的书里，目标段
-        （不含本技能）已启用数 ≥ MAX_PER_STAGE 的书列表——改过去即超限。
-        """
-        rows = self.db.conn.execute(
-            "SELECT b.workspace_id, COUNT(*) AS n FROM workspace_writing_skills AS b "
-            "JOIN writing_skills AS ws ON ws.skill_id = b.skill_id "
-            "WHERE b.skill_id != ? AND b.owner_id = ? AND ws.stage = ? "
-            "AND b.workspace_id IN ("
-            "  SELECT workspace_id FROM workspace_writing_skills "
-            "  WHERE skill_id = ? AND owner_id = ?"
-            ") GROUP BY b.workspace_id HAVING n >= ?",
-            (skill_id, owner_id, new_stage, skill_id, owner_id,
-             self.MAX_PER_STAGE),
-        ).fetchall()
-        return [r["workspace_id"] for r in rows]
-
     def set_enabled(
         self, workspace_id: str, owner_id: str, skill_ids: list[str],
     ) -> None:
-        """整书替换启用列表（勾选即保存）。校验失败抛 ValueError，绑定不变。
+        """旧作品绑定写入，仅保留给存量迁移验证与回滚。
 
-        上限按段计数（REQ-20261025-205943 DEC-005）：同一阶段的技能
-        ≤ MAX_PER_STAGE 条；跨段互不挤占。
+        新客户端通过 set_enabled_for_stage 保存账号配置；旧 HTTP 写接口拒写。
         """
         if len(set(skill_ids)) != len(skill_ids):
             raise ValueError("duplicate skill ids")

@@ -141,6 +141,7 @@ export async function resetStores() {
     messages: [{ role: "assistant", content: "先选择一个工作目录，再开启或恢复创作会话。" }],
     prompt: "", loading: false, result: null,
     hasHistory: false, streamReader: null, threadMessages: new Map(),
+    characterRepair: false, characterRepairWorkspaceId: "",
   });
   useWorkspaceStore.setState({
     authChecked: false, authUser: null, hasApiKey: false,
@@ -157,6 +158,7 @@ export async function resetStores() {
     historyDetails: new Map(), traceLoading: false,
   });
   useContentStore.setState({
+    outlineWorkspaceId: "", outlineError: "", outlineFiles: [], outlinePipeline: null, outlineKind: "pipeline", activeOutlineRel: "",
     characters: [], charactersLoading: false, activeCharacterFilename: "",
     worldviewMarkdown: "", worldviewLoading: false,
     storylineMarkdown: "", storylineEntries: [], storylinePanorama: [],

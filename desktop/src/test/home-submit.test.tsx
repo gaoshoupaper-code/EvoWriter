@@ -11,7 +11,7 @@
  * 这是 P1 重构的回归基线——重构后此测试必须仍然通过。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
@@ -184,5 +184,55 @@ describe("T0a: 发消息 → SSE → completed 全流程", () => {
     // 兜底回 chat：输入框可见（其余面板均无 textbox），无空白主区
     const input = await screen.findByRole("textbox", {}, { timeout: 10000 });
     expect(input).toBeInTheDocument();
+  });
+
+  it("补卡不恢复普通写作的拍板卡，普通拍板状态保留", async () => {
+    const { useExecutionStore } = await import("@/stores/execution");
+    const { streamRequest } = await import("@/lib/stream");
+    renderHome();
+    await screen.findByRole("textbox");
+    act(() => {
+      useExecutionStore.setState({ messages: [{ role: "assistant", content: "普通写作拍板", traceId: "writing-trace", awaitingInput: { question: "选方案", options: [{ label: "甲", description: "甲方案" }] } }] });
+      useExecutionStore.getState().setCharacterRepair(true);
+    });
+    const input = screen.getByRole("textbox");
+    expect(input).not.toBeDisabled();
+    await userEvent.type(input, "重做主角，保留身份");
+    await userEvent.keyboard("{Enter}");
+    await waitFor(() => expect(streamRequest).toHaveBeenCalled());
+    expect(vi.mocked(streamRequest).mock.calls[0][1]?.body).toMatchObject({ prompt: "重做主角，保留身份", character_repair: true });
+    expect(vi.mocked(streamRequest).mock.calls[0][1]?.body).not.toHaveProperty("resume");
+    expect(useExecutionStore.getState().messages.find((message) => message.traceId === "writing-trace")?.awaitingInput).toBeDefined();
+  });
+
+  it("补卡resume和返回写作后的retry均保留补卡标志", async () => {
+    const { useExecutionStore } = await import("@/stores/execution");
+    const { streamRequest } = await import("@/lib/stream");
+    renderHome();
+    await screen.findByRole("textbox");
+    act(() => {
+      useExecutionStore.setState({ messages: [{ role: "assistant", content: "补卡拍板", traceId: "repair-trace", characterRepair: true, awaitingInput: { question: "补充要求" } }] });
+      useExecutionStore.getState().setCharacterRepair(true);
+    });
+    await act(async () => { await useExecutionStore.getState().resume("保留姓名"); });
+    expect(vi.mocked(streamRequest).mock.calls[0][1]?.body).toMatchObject({ resume: "保留姓名", trace_id: "repair-trace", character_repair: true });
+    act(() => { useExecutionStore.getState().setCharacterRepair(false); useExecutionStore.getState().retry(); });
+    await waitFor(() => expect(streamRequest).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(streamRequest).mock.calls[1][1]?.body).toMatchObject({ character_repair: true });
+  });
+
+  it("排队补跑使用原补卡标志，新写作消息不继承", async () => {
+    const { useExecutionStore } = await import("@/stores/execution");
+    const { streamRequest } = await import("@/lib/stream");
+    renderHome();
+    await screen.findByRole("textbox");
+    act(() => useExecutionStore.setState({ characterRepair: false, messages: [
+      { role: "user", content: "补卡排队", messageId: "paused-repair", characterRepair: true },
+      { role: "assistant", content: "待补跑", status: "failed", queuedInterrupted: true, characterRepair: true },
+    ] }));
+    await act(async () => { await useExecutionStore.getState().submit("继续写作"); });
+    expect(vi.mocked(streamRequest).mock.calls[0][1]?.body).toMatchObject({ prompt: "补卡排队", message_id: "paused-repair", character_repair: true });
+    expect(vi.mocked(streamRequest).mock.calls[1][1]?.body).toMatchObject({ prompt: "继续写作" });
+    expect(vi.mocked(streamRequest).mock.calls[1][1]?.body).not.toHaveProperty("character_repair", true);
   });
 });

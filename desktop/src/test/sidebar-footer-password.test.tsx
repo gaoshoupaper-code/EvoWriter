@@ -5,7 +5,11 @@ import { MemoryRouter } from "react-router-dom";
 import { SidebarFooter } from "@/components/workspace/SidebarFooter";
 import { changePassword } from "@/lib/api";
 
-vi.mock("@/lib/api", () => ({ changePassword: vi.fn() }));
+vi.mock("@/lib/api", () => ({
+  changePassword: vi.fn(),
+  listWritingSkills: vi.fn(async () => []),
+  listEnabledWritingSkills: vi.fn(async () => ({ enabled: [], pending_stages: [], candidates: [] })),
+}));
 const change = vi.mocked(changePassword);
 
 function mountFooter() {
@@ -26,6 +30,17 @@ beforeEach(() => {
 });
 
 describe("账户菜单修改密码入口", () => {
+  it("技能入口关闭菜单后打开独立弹窗，关闭后焦点返回账户按钮", async () => {
+    const { account } = mountFooter();
+    await userEvent.click(account);
+    await userEvent.click(screen.getByRole("menuitem", { name: "技能" }));
+    const dialog = await screen.findByRole("dialog", { name: "写作技能" });
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(within(dialog).getAllByRole("tab")).toHaveLength(4);
+    await userEvent.click(within(dialog).getByRole("button", { name: "关闭写作技能" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(account).toHaveFocus();
+  });
   it("退出前新增修改密码，不改变 Key 状态和独立设置入口", async () => {
     const user = userEvent.setup();
     const { account } = mountFooter();
@@ -33,7 +48,7 @@ describe("账户菜单修改密码入口", () => {
     expect(screen.getByRole("link", { name: "设置（API Key）" })).toHaveAttribute("href", "/settings");
     await user.click(account);
     expect(screen.getByText("Key 已配置")).toBeInTheDocument();
-    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["主题", "修改密码", "退出登录"]);
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["主题", "技能", "修改密码", "退出登录"]);
   });
 
   it("点击先关闭菜单再聚焦弹窗，关闭后回到账户按钮", async () => {
@@ -66,6 +81,8 @@ describe("账户菜单修改密码入口", () => {
     act(() => account.focus());
     await user.keyboard("{Enter}");
     expect(screen.getByRole("menuitem", { name: "主题" })).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("menuitem", { name: "技能" })).toHaveFocus();
     await user.keyboard("{ArrowDown}");
     expect(screen.getByRole("menuitem", { name: "修改密码" })).toHaveFocus();
     await user.keyboard("{Enter}");

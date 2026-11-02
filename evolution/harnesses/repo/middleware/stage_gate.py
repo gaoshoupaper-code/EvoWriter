@@ -13,6 +13,10 @@
 防整篇重写把无关标注打成已失效）。任务包处理完（标注转已解决/已失效）后，
 后续装配自然收回放行。
 
+人物卡重建请求（REQ-20261102-135406）：仅显式 character_repair 请求使用
+专门写入门，本轮只准保存人物卡，其他写工具和审稿委派全部拦截。普通请求
+不因补卡能力扩大阶段权限；legacy 工作区仍只读。
+
 读档（read_artifact）与拍板（confirm_with_user）不受限。段间移动
 （前进/跳段/回退）只经界面人工确认（REQ-20261019-232617 FR-004：模型
 工具箱无跳段工具，只能文字建议作者在界面操作）。
@@ -35,6 +39,7 @@ from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
 from contracts.writing_artifacts import (
+    KIND_CHARACTER,
     KIND_THEME,
     STAGE_CHAPTER,
     STAGE_LABELS,
@@ -90,10 +95,12 @@ class StageGateMiddleware(AgentMiddleware):
     """阶段写入硬闸：越段写拦截（fail-closed，不产生任何文件变更）。"""
 
     def __init__(self, stage: str, *, max_blocks: int = 5,
-                 annotation_kinds: set[str] | None = None):
+                 annotation_kinds: set[str] | None = None,
+                 character_repair: bool = False):
         self.stage = stage
         self.max_blocks = max_blocks
         self.annotation_kinds = annotation_kinds or set()
+        self.character_repair = character_repair
         self._blocks = 0
         self._exhausted_logged = False
 
@@ -124,6 +131,13 @@ class StageGateMiddleware(AgentMiddleware):
             name = str(m.get("name") or "")
             args = m.get("args")
             args = args if isinstance(args, dict) else {}
+
+            if self.character_repair:
+                if name in ("read_artifact", "list_characters", "confirm_with_user"):
+                    return None
+                if name == _SAVE_TOOL and args.get("kind") == KIND_CHARACTER:
+                    return None
+                return self._block(request, "本轮只重做人物卡，不得修改其他产物、回写表格或委派审稿。")
 
             if name == _SAVE_TOOL:
                 kind = str(args.get("kind") or "")
@@ -206,6 +220,7 @@ def build(abc):
     return StageGateMiddleware(
         resolve_confirmed_stage(abc.workspace_path),
         annotation_kinds=annotation_task_kinds(abc.workspace_path),
+        character_repair=bool(getattr(getattr(abc, "ctx", None), "character_repair", False)),
     )
 
 

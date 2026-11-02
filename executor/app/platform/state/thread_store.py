@@ -76,9 +76,11 @@ class ThreadStore:
         # 收集被删 thread_id（供 main.py 清理 checkpoint）
         thread_rows = self.threads.list_by_workspace(workspace_id, owner_id)
         deleted_thread_ids = [t["thread_id"] for t in thread_rows]
+        # 元数据事务失败时仍须保留产物，尤其是删除前的全局技能迁移。
+        if not self.workspaces.delete(workspace_id, owner_id):
+            return None
         if ws_path.exists():
             shutil.rmtree(ws_path, ignore_errors=True)
-        self.workspaces.delete(workspace_id, owner_id)
         return deleted_thread_ids
 
     # ── 线程 CRUD ────────────────────────────────────────────

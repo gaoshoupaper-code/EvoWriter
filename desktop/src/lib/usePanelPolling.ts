@@ -11,6 +11,7 @@ import {
 import { useContentStore } from "../stores/content";
 import { useWorkrailStore } from "../stores/workrail";
 import { useAnnotationsStore } from "../stores/annotations";
+import { useWorkspaceStore } from "../stores/workspace";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -44,7 +45,7 @@ export interface PanelPollingSetters {
   setWorldviewMarkdown: (s: string) => void;
   setWorldviewLoading: (b: boolean) => void;
 
-  setOutline: (v: { kind: string; pipeline: import("./types").PipelineStatus; files: import("./types").OutlineFileEntry[] }) => void;
+  setOutline: (v: { kind: string; pipeline: import("./types").PipelineStatus; files: import("./types").OutlineFileEntry[] }, workspaceId?: string) => void;
 }
 
 export interface UsePanelPollingParams {
@@ -94,7 +95,10 @@ async function _pollAll(
   s: PanelPollingSetters,
 ): Promise<boolean> {
   let gotAny = false;
+  const stillActive = () => useWorkspaceStore.getState().activeWorkspaceId === workspaceId;
+  if (!stillActive()) return false;
   const data = await fetchWorkspaceStoryline(workspaceId);
+  if (!stillActive()) return false;
   s.setStorylineMarkdown(data.index_markdown);
   s.setStorylineEntries(data.entries);
   s.setStorylinePanorama(data.panorama);
@@ -104,24 +108,28 @@ async function _pollAll(
   if (data.index_markdown?.trim() || data.entries.length) gotAny = true;
 
   const charData = await fetchWorkspaceCharacters(workspaceId);
+  if (!stillActive()) return false;
   s.setCharacters(charData.characters);
   s.setActiveCharacterFilename((cur) => keepActiveFilename(cur, charData.characters.map((c) => c.filename)));
   s.setCharactersLoading(false);
   if (charData.characters.length) gotAny = true;
 
   const objData = await fetchWorkspaceObjects(workspaceId);
+  if (!stillActive()) return false;
   s.setObjects(objData.objects);
   s.setActiveObjectFilename((cur) => keepActiveFilename(cur, objData.objects.map((o) => o.filename)));
   s.setObjectsLoading(false);
   if (objData.objects.length) gotAny = true;
 
   const worldData = await fetchWorkspaceWorldview(workspaceId);
+  if (!stillActive()) return false;
   s.setWorldviewMarkdown(worldData.markdown);
   s.setWorldviewLoading(false);
   if (worldData.markdown?.trim()) gotAny = true;
 
   const outlineData = await fetchWorkspaceOutline(workspaceId);
-  s.setOutline(outlineData);
+  if (!stillActive()) return false;
+  s.setOutline(outlineData, workspaceId);
   if (outlineData.files.length) gotAny = true;
 
   return gotAny;
@@ -130,10 +138,14 @@ async function _pollAll(
 async function pollAll(workspaceId: string, s: PanelPollingSetters): Promise<boolean> {
   try {
     const gotAny = await _pollAll(workspaceId, s);
+    if (useWorkspaceStore.getState().activeWorkspaceId !== workspaceId) return false;
     useWorkrailStore.getState().markPollOk(true);
+    useContentStore.getState().setOutlineError("");
     return gotAny;
-  } catch {
+  } catch (cause) {
+    if (useWorkspaceStore.getState().activeWorkspaceId !== workspaceId) return false;
     useWorkrailStore.getState().markPollOk(false);
+    useContentStore.getState().setOutlineError(cause instanceof Error ? `人物卡加载失败：${cause.message}` : "人物卡加载失败，请重试。");
     // 静默：与单次轮询一致，避免打断完成态 UI。按全空处理走延迟重拉。
     return false;
   }
@@ -162,10 +174,10 @@ function enqueuePoll(workspaceId: string, s: PanelPollingSetters): Promise<boole
 
 /**
  * 独立全量刷新（作品栏「重试」按钮用）：直接写 contentStore。
- * 在途周期未结束时跳过（单飞），避免连点堆积并发请求。
+ * 普通重试跳过在途周期；删除后的 force 刷新排在旧请求之后，避免旧快照覆盖删除结果。
  */
-export async function refreshWorkspaceContent(workspaceId: string): Promise<boolean> {
-  if (pollInFlight) return false;
+export async function refreshWorkspaceContent(workspaceId: string, force = false): Promise<boolean> {
+  if (pollInFlight && !force) return false;
   return enqueuePoll(workspaceId, contentStoreSetters());
 }
 

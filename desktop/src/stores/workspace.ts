@@ -35,6 +35,7 @@ import {
 
 // 内容面板数据类型（bootstrap/switchWorkspace 返回，供 contentStore 消费）
 export interface ContentData {
+  workspaceId?: string;
   storylineMarkdown: string;
   storylineEntries: { filename: string; title: string; markdown: string }[];
   storylinePanorama: { t: string; name: string; type: string; storylines: string[]; characters: string; location: string; desc: string; tension?: number | null; payoff?: string }[];
@@ -98,8 +99,8 @@ interface WorkspaceState {
   handleLogout: (navigate: (path: string, opts?: any) => void) => Promise<void>;
   initTheme: () => void;
   toggleTheme: () => void;
-  bootstrap: () => Promise<ContentData | null>;
-  switchWorkspace: (workspaceId: string) => Promise<ContentData | null>;
+  bootstrap: (onContentError?: (workspaceId: string, message: string) => void) => Promise<ContentData | null>;
+  switchWorkspace: (workspaceId: string, onContentError?: (workspaceId: string, message: string) => void) => Promise<ContentData | null>;
   handleCreateWorkspace: () => Promise<void>;
   handleDeleteWorkspace: () => Promise<void>;
   handleDeleteThread: (threadId: string) => Promise<void>;
@@ -165,7 +166,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set({ theme: next });
   },
 
-  bootstrap: async () => {
+  bootstrap: async (onContentError) => {
     try {
       set({ bootstrapping: true });
       // FR-001：等认证就绪再读本地位置——按用户名隔离的记录依赖 authUser
@@ -183,7 +184,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
       set({ activeWorkspaceId: firstWorkspaceId });
       if (!firstWorkspaceId) return null;
 
-      return await loadWorkspaceData(firstWorkspaceId, set, get, last?.threadId);
+      return await loadWorkspaceData(firstWorkspaceId, set, get, last?.threadId, onContentError);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "初始化加载失败。");
       return null;
@@ -192,8 +193,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
   },
 
-  switchWorkspace: async (workspaceId) => {
-    return await loadWorkspaceData(workspaceId, set, get);
+  switchWorkspace: async (workspaceId, onContentError) => {
+    return await loadWorkspaceData(workspaceId, set, get, undefined, onContentError);
   },
 
   handleCreateWorkspace: async () => {
@@ -340,6 +341,7 @@ async function loadWorkspaceData(
   set: (partial: Partial<WorkspaceState>) => void,
   get: () => WorkspaceState,
   preferredThreadId?: string,
+  onContentError?: (workspaceId: string, message: string) => void,
 ): Promise<ContentData | null> {
   set({ bootstrapping: true } as any);
   try {
@@ -363,6 +365,7 @@ async function loadWorkspaceData(
     if (activeThreadId) void saveLastPosition(workspaceId, activeThreadId);
 
     const content: ContentData = {
+      workspaceId,
       storylineMarkdown: data.storyline?.index_markdown || "",
       storylineEntries: data.storyline?.entries || [],
       storylinePanorama: data.storyline?.panorama || [],
@@ -381,6 +384,7 @@ async function loadWorkspaceData(
     };
     return content;
   } catch (err) {
+    if (get().activeWorkspaceId === workspaceId) onContentError?.(workspaceId, err instanceof Error ? err.message : "无法加载工作区数据。");
     toast.error(err instanceof Error ? err.message : "无法加载工作区数据。");
     return null;
   } finally {

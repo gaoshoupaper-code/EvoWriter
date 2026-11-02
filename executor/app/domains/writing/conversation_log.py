@@ -47,6 +47,7 @@ class ConversationMessage(BaseModel):
     status: str                     # USER_STATUSES / ASSISTANT_STATUSES 成员
     trace_id: str | None = None
     ts: str = ""
+    character_repair: bool = False
 
 
 def _now_iso() -> str:
@@ -77,7 +78,10 @@ class ConversationLog:
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
-    def admit_user(self, conversation_id: str, content: str, *, message_id: str | None = None) -> str | None:
+    def admit_user(
+        self, conversation_id: str, content: str, *, message_id: str | None = None,
+        character_repair: bool = False,
+    ) -> str | None:
         """用户消息先落档（ledger）。同一 message_id 重发（断连补跑）重新入队。
 
         落档失败抛 ConversationLogError——调用方必须拒绝该轮。
@@ -92,6 +96,8 @@ class ConversationLog:
                 current = next(m for m in folded if m.id == message_id)
                 if current.status == "cancelled":
                     return None
+                if current.character_repair != character_repair:
+                    raise ConversationLogError("同一条消息重试时，人物卡重做模式必须保持一致。")
                 self._append(conversation_id, {
                     "kind": "user_status", "id": message_id,
                     "status": "queued", "ts": _now_iso(),
@@ -100,6 +106,7 @@ class ConversationLog:
                 self._append(conversation_id, {
                     "kind": "user", "id": message_id, "content": content,
                     "status": "queued", "ts": _now_iso(),
+                    "character_repair": character_repair,
                 })
         except OSError as exc:
             raise ConversationLogError(
@@ -118,13 +125,17 @@ class ConversationLog:
         except OSError:
             logger.warning("会话日志用户状态写失败 conv=%s msg=%s", conversation_id, message_id)
 
-    def open_assistant(self, conversation_id: str, trace_id: str, *, assistant_id: str | None = None) -> str:
+    def open_assistant(
+        self, conversation_id: str, trace_id: str, *, assistant_id: str | None = None,
+        character_repair: bool = False,
+    ) -> str:
         """助手记录两阶段写·开壳（status=running）。best-effort 不阻断生成。"""
         assistant_id = assistant_id or f"a-{uuid.uuid4().hex}"
         try:
             self._append(conversation_id, {
                 "kind": "assistant", "id": assistant_id, "trace_id": trace_id,
                 "status": "running", "ts": _now_iso(),
+                "character_repair": character_repair,
             })
         except OSError:
             logger.warning("会话日志助手开壳写失败 conv=%s trace=%s", conversation_id, trace_id)
@@ -176,6 +187,7 @@ class ConversationLog:
                     "id": msg_id, "role": "user",
                     "content": str(record.get("content", "")),
                     "status": str(record.get("status", "queued")),
+                    "character_repair": record.get("character_repair") is True,
                     "ts": str(record.get("ts", "")),
                 }
             elif kind == "assistant":
@@ -185,6 +197,7 @@ class ConversationLog:
                     "id": msg_id, "role": "assistant", "content": "",
                     "status": str(record.get("status", "running")),
                     "trace_id": record.get("trace_id"),
+                    "character_repair": record.get("character_repair") is True,
                     "ts": str(record.get("ts", "")),
                 }
             elif kind in ("user_status", "assistant_status"):

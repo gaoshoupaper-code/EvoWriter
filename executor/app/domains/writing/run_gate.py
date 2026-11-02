@@ -11,6 +11,8 @@
 from __future__ import annotations
 
 import asyncio
+import threading
+from pathlib import Path
 
 
 class ConversationGate:
@@ -58,6 +60,19 @@ class ConversationGate:
 
 
 _gates: dict[tuple[object, str], ConversationGate] = {}
+_workspace_mutation_locks: dict[Path, threading.RLock] = {}
+_workspace_mutation_registry_lock = threading.Lock()
+
+
+def get_workspace_mutation_lock(workspace_path: str | Path):
+    """同步短临界区：人物删卡与生成复查互斥，不得持锁跨 await。"""
+    key = Path(workspace_path).resolve()
+    with _workspace_mutation_registry_lock:
+        lock = _workspace_mutation_locks.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _workspace_mutation_locks[key] = lock
+        return lock
 
 
 def get_conversation_gate(conversation_id: str) -> ConversationGate:

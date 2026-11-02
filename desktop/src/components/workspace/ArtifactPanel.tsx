@@ -139,7 +139,8 @@ export function ArtifactPanel({
     try {
       const result = await useAnnotationsStore.getState().dispatch();
       const queued = useExecutionStore.getState().loading;
-      void useExecutionStore.getState().submit(result.message);
+      useExecutionStore.getState().setCharacterRepair(false);
+      void useExecutionStore.getState().submit(result.message, { characterRepair: false });
       toast.success(queued ? "任务已排队：当前生成结束后自动发出" : "已交给陪练，处理过程见对话面板");
       if (result.invalidated > 0) {
         toast.info(`${result.invalidated} 条标注的原文已变化，转为已失效（不进任务包）`);
@@ -173,9 +174,11 @@ export function ArtifactPanel({
     setRedoBusy(true);
     try {
       const result = await deleteArtifactForRedo(workspaceId, active.rel);
-      toast.success(`已删除「${relLabel(result.deleted)}」，回到${stageDisplayLabel(result.stage_label)}重做`);
+      toast.success(isCharacterRel(result.deleted)
+        ? `已删除「${characterLabel(result.deleted)}」，请从侧栏「重做人物卡」进入对话。`
+        : `已删除「${relLabel(result.deleted)}」，回到${stageDisplayLabel(result.stage_label)}重做`);
       setRedoOpen(false);
-      await refreshWorkspaceContent(workspaceId);
+      await refreshWorkspaceContent(workspaceId, true);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "删除失败，请重试");
     } finally {
@@ -217,7 +220,7 @@ export function ArtifactPanel({
       setBatchOpen(false);
       setBatchMode(false);
       setBatchSel(new Set());
-      await refreshWorkspaceContent(workspaceId);
+      await refreshWorkspaceContent(workspaceId, true);
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "批量删除失败，请重试");
     } finally {
@@ -268,7 +271,7 @@ export function ArtifactPanel({
                   ? redo.reason
                   : loading
                     ? "生成中不可删除，等本轮结束再操作"
-                    : "删除该定稿产物并回到对应段重做（二次确认）"
+                    : isCharacterRel(active.rel) ? "删除人物卡并移入回收站，随后通过对话重做（二次确认）" : "删除该定稿产物并回到对应段重做（二次确认）"
               }
               onClick={() => setRedoOpen(true)}
             >
@@ -419,6 +422,9 @@ export function ArtifactPanel({
         open={redoOpen}
         title={`删除重做「${active ? relLabel(active.rel) : ""}」？`}
         description={
+          active && isCharacterRel(active.rel) ?
+          "人物卡将移入回收站，卡片标注一并清除。写作进度和已有纲文保留，可从侧栏「重做人物卡」进入对话。" +
+          (active.rel === PROTAGONIST_REL ? "主角卡补齐前，依赖主角卡的生成暂停。" : "") :
           "该定稿产物会被删除并移入回收站（可在「回收站」恢复），" +
           "流水线回到对应段从头重做；该产物上的标注一并清除。下游产物不会被连带删除。"
         }

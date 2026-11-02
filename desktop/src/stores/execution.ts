@@ -350,6 +350,8 @@ interface ExecutionState {
 
   // ── 瞬态（运行中，不持久）──
   hasHistory: boolean; // T18: 当前会话是否已有历史交互（驱动记忆感开场白）
+  characterRepair: boolean;
+  characterRepairWorkspaceId: string;
 
   // ── 内部 ref 等价物 ──
   streamReader: { read: () => Promise<{ done: boolean; value: Uint8Array | undefined }>; cancel: () => Promise<void> } | null;
@@ -357,6 +359,7 @@ interface ExecutionState {
 
   // ── actions ──
   setPrompt: (prompt: string) => void;
+  setCharacterRepair: (enabled: boolean) => void;
   setMessages: (updater: ChatMessage[] | ((current: ChatMessage[]) => ChatMessage[])) => void;
   switchThread: (threadId: string) => void;
   loadThreadMessages: (threadId: string) => void;
@@ -364,7 +367,7 @@ interface ExecutionState {
   clearThreadMessages: () => void;
   /** 新建工作区前置（REQ-20261020-193647 FR-001）：摘指针→重置→清缓存，原子有序。 */
   beginNewWorkspace: () => void;
-  submit: (promptText: string) => Promise<void>;
+  submit: (promptText: string, options?: { characterRepair?: boolean }) => Promise<void>;
   resume: (resumeText: string) => Promise<void>;
   stop: () => void;
   retry: () => void;
@@ -376,10 +379,13 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   loading: false,
   result: null,
   hasHistory: false,
+  characterRepair: false,
+  characterRepairWorkspaceId: "",
   streamReader: null,
   threadMessages: new Map(),
 
   setPrompt: (prompt) => set({ prompt }),
+  setCharacterRepair: (enabled) => set({ characterRepair: enabled, characterRepairWorkspaceId: enabled ? requireDeps().getActiveWorkspaceId() : "" }),
 
   setMessages: (updater) =>
     set((state) => ({
@@ -444,7 +450,7 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
 
   resetMessages: () => {
     const d = requireDeps();
-    set({ messages: [makeWelcomeMessage(!!d.getActiveWorkspaceId())] });
+    set({ messages: [makeWelcomeMessage(!!d.getActiveWorkspaceId())], characterRepair: false, characterRepairWorkspaceId: "" });
   },
 
   clearThreadMessages: () => {
@@ -461,8 +467,8 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
     get().clearThreadMessages();
   },
 
-  submit: async (promptText) => {
-    await performSubmit(set, get, promptText);
+  submit: async (promptText, options) => {
+    await performSubmit(set, get, promptText, options);
   },
 
   resume: async (resumeText) => {
@@ -557,6 +563,7 @@ async function reconcileRestoredRunState(
 type StreamReader = { read: () => Promise<{ done: boolean; value: Uint8Array | undefined }>; cancel: () => Promise<void> };
 
 type SubmitOptions = {
+  characterRepair?: boolean;
   /** 对话气泡里展示的用户消息（默认用 promptText）。 */
   userDisplay?: string;
   /** 用户消息台账键：断连补跑时按同一 id 重发（服务端幂等入队，DEC-009）。 */
@@ -566,7 +573,7 @@ type SubmitOptions = {
 };
 
 /** 排队中断待补跑的用户/助手消息对。 */
-type PausedPair = { userIndex: number; content: string; messageId?: string };
+type PausedPair = { userIndex: number; content: string; messageId?: string; characterRepair: boolean };
 
 function collectPausedPairs(messages: ChatMessage[]): PausedPair[] {
   const pairs: PausedPair[] = [];
@@ -574,7 +581,7 @@ function collectPausedPairs(messages: ChatMessage[]): PausedPair[] {
     if (messages[i].role !== "user") continue;
     const assistant = messages[i + 1];
     if (assistant?.role === "assistant" && assistant.queuedInterrupted) {
-      pairs.push({ userIndex: i, content: messages[i].content, messageId: messages[i].messageId });
+      pairs.push({ userIndex: i, content: messages[i].content, messageId: messages[i].messageId, characterRepair: !!messages[i].characterRepair });
       i += 1;
     }
   }
@@ -586,12 +593,16 @@ async function resendPausedMessages(
   set: (partial: Partial<ExecutionState> | ((s: ExecutionState) => Partial<ExecutionState>)) => void,
   get: () => ExecutionState,
 ) {
+  const d = requireDeps();
+  const workspaceId = d.getActiveWorkspaceId();
+  const threadId = d.getActiveThreadId();
   // 每轮从最新 state 重取第一个待补跑对、按当轮索引移除（review R-001：
   // 预计算的索引快照在移除/并发提交后会错位删行），直至清空。
   // R2-P3：本轮已试过的 id 跳过——补跑自身又断连生成的新待补跑对留给
   // 下次用户提交，不在同一循环里自噬。
   const attempted = new Set<string | undefined>();
   for (;;) {
+    if (d.getActiveWorkspaceId() !== workspaceId || d.getActiveThreadId() !== threadId) return;
     const pair = collectPausedPairs(get().messages).find((p) => !attempted.has(p.messageId));
     if (!pair) return;
     attempted.add(pair.messageId);
@@ -609,6 +620,7 @@ async function resendPausedMessages(
       messageId: pair.messageId,
       isResend: true,
       userDisplay: pair.content,
+      characterRepair: pair.characterRepair,
     });
   }
 }
@@ -627,12 +639,13 @@ export async function restoreFromServerConversation(
     if (!entries.length) return null;
     return entries.map((entry): ChatMessage => {
       if (entry.role === "user") {
-        return { role: "user", content: entry.content, messageId: entry.id };
+        return { role: "user", content: entry.content, messageId: entry.id, characterRepair: !!entry.character_repair };
       }
       const message: ChatMessage = {
         role: "assistant",
         content: entry.content || "",
         traceId: entry.trace_id ?? undefined,
+        characterRepair: !!entry.character_repair,
       };
       if (entry.status === "interrupted") {
         // DEC-004：半截内容显示保留 + 标注中断（当前会话场景 FailedView 自带重试入口）
@@ -661,12 +674,16 @@ async function performSubmit(
 ) {
   const trimmedPrompt = promptText.trim();
   if (!trimmedPrompt) return;
+  const d = requireDeps();
+  const submittedWorkspaceId = d.getActiveWorkspaceId();
+  // 模式在任何异步等待前拍照，排队补跑或切书不能改变本次提交的用途。
+  const characterRepair = opts.characterRepair ?? (get().characterRepair && get().characterRepairWorkspaceId === submittedWorkspaceId);
   // DEC-009：先把排队中断未发的消息按序补跑（isResend 内层不再递归预处理）。
   if (!opts.isResend) await resendPausedMessages(set, get);
-  const d = requireDeps();
+  if (d.getActiveWorkspaceId() !== submittedWorkspaceId) return;
 
   const messages = get().messages;
-  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant");
+  const lastAssistant = [...messages].reverse().find((m) => m.role === "assistant" && !!m.characterRepair === characterRepair);
   const isResume = !!lastAssistant?.awaitingInput;
   const resumeTraceId = isResume ? lastAssistant?.traceId ?? null : null;
 
@@ -735,7 +752,7 @@ async function performSubmit(
   set((state) => ({
     messages: [
       ...state.messages,
-      { role: "user", content: trimmedPrompt, messageId },
+      { role: "user", content: trimmedPrompt, messageId, characterRepair },
       {
         role: "assistant",
         content: "正在执行...",
@@ -743,6 +760,7 @@ async function performSubmit(
         tools: [],
         traceId: resumeTraceId ?? undefined,
         agent: pipelineAgent,
+        characterRepair,
       },
     ],
     prompt: "",
@@ -830,9 +848,12 @@ async function performSubmit(
     reader = (await streamRequest("/api/screenplay/generate/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: isResume
-        ? { thread_id: userMessageThreadId, resume: trimmedPrompt, trace_id: resumeTraceId ?? undefined, message_id: messageId }
-        : { thread_id: userMessageThreadId, prompt: trimmedPrompt, message_id: messageId },
+      body: {
+        ...(isResume
+          ? { thread_id: userMessageThreadId, resume: trimmedPrompt, trace_id: resumeTraceId ?? undefined, message_id: messageId }
+          : { thread_id: userMessageThreadId, prompt: trimmedPrompt, message_id: messageId }),
+        ...(characterRepair ? { character_repair: true } : {}),
+      },
     })) as StreamReader;
     activeReaders.add(reader);
     set({ streamReader: reader });
@@ -1286,7 +1307,7 @@ function handleRetry(set: any, get: () => ExecutionState) {
   }
   const lastUser = [...messages].reverse().find((m) => m.role === "user");
   if (lastUser?.content) {
-    void performSubmit(set, get, lastUser.content);
+    void performSubmit(set, get, lastUser.content, { characterRepair: !!lastUser.characterRepair });
   }
 }
 

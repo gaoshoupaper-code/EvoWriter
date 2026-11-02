@@ -40,6 +40,7 @@ from contracts.writing_artifacts import (
     KIND_THEME,
     KIND_VOLUME,
     MASTER_FILENAME,
+    PROTAGONIST_CARD_RELPATH,
     STAGE_CHAPTER,
     STAGE_LABELS,
     STAGE_OUTLINE,
@@ -50,6 +51,7 @@ from contracts.writing_artifacts import (
     TEXT_FILE_PATTERN,
     VOLUME_DIR,
     load_writing_state,
+    mark_character_mode,
     parse_relpath,
     parse_volume_chapter_range,
     save_writing_state,
@@ -152,8 +154,7 @@ def redo_eligibility(workspace: Path, rel: str) -> tuple[bool, str]:
     if ref.kind in (KIND_TEXT, KIND_STYLE):
         return True, ""
 
-    # 人物卡（跨段支线产物，叶级）：随时可删；删除主角卡等于本书退回
-    # 未启用人物卡状态（分流判定按主角卡存在与否），由用户显式决定。
+    # 人物卡是叶级支线产物；删主角卡保留人物机制，补齐前暂停相关生成。
     if ref.kind == KIND_CHARACTER:
         return True, ""
 
@@ -177,6 +178,9 @@ def delete_artifact_for_redo(workspace: Path, rel: str) -> dict:
         # 回收站命名用 __ 承载 /：文件名本身含 __ 时暂存名无法无损还原，
         # 宁拒删（fail-safe，与卷范围解析失败兜底同向）。
         raise ValueError("该产物文件名含「__」，删除后回收站无法还原原路径，已拒绝删除。")
+
+    if rel == PROTAGONIST_CARD_RELPATH:
+        mark_character_mode(workspace)
 
     # 1. 移入回收暂存（同目录结构展平为文件名前缀，避免建目录树；
     #    时间戳含微秒，同秒连续删除同名产物也不互相覆盖）

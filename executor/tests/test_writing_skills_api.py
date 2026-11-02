@@ -1,8 +1,7 @@
 """用户自定义写作技能：API 路由层（REQ-20261023-000000 FR-001/002，AC-001/002/006）。
 
 轻量 TestClient（只挂 writing_skills 路由 + 依赖覆盖 + 真 SQLite），
-锁定：三字段必填与 3000 字边界、每书启用 ≤5 条双保险（服务端拒绝）、
-跨账号 404 隔离。
+锁定：字段与 20000 字边界、全局分阶段启用、旧客户端拒写及账号隔离。
 """
 
 from __future__ import annotations
@@ -16,7 +15,7 @@ from fastapi.testclient import TestClient
 from app.auth import current_user
 from app.platform.core.security import generate_master_key, load_master_key
 from app.platform.core.db import (
-    Database, UserRepository, WorkspaceRepository, init_database,
+    Database, UserRepository, WorkspaceRepository, WritingSkillRepository, init_database,
 )
 from app.routers import writing_skills as wsk_router
 
@@ -130,39 +129,91 @@ class TestFieldValidation:
         assert client.get("/api/writing-skills").json() == []
 
 
-# ── 按书启用（FR-002 / AC-002）─────────────────────────────
+# ── 账号全局启用（REQ-20261102-135406 FR-003/005）───────────
 
 class TestEnableEndpoints:
     def test_enable_roundtrip(self, client, ws1):
         ids = [_create_skill(client, name=f"技能{i}")["skill_id"] for i in range(2)]
-        resp = client.put(f"/api/workspaces/{ws1}/writing-skills", json={"skill_ids": ids})
+        resp = client.put("/api/writing-skills/enabled", json={"stage": "text", "skill_ids": ids})
         assert resp.status_code == 200, resp.text
         body = resp.json()
         # 响应自带权威启用列表（含 stage），客户端免二次回拉
-        assert [s["name"] for s in body["skills"]] == ["技能0", "技能1"]
+        assert [s["name"] for s in body["enabled"]] == ["技能0", "技能1"]
+        assert body["pending_stages"] == []
+        assert body["candidates"] == []
         got = client.get(f"/api/workspaces/{ws1}/writing-skills").json()
         assert [s["name"] for s in got] == ["技能0", "技能1"]
 
     def test_six_skills_rejected_by_server(self, client, ws1):
         ids = [_create_skill(client, name=f"技能{i}")["skill_id"] for i in range(6)]
-        resp = client.put(f"/api/workspaces/{ws1}/writing-skills", json={"skill_ids": ids})
+        resp = client.put("/api/writing-skills/enabled", json={"stage": "text", "skill_ids": ids})
         assert resp.status_code == 422
 
     def test_exactly_five_ok(self, client, ws1):
         ids = [_create_skill(client, name=f"技能{i}")["skill_id"] for i in range(5)]
-        resp = client.put(f"/api/workspaces/{ws1}/writing-skills", json={"skill_ids": ids})
+        resp = client.put("/api/writing-skills/enabled", json={"stage": "text", "skill_ids": ids})
         assert resp.status_code == 200
         assert len(client.get(f"/api/workspaces/{ws1}/writing-skills").json()) == 5
 
     def test_duplicate_ids_rejected(self, client, ws1):
         sid = _create_skill(client)["skill_id"]
-        resp = client.put(f"/api/workspaces/{ws1}/writing-skills", json={"skill_ids": [sid, sid]})
+        resp = client.put("/api/writing-skills/enabled", json={"stage": "text", "skill_ids": [sid, sid]})
         assert resp.status_code == 422
 
     def test_unknown_workspace_404(self, client, ws1):
         sid = _create_skill(client)["skill_id"]
         resp = client.put("/api/workspaces/nope/writing-skills", json={"skill_ids": [sid]})
         assert resp.status_code == 404
+
+    def test_global_enable_needs_no_workspace(self, client, monkeypatch):
+        monkeypatch.setattr(wsk_router, "get_thread_store", lambda: pytest.fail("不应读取作品"))
+        sid = _create_skill(client)["skill_id"]
+        resp = client.put("/api/writing-skills/enabled", json={"stage": "text", "skill_ids": [sid]})
+        assert resp.status_code == 200, resp.text
+        assert client.get("/api/writing-skills/enabled").json() == resp.json()
+
+    def test_legacy_client_cannot_overwrite_global_selection(self, client, ws1):
+        sid = _create_skill(client)["skill_id"]
+        state = client.put("/api/writing-skills/enabled", json={"stage": "text", "skill_ids": [sid]}).json()
+        resp = client.put(f"/api/workspaces/{ws1}/writing-skills", json={"skill_ids": []})
+        assert resp.status_code == 409
+        assert "更新客户端" in resp.json()["detail"]
+        assert client.get("/api/writing-skills/enabled").json() == state
+
+    @pytest.mark.parametrize("stage", ["theme", "unknown", ""])
+    def test_invalid_enable_stage_rejected(self, client, stage):
+        resp = client.put("/api/writing-skills/enabled", json={"stage": stage, "skill_ids": []})
+        assert resp.status_code == 422
+
+    def test_skill_from_other_stage_rejected(self, client):
+        sid = _create_skill(client, stage="outline")["skill_id"]
+        resp = client.put("/api/writing-skills/enabled", json={"stage": "text", "skill_ids": [sid]})
+        assert resp.status_code == 422
+
+    def test_migration_candidates_are_separate_and_stage_saves_are_independent(self, client, db, users, ws1):
+        owner, _ = users
+        ws2 = WorkspaceRepository(db).create(owner_id=owner, title="另一部作品")["workspace_id"]
+        text_ids = [_create_skill(client, name=f"正文{i}")["skill_id"] for i in range(6)]
+        outline_id = _create_skill(client, name="总纲", stage="outline")["skill_id"]
+        repo = WritingSkillRepository(db)
+        repo.set_enabled(ws1, owner, text_ids[:5] + [outline_id])
+        repo.set_enabled(ws2, owner, text_ids[1:])
+
+        state = client.get("/api/writing-skills/enabled").json()
+        assert {skill["skill_id"] for skill in state["enabled"]} == {outline_id}
+        assert state["pending_stages"] == ["text"]
+        assert {skill["skill_id"] for skill in state["candidates"]} == set(text_ids)
+        assert all("is_candidate" not in skill for skill in state["candidates"])
+
+        response = client.put("/api/writing-skills/enabled", json={"stage": "outline", "skill_ids": []})
+        assert response.status_code == 200
+        assert response.json()["pending_stages"] == ["text"]
+        assert response.json()["candidates"] == state["candidates"]
+        response = client.put("/api/writing-skills/enabled", json={"stage": "text", "skill_ids": text_ids[:5]})
+        assert response.status_code == 200
+        assert response.json()["pending_stages"] == []
+        assert response.json()["candidates"] == []
+        assert client.get(f"/api/workspaces/{ws1}/writing-skills").json() == response.json()["enabled"]
 
 
 # ── 账号隔离（FR-006 / AC-006）──────────────────────────────
@@ -187,9 +238,8 @@ class TestOwnerIsolation:
         u1, u2 = users
         skill = _create_skill(client)
         c2 = _client_for(db, monkeypatch, u2, u1, ws1)
-        # u2 没有这本书的归属权 → 404（workspace 层先拦）
         resp = c2.put(
-            f"/api/workspaces/{ws1}/writing-skills", json={"skill_ids": [skill["skill_id"]]},
+            "/api/writing-skills/enabled", json={"stage": "text", "skill_ids": [skill["skill_id"]]},
         )
         assert resp.status_code == 404
 
@@ -248,7 +298,7 @@ class TestPerStageEnableLimit:
             _create_skill(client, name=f"总纲技{i}", stage="outline")["skill_id"]
             for i in range(6)
         ]
-        resp = client.put(f"/api/workspaces/{ws1}/writing-skills", json={"skill_ids": ids})
+        resp = client.put("/api/writing-skills/enabled", json={"stage": "outline", "skill_ids": ids})
         assert resp.status_code == 422
 
     def test_five_per_stage_across_stages_ok(self, client, ws1):
@@ -261,12 +311,13 @@ class TestPerStageEnableLimit:
             _create_skill(client, name=f"正文技{i}", stage="text")["skill_id"]
             for i in range(5)
         ]
-        resp = client.put(f"/api/workspaces/{ws1}/writing-skills", json={"skill_ids": ids})
-        assert resp.status_code == 200, resp.text
+        for stage, stage_ids in (("outline", ids[:5]), ("text", ids[5:])):
+            resp = client.put("/api/writing-skills/enabled", json={"stage": stage, "skill_ids": stage_ids})
+            assert resp.status_code == 200, resp.text
         assert len(client.get(f"/api/workspaces/{ws1}/writing-skills").json()) == 10
 
-    def test_stage_change_rejects_when_book_overflows(self, client, ws1):
-        """改阶段不得绕过每段上限：书已启用 5 条总纲，把已启用的正文技能
+    def test_stage_change_rejects_when_account_overflows(self, client, ws1):
+        """改阶段不得绕过每段上限：账号已启用 5 条总纲，把已启用的正文技能
         改成总纲 → 422；未启用的技能改阶段不受影响。"""
         outline_ids = [
             _create_skill(client, name=f"总纲技{i}", stage="outline")["skill_id"]
@@ -274,12 +325,10 @@ class TestPerStageEnableLimit:
         ]
         enabled_text = _create_skill(client, name="正文技", stage="text")["skill_id"]
         idle_text = _create_skill(client, name="未启用正文技", stage="text")["skill_id"]
-        resp = client.put(
-            f"/api/workspaces/{ws1}/writing-skills",
-            json={"skill_ids": outline_ids + [enabled_text]},
-        )
-        assert resp.status_code == 200, resp.text
-        # 已启用：改成总纲会让该书总纲段到 6 条 → 拒
+        for stage, stage_ids in (("outline", outline_ids), ("text", [enabled_text])):
+            resp = client.put("/api/writing-skills/enabled", json={"stage": stage, "skill_ids": stage_ids})
+            assert resp.status_code == 200, resp.text
+        # 已启用：改成总纲会让全局总纲段到 6 条 → 拒
         reject = client.put(
             f"/api/writing-skills/{enabled_text}", json=_payload(stage="outline"),
         )

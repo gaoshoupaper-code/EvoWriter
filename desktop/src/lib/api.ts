@@ -558,6 +558,7 @@ export type ConversationMessage = {
   status: string;
   trace_id?: string | null;
   ts?: string;
+  character_repair?: boolean;
 };
 
 /**
@@ -846,7 +847,7 @@ export async function restoreTrash(workspaceId: string, trashRel: string) {
 }
 
 // ── 用户自定义写作技能（REQ-20261023-000000 / REQ-20261025-205943：
-//    库 CRUD + 按书启用；技能带阶段归属，每段 ≤5 条）──────────────
+//    库 CRUD + 账号全局启用；技能带阶段归属，每段 ≤5 条）─────────
 
 /** 技能阶段归属（四选一；题材段不开放——REQ-20261025-205943 DEC-001） */
 export type WritingStage = "outline" | "volume" | "chapter" | "text";
@@ -893,17 +894,23 @@ export async function deleteWritingSkill(skillId: string) {
   });
 }
 
-export async function listEnabledWritingSkills(workspaceId: string) {
-  return apiJson<WritingSkill[]>(`${API_BASE_URL}/api/workspaces/${workspaceId}/writing-skills`);
+export interface EnabledWritingSkills {
+  enabled: WritingSkill[];
+  pending_stages: WritingStage[];
+  candidates: WritingSkill[];
 }
 
-export async function setEnabledWritingSkills(workspaceId: string, skillIds: string[]) {
-  return apiJson<{ status: string; enabled: string[]; skills: WritingSkill[] }>(
-    `${API_BASE_URL}/api/workspaces/${workspaceId}/writing-skills`,
+export async function listEnabledWritingSkills() {
+  return apiJson<EnabledWritingSkills>(`${API_BASE_URL}/api/writing-skills/enabled`);
+}
+
+export async function setEnabledWritingSkills(stage: WritingStage, skillIds: string[]) {
+  return apiJson<EnabledWritingSkills>(
+    `${API_BASE_URL}/api/writing-skills/enabled`,
     {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ skill_ids: skillIds }),
+      body: JSON.stringify({ stage, skill_ids: skillIds }),
     },
   );
 }

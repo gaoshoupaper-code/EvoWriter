@@ -7722,98 +7722,40 @@ html[data-theme="dark"] .admin-outline {
   font-size: var(--text-ui-xs);
 }
 
-/* ── 产物树内「技能」可折叠节点（REQ-20261025-205943 FR-004/DEC-006；
-   2026-10-26 修订：迁入产物树、主题上方；规格对齐树条目）── */
-
-.sidebar-skill-toggle {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+/* 人物侧栏与全局技能管理（REQ-20261102-135406）。 */
+.sidebar-character-toggle {
   width: 100%;
-  padding: 5px 6px;
   border: 0;
   border-radius: var(--radius-md);
   background: transparent;
-  color: var(--ink);
-  font-size: var(--text-ui-base);
   text-align: left;
   cursor: pointer;
 }
-
-.sidebar-skill-toggle:hover {
-  background: var(--hover);
-}
-
-.sidebar-skill-toggle:focus-visible {
-  outline: 2px solid var(--teal);
-  outline-offset: 1px;
-}
-
-.sidebar-skill-chevron {
-  flex-shrink: 0;
-  color: var(--muted);
-  transition: transform var(--motion-duration) var(--motion-ease);
-}
-
-.sidebar-skill-toggle.open .sidebar-skill-chevron {
-  transform: rotate(90deg);
-}
-
-.sidebar-skill-item {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 5px 6px 5px 20px;
-  border: 0;
-  border-radius: var(--radius-md);
-  background: transparent;
-  color: var(--ink);
-  font-size: var(--text-ui-base);
-  cursor: pointer;
-}
-
-.sidebar-skill-item:hover {
-  background: var(--hover);
-}
-
-.sidebar-skill-item.active {
-  background: var(--hover);
-  color: var(--teal);
-}
-
-.sidebar-skill-item:focus-visible {
-  outline: 2px solid var(--teal);
-  outline-offset: 1px;
-}
-
-.sidebar-skill-badge {
-  margin-left: auto;
-  min-width: 16px;
-  height: 16px;
-  padding: 0 4px;
-  border-radius: 999px;
-  color: var(--panel-solid);
-  background: var(--teal);
-  font-size: 10px;
-  font-weight: 700;
-  line-height: 16px;
-  text-align: center;
-}
-
-/* 浮层经 createPortal 挂 body，定位由内联 fixed 坐标给出（侧栏滚动容器
-   会裁剪行内 absolute 元素——线上点击无反应的根因） */
-.sidebar-skill-popover {
-  z-index: 40;
-  width: 300px;
-  max-height: 60dvh;
-  overflow-y: auto;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--panel-solid);
-  box-shadow: var(--shadow);
-}
+.sidebar-character-toggle:hover { background: var(--hover); }
+.sidebar-character-toggle:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
+.sidebar-character-chevron { flex-shrink: 0; transition: transform var(--motion-duration) var(--motion-ease); }
+.sidebar-character-chevron.open { transform: rotate(90deg); }
+.sidebar-character-error { padding: 6px 10px; color: var(--danger); font-size: var(--text-ui-sm); }
+.sidebar-character-error p { margin: 0 0 6px; }
+.sidebar-character-repair { margin: 8px 0 4px 18px; }
+.character-repair-banner { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; padding: 9px 12px; border-left: 2px solid var(--teal); background: var(--panel-soft); font-size: var(--text-ui-sm); }
+.character-repair-banner p { margin: 0; }
+.character-repair-banner button { flex-shrink: 0; }
+.writing-skills-dialog { width: min(680px, 94vw); max-height: 84dvh; overflow-y: auto; }
+.writing-skills-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 16px; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+.writing-skills-tab { display: flex; flex: 1 1 120px; align-items: center; gap: 6px; padding: 9px 10px; border: 0; border-radius: var(--radius-md); color: var(--muted); background: transparent; text-align: left; font-size: var(--text-ui-base); cursor: pointer; }
+.writing-skills-tab small { margin-left: auto; font-size: var(--text-ui-xs); }
+.writing-skills-tab.active { color: var(--teal); background: var(--panel-soft); }
+.writing-skills-tab:hover { background: var(--hover); }
+.writing-skills-tab:focus-visible { outline: 2px solid var(--teal); outline-offset: 1px; }
+.writing-skills-panel { min-height: 220px; padding-top: 14px; }
+.writing-skills-panel .writing-skills-list { max-height: 40dvh; overflow-y: auto; }
+.writing-skills-panel-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 12px; margin-top: 12px; border-top: 1px solid var(--line); }
+.writing-skills-pending { margin: 0 0 10px; padding: 10px; border-left: 2px solid var(--gold); background: var(--panel-soft); font-size: var(--text-ui-sm); line-height: 1.7; }
+.writing-skills-error { margin-top: 12px; color: var(--danger); font-size: var(--text-ui-sm); }
+.writing-skills-item-copy { display: grid; gap: 3px; min-width: 0; }
+.writing-skills-dialog .sidebar-skill-entry-actions { opacity: 1; }
+.skill-editor-overlay { z-index: 110; }
 
 .sidebar-skill-entry {
   display: flex;
@@ -7867,12 +7809,6 @@ html[data-theme="dark"] .admin-outline {
   outline-offset: 1px;
 }
 
-.sidebar-skill-popover-foot {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--line);
-}
-
 .sidebar-skill-new {
   display: inline-flex;
   align-items: center;
@@ -7889,7 +7825,7 @@ html[data-theme="dark"] .admin-outline {
   color: var(--teal);
 }
 
-/* 新建/编辑弹窗（管理入口迁入侧栏，2026-10-25 修订） */
+/* 写作技能新建/编辑弹窗。 */
 .skill-dialog {
   width: min(480px, 92vw);
 }
@@ -7930,7 +7866,7 @@ html[data-theme="dark"] .admin-outline {
   margin: 12px 0;
 }
 
-/* ── 写作技能勾选浮层内件（侧栏技能浮层复用；REQ-20261025-205943）── */
+/* ── 全局写作技能列表 ── */
 
 .writing-skills-popover-head {
   display: flex;
@@ -7998,7 +7934,7 @@ html[data-theme="dark"] .admin-outline {
   line-height: 1.5;
 }
 
-/* ── 写作技能弹窗表单（管理入口迁入侧栏，2026-10-25 修订）── */
+/* ── 写作技能编辑表单 ── */
 
 .wskill-content {
   width: 100%;

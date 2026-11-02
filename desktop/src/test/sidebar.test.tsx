@@ -37,9 +37,6 @@ function baseProps(over: Partial<Parameters<typeof Sidebar>[0]> = {}) {
     files: FILES,
     activeRel: "",
     onSelectArtifact: vi.fn(),
-    // 技能分组（REQ-20261025-205943）在 sidebarSkills.test.tsx 单测；此处
-    // 关闭以保持书架/产物树断言聚焦
-    showSkills: false,
     ...over,
   };
 }
@@ -164,7 +161,7 @@ describe("作品侧栏（FR-011）", () => {
       document.querySelectorAll(".sidebar-tree-group-label"),
       (el) => el.textContent,
     );
-    expect(labels).toEqual(["正文"]);
+    expect(labels).toEqual(["人物卡", "正文"]);
     document
       .querySelectorAll(".sidebar-tree-group-label")
       .forEach((label) => expect(label.querySelector("svg")).not.toBeNull());

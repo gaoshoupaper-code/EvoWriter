@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from contextlib import nullcontext
+from dataclasses import replace
 
 from pathlib import Path
 from typing import Any, AsyncIterator
@@ -19,7 +20,7 @@ from app.platform.agent.base_service import BaseAgentService
 from app.platform.streaming import ExtraTask, run_agent_stream
 from app.domains.writing.events import WritingEventSink
 from app.domains.writing.conversation_log import ConversationLog, ConversationLogError
-from app.domains.writing.run_gate import get_conversation_gate
+from app.domains.writing.run_gate import get_conversation_gate, get_workspace_mutation_lock
 from app.domains.writing.expert_agent.services.storyline_graph import generate_storyline_graph
 from app.domains.writing.models import build_writer_model
 from app.platform.agent.middleware import (
@@ -42,6 +43,24 @@ from app.schemas.screenplay import (
 _QUEUE_HEARTBEAT_S = 15.0
 
 logger = logging.getLogger("writer.meta_agent")
+
+_CHARACTER_REPAIR_KEY = "character-repair"
+
+
+def _character_repair_route(workspace: Path, conversation_id: str, *, resume_trace: str | None):
+    """补卡复用当前界面对话，但不占用普通写作的 checkpoint 与待拍板记录。"""
+    from app.domains.writing.pipeline import route
+    from contracts.writing_artifacts import load_writing_state
+
+    decision = route(workspace, conversation_id)
+    state = load_writing_state(workspace)
+    thread_id = f"{conversation_id}:{_CHARACTER_REPAIR_KEY}"
+    matched = (state.active_threads.get(_CHARACTER_REPAIR_KEY) == thread_id
+               and state.active_traces.get(_CHARACTER_REPAIR_KEY) == resume_trace)
+    return replace(
+        decision, thread_id=thread_id, new_session=False,
+        resume_degraded=bool(resume_trace and not matched),
+    )
 
 
 def _safe_version(pkg: str) -> str | None:
@@ -430,7 +449,7 @@ class MetaAgentService(BaseAgentService):
             return None
         skills = [
             sk for sk in WritingSkillRepository(get_database())
-            .list_enabled_for_workspace(workspace_id, owner_id)
+            .list_enabled_for_owner(owner_id)
             if sk["stage"] == stage
         ]
         return skills or None
@@ -472,6 +491,7 @@ class MetaAgentService(BaseAgentService):
 
     def _compose_review_constraints(
         self, workspace_id: str | None, owner_id: str | None, workspace_path: Path,
+        *, skills: list[dict] | None = None,
     ) -> str | None:
         """组装审稿子代理的技能约束段（REQ-20261025-230811 FR-005）。
 
@@ -488,7 +508,8 @@ class MetaAgentService(BaseAgentService):
 
         if current_stage(workspace_path) != STAGE_TEXT:
             return None
-        skills = self._list_enabled_stage_skills(workspace_id, owner_id, workspace_path)
+        if skills is None:
+            skills = self._list_enabled_stage_skills(workspace_id, owner_id, workspace_path)
         if not skills:
             return None
         parts = [
@@ -520,13 +541,17 @@ class MetaAgentService(BaseAgentService):
             return styles
         try:
             merged = dict(styles or {})
+            if stage_skills is None:
+                stage_skills = self._list_enabled_stage_skills(workspace_id, owner_id, workspace_path) or []
             suffix = self._compose_user_writing_skills(
                 workspace_id, owner_id, workspace_path, skills=stage_skills,
             )
             if suffix:
                 base = merged.get("author") or ""
                 merged["author"] = f"{base}\n\n{suffix}" if base else suffix
-            review_suffix = self._compose_review_constraints(workspace_id, owner_id, workspace_path)
+            review_suffix = self._compose_review_constraints(
+                workspace_id, owner_id, workspace_path, skills=stage_skills,
+            )
             if review_suffix:
                 merged["review"] = review_suffix
             return merged
@@ -546,7 +571,30 @@ class MetaAgentService(BaseAgentService):
         if classify_workspace(workspace_path) != "five":
             return []
         return [skill for skill in WritingSkillRepository(get_database())
-                .list_enabled_for_workspace(workspace_id, owner_id) if skill["stage"] == "volume"]
+                .list_enabled_for_owner(owner_id) if skill["stage"] == "volume"]
+
+    def _generation_block_reason(
+        self, workspace_path: Path, *, owner_id: str | None, character_repair: bool = False,
+    ) -> str | None:
+        from app.domains.writing.pipeline import classify_workspace, current_stage
+        from app.platform.core.db import WritingSkillRepository, get_database
+        from contracts.writing_artifacts import STAGE_LABELS, character_generation_block_reason
+
+        if classify_workspace(workspace_path) != "five":
+            return "旧版作品为只读，不能重做人物卡。" if character_repair else None
+        if character_repair:
+            return None
+        reason = character_generation_block_reason(workspace_path)
+        if reason:
+            return reason
+        if owner_id:
+            stage = current_stage(workspace_path)
+            if stage not in WritingSkillRepository.STAGE_VALUES:
+                return None
+            state = WritingSkillRepository(get_database()).get_global_state(owner_id)
+            if stage in state["pending_stages"]:
+                return f"「{STAGE_LABELS[stage]}」技能待选择，请在个人菜单的技能中选好并保存后继续。"
+        return None
 
     def _safe_volume_skills(
         self, workspace_id: str | None, owner_id: str | None, workspace_path: Path,
@@ -558,7 +606,7 @@ class MetaAgentService(BaseAgentService):
             logger.warning("卷纲技能读取失败，跳过注入", exc_info=True)
             return None
 
-    def _agent_for_workspace(self, workspace_path: Path, trace_id: str | None = None, workspace_id: str | None = None, *, model=None, checkpointer=None, owner_id: str | None = None, strict_evidence: bool = False, llm_override=None, binding: BindingRecord | None = None, agent_name: str | None = None):
+    def _agent_for_workspace(self, workspace_path: Path, trace_id: str | None = None, workspace_id: str | None = None, *, model=None, checkpointer=None, owner_id: str | None = None, strict_evidence: bool = False, llm_override=None, binding: BindingRecord | None = None, agent_name: str | None = None, character_repair: bool = False):
         # 多用户隔离（T2.4/T2.5）：model 用用户解密 key 构建，
         # checkpointer 用用户的分库 saver。两者外部注入，缺省回退全局（管理员兜底）。
         # Phase 7 包化重构：装配逻辑从 evolution 拉 manifest 改为同进程 import Agent 包。
@@ -573,6 +621,7 @@ class MetaAgentService(BaseAgentService):
             strict_evidence=strict_evidence,
             llm_override=llm_override, binding=binding,
             agent_name=agent_name,
+            character_repair=character_repair,
         )
 
     def _assemble_via_package(
@@ -588,6 +637,7 @@ class MetaAgentService(BaseAgentService):
         llm_override=None,
         binding: BindingRecord | None = None,
         agent_name: str | None = None,
+        character_repair: bool = False,
     ):
         """Phase 7：经 Agent 包装配（替代 _assemble_via_manifest）。
 
@@ -693,8 +743,16 @@ class MetaAgentService(BaseAgentService):
         # 走清单旧文件原样。
         prompt_overrides: dict[str, str] | None = None
         volume_skills: list[dict] | None = None
+        stage_skills: list[dict] | None = None
         volume_stage = False
-        if agent_name == "author":
+        if character_repair:
+            repair_prompt = getattr(pkg, "character_repair_prompt", None)
+            prompt = repair_prompt() if callable(repair_prompt) else None
+            if not prompt:
+                raise RuntimeError("harness 尚未支持人物卡重做，请先发版对应提示词和写入保护。")
+            prompt_overrides = {"author": prompt}
+            styles = None
+        elif agent_name == "author":
             from app.domains.writing.pipeline import classify_workspace, current_stage
 
             if classify_workspace(workspace_path) == "five":
@@ -705,17 +763,26 @@ class MetaAgentService(BaseAgentService):
                 )
                 styles = {**(styles or {}), "author": author_style}
 
-                # 卷纲技能快照（payoff 校验防线已按 REQ-20261030-200030 移除，
-                # 这里只做上下文注入：卷纲段装配与跨段回写约束共用）。
-                volume_skills = self._safe_volume_skills(workspace_id, owner_id, workspace_path)
+                # 同一轮 author、review 和卷纲回写使用同一次账号快照。
+                enabled_skills: list[dict] = []
+                if workspace_id and owner_id:
+                    try:
+                        from app.platform.core.db import WritingSkillRepository, get_database
+
+                        enabled_skills = WritingSkillRepository(get_database()).list_enabled_for_owner(owner_id)
+                    except Exception:
+                        logger.warning("用户写作技能快照读取失败，跳过注入", exc_info=True)
+                stage_skills = [skill for skill in enabled_skills if skill["stage"] == stage]
+                volume_skills = [skill for skill in enabled_skills if skill["stage"] == "volume"]
 
         # 用户自定义写作技能（REQ-20261023-000000 FR-003）：服务端硬闸在
         # _compose 内（仅正文段）；非正文段 styles 与现状逐字一致（AC-003）。
-        styles = self._apply_user_writing_skills(
-            styles=styles, agent_name=agent_name, workspace_id=workspace_id,
-            owner_id=owner_id, workspace_path=workspace_path,
-            stage_skills=volume_skills if volume_stage else None,
-        )
+        if not character_repair:
+            styles = self._apply_user_writing_skills(
+                styles=styles, agent_name=agent_name, workspace_id=workspace_id,
+                owner_id=owner_id, workspace_path=workspace_path,
+                stage_skills=stage_skills,
+            )
         if volume_skills and not volume_stage:
             # Only writes targeting a volume use these rules; chapter creation keeps its own Skills.
             scope = "## 卷纲回写约束（仅修改卷纲时适用）\n\n"
@@ -734,6 +801,7 @@ class MetaAgentService(BaseAgentService):
             # 按模式组装（REQ-20261028-110538）：五段制时中性 author_base 整体
             # 替换清单主 prompt；None = 按清单文件读（legacy 现状行为）。
             prompt_overrides=prompt_overrides,
+            character_repair=character_repair,
             trace_recorder=self.trace_recorder,
             trace_middleware_cls=TraceMiddleware,  # T2：类由执行端注入，包内实例化
             # CON-005/FR-003：注入平台级 task 防重放边界。harness 的 ErrorRecovery
@@ -1102,6 +1170,7 @@ class MetaAgentService(BaseAgentService):
                 conversation_id,
                 user_text,
                 message_id=getattr(payload, "message_id", None),
+                character_repair=bool(payload.character_repair),
             )
         except ConversationLogError:
             logger.exception("会话消息落档失败，拒绝本轮 conv=%s", conversation_id)
@@ -1218,7 +1287,17 @@ class MetaAgentService(BaseAgentService):
 
         trace: Any = None
         agent_name: str | None = None
+        route_key: str | None = None
+        character_repair = bool(payload.character_repair)
+        stream_entered = False
+        preparation_status = "paused"
         try:
+            reason = self._generation_block_reason(
+                workspace_path, owner_id=owner_id, character_repair=character_repair,
+            )
+            if reason:
+                conv_log.mark_user(conversation_id, user_msg_id, "cancelled")
+                raise ValueError(reason)
 
             # 多用户：分库 checkpointer 先解析；model 构建推迟到 Run 绑定之后
             # （FR-004 Run 级模型锁定：绑定快照有值时 model/base_url 锁定为快照值）。
@@ -1235,7 +1314,7 @@ class MetaAgentService(BaseAgentService):
             trace_id_in = getattr(payload, "trace_id", None)
             llm_override = None
             binding = None
-            if resume_value is not None and trace_id_in:
+            if resume_value is not None and trace_id_in and not character_repair:
                 from contracts.writing_artifacts import load_writing_state
                 from app.platform.trace.recorder import STAGE_ADVANCED_MESSAGE
 
@@ -1270,13 +1349,20 @@ class MetaAgentService(BaseAgentService):
                 route as pipeline_route,
             )
 
-            pipe_decision = pipeline_route(
-                workspace_path, thread.thread_id,
-                user_text=user_text,
-                resume_trace=trace_id_in if resume_value is not None else None,
-                fresh_session=bool(getattr(payload, "fresh_session", False)),
-            )
+            if character_repair:
+                pipe_decision = _character_repair_route(
+                    workspace_path, thread.thread_id,
+                    resume_trace=trace_id_in if resume_value is not None else None,
+                )
+            else:
+                pipe_decision = pipeline_route(
+                    workspace_path, thread.thread_id,
+                    user_text=user_text,
+                    resume_trace=trace_id_in if resume_value is not None else None,
+                    fresh_session=bool(getattr(payload, "fresh_session", False)),
+                )
             agent_name = pipe_decision.agent_name
+            route_key = _CHARACTER_REPAIR_KEY if character_repair else agent_name
             lg_thread_id = pipe_decision.thread_id
             if getattr(payload, "fresh_session", False) and pipe_decision.new_session:
                 old_trace = pop_awaiting_trace(workspace_path, agent_name)
@@ -1316,6 +1402,8 @@ class MetaAgentService(BaseAgentService):
                     traceparent=traceparent,
                 )
                 is_new = True
+            # 准备模型和绑定期间也允许停止；准备失败由外层统一回收。
+            self.trace_recorder.register_run_task(trace.trace_id, asyncio.current_task())
             if is_new:
                 yield _sse("status", {"status": "started", "trace_id": trace.trace_id})
                 # 第二期证据采集（2026-07）：新 trace 启动时冻结任务契约快照。
@@ -1328,7 +1416,9 @@ class MetaAgentService(BaseAgentService):
                     self._issue_run_binding, trace.trace_id, run_purpose
                 )
             # FR-005 助手记录开壳：本轮 run 的服务端留档起点（两阶段写之前半）。
-            assistant_id = conv_log.open_assistant(conversation_id, trace.trace_id)
+            assistant_id = conv_log.open_assistant(
+                conversation_id, trace.trace_id, character_repair=character_repair,
+            )
             model = (
                 build_writer_model(self.settings, llm_override=llm_override)
                 if llm_override is not None
@@ -1337,25 +1427,37 @@ class MetaAgentService(BaseAgentService):
             trace_queue = self.trace_recorder.get_active_queue(trace.trace_id)
             if trace_queue is None:
                 raise RuntimeError(f"Trace queue was not created: {trace.trace_id}")
-            # 登记 SSE 生成器 task，让 POST /stop 能跨请求 task.cancel()（弥补浏览器
-            # 刷新/关闭/cloudflared 掐断后 abortController 丢失导致后台 trace 停不掉的缺口）。
-            # 清理由下方 try/finally 保证（正常/异常/CancelledError 三路都 unregister）。
-            self.trace_recorder.register_run_task(trace.trace_id, asyncio.current_task())
             for trace_update in self._trace_updates(trace_queue):
                 yield trace_update
 
+            # 与删卡共用短临界区，等待已获准的删除完成后再复查。
+            with get_workspace_mutation_lock(workspace_path):
+                reason = self._generation_block_reason(
+                    workspace_path, owner_id=owner_id, character_repair=character_repair,
+                )
+            if reason:
+                raise ValueError(reason)
             agent = self._agent_for_workspace(
                 Path(thread.workspace_path), trace.trace_id, thread.workspace_id,
                 model=model, checkpointer=checkpointer, owner_id=owner_id,
                 strict_evidence=run_purpose != "user_generation",
                 llm_override=llm_override, binding=binding,
                 agent_name=agent_name,
+                character_repair=character_repair,
             )
 
             # 管线状态落盘（会话与 active trace 登记）+ 桌面端阶段条事件（FR-010）
             # R3 修复：状态写是加速层（目录即进度），失败 best-effort 不裸断 SSE。
             try:
-                writing_pipeline.commit_route(workspace_path, pipe_decision, trace.trace_id)
+                if character_repair:
+                    from contracts.writing_artifacts import load_writing_state, save_writing_state
+
+                    repair_state = load_writing_state(workspace_path)
+                    repair_state.active_threads[_CHARACTER_REPAIR_KEY] = lg_thread_id
+                    repair_state.active_traces[_CHARACTER_REPAIR_KEY] = trace.trace_id
+                    save_writing_state(workspace_path, repair_state)
+                else:
+                    writing_pipeline.commit_route(workspace_path, pipe_decision, trace.trace_id)
             except OSError:
                 logger.warning(
                     "管线状态落盘失败（best-effort，目录即进度可重建）: %s", workspace_path,
@@ -1429,6 +1531,7 @@ class MetaAgentService(BaseAgentService):
             from app.domains.writing.pipeline import should_auto_answer as _should_auto_answer
             auto_answer_text = "由你自行决定（自动模式：作者不在场，请自行拍板并在进度行说明，继续推进）。"
 
+            stream_entered = True
             try:
                 while True:
                     sse_iter, result = await run_agent_stream(
@@ -1448,7 +1551,7 @@ class MetaAgentService(BaseAgentService):
 
                         if result.pending_interrupt is not None:
                             iv = result.pending_interrupt
-                            if _should_auto_answer(iv, workspace_path, pipe_decision.phase):
+                            if not character_repair and _should_auto_answer(iv, workspace_path, pipe_decision.phase):
                                 # FR-007 违纪代答：不挂起，广播 auto_answer 后续跑。
                                 question = str(iv.get("question", "")) if isinstance(iv, dict) else ""
                                 yield _sse("auto_answer", {
@@ -1468,7 +1571,7 @@ class MetaAgentService(BaseAgentService):
                             # notify evolution（不清内存，等 Command(resume) 续接）。
                             self.trace_recorder.await_input_run(thread, trace.trace_id)
                             try:
-                                writing_pipeline.on_interrupt(workspace_path, agent_name, trace.trace_id)
+                                writing_pipeline.on_interrupt(workspace_path, route_key, trace.trace_id)
                             except OSError:
                                 logger.warning("on_interrupt 状态写失败（best-effort）", exc_info=True)
                             interrupt_payload: dict[str, Any] = {
@@ -1504,7 +1607,7 @@ class MetaAgentService(BaseAgentService):
                         # FR-005：助手记录收尾（completed + 全文）。
                         _close_assistant("completed", content)
                         try:
-                            writing_pipeline.on_run_complete(workspace_path, agent_name)
+                            writing_pipeline.on_run_complete(workspace_path, route_key)
                         except OSError:
                             logger.warning("on_run_complete 状态写失败（best-effort）", exc_info=True)
                         # 相位推进即时广播（如主题完成→总纲）：on_run_complete 重扫后的相位
@@ -1552,7 +1655,7 @@ class MetaAgentService(BaseAgentService):
                             _close_assistant("stopped", _partial_content())
                             self.trace_recorder.cancel_run(thread, trace.trace_id, reason="user_stop")
                             try:
-                                writing_pipeline.on_run_abandoned(workspace_path, agent_name)
+                                writing_pipeline.on_run_abandoned(workspace_path, route_key)
                             except OSError:
                                 logger.warning("on_run_abandoned 状态写失败（best-effort）", exc_info=True)
                             # 用户停止也要结算预扣（已消耗的 token 不退）
@@ -1567,7 +1670,7 @@ class MetaAgentService(BaseAgentService):
                             # FR-002 修复：断连分支此前漏调 on_run_abandoned，state.json 残留
                             # 僵尸 active_traces（resume 误配根因之一）——补齐清理。
                             try:
-                                writing_pipeline.on_run_abandoned(workspace_path, agent_name)
+                                writing_pipeline.on_run_abandoned(workspace_path, route_key)
                             except OSError:
                                 logger.warning("on_run_abandoned 状态写失败（best-effort）", exc_info=True)
                         raise
@@ -1595,7 +1698,30 @@ class MetaAgentService(BaseAgentService):
                     self.trace_recorder.finalize_orphan_run(thread, trace.trace_id)
                 # 未收尾的助手记录按 interrupted 落档（半截内容保真，FR-004）。
                 _close_assistant("interrupted", _partial_content())
+        except asyncio.CancelledError:
+            if trace is not None and not stream_entered:
+                stopped = self.trace_recorder.is_user_stop_requested(trace.trace_id)
+                preparation_status = "cancelled" if stopped else "paused"
+                _close_assistant("stopped" if stopped else "interrupted", _partial_content())
+                if stopped:
+                    self.trace_recorder.cancel_run(thread, trace.trace_id, reason="user_stop")
+                elif not self.trace_recorder.is_awaiting_input(trace.trace_id):
+                    self.trace_recorder.interrupt_run(thread, trace.trace_id)
+            raise
+        except Exception as exc:
+            if not stream_entered:
+                preparation_status = "cancelled"
+                conv_log.mark_user(conversation_id, user_msg_id, preparation_status)
+                if trace is not None:
+                    _close_assistant("failed", _partial_content())
+                    self.trace_recorder.fail_run(thread, trace.trace_id, exc)
+            raise
         finally:
+            if trace is not None and not stream_entered:
+                self.trace_recorder.unregister_run_task(trace.trace_id)
+                self.trace_recorder.finalize_orphan_run(thread, trace.trace_id)
+                _close_assistant("interrupted", _partial_content())
+                conv_log.mark_user(conversation_id, user_msg_id, preparation_status)
             gate.release()
 
     def _trace_updates(self, trace_queue) -> list[str]:

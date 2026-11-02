@@ -139,6 +139,11 @@ def author_base_neutral_prompt() -> str | None:
     return _read_prompt(AUTHOR_BASE_NEUTRAL_FILE)
 
 
+def character_repair_prompt() -> str | None:
+    """人物卡原地重建使用独立规程，不叠加当前阶段的产物写入规则。"""
+    return _read_prompt("character_repair.md")
+
+
 def assemble(ctx: RuntimeContext, agent_name: str | None = None):
     """清单驱动装配：薄委托架构清单解释器（读 architecture.json 实例化）。
 
@@ -154,4 +159,5 @@ __all__ = [
     "PACKAGE_DIR", "STAGE_PROMPT_FILES", "assemble",
     "auto_mode_prompt", "stage_prompt",
     "author_base_neutral_prompt", "guide_prompt", "neutral_stage_prompt",
+    "character_repair_prompt",
 ]

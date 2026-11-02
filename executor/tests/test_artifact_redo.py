@@ -44,6 +44,7 @@ def client(tmp_path: Path, monkeypatch) -> TestClient:
     app.include_router(ws_router.router)
     app.dependency_overrides[current_user] = lambda: SimpleNamespace(user_id="u1")
     monkeypatch.setattr(ws_router, "get_thread_store", lambda: _FakeStore(tmp_path))
+    monkeypatch.setattr(ws_router, "get_trace_recorder", lambda: SimpleNamespace(list_active_runs=lambda: []))
     return TestClient(app)
 
 
@@ -519,3 +520,77 @@ def test_character_card_delete_eligibility(tmp_path):
     assert result["status"] == "ok"
     assert result["stage_reset_to"] is None
     assert not card.exists()
+
+
+def test_delete_protagonist_preserves_character_mode(tmp_path):
+    from contracts.writing_artifacts import character_generation_block_reason, is_character_mode
+
+    card = tmp_path / "人物" / "主角.md"
+    card.parent.mkdir()
+    card.write_text("# 主角", encoding="utf-8")
+    _set_stage(tmp_path, "chapter")
+    before = (tmp_path / ".writing" / "state.json").read_bytes()
+    result = delete_artifact_for_redo(tmp_path, "人物/主角.md")
+    assert is_character_mode(tmp_path)
+    assert character_generation_block_reason(tmp_path)
+    assert (tmp_path / result["trash_rel"]).read_text(encoding="utf-8") == "# 主角"
+    assert (tmp_path / ".writing" / "state.json").read_bytes() == before
+
+
+def test_character_mode_marker_failure_preserves_card(tmp_path, monkeypatch):
+    import app.domains.writing.artifact_redo as redo
+
+    card = tmp_path / "人物" / "主角.md"
+    card.parent.mkdir()
+    card.write_text("# 主角", encoding="utf-8")
+
+    def fail(_workspace):
+        raise OSError("marker unavailable")
+
+    monkeypatch.setattr(redo, "mark_character_mode", fail)
+    with pytest.raises(OSError, match="marker unavailable"):
+        redo.delete_artifact_for_redo(tmp_path, "人物/主角.md")
+    assert card.read_text(encoding="utf-8") == "# 主角"
+
+
+@pytest.mark.parametrize("batch", [False, True])
+def test_character_delete_rejected_while_workspace_generates(client, tmp_path, monkeypatch, batch):
+    card = tmp_path / "人物" / "配角.md"
+    card.parent.mkdir()
+    card.write_text("# 配角", encoding="utf-8")
+    monkeypatch.setattr(ws_router, "get_trace_recorder", lambda: SimpleNamespace(
+        list_active_runs=lambda: [{"workspace_id": "ws1", "status": "running"}],
+    ))
+    endpoint = "/workspaces/ws1/artifact/delete-batch" if batch else "/workspaces/ws1/artifact/delete"
+    payload = {"rels": ["人物/配角.md"]} if batch else {"rel": "人物/配角.md"}
+    response = client.post(endpoint, json=payload)
+    assert response.status_code == 409
+    assert "生成" in response.json()["detail"]
+    assert card.exists()
+
+
+def test_character_delete_does_not_block_other_workspaces(client, tmp_path, monkeypatch):
+    card = tmp_path / "人物" / "配角.md"
+    card.parent.mkdir()
+    card.write_text("# 配角", encoding="utf-8")
+    monkeypatch.setattr(ws_router, "get_trace_recorder", lambda: SimpleNamespace(
+        list_active_runs=lambda: [{"workspace_id": "other", "status": "running"}],
+    ))
+    assert client.post("/workspaces/ws1/artifact/delete", json={"rel": "人物/配角.md"}).status_code == 200
+
+
+def test_character_delete_marker_failure_returns_error_and_keeps_original(client, tmp_path, monkeypatch):
+    import app.domains.writing.artifact_redo as redo
+
+    card = tmp_path / "人物" / "主角.md"
+    card.parent.mkdir()
+    card.write_text("# 主角原稿", encoding="utf-8")
+
+    def fail(_workspace):
+        raise OSError("cannot preserve mode")
+
+    monkeypatch.setattr(redo, "mark_character_mode", fail)
+    response = client.post("/workspaces/ws1/artifact/delete", json={"rel": "人物/主角.md"})
+    assert response.status_code == 409
+    assert card.read_text(encoding="utf-8") == "# 主角原稿"
+    assert not list((tmp_path / ".writing" / "trash").glob("*.md"))

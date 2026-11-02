@@ -29,9 +29,11 @@ interface ContentState {
   outlinePipeline: PipelineStatus | null;
   outlineFiles: OutlineFileEntry[];
   activeOutlineRel: string;
+  outlineWorkspaceId: string;
+  outlineError: string;
 
   // actions
-  setContentData: (data: ContentData) => void;
+  setContentData: (data: ContentData, workspaceId?: string) => void;
   clearContent: () => void;
   setStorylineMarkdown: (v: string) => void;
   setStorylineEntries: (v: StorylineEntry[]) => void;
@@ -47,7 +49,8 @@ interface ContentState {
   setObjects: (v: ObjectMarkdownFile[]) => void;
   setActiveObjectFilename: (v: string) => void;
   setObjectsLoading: (v: boolean) => void;
-  setOutline: (v: { kind: string; pipeline: PipelineStatus; files: OutlineFileEntry[] }) => void;
+  setOutline: (v: { kind: string; pipeline: PipelineStatus; files: OutlineFileEntry[] }, workspaceId?: string) => void;
+  setOutlineError: (message: string) => void;
   /** 只更新管线相位（SSE pipeline 事件即时通道，DEC-013）；产物文件仍由轮询维护 */
   setOutlinePipeline: (v: PipelineStatus) => void;
   setActiveOutlineRel: (v: string) => void;
@@ -72,9 +75,13 @@ export const useContentStore = create<ContentState>((set) => ({
   outlinePipeline: null,
   outlineFiles: [],
   activeOutlineRel: "",
+  outlineWorkspaceId: "",
+  outlineError: "",
 
-  setContentData: (data) =>
+  setContentData: (data, workspaceId = "") =>
     set({
+      outlineWorkspaceId: workspaceId,
+      outlineError: "",
       storylineMarkdown: data.storylineMarkdown,
       storylineEntries: data.storylineEntries,
       storylinePanorama: data.storylinePanorama,
@@ -109,6 +116,8 @@ export const useContentStore = create<ContentState>((set) => ({
       outlinePipeline: null,
       outlineFiles: [],
       activeOutlineRel: "",
+      outlineWorkspaceId: "",
+      outlineError: "",
     }),
 
   setStorylineMarkdown: (v) => set({ storylineMarkdown: v }),
@@ -125,8 +134,10 @@ export const useContentStore = create<ContentState>((set) => ({
   setObjects: (v) => set({ objects: v }),
   setActiveObjectFilename: (v) => set({ activeObjectFilename: v }),
   setObjectsLoading: (v) => set({ objectsLoading: v }),
-  setOutline: (v) =>
+  setOutline: (v, workspaceId) =>
     set((s) => ({
+      outlineWorkspaceId: workspaceId ?? s.outlineWorkspaceId,
+      outlineError: "",
       outlineKind: v.kind,
       outlinePipeline: v.pipeline,
       outlineFiles: v.files,
@@ -135,5 +146,6 @@ export const useContentStore = create<ContentState>((set) => ({
         : (v.files[0]?.rel ?? ""),
     })),
   setOutlinePipeline: (v) => set({ outlinePipeline: v }),
+  setOutlineError: (message) => set({ outlineError: message }),
   setActiveOutlineRel: (v) => set({ activeOutlineRel: v }),
 }));

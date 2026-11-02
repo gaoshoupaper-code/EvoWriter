@@ -1,8 +1,10 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronRight, ChevronsUpDown, KeyRound, LogOut, Moon, Settings, Sun } from "lucide-react";
+import { Check, ChevronRight, ChevronsUpDown, KeyRound, LogOut, Moon, Settings, Sparkles, Sun } from "lucide-react";
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
+import { WritingSkillsDialog } from "./SidebarSkills";
+import { useWritingSkillsStore } from "@/stores/writingSkills";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -21,8 +23,14 @@ type SidebarFooterProps = {
 
 export function SidebarFooter({ theme, username, hasApiKey, onThemeToggle, onLogout }: SidebarFooterProps) {
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
-  const passwordDialogRequested = useRef(false);
+  const [skillsDialogOpen, setSkillsDialogOpen] = useState(false);
+  const dialogRequested = useRef<"password" | "skills" | null>(null);
   const accountTrigger = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    useWritingSkillsStore.getState().clear();
+    setSkillsDialogOpen(false);
+    return () => useWritingSkillsStore.getState().clear();
+  }, [username]);
 
   return (
     <div className="sidebar-footer">
@@ -39,11 +47,13 @@ export function SidebarFooter({ theme, username, hasApiKey, onThemeToggle, onLog
           align="start"
           className="sidebar-account-menu w-[220px]"
           onCloseAutoFocus={(event) => {
-            if (!passwordDialogRequested.current) return;
+            if (!dialogRequested.current) return;
             // 等菜单完成关闭，再把焦点交给弹窗，避免菜单抢回账户按钮焦点。
             event.preventDefault();
-            passwordDialogRequested.current = false;
-            setPasswordDialogOpen(true);
+            const requested = dialogRequested.current;
+            dialogRequested.current = null;
+            if (requested === "password") setPasswordDialogOpen(true);
+            else setSkillsDialogOpen(true);
           }}
         >
           <div className="user-menu-header">
@@ -84,8 +94,12 @@ export function SidebarFooter({ theme, username, hasApiKey, onThemeToggle, onLog
               </DropdownMenuPrimitive.SubContent>
             </DropdownMenuPrimitive.Portal>
           </DropdownMenuPrimitive.Sub>
+          <DropdownMenuItem onSelect={() => { dialogRequested.current = "skills"; }}>
+            <Sparkles size={16} aria-hidden="true" />
+            技能
+          </DropdownMenuItem>
           <DropdownMenuSeparator />
-          <DropdownMenuItem onSelect={() => { passwordDialogRequested.current = true; }}>
+          <DropdownMenuItem onSelect={() => { dialogRequested.current = "password"; }}>
             <KeyRound size={16} aria-hidden="true" />
             修改密码
           </DropdownMenuItem>
@@ -98,6 +112,7 @@ export function SidebarFooter({ theme, username, hasApiKey, onThemeToggle, onLog
       {passwordDialogOpen ? (
         <ChangePasswordDialog onClose={() => setPasswordDialogOpen(false)} returnFocusRef={accountTrigger} />
       ) : null}
+      {skillsDialogOpen ? <WritingSkillsDialog onClose={() => setSkillsDialogOpen(false)} returnFocusRef={accountTrigger} /> : null}
       <Link className="sidebar-settings-link" to="/settings" aria-label="设置（API Key）" title="设置（API Key）">
         <Settings size={18} aria-hidden="true" />
       </Link>

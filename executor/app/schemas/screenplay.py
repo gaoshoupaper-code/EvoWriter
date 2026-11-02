@@ -379,6 +379,8 @@ class ScreenplayGenerateRequest(BaseModel):
     # 丢弃重开（REQ-20261011-142529 DEC-020 第 4 条）：true = 作废未决拍板、
     # 新会话新 thread（不强制回原会话——切新会话即表达对上次不满）。
     fresh_session: bool = False
+    # 独立补卡请求：仍走当前对话，写入范围仅限人物卡，不推进主流程。
+    character_repair: bool = False
     # 会话消息台账键（REQ-20261019-222403 FR-005/DEC-009）：客户端生成的用户消息
     # 稳定 id；断连后排队消息补跑时回传同一 id，服务端日志按 id 幂等入队。
     message_id: str | None = None

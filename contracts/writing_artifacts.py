@@ -32,6 +32,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -76,11 +77,12 @@ CHAPTER_OUTLINE_DIR = "章纲"
 TEXT_DIR = "正文"
 
 # ── 人物卡（REQ-20261031-183257：一人一卡，DEC-001）───────────────
-# 主角卡文件名固定「主角」（标题行写真实姓名）：新旧作品分流判定
-# （DEC-017）＝人物/主角.md 存在，固定名免去解析卡内容。
+# 主角卡文件名固定「主角」（标题行写真实姓名）；重做删卡期间用独立标记
+# 保留人物机制，不能因卡片临时缺失退回老书流程。
 CHARACTER_DIR = "人物"
 PROTAGONIST_CARD_NAME = "主角"
 PROTAGONIST_CARD_RELPATH = f"{CHARACTER_DIR}/{PROTAGONIST_CARD_NAME}.md"
+CHARACTER_MODE_RELPATH = ".writing/character_mode"
 # 人名即文件名：首字符为字母/中文/数字/下划线，全长 1-24；· 与 - 放行
 # （BOSS·卷一·恶霸工头 / 欧阳-锋）；路径分隔符与 Windows 保留字符全拒。
 CHARACTER_NAME_PATTERN = re.compile(r"^\w[\w·\-]{0,23}$")
@@ -422,8 +424,32 @@ class WritingProgress:
 
 
 def is_character_mode(workspace: Path) -> bool:
-    """人物卡机制启用判定（DEC-017）：人物/主角.md 存在＝新作品走人物卡流程。"""
-    return (Path(workspace) / PROTAGONIST_CARD_RELPATH).is_file()
+    """人物机制启用意图：主角卡已建立，或重做期间保留的持久标记。"""
+    workspace = Path(workspace)
+    return ((workspace / PROTAGONIST_CARD_RELPATH).is_file()
+            or (workspace / CHARACTER_MODE_RELPATH).is_file())
+
+
+def mark_character_mode(workspace: Path) -> None:
+    """删主角卡前持久化启用意图；失败向上抛出，原卡必须保留。"""
+    path = Path(workspace) / CHARACTER_MODE_RELPATH
+    if path.is_file():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f"{path.name}.{uuid4().hex}.tmp")
+    try:
+        tmp.write_text("enabled\n", encoding="utf-8")
+        tmp.replace(path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def character_generation_block_reason(workspace: Path) -> str | None:
+    """已启用人物机制的作品缺主角卡时，相关生成必须先补卡。"""
+    workspace = Path(workspace)
+    if is_character_mode(workspace) and not (workspace / PROTAGONIST_CARD_RELPATH).is_file():
+        return "主角卡待补齐，请先通过对话重做人物卡，或从回收站恢复主角卡，再继续生成。"
+    return None
 
 
 def _read(workspace: Path, rel: str) -> str | None:
@@ -511,7 +537,7 @@ def scan_writing_progress(workspace: Path) -> WritingProgress:
             if m and CHARACTER_NAME_PATTERN.match(m.group(1)):
                 prog.characters.append(m.group(1))
         prog.characters.sort()
-        prog.character_mode = (ch_dir / f"{PROTAGONIST_CARD_NAME}.md").is_file()
+    prog.character_mode = is_character_mode(workspace)
     return prog
 
 
@@ -716,6 +742,7 @@ __all__ = [
     "CHAPTER_OUTLINE_DIR",
     "CHAPTER_OUTLINE_PATTERN",
     "CHARACTER_DIR",
+    "CHARACTER_MODE_RELPATH",
     "CHARACTER_FILE_PATTERN",
     "CHARACTER_NAME_PATTERN",
     "KIND_CHAPTER",
@@ -755,6 +782,8 @@ __all__ = [
     "classify_writing_workspace",
     "derive_stage",
     "is_character_mode",
+    "mark_character_mode",
+    "character_generation_block_reason",
     "is_final_status",
     "load_writing_state",
     "next_stage_on_confirm",

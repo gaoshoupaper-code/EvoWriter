@@ -867,6 +867,43 @@ export async function listWritingSkills() {
   return apiJson<WritingSkill[]>(`${API_BASE_URL}/api/writing-skills`);
 }
 
+export interface WritingStyleAsset {
+  style_id: string;
+  name: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export function listWritingStyles() {
+  return apiJson<WritingStyleAsset[]>(`${API_BASE_URL}/api/writing-styles`);
+}
+
+export function renameWritingStyle(styleId: string, name: string) {
+  return apiJson<WritingStyleAsset>(`${API_BASE_URL}/api/writing-styles/${styleId}`, {
+    method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }),
+  });
+}
+
+export function deleteWritingStyle(styleId: string) {
+  return apiJson<{ status: string; deleted: string }>(`${API_BASE_URL}/api/writing-styles/${styleId}`, { method: "DELETE" });
+}
+
+export function saveWorkspaceWritingStyle(workspaceId: string, name: string, targetStyleId?: string) {
+  return apiJson<WritingStyleAsset>(`${API_BASE_URL}/api/workspaces/${workspaceId}/writing-style/save`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, target_style_id: targetStyleId }),
+  });
+}
+
+export function importWorkspaceWritingStyle(workspaceId: string, styleId: string) {
+  return apiJson<{ status: string; style_id: string; content: string; invalidated_annotations: number }>(
+    `${API_BASE_URL}/api/workspaces/${workspaceId}/writing-style/import`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ style_id: styleId }),
+    },
+  );
+}
+
 export async function createWritingSkill(data: {
   name: string; description: string; content: string; stage: WritingStage;
 }) {

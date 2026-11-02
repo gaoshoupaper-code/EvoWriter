@@ -319,5 +319,6 @@ def dispatch_annotations(workspace: Path) -> tuple[str, list[str], int]:
         f"【标注修订任务】共 {len(blocks)} 条，请按编号逐条定点修改对应产物；"
         "改完逐条回报结果，哪条改不了就保持原样并说明原因。\n\n"
         + "\n\n".join(blocks)
+        + f"\n\n<!-- annotation-ids: {','.join(ids)} -->"
     )
     return message, ids, invalidated

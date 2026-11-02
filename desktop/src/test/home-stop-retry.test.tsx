@@ -12,7 +12,7 @@
  * 这是当前真实行为——P0 测试以此为准。P1 重构时可修正为 stopped。
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 
@@ -25,7 +25,7 @@ function sseEvent(type: string, data: unknown): string {
 // "stop" = 只发一个 chunk 然后阻塞等 cancel
 // "error" = 直接抛错（触发 failed）
 // "final" = 完整流到 final
-let mode: "stop" | "error" | "final" = "stop";
+let mode: "stop" | "error" | "final" | "style_failed" = "stop";
 
 const STOP_CHUNKS: Uint8Array[] = [
   encoder.encode(sseEvent("trace_event", {
@@ -57,7 +57,9 @@ vi.mock("@/lib/stream", () => ({
       return Promise.reject(new Error("connection refused"));
     }
 
-    const chunks = currentMode === "stop" ? STOP_CHUNKS : FINAL_CHUNKS;
+    const chunks = currentMode === "stop" ? STOP_CHUNKS : currentMode === "style_failed"
+      ? [encoder.encode(sseEvent("status", { status: "writing_style_failed", error: "文风已替换，旧文风标注任务已失效。请重新派发。" }))]
+      : FINAL_CHUNKS;
     return Promise.resolve({
       read: () => {
         if (cancelled) return Promise.resolve({ done: true, value: undefined });
@@ -193,5 +195,17 @@ describe("T0c: stop → retry", () => {
     const messages2 = document.querySelectorAll(".message.assistant");
     const last2 = messages2[messages2.length - 1];
     expect(last2).toHaveAttribute("data-status", "completed");
+  });
+
+  it("文风任务失效时显示服务端原因，不误报网络断流", async () => {
+    mode = "style_failed";
+    const user = userEvent.setup();
+    render(<MemoryRouter initialEntries={["/"]}><Home /></MemoryRouter>);
+    fireEvent.change(await screen.findByRole("textbox"), { target: { value: "旧标注任务\n\n<!-- annotation-ids: a-old -->" } });
+    await user.click(screen.getByRole("textbox"));
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(document.querySelector(".message.assistant[data-status='failed']")).toHaveTextContent("旧文风标注任务已失效"));
+    expect(screen.queryByText(/连接中断（未收到完成信号）/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/annotation-ids:/)).not.toBeInTheDocument();
   });
 });

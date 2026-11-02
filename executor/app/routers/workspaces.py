@@ -259,7 +259,8 @@ async def _workspace_watch_generator(owner_id: str, workspace_id: str, workspace
                 try:
                     from app.domains.writing.annotations import reverify_annotations
 
-                    reverify_annotations(workspace_path)
+                    with get_workspace_mutation_lock(workspace_path):
+                        reverify_annotations(workspace_path)
                 except Exception:  # pragma: no cover - 文件竞态等边缘，降级为跳过
                     logger.warning("标注复验失败: workspace=%s", workspace_id, exc_info=True)
                 yield _sse_event("outline", _read_outline_content(workspace_path).model_dump())
@@ -681,8 +682,9 @@ def list_annotations(workspace_id: str, user: CurrentUser = Depends(current_user
     from app.domains.writing.annotations import load_annotations, reverify_annotations
 
     workspace_path = _annotation_workspace(workspace_id, user)
-    reverify_annotations(workspace_path)
-    return AnnotationsListResponse(annotations=load_annotations(workspace_path))
+    with get_workspace_mutation_lock(workspace_path):
+        reverify_annotations(workspace_path)
+        return AnnotationsListResponse(annotations=load_annotations(workspace_path))
 
 
 @router.post("/workspaces/{workspace_id}/annotations", response_model=Annotation)
@@ -695,7 +697,8 @@ def create_annotation(
 
     workspace_path = _annotation_workspace(workspace_id, user)
     try:
-        return _create(workspace_path, payload)
+        with get_workspace_mutation_lock(workspace_path):
+            return _create(workspace_path, payload)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -710,7 +713,8 @@ def update_annotation(
 
     workspace_path = _annotation_workspace(workspace_id, user)
     try:
-        return _update(workspace_path, annotation_id, payload)
+        with get_workspace_mutation_lock(workspace_path):
+            return _update(workspace_path, annotation_id, payload)
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -725,8 +729,9 @@ def delete_annotation(
     from app.domains.writing.annotations import delete_annotation as _delete
 
     workspace_path = _annotation_workspace(workspace_id, user)
-    if not _delete(workspace_path, annotation_id):
-        raise HTTPException(status_code=404, detail="标注不存在")
+    with get_workspace_mutation_lock(workspace_path):
+        if not _delete(workspace_path, annotation_id):
+            raise HTTPException(status_code=404, detail="标注不存在")
     return {"status": "ok", "deleted": annotation_id}
 
 
@@ -739,7 +744,8 @@ def clear_annotations(
     from app.domains.writing.annotations import clear_annotations as _clear
 
     workspace_path = _annotation_workspace(workspace_id, user)
-    return {"status": "ok", "deleted": _clear(workspace_path, payload.statuses)}
+    with get_workspace_mutation_lock(workspace_path):
+        return {"status": "ok", "deleted": _clear(workspace_path, payload.statuses)}
 
 
 @router.post("/workspaces/{workspace_id}/annotations/dispatch", response_model=AnnotationDispatchResponse)
@@ -756,7 +762,8 @@ def dispatch_annotations(
 
     workspace_path = _annotation_workspace(workspace_id, user)
     try:
-        message, annotation_ids, invalidated = _dispatch(workspace_path)
+        with get_workspace_mutation_lock(workspace_path):
+            message, annotation_ids, invalidated = _dispatch(workspace_path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return AnnotationDispatchResponse(

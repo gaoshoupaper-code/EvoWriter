@@ -24,6 +24,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { OutlineFileEntry, WorkspacePanel, WorkspaceSummary } from "../../lib/types";
+import { SidebarStyle } from "./SidebarStyle";
 
 type SidebarProps = {
   activePanel: WorkspacePanel;
@@ -69,7 +70,7 @@ function treeGroups(files: OutlineFileEntry[]): { id: string; label: string; rel
     { id: "volume", label: "卷纲", rels: groups.volume },
     { id: "chapter", label: "章纲", rels: groups.chapter },
     { id: "text", label: "正文", rels: groups.text },
-  ].filter((g) => g.id === "character" || g.rels.length > 0);
+  ].filter((g) => g.id === "character" || g.id === "style" || g.rels.length > 0);
 }
 
 function relOfLabel(dir: string | null, label: string): string {
@@ -225,6 +226,7 @@ export function Sidebar({
           {(
             groups.map((g) => {
               const Icon = GROUP_ICON[g.id];
+              if (g.id === "style") return <SidebarStyle key={`${activeWorkspaceId}:style`} workspaceId={activeWorkspaceId} hasStyle={g.rels.length > 0} active={activeRel === "文风.md" && activePanel === "artifacts"} onOpen={() => onSelectArtifact("文风.md")} filesLoading={filesLoading} filesError={filesError} />;
               if (g.id === "character") return (
                 <div className="sidebar-tree-group sidebar-characters" key={g.id} role="group" aria-label="人物卡">
                   <button className="sidebar-tree-group-label sidebar-character-toggle" type="button" aria-label="人物卡" aria-expanded={charactersExpanded} aria-controls={characterListId} onClick={() => setCharactersExpanded((v) => !v)}>

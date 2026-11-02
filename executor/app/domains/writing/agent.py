@@ -21,6 +21,7 @@ from app.platform.streaming import ExtraTask, run_agent_stream
 from app.domains.writing.events import WritingEventSink
 from app.domains.writing.conversation_log import ConversationLog, ConversationLogError
 from app.domains.writing.run_gate import get_conversation_gate, get_workspace_mutation_lock
+from app.domains.writing.style_assets import WritingStyleError
 from app.domains.writing.expert_agent.services.storyline_graph import generate_storyline_graph
 from app.domains.writing.models import build_writer_model
 from app.platform.agent.middleware import (
@@ -332,6 +333,7 @@ def _emit_contract_snapshot(recorder, trace_id: str, payload, thread, run_purpos
 
         recorder.append_event(trace_id, {
             "type": "run_meta",
+            "status": "running",
             "source": "system",
             "input": {"contract_snapshot": contract},
         })
@@ -558,6 +560,36 @@ class MetaAgentService(BaseAgentService):
         except Exception:  # noqa: BLE001 — 注入失败退回无技能装配，不阻塞
             logger.warning("用户写作技能注入失败，跳过", exc_info=True)
             return styles
+
+    def _apply_workspace_style_card(
+        self, *, styles: dict[str, str] | None, agent_name: str | None,
+        workspace_path: Path, package,
+    ) -> dict[str, str] | None:
+        """正文每轮读取一次作品副本，执笔和审稿使用相同快照。"""
+        from app.domains.writing.pipeline import classify_workspace, current_stage
+        from contracts.writing_artifacts import STYLE_FILENAME, STAGE_TEXT
+
+        if agent_name != "author" or classify_workspace(workspace_path) != "five":
+            return styles
+        if current_stage(workspace_path) != STAGE_TEXT:
+            return styles
+        try:
+            content = (workspace_path / STYLE_FILENAME).read_bytes().decode("utf-8")
+        except FileNotFoundError:
+            return styles
+        except (OSError, UnicodeError) as exc:
+            raise WritingStyleError("作品文风读取失败，请重试后再生成正文。") from exc
+        if not content.strip():
+            raise WritingStyleError("作品文风为空，请先补齐文风。")
+        build_prompt = getattr(package, "workspace_style_prompt", None)
+        if not callable(build_prompt):
+            raise WritingStyleError("harness 尚未支持整卡文风，请先发布对应提示词。")
+        suffix = build_prompt(content)
+        merged = dict(styles or {})
+        for name in ("author", "review"):
+            base = merged.get(name, "")
+            merged[name] = f"{base}\n\n{suffix}" if base else suffix
+        return merged
 
     def _list_volume_constraint_skills(
         self, workspace_id: str | None, owner_id: str | None, workspace_path: Path,
@@ -790,6 +822,11 @@ class MetaAgentService(BaseAgentService):
             scope += "\n\n".join(f"### {skill['name']}\n{skill['content']}" for skill in volume_skills)
             styles = {**(styles or {}), "author": f"{(styles or {}).get('author', '')}\n\n{scope}"}
 
+        if not character_repair:
+            styles = self._apply_workspace_style_card(
+                styles=styles, agent_name=agent_name, workspace_path=workspace_path, package=pkg,
+            )
+
         ctx = RuntimeContext(
             model=model,
             backend=backend,
@@ -949,6 +986,30 @@ class MetaAgentService(BaseAgentService):
 
     # ── 生成主链路 ─────────────────────────────────────────────────
 
+    def _assert_style_annotation_task_current(self, thread, message: str, resume_trace: str | None = None) -> None:
+        from app.domains.writing.style_assets import assert_style_annotation_task_current
+
+        workspace = Path(thread.workspace_path)
+        assert_style_annotation_task_current(workspace, message)
+        if not resume_trace:
+            return
+        run = self.trace_recorder.find_run_by_trace_id(resume_trace, workspace_path=str(workspace))
+        if run is None or run.workspace_id != thread.workspace_id:
+            return
+        for event in self.trace_recorder.read_trace_events(resume_trace, hydrate_payloads=True) or []:
+            contract = event.input.get("contract_snapshot") if isinstance(event.input, dict) else None
+            if isinstance(contract, dict) and isinstance(contract.get("user_goal"), str):
+                assert_style_annotation_task_current(workspace, contract["user_goal"], allow_resolved=True)
+                return
+        # 旧运行没有任务快照时，沿会话日志检查原始请求。
+        previous_user = ""
+        for entry in ConversationLog(workspace).read(thread.thread_id):
+            if entry.role == "user":
+                previous_user = entry.content
+            elif entry.trace_id == resume_trace:
+                assert_style_annotation_task_current(workspace, previous_user, allow_resolved=True)
+                break
+
     def generate(
         self,
         payload: ScreenplayGenerateRequest,
@@ -959,7 +1020,9 @@ class MetaAgentService(BaseAgentService):
         if self.settings.writer_agent_mode.lower() == "mock":
             return self._mock_response(payload, thread)
 
-        trace = self.trace_recorder.create_run(thread, "screenplay.generate")
+        with get_workspace_mutation_lock(thread.workspace_path):
+            self._assert_style_annotation_task_current(thread, payload.primary_text() or "")
+            trace = self.trace_recorder.create_run(thread, "screenplay.generate")
         try:
             from app.domains.writing.pipeline import route as pipeline_route
 
@@ -1390,17 +1453,21 @@ class MetaAgentService(BaseAgentService):
                         "reason": f"恢复被拒:版本不兼容（{check.reason}）",
                     })
                     return
-                trace, is_new = self.trace_recorder.resume_run(thread, trace_id_in)
+                with get_workspace_mutation_lock(workspace_path):
+                    self._assert_style_annotation_task_current(thread, user_text, trace_id_in)
+                    trace, is_new = self.trace_recorder.resume_run(thread, trace_id_in)
                 if not is_new:
                     # FR-004：续跑 Run 的模型配置用绑定快照（无绑定/查询失败降级现有链）
                     llm_override = bound_snapshot
             else:
-                trace = self.trace_recorder.create_run(
-                    thread,
-                    "screenplay.generate.stream",
-                    run_purpose=run_purpose,
-                    traceparent=traceparent,
-                )
+                with get_workspace_mutation_lock(workspace_path):
+                    self._assert_style_annotation_task_current(thread, user_text)
+                    trace = self.trace_recorder.create_run(
+                        thread,
+                        "screenplay.generate.stream",
+                        run_purpose=run_purpose,
+                        traceparent=traceparent,
+                    )
                 is_new = True
             # 准备模型和绑定期间也允许停止；准备失败由外层统一回收。
             self.trace_recorder.register_run_task(trace.trace_id, asyncio.current_task())
@@ -1715,6 +1782,9 @@ class MetaAgentService(BaseAgentService):
                 if trace is not None:
                     _close_assistant("failed", _partial_content())
                     self.trace_recorder.fail_run(thread, trace.trace_id, exc)
+            if isinstance(exc, WritingStyleError):
+                yield _sse("status", {"status": "writing_style_failed", "error": str(exc)})
+                return
             raise
         finally:
             if trace is not None and not stream_entered:

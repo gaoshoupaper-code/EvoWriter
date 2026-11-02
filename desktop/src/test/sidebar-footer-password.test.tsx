@@ -48,7 +48,7 @@ describe("账户菜单修改密码入口", () => {
     expect(screen.getByRole("link", { name: "设置（API Key）" })).toHaveAttribute("href", "/settings");
     await user.click(account);
     expect(screen.getByText("Key 已配置")).toBeInTheDocument();
-    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["主题", "技能", "修改密码", "退出登录"]);
+    expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["主题", "文风", "技能", "修改密码", "退出登录"]);
   });
 
   it("点击先关闭菜单再聚焦弹窗，关闭后回到账户按钮", async () => {
@@ -81,6 +81,8 @@ describe("账户菜单修改密码入口", () => {
     act(() => account.focus());
     await user.keyboard("{Enter}");
     expect(screen.getByRole("menuitem", { name: "主题" })).toHaveFocus();
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("menuitem", { name: "文风" })).toHaveFocus();
     await user.keyboard("{ArrowDown}");
     expect(screen.getByRole("menuitem", { name: "技能" })).toHaveFocus();
     await user.keyboard("{ArrowDown}");

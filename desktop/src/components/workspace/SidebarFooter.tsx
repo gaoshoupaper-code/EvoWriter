@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
-import { Check, ChevronRight, ChevronsUpDown, KeyRound, LogOut, Moon, Settings, Sparkles, Sun } from "lucide-react";
+import { Check, ChevronRight, ChevronsUpDown, Feather, KeyRound, LogOut, Moon, Settings, Sparkles, Sun } from "lucide-react";
 import { ChangePasswordDialog } from "./ChangePasswordDialog";
 import { WritingSkillsDialog } from "./SidebarSkills";
 import { useWritingSkillsStore } from "@/stores/writingSkills";
+import { WritingStylesDialog } from "./WritingStylesDialog";
+import { useWritingStylesStore } from "@/stores/writingStyles";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -24,12 +26,15 @@ type SidebarFooterProps = {
 export function SidebarFooter({ theme, username, hasApiKey, onThemeToggle, onLogout }: SidebarFooterProps) {
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [skillsDialogOpen, setSkillsDialogOpen] = useState(false);
-  const dialogRequested = useRef<"password" | "skills" | null>(null);
+  const [stylesDialogOpen, setStylesDialogOpen] = useState(false);
+  const dialogRequested = useRef<"password" | "skills" | "styles" | null>(null);
   const accountTrigger = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     useWritingSkillsStore.getState().clear();
+    useWritingStylesStore.getState().clear();
     setSkillsDialogOpen(false);
-    return () => useWritingSkillsStore.getState().clear();
+    setStylesDialogOpen(false);
+    return () => { useWritingSkillsStore.getState().clear(); useWritingStylesStore.getState().clear(); };
   }, [username]);
 
   return (
@@ -53,6 +58,7 @@ export function SidebarFooter({ theme, username, hasApiKey, onThemeToggle, onLog
             const requested = dialogRequested.current;
             dialogRequested.current = null;
             if (requested === "password") setPasswordDialogOpen(true);
+            else if (requested === "styles") setStylesDialogOpen(true);
             else setSkillsDialogOpen(true);
           }}
         >
@@ -94,6 +100,10 @@ export function SidebarFooter({ theme, username, hasApiKey, onThemeToggle, onLog
               </DropdownMenuPrimitive.SubContent>
             </DropdownMenuPrimitive.Portal>
           </DropdownMenuPrimitive.Sub>
+          <DropdownMenuItem onSelect={() => { dialogRequested.current = "styles"; }}>
+            <Feather size={16} aria-hidden="true" />
+            文风
+          </DropdownMenuItem>
           <DropdownMenuItem onSelect={() => { dialogRequested.current = "skills"; }}>
             <Sparkles size={16} aria-hidden="true" />
             技能
@@ -113,6 +123,7 @@ export function SidebarFooter({ theme, username, hasApiKey, onThemeToggle, onLog
         <ChangePasswordDialog onClose={() => setPasswordDialogOpen(false)} returnFocusRef={accountTrigger} />
       ) : null}
       {skillsDialogOpen ? <WritingSkillsDialog onClose={() => setSkillsDialogOpen(false)} returnFocusRef={accountTrigger} /> : null}
+      {stylesDialogOpen ? <WritingStylesDialog key={username} mode="library" onClose={() => setStylesDialogOpen(false)} returnFocusRef={accountTrigger} /> : null}
       <Link className="sidebar-settings-link" to="/settings" aria-label="设置（API Key）" title="设置（API Key）">
         <Settings size={18} aria-hidden="true" />
       </Link>

@@ -993,7 +993,7 @@ async function performSubmit(
                 })),
               }));
               break;
-            } else if (s === "log_failed") {
+            } else if (s === "log_failed" || s === "writing_style_failed") {
               const note = `⚠️ ${String((event.data as { error?: string }).error ?? "会话日志写入失败，本轮未发送")}`;
               toast.error(note);
               set((state) => ({

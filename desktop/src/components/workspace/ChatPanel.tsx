@@ -197,7 +197,7 @@ export function ChatPanel({
                   {message.role === "assistant" && message.contentFormat === "markdown" ? (
                     <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]} components={markdownTableComponents}>{message.content}</ReactMarkdown>
                   ) : (
-                    <p className="message-plaintext">{message.content}</p>
+                    <p className="message-plaintext">{message.role === "user" ? message.content.replace(/\n\n<!-- annotation-ids: [A-Za-z0-9,\-]+ -->$/, "") : message.content}</p>
                   )}
                 </div>
               ) : null}

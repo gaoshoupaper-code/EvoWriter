@@ -141,6 +141,17 @@ CREATE TABLE IF NOT EXISTS writing_skills (
     updated_at   TEXT NOT NULL
 );
 
+-- 完整文风卡资产；与旧四字段 styles 分开，作品只保存导入时副本。
+CREATE TABLE IF NOT EXISTS writing_style_assets (
+    style_id   TEXT PRIMARY KEY,
+    owner_id   TEXT NOT NULL REFERENCES users(user_id),
+    name       TEXT NOT NULL,
+    content    TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (owner_id, name)
+);
+
 -- 书 → 写作技能启用绑定（REQ-20261023-000000 DEC-002/006：每书 ≤5 条）
 CREATE TABLE IF NOT EXISTS workspace_writing_skills (
     workspace_id TEXT NOT NULL REFERENCES workspaces(workspace_id),
@@ -1589,6 +1600,72 @@ class WritingSkillRepository:
             (workspace_id, owner_id),
         ).fetchall()
         return [dict(r) for r in rows]
+
+
+class WritingStyleRepository:
+    """整卡文风资产。所有读写均限定 owner，不与作品建立动态关联。"""
+
+    def __init__(self, db: Database) -> None:
+        self.db = db
+
+    def list_by_owner(self, owner_id: str) -> list[dict]:
+        with self.db.transaction() as conn:
+            return [dict(row) for row in conn.execute(
+                "SELECT * FROM writing_style_assets WHERE owner_id = ? "
+                "ORDER BY updated_at DESC, style_id", (owner_id,),
+            )]
+
+    def get(self, style_id: str, owner_id: str) -> dict | None:
+        with self.db.transaction() as conn:
+            row = conn.execute(
+                "SELECT * FROM writing_style_assets WHERE style_id = ? AND owner_id = ?",
+                (style_id, owner_id),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def save(self, owner_id: str, name: str, content: str, target_style_id: str | None = None) -> dict | None:
+        now = _now()
+        with self.db.transaction() as conn:
+            if target_style_id:
+                result = conn.execute(
+                    "UPDATE writing_style_assets SET content = ?, updated_at = ? "
+                    "WHERE style_id = ? AND owner_id = ?",
+                    (content, now, target_style_id, owner_id),
+                )
+                if not result.rowcount:
+                    return None
+                style_id = target_style_id
+            else:
+                style_id = f"wstyle-{uuid4().hex}"
+                conn.execute(
+                    "INSERT INTO writing_style_assets "
+                    "(style_id, owner_id, name, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (style_id, owner_id, name, content, now, now),
+                )
+            return dict(conn.execute(
+                "SELECT * FROM writing_style_assets WHERE style_id = ? AND owner_id = ?",
+                (style_id, owner_id),
+            ).fetchone())
+
+    def rename(self, style_id: str, owner_id: str, name: str) -> dict | None:
+        with self.db.transaction() as conn:
+            result = conn.execute(
+                "UPDATE writing_style_assets SET name = ?, updated_at = ? "
+                "WHERE style_id = ? AND owner_id = ?", (name, _now(), style_id, owner_id),
+            )
+            if not result.rowcount:
+                return None
+            return dict(conn.execute(
+                "SELECT * FROM writing_style_assets WHERE style_id = ? AND owner_id = ?",
+                (style_id, owner_id),
+            ).fetchone())
+
+    def delete(self, style_id: str, owner_id: str) -> bool:
+        with self.db.transaction() as conn:
+            return bool(conn.execute(
+                "DELETE FROM writing_style_assets WHERE style_id = ? AND owner_id = ?",
+                (style_id, owner_id),
+            ).rowcount)
 
 
 def init_database(db: Database) -> None:

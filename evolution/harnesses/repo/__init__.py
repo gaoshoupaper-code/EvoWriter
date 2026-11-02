@@ -45,6 +45,12 @@ STAGE_PROMPT_FILES: dict[str, str] = {
 }
 
 
+def workspace_style_prompt(content: str) -> str:
+    """正文与审稿共用的文风快照模板；行为约束随 harness 发版。"""
+    template = (PACKAGE_DIR / "prompts" / "workspace_style.md").read_text(encoding="utf-8")
+    return template.replace("{style_card}", content)
+
+
 def stage_prompt(stage: str) -> str | None:
     """读当前段的流程提示词文本（DEC-002：executor 每轮装配时调用）。
 

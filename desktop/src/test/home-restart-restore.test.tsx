@@ -69,6 +69,7 @@ vi.mock("@/lib/stream", () => ({
 const threadSummary = { thread_id: "thread-1", workspace_id: "ws-1", session_name: "测试会话", workspace_path: "/test", created_at: "", updated_at: "" };
 
 vi.mock("@/lib/api", () => ({
+  fetchMyBilling: vi.fn().mockResolvedValue({ enabled: false, protocol: 2, contact_qq: "1134559830", balance: 100, total_balance: 100, reserved: 0, default_budgets: { default: 10 }, operations: [], transactions: [] }),
   API_BASE_URL: "",
   fetchMeOrNull: vi.fn().mockResolvedValue({ user_id: "u1", username: "testuser", is_admin: false, has_api_key: true }),
   fetchInit: vi.fn().mockResolvedValue({

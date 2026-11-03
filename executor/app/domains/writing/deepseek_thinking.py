@@ -97,6 +97,7 @@ class ReasoningStreamChatModel(ChatOpenAI):
             yield chunk
         if self._recover_empty_reasoning(kwargs, visible, finish):
             logger.warning("GLM reasoning exhausted output without content; retrying once without thinking")
+            yield ChatGenerationChunk(message=AIMessageChunk(content="", response_metadata={"billing_fault_retry": True}))
             yield from super()._stream(*args, **_without_thinking(kwargs, self.extra_body))
         elif headers is not None:
             yield ChatGenerationChunk(message=AIMessageChunk(content=""), generation_info={"headers": headers})
@@ -118,6 +119,7 @@ class ReasoningStreamChatModel(ChatOpenAI):
             yield chunk
         if self._recover_empty_reasoning(kwargs, visible, finish):
             logger.warning("GLM reasoning exhausted output without content; retrying once without thinking")
+            yield ChatGenerationChunk(message=AIMessageChunk(content="", response_metadata={"billing_fault_retry": True}))
             async for chunk in super()._astream(*args, **_without_thinking(kwargs, self.extra_body)):
                 yield chunk
         elif headers is not None:

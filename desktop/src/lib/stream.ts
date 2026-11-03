@@ -145,6 +145,10 @@ export async function streamRequest(path: string, init: StreamRequestInit = {}):
     // 队列空 + 未结束：阻塞，等 chunk/end event 唤醒
     return new Promise<StreamReadResult>((resolve) => {
       waiter = resolve;
+    }).then((result) => {
+      // HTTP 拒绝可能发生在 read 等待时，不能当成正常关流或后台继续。
+      if (result.done && error) throw new Error(error);
+      return result;
     });
   };
 

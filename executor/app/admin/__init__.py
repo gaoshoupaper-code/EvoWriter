@@ -187,7 +187,7 @@ class InviteCodeSummary(BaseModel):
     code: str
     created_at: str
     is_admin_code: bool
-    granted_credits: int = 0
+    granted_credits: float = 0
     used: bool
     used_by: str | None
     used_at: str | None
@@ -196,8 +196,9 @@ class InviteCodeSummary(BaseModel):
 
 class CreateInviteCodesRequest(BaseModel):
     count: int = Field(default=1, ge=1, le=50)
-    granted_credits: int = Field(default=0, ge=0, description="每个邀请码携带的积分额度（D10）")
-    note: str | None = None  # 备注暂不入库，预留
+    granted_credits: float = Field(default=0, ge=0, description="每个邀请码携带的积分额度")
+    note: str = Field(min_length=1, max_length=200)
+    request_id: str = Field(min_length=1, max_length=200)
 
 
 @admin_router.get("/invite-codes", response_model=list[InviteCodeSummary])
@@ -208,7 +209,7 @@ def list_invite_codes(admin: CurrentUser = Depends(require_super_admin)) -> list
             code=r["code"],
             created_at=r["created_at"],
             is_admin_code=bool(r["is_admin_code"]),
-            granted_credits=int(r.get("granted_credits", 0)),
+            granted_credits=float(r.get("granted_credits", 0)),
             used=r["used_by"] is not None,
             used_by=r["used_by"],
             used_at=r["used_at"],
@@ -223,10 +224,9 @@ def create_invite_codes(
     payload: CreateInviteCodesRequest,
     admin: CurrentUser = Depends(require_super_admin),
 ) -> list[str]:
-    return InviteCodeRepository(get_database()).create(
-        created_by=admin.user_id, count=payload.count,
-        is_admin_code=False, granted_credits=payload.granted_credits,
-    )
+    from app.platform.credits.ledger import get_billing
+    return get_billing().create_invites(admin_id=admin.user_id, count=payload.count,
+                                       amount=payload.granted_credits, note=payload.note, request_id=payload.request_id)
 
 
 @admin_router.delete("/invite-codes/{code}")
@@ -248,7 +248,7 @@ class AdminUserSummary(BaseModel):
     is_super_admin: bool = False
     disabled: bool
     has_api_key: bool
-    credits_balance: int = 0
+    credits_balance: float = 0
     workspace_count: int
     created_at: str
 
@@ -265,6 +265,7 @@ def _random_password() -> str:
 @admin_router.get("/users", response_model=list[AdminUserSummary])
 def list_users(admin: CurrentUser = Depends(require_super_admin)) -> list[AdminUserSummary]:
     users = UserRepository(get_database())
+    from app.platform.credits.ledger import get_billing
     return [
         AdminUserSummary(
             user_id=r["user_id"],
@@ -273,7 +274,7 @@ def list_users(admin: CurrentUser = Depends(require_super_admin)) -> list[AdminU
             is_super_admin=bool(r.get("is_super_admin", 0)),
             disabled=bool(r["disabled"]),
             has_api_key=bool(r["encrypted_api_key"]),
-            credits_balance=int(r.get("credits_balance", 0)),
+            credits_balance=get_billing().balance(r["user_id"])["balance"],
             workspace_count=users.workspace_count(r["user_id"]),
             created_at=r["created_at"],
         )
@@ -392,8 +393,9 @@ def read_user_workspace_outline(
 
 
 class AdjustCreditsRequest(BaseModel):
-    amount: int = Field(description="调整额度（正=充值，负=扣减）")
-    note: str = Field(default="", max_length=200)
+    amount: str | float = Field(description="调整额度（正=发放，负=扣减）")
+    note: str = Field(min_length=1, max_length=200)
+    request_id: str = Field(min_length=1, max_length=200)
 
 
 @admin_router.post("/users/{user_id}/credits")
@@ -407,11 +409,9 @@ def adjust_user_credits(
     if users.get_by_id(user_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "用户不存在")
 
-    from app.platform.credits.service import get_credits_service
-    balance = get_credits_service().admin_adjust(
-        user_id=user_id, amount=payload.amount,
-        note=payload.note or "管理员调整", admin_id=admin.user_id,
-    )
+    from app.platform.credits.ledger import get_billing
+    balance = get_billing().adjust(user_id, payload.amount, payload.note,
+                                   admin_id=admin.user_id, request_id=payload.request_id)
     return {"status": "ok", "balance": balance}
 
 
@@ -426,8 +426,8 @@ def list_user_credit_transactions(
     if users.get_by_id(user_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "用户不存在")
 
-    from app.platform.credits.service import get_credits_service
-    return get_credits_service().list_user_transactions(user_id, limit)
+    from app.platform.credits.ledger import get_billing
+    return get_billing().transactions(user_id, limit=max(1, min(limit, 200)))
 
 
 @admin_router.get("/credits/transactions")
@@ -436,8 +436,8 @@ def list_all_credit_transactions(
     admin: CurrentUser = Depends(require_super_admin),
 ) -> list[dict]:
     """全局积分流水（D18-G）。"""
-    from app.platform.credits.service import get_credits_service
-    return get_credits_service().list_all_transactions(limit)
+    from app.platform.credits.ledger import get_billing
+    return get_billing().transactions(limit=max(1, min(limit, 200)))
 
 
 # ════════════════════════════════════════════════════════════
@@ -448,12 +448,8 @@ def list_all_credit_transactions(
 @me_router.get("/credits")
 def get_my_credits(user: CurrentUser = Depends(current_user)) -> dict:
     """当前用户的积分余额（D11 写作端展示用）。"""
-    try:
-        from app.platform.credits.service import get_credits_service
-        balance = get_credits_service().get_balance(user.user_id)
-    except Exception:
-        balance = 0
-    return {"balance": balance}
+    from app.platform.credits.ledger import get_billing
+    return get_billing().balance(user.user_id)
 
 
 # ════════════════════════════════════════════════════════════

@@ -42,6 +42,7 @@ vi.mock("@/lib/stream", () => ({
 const createThreadMock = vi.fn();
 const updateStageMock = vi.fn();
 vi.mock("@/lib/api", () => ({
+  fetchMyBilling: vi.fn(async () => ({ enabled: false, default_budgets: { default: 100 }, contact_qq: "1134559830", protocol: 2, balance: 100, total_balance: 100, reserved: 0, operations: [], transactions: [] })),
   API_BASE_URL: "",
   fetchMeOrNull: vi.fn().mockResolvedValue({ user_id: "u1", username: "test", is_admin: false, has_api_key: true }),
   fetchInit: vi.fn().mockResolvedValue({

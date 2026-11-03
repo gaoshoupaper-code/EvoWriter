@@ -1,0 +1,32 @@
+.billing-admin { min-width: 0; }
+.billing-admin-heading, .billing-admin-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.billing-admin-section { padding: 20px 0; border-top: 1px solid var(--border); }
+.billing-admin-section h2 { margin: 0 0 10px; font-size: var(--text-ui-lg); font-weight: 700; }
+.billing-checkbox { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: var(--text-ui-base); }
+.billing-checkbox input { accent-color: var(--teal); }
+.billing-budget-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; max-width: 800px; margin: 16px 0; }
+.billing-admin-section > .config-button { margin-top: 12px; }
+.billing-price-form { padding: 16px; margin-top: 12px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--panel-solid); }
+.billing-price-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+.billing-price-title .text-mute { font-size: var(--text-ui-sm); }
+.billing-price-fields { display: flex; align-items: end; gap: 12px; flex-wrap: wrap; }
+.billing-price-fields .config-field { flex: 1; min-width: 130px; }
+.billing-price-form > .config-field { margin-bottom: 12px; }
+.billing-admin-note { padding: 16px; border-left: 3px solid var(--teal); background: var(--hover); border-radius: var(--radius-md); font-size: var(--text-ui-caption); line-height: 1.8; }
+.billing-admin-note p { margin: 6px 0 0; }
+.billing-operation-list { display: flex; flex-direction: column; gap: 8px; }
+.billing-operation { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--panel-solid); }
+.billing-operation > summary { display: flex; align-items: center; gap: 16px; padding: 14px 16px; cursor: pointer; font-size: var(--text-ui-base); flex-wrap: wrap; }
+.billing-operation > summary:hover { background: var(--hover); border-radius: var(--radius-lg); }
+.billing-operation > summary::before { content: "+"; color: var(--muted); }
+.billing-operation[open] > summary::before { content: "−"; }
+.billing-operation-identity { display: flex; flex-direction: column; min-width: 180px; margin-right: auto; gap: 4px; }
+.billing-operation-identity .text-mute { font-size: var(--text-ui-sm); }
+.billing-operation-detail { padding: 0 16px 16px; font-size: var(--text-ui-caption); }
+.billing-operation-detail > p { margin: 10px 0; }
+.billing-table-scroll { width: 100%; overflow-x: auto; }
+.billing-table-scroll table { min-width: 640px; }
+.billing-table-scroll td { vertical-align: top; }
+.billing-legacy { display: inline-block; padding: 1px 5px; margin-left: 6px; color: var(--muted); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: var(--text-ui-xs); }
+.billing-locked-prices { padding-top: 8px; }
+.billing-locked-prices > summary { cursor: pointer; color: var(--muted); }

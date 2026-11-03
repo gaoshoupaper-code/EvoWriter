@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { formatCredits, parseCreditAmount } from "@/lib/billing";
 import { toast } from "sonner";
 import {
   Sheet,
@@ -30,13 +31,17 @@ export default function AdminInviteCodes() {
   const [createOpen, setCreateOpen] = useState(false);
   const [count, setCount] = useState("1");
   const [credits, setCredits] = useState("2000");
+  const [note, setNote] = useState("");
+  const [error, setError] = useState("");
+  const requestId = useRef("");
   const [submitting, setSubmitting] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
       setCodes(await fetchInviteCodes());
+      setError("");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "读取邀请码失败");
+      setError(err instanceof Error ? err.message : "读取邀请码失败");
     } finally {
       setLoading(false);
     }
@@ -47,20 +52,26 @@ export default function AdminInviteCodes() {
   }, [refresh]);
 
   async function handleCreate() {
-    const n = parseInt(count, 10);
-    const c = parseInt(credits, 10);
-    if (isNaN(n) || n < 1) {
+    if (submitting) return;
+    const n = Number(count);
+    const c = parseCreditAmount(credits);
+    if (!Number.isInteger(n) || n < 1 || n > 50) {
       toast.error("数量无效（1-50）");
       return;
     }
-    if (isNaN(c) || c < 0) {
-      toast.error("积分额度无效（≥0）");
+    if (!Number.isFinite(c) || c < 0) {
+      toast.error("积分必须非负，最多保留两位小数");
       return;
     }
+    if (!note.trim()) {
+      toast.error("请填写发放原因");
+      return;
+    }
+    requestId.current ||= crypto.randomUUID();
     setSubmitting(true);
     try {
-      const newCodes = await createInviteCodes(n, c);
-      toast.success(`已创建 ${newCodes.length} 个邀请码（每个 ${c} 积分）`);
+      const newCodes = await createInviteCodes(n, c, note.trim(), requestId.current);
+      toast.success(`已创建 ${newCodes.length} 个邀请码（每个 ${formatCredits(c)} 积分）`);
       setCreateOpen(false);
       await refresh();
     } catch (err) {
@@ -102,11 +113,12 @@ export default function AdminInviteCodes() {
             <h1>邀请码管理</h1>
             <p className="page-desc">创建带积分配额的邀请码，管理使用状态</p>
           </div>
-          <button className="config-button primary" onClick={() => setCreateOpen(true)}>
-            + 创建邀请码
+          <button className="config-button primary" onClick={() => { requestId.current = ""; setNote(""); setCreateOpen(true); }}>
+            创建邀请码
           </button>
         </div>
       </header>
+      {error && <p role="alert" className="config-test-result fail">邀请码列表未更新：{error} <button className="config-button small" onClick={() => { setError(""); void refresh(); }}>重试</button></p>}
 
       <table className="data-table">
         <thead>
@@ -130,7 +142,7 @@ export default function AdminInviteCodes() {
               >
                 {c.code.slice(0, 12)}…
               </td>
-              <td className="mono" style={{ fontWeight: 700 }}>{c.granted_credits}</td>
+              <td className="mono" style={{ fontWeight: 700 }}>{formatCredits(c.granted_credits)}</td>
               <td>
                 {c.revoked_at ? (
                   <Badge variant="destructive">已吊销</Badge>
@@ -179,7 +191,7 @@ export default function AdminInviteCodes() {
                 min={1}
                 max={50}
                 value={count}
-                onChange={(e) => setCount(e.target.value)}
+                onChange={(e) => { requestId.current = ""; setCount(e.target.value); }}
                 disabled={submitting}
               />
             </label>
@@ -189,11 +201,18 @@ export default function AdminInviteCodes() {
                 className="config-input"
                 type="number"
                 min={0}
+                step="0.01"
+                aria-label="每个邀请码的积分额度"
                 value={credits}
-                onChange={(e) => setCredits(e.target.value)}
+                onChange={(e) => { requestId.current = ""; setCredits(e.target.value); }}
                 disabled={submitting}
               />
-              <span className="config-hint">用户注册后积分自动到账</span>
+              <span className="config-hint">用户注册后一次到账，积分永久有效。</span>
+            </label>
+            <label className="config-field">
+              <span className="config-label">发放原因（必填）</span>
+              <input className="config-input" value={note} maxLength={200} required
+                onChange={(event) => { requestId.current = ""; setNote(event.target.value); }} disabled={submitting} />
             </label>
             <div className="config-actions">
               <button

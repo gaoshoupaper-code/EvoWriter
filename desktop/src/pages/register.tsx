@@ -94,7 +94,7 @@ export default function RegisterPage() {
           <Link to="/login">直接登录</Link>
         </p>
         <p className="auth-hint">
-          忘记密码只能联系管理员重置；请妥善保管。注册后请在设置页填写你自己的 API Key。
+          忘记密码请联系管理员重置。模型由平台提供，注册后可在设置页查看积分。
         </p>
       </section>
     </main>

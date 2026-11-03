@@ -9,7 +9,7 @@ import { setExecutionDeps, useExecutionStore } from "@/stores/execution";
 import { useWorkspaceStore } from "@/stores/workspace";
 import { streamRequest } from "@/lib/stream";
 
-vi.mock("@/lib/api", () => ({ deleteArtifactForRedo: vi.fn(), deleteArtifactsBatch: vi.fn(), fetchAnnotations: vi.fn(async () => ({ annotations: [] })), dispatchAnnotations: vi.fn(async () => ({ message: "修改正文标注", invalidated: 0 })) }));
+vi.mock("@/lib/api", () => ({ fetchMyBilling: vi.fn(async () => ({ enabled: false, default_budgets: { default: 100 }, contact_qq: "1134559830", protocol: 2, balance: 100, total_balance: 100, reserved: 0, operations: [], transactions: [] })), deleteArtifactForRedo: vi.fn(), deleteArtifactsBatch: vi.fn(), fetchAnnotations: vi.fn(async () => ({ annotations: [] })), dispatchAnnotations: vi.fn(async () => ({ message: "修改正文标注", invalidated: 0 })) }));
 vi.mock("@/lib/stream", () => ({ streamRequest: vi.fn() }));
 vi.mock("@/lib/usePanelPolling", () => ({ refreshWorkspaceContent: vi.fn(async () => true), watchPipelineAfterDisconnect: vi.fn() }));
 vi.mock("@/components/workspace/PipelineStageBar", () => ({ PipelineStageBar: () => null }));

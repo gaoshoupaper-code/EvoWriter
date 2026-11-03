@@ -103,19 +103,20 @@ describe("左下入口迁移（AC-001/003/006）", () => {
     const sidebar = screen.getByRole("complementary", { name: "作品侧栏" });
     const nav = within(sidebar).getByRole("navigation");
     const account = within(sidebar).getByRole("button", { name: "用户菜单" });
-    const settings = within(sidebar).getByRole("link", { name: "设置（API Key）" });
+    const settings = within(sidebar).getByRole("link", { name: "设置与积分账单" });
     expect(account).toHaveTextContent("writer");
     expect(nav).not.toContainElement(account);
     expect(nav).not.toContainElement(settings);
     expect(settings).toHaveAttribute("href", "/settings");
   });
 
-  it.each([true, false])("账户菜单保留 Key 配置状态：%s", async (hasApiKey) => {
+  it.each([true, false])("历史 Key 状态不改变平台模型入口：%s", async (hasApiKey) => {
     useWorkspaceStore.setState({ hasApiKey });
     renderHome();
     const sidebar = screen.getByRole("complementary", { name: "作品侧栏" });
     await userEvent.click(within(sidebar).getByRole("button", { name: "用户菜单" }));
-    expect(screen.getByText(hasApiKey ? "Key 已配置" : "Key 未配置")).toBeInTheDocument();
+    expect(screen.getByText("平台模型")).toBeInTheDocument();
+    expect(screen.queryByText(/Key 已配置|Key 未配置/)).not.toBeInTheDocument();
     expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["主题", "文风", "技能", "修改密码", "退出登录"]);
     expect(screen.queryByRole("menuitem", { name: "设置（API Key）" })).not.toBeInTheDocument();
   });
@@ -133,7 +134,7 @@ describe("左下入口迁移（AC-001/003/006）", () => {
     renderHome();
     const sidebar = screen.getByRole("complementary", { name: "作品侧栏" });
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
-    await userEvent.click(within(sidebar).getByRole("link", { name: "设置（API Key）" }));
+    await userEvent.click(within(sidebar).getByRole("link", { name: "设置与积分账单" }));
     expect(await screen.findByText("原配置页")).toBeInTheDocument();
     expect(useExecutionStore.getState().prompt).toBe("还没发送的草稿");
     expect(useWorkspaceStore.getState().hasApiKey).toBe(true);

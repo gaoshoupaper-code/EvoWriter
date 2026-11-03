@@ -132,6 +132,8 @@ export function renderWithRouter(ui: ReactElement) {
  * 在 beforeEach 里调用此函数确保每个测试从干净状态开始。
  */
 export async function resetStores() {
+  const { useBillingStore } = await import("@/stores/billing");
+  useBillingStore.getState().reset();
   const { useExecutionStore } = await import("@/stores/execution");
   const { useWorkspaceStore } = await import("@/stores/workspace");
   const { useTraceStore } = await import("@/stores/trace");

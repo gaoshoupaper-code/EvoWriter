@@ -6,6 +6,7 @@ import { SidebarFooter } from "@/components/workspace/SidebarFooter";
 import { changePassword } from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
+  fetchMyBilling: vi.fn().mockResolvedValue({ enabled: false, protocol: 2, contact_qq: "1134559830", balance: 100, total_balance: 100, reserved: 0, default_budgets: { default: 10 }, operations: [], transactions: [] }),
   changePassword: vi.fn(),
   listWritingSkills: vi.fn(async () => []),
   listEnabledWritingSkills: vi.fn(async () => ({ enabled: [], pending_stages: [], candidates: [] })),
@@ -41,13 +42,14 @@ describe("账户菜单修改密码入口", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     expect(account).toHaveFocus();
   });
-  it("退出前新增修改密码，不改变 Key 状态和独立设置入口", async () => {
+  it("修改密码保留平台模型提示和独立设置入口", async () => {
     const user = userEvent.setup();
     const { account } = mountFooter();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "设置（API Key）" })).toHaveAttribute("href", "/settings");
+    expect(screen.getByRole("link", { name: "设置与积分账单" })).toHaveAttribute("href", "/settings");
     await user.click(account);
-    expect(screen.getByText("Key 已配置")).toBeInTheDocument();
+    expect(screen.getByText("平台模型")).toBeInTheDocument();
+    expect(screen.queryByText("Key 已配置")).not.toBeInTheDocument();
     expect(screen.getAllByRole("menuitem").map((item) => item.textContent)).toEqual(["主题", "文风", "技能", "修改密码", "退出登录"]);
   });
 

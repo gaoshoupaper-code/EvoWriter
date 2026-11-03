@@ -384,6 +384,8 @@ class ScreenplayGenerateRequest(BaseModel):
     # 会话消息台账键（REQ-20261019-222403 FR-005/DEC-009）：客户端生成的用户消息
     # 稳定 id；断连后排队消息补跑时回传同一 id，服务端日志按 id 幂等入队。
     message_id: str | None = None
+    billing_protocol: int | None = None
+    billing_budget: str | float | None = None
 
     def primary_text(self) -> str:
         return self.prompt or self.content or self.text or self.premise or ""
@@ -392,7 +394,7 @@ class ScreenplayGenerateRequest(BaseModel):
         return self.title or "未命名大纲"
 
     def loose_context(self) -> dict[str, Any]:
-        return self.model_dump(exclude_none=True, exclude={"thread_id"})
+        return self.model_dump(exclude_none=True, exclude={"thread_id", "billing_protocol", "billing_budget"})
 
 
 class ScreenplayGenerateResponse(BaseModel):

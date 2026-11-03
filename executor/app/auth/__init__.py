@@ -137,38 +137,11 @@ def require_super_admin(user: CurrentUser = Depends(current_user)) -> CurrentUse
 def register(payload: RegisterRequest, response: Response) -> RegisterResponse:
     """邀请码注册：校验码 → 建用户 → 标记码已用 → 发会话 cookie。"""
     db = get_database()
-    invites = InviteCodeRepository(db)
-    users = UserRepository(db)
-
-    if not invites.is_usable(payload.code):
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "邀请码无效或已被使用")
-    invite = invites.get(payload.code)
-
-    if users.get_by_username(payload.username) is not None:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "用户名已被占用")
-
     settings = get_settings()
-    is_admin = bool(invite and invite["is_admin_code"])
-    quota = settings.default_workspace_quota
-    user = users.create(
-        username=payload.username,
-        password=payload.password,
-        is_admin=is_admin,
-        workspace_quota=quota,
-    )
-    invites.mark_used(payload.code, user["user_id"])
-
-    # AD10：邀请码积分到账（D8/D10）。granted_credits > 0 时发积分。
-    granted = invite.get("granted_credits", 0) if invite else 0
-    if granted > 0:
-        try:
-            from app.platform.credits.service import get_credits_service
-            get_credits_service().grant_invite_credits(
-                user_id=user["user_id"], amount=granted, invite_code=payload.code,
-            )
-        except Exception:
-            # 积分系统不可用时注册仍成功（降级：不发积分，管理员可后续手动补）
-            pass
+    from app.platform.credits.ledger import get_billing
+    user = get_billing().register_invited(username=payload.username, password=payload.password,
+                                         code=payload.code, quota=settings.default_workspace_quota)
+    is_admin = user["is_admin"]
 
     session_id = SessionRepository(db).create(
         user_id=user["user_id"], ttl_days=settings.session_ttl_days,

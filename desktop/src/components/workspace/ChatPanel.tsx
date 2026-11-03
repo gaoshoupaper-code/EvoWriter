@@ -17,6 +17,7 @@ import { ArrowUp, Square, Maximize2, Minimize2 } from "lucide-react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useContentStore } from "@/stores/content";
 import { useStageSessionStore } from "@/stores/stage-session";
+import { BillingBudget } from "@/components/billing/BillingPanel";
 
 type ChatPanelProps = {
   messages: ChatMessage[];
@@ -277,6 +278,7 @@ export function ChatPanel({
       {/* composer：无卡时输入框是唯一输入（DEC-005 单输入面）；
           完成卡片挂起时输入框保持可用——直接发送即隐式切换（DEC-012） */}
       <form className="chat-composer" onSubmit={onSubmit}>
+        <BillingBudget phase={characterRepair ? "character" : pipeline?.phase ?? "default"} />
         {characterRepair ? <div className="character-repair-banner"><p role="status">正在重做人物卡。请说明人物和重做要求。</p><button className="sidebar-skill-new" type="button" onClick={onExitCharacterRepair}>返回写作</button></div> : null}
         <div className={`chat-input-wrap${expanded ? " expanded" : ""}`}>
           {!characterRepair ? <ModeToggle /> : null}

@@ -10,10 +10,15 @@ Session Cookie 在 TestClient 中自动维护。
 from __future__ import annotations
 
 import os
+from uuid import uuid4
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+
+
+def invite_payload(count=1):
+    return {"count": count, "note": "测试发放", "request_id": uuid4().hex}
 
 
 # ── fixtures ───────────────────────────────────────────────
@@ -111,7 +116,7 @@ class TestInviteCodesAdmin:
     def test_non_admin_forbidden(self, client):
         # 先用管理员发一个普通用户邀请码
         client.post("/api/auth/login", json={"username": "rootadmin", "password": "admin-pw-123"})
-        codes = client.post("/api/admin/invite-codes", json={"count": 1}).json()
+        codes = client.post("/api/admin/invite-codes", json=invite_payload()).json()
         client.post("/api/auth/logout")
         # 注册普通用户
         code = codes[0]
@@ -127,7 +132,7 @@ class TestInviteCodesAdmin:
         client.post("/api/auth/login", json={"username": "rootadmin", "password": "admin-pw-123"})
 
         # 生成 3 个码
-        r = client.post("/api/admin/invite-codes", json={"count": 3})
+        r = client.post("/api/admin/invite-codes", json=invite_payload(3))
         assert r.status_code == 200
         codes = r.json()
         assert len(codes) == 3
@@ -151,7 +156,7 @@ class TestInviteCodesAdmin:
 class TestUserAdmin:
     def _setup(self, client):
         client.post("/api/auth/login", json={"username": "rootadmin", "password": "admin-pw-123"})
-        codes = client.post("/api/admin/invite-codes", json={"count": 1}).json()
+        codes = client.post("/api/admin/invite-codes", json=invite_payload()).json()
         client.post("/api/auth/register", json={"code": codes[0], "username": "alice", "password": "pw123456"})
         client.post("/api/auth/logout")
         client.post("/api/auth/login", json={"username": "rootadmin", "password": "admin-pw-123"})
@@ -217,7 +222,7 @@ class TestAdminImpersonateRead:
     def test_admin_reads_user_workspace_outline(self, client):
         # 管理员发码 + alice 注册
         client.post("/api/auth/login", json={"username": "rootadmin", "password": "admin-pw-123"})
-        codes = client.post("/api/admin/invite-codes", json={"count": 1}).json()
+        codes = client.post("/api/admin/invite-codes", json=invite_payload()).json()
         client.post("/api/auth/register", json={"code": codes[0], "username": "alice", "password": "pw123456"})
 
         # alice 创建作品并写 outline

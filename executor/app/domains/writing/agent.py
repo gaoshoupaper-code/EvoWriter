@@ -1,4 +1,5 @@
 from __future__ import annotations
+from app.platform.credits.runtime import BudgetExhausted
 
 import asyncio
 import json
@@ -1695,6 +1696,14 @@ class MetaAgentService(BaseAgentService):
                             raise RuntimeError(f"Trace snapshot was not found: {trace.trace_id}")
                         yield _sse("trace_snapshot", snapshot.model_dump(mode="json"))
                         yield _sse("final", response.model_dump())
+                        return
+                    except BudgetExhausted:
+                        self.trace_recorder.step_limit_run(thread, trace.trace_id)
+                        _close_assistant("stopped", _partial_content())
+                        try:
+                            writing_pipeline.on_run_abandoned(workspace_path, route_key)
+                        except OSError:
+                            logger.warning("预算暂停状态保存失败", exc_info=True)
                         return
                     except GraphRecursionError:
                         # FR-004（REQ-20261002-125538）：撞步数保险丝 → 部分成功收尾，不裸抛。

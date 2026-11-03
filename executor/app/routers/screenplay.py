@@ -74,18 +74,27 @@ async def stream_screenplay(
     request: Request,
     user: CurrentUser = Depends(current_user),
 ):
-    # FR-007（REQ-20260920-150149）：免计费——积分冻结拦截移除（关闭不拆，
-    # platform/credits 代码与 DB 保留）。恢复计费 = 重新装配此校验。
     thread = get_thread_store().get_thread(user.user_id, payload.thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
-    return StreamingResponse(
-        _event_generator(
+    from app.platform.credits.api import prepare_operation
+    from app.platform.credits.runtime import get_billing_runs
+    operation = await prepare_operation(payload, user.user_id, thread.thread_id)
+    def source():
+        return _event_generator(
             payload,
             thread,
             owner_id=user.user_id,
             traceparent=request.headers.get("traceparent"),
-        ),
+        )
+    if operation is not None:
+        runs = get_billing_runs()
+        run = runs.submit(operation, source)
+        stream = runs.stream(run)
+    else:
+        stream = source()
+    return StreamingResponse(
+        stream,
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -124,8 +133,18 @@ async def stop_screenplay(req: StopRequest, user: CurrentUser = Depends(current_
     """
     recorder = get_trace_recorder()
     thread = get_thread_store().get_thread(user.user_id, req.thread_id)
-    recorder.request_user_stop(req.trace_id)
-    cancelled = recorder.cancel_run_task(req.trace_id)
+    if thread is None:
+        raise HTTPException(404, "Thread not found")
+    # A trace ID from another conversation must never cancel somebody else's task.
+    from app.platform.credits.runtime import get_billing_runs
+    if req.trace_id:
+        owned = recorder.find_run_by_trace_id(req.trace_id, workspace_path=thread.workspace_path)
+        if owned is None or owned.workspace_id != thread.workspace_id or owned.thread_id != req.thread_id:
+            raise HTTPException(404, "本会话不存在该运行")
+        recorder.request_user_stop(req.trace_id)
+    billing_stopped = get_billing_runs().request_stop(
+        user.user_id, req.thread_id, req.trace_id or None, before_cancel=recorder.request_user_stop)
+    cancelled = recorder.cancel_run_task(req.trace_id) if req.trace_id else bool(billing_stopped)
     queue_cleared = _clear_conversation_queue(thread) if thread is not None else 0
     return {
         "status": "accepted",

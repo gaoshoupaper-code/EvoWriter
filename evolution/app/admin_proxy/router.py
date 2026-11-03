@@ -142,9 +142,14 @@ async def proxy_adjust_credits(request: Request, user_id: str) -> Response:
 
 @router.get("/users/{user_id}/credits/transactions")
 async def proxy_user_credit_transactions(request: Request, user_id: str) -> Response:
+    from urllib.parse import quote
+
     if denied := _check_super_admin(request):
         return denied
-    return await _forward(request, f"/api/admin/users/{user_id}/credits/transactions")
+    limit = request.query_params.get("limit", "50")
+    if not limit.isascii() or not limit.isdecimal() or len(limit) > 3 or not 1 <= int(limit) <= 200:
+        return JSONResponse(status_code=422, content={"detail": "条数必须在 1 至 200 之间"})
+    return await _forward(request, f"/api/admin/users/{quote(user_id, safe='')}/credits/transactions?limit={limit}")
 
 
 @router.get("/credits/transactions")
@@ -160,6 +165,53 @@ async def proxy_get_credits_config(request: Request) -> Response:
     if denied := _check_super_admin(request):
         return denied
     return await _forward(request, "/api/admin/credits/config")
+
+
+@router.get("/billing/config")
+async def proxy_billing_config(request: Request) -> Response:
+    if denied := _check_super_admin(request):
+        return denied
+    return await _forward(request, "/api/admin/billing/config")
+
+
+@router.put("/billing/config")
+async def proxy_update_billing_config(request: Request) -> Response:
+    if denied := _check_super_admin(request):
+        return denied
+    return await _forward(request, "/api/admin/billing/config")
+
+
+@router.put("/billing/prices/{model:path}")
+async def proxy_billing_price(request: Request, model: str) -> Response:
+    from urllib.parse import quote
+
+    if denied := _check_super_admin(request):
+        return denied
+    return await _forward(request, f"/api/admin/billing/prices/{quote(model, safe='')}")
+
+
+@router.get("/billing/operations")
+async def proxy_billing_operations(request: Request) -> Response:
+    from urllib.parse import urlencode
+
+    if denied := _check_super_admin(request):
+        return denied
+    limit = request.query_params.get("limit", "50")
+    if not limit.isascii() or not limit.isdecimal() or len(limit) > 3 or not 1 <= int(limit) <= 200:
+        return JSONResponse(status_code=422, content={"detail": "条数必须在 1 至 200 之间"})
+    query = {"limit": limit}
+    if user_id := request.query_params.get("user_id"):
+        query["user_id"] = user_id
+    return await _forward(request, f"/api/admin/billing/operations?{urlencode(query)}")
+
+
+@router.get("/billing/operations/{operation_id}")
+async def proxy_billing_operation(request: Request, operation_id: str) -> Response:
+    from urllib.parse import quote
+
+    if denied := _check_super_admin(request):
+        return denied
+    return await _forward(request, f"/api/admin/billing/operations/{quote(operation_id, safe='')}")
 
 
 @router.put("/credits/config/{key}")

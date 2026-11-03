@@ -189,7 +189,7 @@ export type WorkspaceObjectContent = {
 };
 
 export type StreamEvent = {
-  type: "model_output" | "tool_call" | "tool_output" | "tool_error" | "model_stream" | "reasoning_stream" | "final" | "trace_event" | "trace_snapshot" | "interrupt" | "auto_answer" | "credit_exhausted" | "pipeline" | "row" | "status";
+  type: "model_output" | "tool_call" | "tool_output" | "tool_error" | "model_stream" | "reasoning_stream" | "final" | "trace_event" | "trace_snapshot" | "interrupt" | "auto_answer" | "credit_exhausted" | "pipeline" | "row" | "status" | "billing" | "billing_error" | "billing_reconcile";
   data: Record<string, unknown>;
 };
 
@@ -427,6 +427,10 @@ export type ChatMessage = {
   // 会话消息台账键（REQ-20261019-222403 FR-005/DEC-009）：用户消息的稳定 id，
   // 服务端日志按 id 幂等入队；排队消息断连后按此 id 补跑。
   messageId?: string;
+  billingOperationId?: string;
+  billingManaged?: boolean;
+  billingDetached?: boolean;
+  billingOutcome?: string;
   /** 人物卡独立补卡对话；重试、拍板续跑和排队补发必须保留。 */
   characterRepair?: boolean;
   // 排队消息断连待补跑标记（DEC-009）：下一次提交/重试时自动按序补发。

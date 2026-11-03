@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from app.auth import CurrentUser, current_user
 
 from app.domains.writing.styling.optimizer import StyleOptimizer, VALID_STYLE_TYPES
 from app.domains.writing.styling.schemas import (
@@ -93,14 +94,21 @@ def set_workspace_style(workspace_id: str, payload: WorkspaceStyleRequest) -> Wo
 
 
 @router.post("/styles/optimize", response_model=StyleOptimizeResponse)
-async def optimize_style(payload: StyleOptimizeRequest) -> StyleOptimizeResponse:
+async def optimize_style(payload: StyleOptimizeRequest, user: CurrentUser = Depends(current_user)) -> StyleOptimizeResponse:
     if payload.style_type not in VALID_STYLE_TYPES:
         raise HTTPException(
             status_code=400,
             detail=f"Invalid style_type. Must be one of: {', '.join(sorted(VALID_STYLE_TYPES))}",
         )
-    try:
+    from app.platform.credits.api import prepare_operation, run_json_operation
+    from app.platform.credits.ledger import BillingError
+    operation = await prepare_operation(payload, user.user_id, "style-optimize")
+    async def action():
         optimized = await _require_optimizer().optimize(payload.style_type, payload.content)
         return StyleOptimizeResponse(optimized=optimized)
+    try:
+        return await run_json_operation(operation, action)
+    except BillingError:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Optimization failed: {exc}") from exc

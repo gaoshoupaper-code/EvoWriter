@@ -42,6 +42,7 @@ def test_empty_reasoning_retries_once_and_keeps_both_usage_records(monkeypatch):
     assert "".join(c.text for c in chunks) == "done"
     assert [c.generation_info.get("finish_reason") for c in chunks if c.generation_info] == ["stop"]
     assert sum((c.message.usage_metadata or {}).get("output_tokens", 0) for c in chunks) == 64
+    assert any(c.message.response_metadata.get("billing_fault_retry") for c in chunks)
     assert not any((c.generation_info or {}).get("system_fingerprint") == "first" for c in chunks)
     assert [c.generation_info["headers"] for c in chunks if (c.generation_info or {}).get("headers")] == [{"x-request-id": "second"}]
 
@@ -118,3 +119,4 @@ def test_async_empty_reasoning_recovers_once(monkeypatch):
     assert len(calls) == 2
     assert calls[1]["extra_body"] == {"thinking": {"type": "disabled"}}
     assert "".join(c.text for c in result) == "done"
+    assert any(c.message.response_metadata.get("billing_fault_retry") for c in result)

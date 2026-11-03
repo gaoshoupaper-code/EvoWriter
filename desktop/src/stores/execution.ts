@@ -33,6 +33,7 @@ import {
   createThread as createThreadRequest,
   fetchThreadConversation,
   fetchThreadRunState,
+  fetchBillingOperation,
   updateThread as updateThreadRequest,
   trackCopy,
   trackRegenerate,
@@ -40,6 +41,8 @@ import {
 } from "@/lib/api";
 import { reconcileMessagesWithRunState } from "@/lib/run-reconcile";
 import { finalizeAnsweredMessage } from "@/lib/hitl-finalize";
+import { useBillingStore } from "@/stores/billing";
+import type { BillingOperation } from "@/lib/api";
 
 // ── 心跳超时（与原 home.tsx 一致）──
 const HEARTBEAT_TIMEOUT_MS = 45_000;
@@ -562,6 +565,57 @@ async function reconcileRestoredRunState(
 // streamRequest 返回的 reader 类型
 type StreamReader = { read: () => Promise<{ done: boolean; value: Uint8Array | undefined }>; cancel: () => Promise<void> };
 
+const detachedBilling = new Map<string, ReturnType<typeof setTimeout> | null>();
+
+function watchDetachedBilling(
+  set: (partial: Partial<ExecutionState> | ((state: ExecutionState) => Partial<ExecutionState>)) => void,
+  get: () => ExecutionState,
+  requestId: string,
+  threadId: string,
+  operationId: string | null,
+) {
+  if (!threadId || detachedBilling.has(requestId)) return;
+  const owner = useBillingStore.getState().owner;
+  let missing = 0;
+  detachedBilling.set(requestId, null);
+  const check = async () => {
+    if (useBillingStore.getState().owner !== owner) { detachedBilling.delete(requestId); return; }
+    const account = await useBillingStore.getState().refresh();
+    if (useBillingStore.getState().owner !== owner) { detachedBilling.delete(requestId); return; }
+    let operation = account?.operations.find((row) => row.request_id === requestId);
+    if (!operation && operationId) {
+      try { operation = await fetchBillingOperation(operationId); } catch { /* Keep the last state until the account is reachable. */ }
+    }
+    const d = requireDeps();
+    if (operation && ["completed", "stopped", "failed", "budget_exhausted"].includes(operation.status)) {
+      if (d.getActiveThreadId() === threadId && get().loading) {
+        detachedBilling.set(requestId, setTimeout(() => { void check(); }, 5000));
+        return;
+      }
+      if (d.getActiveThreadId() === threadId && !get().loading) {
+        const restored = await restoreFromServerConversation(threadId);
+        if (restored && d.getActiveThreadId() === threadId && !get().loading && useBillingStore.getState().owner === owner) {
+          set({ messages: restored });
+          await reconcileRestoredRunState(set, get, threadId);
+        }
+      }
+      detachedBilling.delete(requestId);
+      return;
+    }
+    if (account && !operation && ++missing >= 3) {
+      if (d.getActiveThreadId() === threadId && !get().loading) {
+        set({ messages: get().messages.map((message, index, messages) => message.role === "assistant" && messages[index - 1]?.messageId === requestId
+          ? { ...message, billingDetached: false, status: "failed", content: `${message.content}\n\n未查到本次已接受的操作。请先核对账单，再决定是否重新发送。` }
+          : message) });
+      }
+      detachedBilling.delete(requestId);
+      return;
+    }
+    detachedBilling.set(requestId, setTimeout(() => { void check(); }, 5000));
+  };
+  void check();
+}
+
 type SubmitOptions = {
   characterRepair?: boolean;
   /** 对话气泡里展示的用户消息（默认用 promptText）。 */
@@ -678,8 +732,18 @@ async function performSubmit(
   const submittedWorkspaceId = d.getActiveWorkspaceId();
   // 模式在任何异步等待前拍照，排队补跑或切书不能改变本次提交的用途。
   const characterRepair = opts.characterRepair ?? (get().characterRepair && get().characterRepairWorkspaceId === submittedWorkspaceId);
+  let billingBudget: number | undefined;
+  try {
+    billingBudget = await useBillingStore.getState().submissionBudget(characterRepair ? "character" : useBillingStore.getState().phase);
+  } catch (error) {
+    toast.error(error instanceof Error ? error.message : "请先确认本次预算");
+    if ([...get().messages].reverse().find((message) => message.role === "assistant")?.awaitingInput) throw error;
+    return;
+  }
+  const billingEnabled = useBillingStore.getState().account?.enabled ?? false;
+  const billingOwner = useBillingStore.getState().owner;
   // DEC-009：先把排队中断未发的消息按序补跑（isResend 内层不再递归预处理）。
-  if (!opts.isResend) await resendPausedMessages(set, get);
+  if (!opts.isResend && !billingEnabled) await resendPausedMessages(set, get);
   if (d.getActiveWorkspaceId() !== submittedWorkspaceId) return;
 
   const messages = get().messages;
@@ -725,6 +789,7 @@ async function performSubmit(
 
   // 保存当前会话消息
   const activeThreadId = d.getActiveThreadId();
+  let submittedThreadId = activeThreadId;
   if (activeThreadId) {
     get().threadMessages.set(activeThreadId, get().messages);
   }
@@ -747,8 +812,11 @@ async function performSubmit(
   } catch {
     pipelineAgent = undefined;
   }
+  if (billingEnabled && useBillingStore.getState().owner !== billingOwner) { endStream(set); return; }
   // FR-005 台账键：用户消息带稳定 id 随请求发出（断连补跑按 id 幂等重发）
   const messageId = opts.messageId ?? genMessageId();
+  let billingOperationId: string | null = null;
+  let billingReconcile = false;
   set((state) => ({
     messages: [
       ...state.messages,
@@ -761,6 +829,7 @@ async function performSubmit(
         traceId: resumeTraceId ?? undefined,
         agent: pipelineAgent,
         characterRepair,
+        billingManaged: billingEnabled,
       },
     ],
     prompt: "",
@@ -816,6 +885,7 @@ async function performSubmit(
 
     if (!userMessageThreadId) {
       const thread = await createThreadRequest(activeWorkspaceId, getSessionTitle(displayText));
+      if (billingEnabled && useBillingStore.getState().owner !== billingOwner) return;
       userMessageThreadId = thread.thread_id;
       shouldNameThread = false;
       get().threadMessages.set(thread.thread_id, get().messages);
@@ -835,6 +905,7 @@ async function performSubmit(
     }
 
     const nextSessionName = shouldNameThread ? getSessionTitle(displayText) : "";
+    submittedThreadId = userMessageThreadId;
     if (nextSessionName) {
       updateThreadRequest(userMessageThreadId, nextSessionName)
         .then((thread) => {
@@ -853,9 +924,12 @@ async function performSubmit(
           ? { thread_id: userMessageThreadId, resume: trimmedPrompt, trace_id: resumeTraceId ?? undefined, message_id: messageId }
           : { thread_id: userMessageThreadId, prompt: trimmedPrompt, message_id: messageId }),
         ...(characterRepair ? { character_repair: true } : {}),
+        billing_protocol: 2,
+        billing_budget: billingBudget,
       },
     })) as StreamReader;
     activeReaders.add(reader);
+    if (billingEnabled && useBillingStore.getState().owner !== billingOwner) { await reader.cancel(); return; }
     set({ streamReader: reader });
 
     const decoder = new TextDecoder();
@@ -870,6 +944,10 @@ async function performSubmit(
     let finalData: ScreenplayResponse | null = null;
 
     while (true) {
+      if (billingEnabled && useBillingStore.getState().owner !== billingOwner) {
+        await reader.cancel();
+        return;
+      }
       let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
       const heartbeatTimeout = new Promise<never>((_, reject) => {
         heartbeatTimer = setTimeout(() => reject(new Error("HEARTBEAT_TIMEOUT")), HEARTBEAT_TIMEOUT_MS);
@@ -881,13 +959,14 @@ async function performSubmit(
         const chunk = (await Promise.race([reader.read(), heartbeatTimeout])) as { done: boolean; value: Uint8Array | undefined };
         done = chunk.done;
         value = chunk.value;
-      } catch {
+      } catch (error) {
         reader.cancel().catch(() => {});
-        throw new Error("HEARTBEAT_TIMEOUT");
+        throw error;
       } finally {
         if (heartbeatTimer) clearTimeout(heartbeatTimer);
       }
 
+      if (billingEnabled && useBillingStore.getState().owner !== billingOwner) { await reader.cancel(); return; }
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
@@ -911,7 +990,26 @@ async function performSubmit(
         try {
           const event = { type: eventType as StreamEvent["type"], data: JSON.parse(eventData) as Record<string, unknown> };
 
-          if (event.type === "model_stream") {
+          if (event.type === "billing") {
+            const operation = event.data as BillingOperation;
+            if (typeof operation.operation_id === "string") {
+              billingOperationId = operation.operation_id;
+              useBillingStore.getState().receiveOperation(operation);
+              const settledNote = operation.status === "budget_exhausted" ? `本次已扣 ${operation.charged.toFixed(2)} 分，未用预留已退回。` : "";
+              set((state) => ({ messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
+                ...message, billingOperationId: operation.operation_id, billingOutcome: operation.status,
+                ...(settledNote && !message.content.includes(settledNote) ? { content: `${message.content}\n\n${settledNote}` } : {}),
+              })) }));
+            }
+          } else if (event.type === "billing_error") {
+            closeThoughts("interrupted");
+            closeRows("failed");
+            set((state) => ({ messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, status: "failed", content: breakNote(message, "系统故障，本次操作按规则退分。最终退款状态请查看账单。"), contentFormat: "markdown" })) }));
+          } else if (event.type === "billing_reconcile") {
+            billingReconcile = true;
+            if (typeof event.data.operation_id === "string") billingOperationId = event.data.operation_id;
+            void useBillingStore.getState().refresh();
+          } else if (event.type === "model_stream") {
             if (!rowMode) streamedText += String(event.data.content ?? "");
           } else if (event.type === "reasoning_stream") {
             // FR-003：reasoning token 续写末段或开新段；label 快照自当前 tools。
@@ -1028,19 +1126,20 @@ async function performSubmit(
             d.setLiveTraceId("");
             closeThoughts("interrupted");
             closeRows("interrupted");
-            toast.error(msg);
-            const note = `⚠️ ${msg}\n\n已创作的内容已保存，补充积分后可继续创作。`;
+            toast.info(msg);
+            const note = `⚠️ ${msg}\n\n已创作的内容已保存。调整预算或补充积分后，请主动继续。`;
             set((state) => ({
               messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
                 ...message,
-                status: "failed",
+                status: "stopped",
+                billingOutcome: "budget_exhausted",
                 thoughts: thoughtSegments,
                 ...(rowSegments.length ? { rows: rowSegments } : {}),
                 content: !message.content || message.content === "正在执行..." ? note : `${message.content}\n\n${note}`,
                 contentFormat: "markdown",
               })),
             }));
-            break;
+            if (!billingEnabled) break;
           } else if (event.type === "pipeline") {
             // DEC-013（REQ-20261018-175526）：阶段事件即时写入 contentStore，
             // 阶段条/浮窗/切换检测共用同源 state；outline 轮询是产物文件与断连兜底通道。
@@ -1122,10 +1221,10 @@ async function performSubmit(
           if (rowMode) {
             // 行模式：content 由正文行拼接派生（含中间正文，FR-002/FR-003），
             // 待答期间（awaitingInput）不动 content
-            if (!next.awaitingInput) {
+            if (!next.awaitingInput && next.status !== "failed" && next.status !== "stopped") {
               next = { ...next, content: concatTextRows(rowSegments), contentFormat: "markdown" };
             }
-          } else if (!next.awaitingInput && streamedText) {
+          } else if (!next.awaitingInput && next.status !== "failed" && next.status !== "stopped" && streamedText) {
             next = { ...next, content: streamedText, contentFormat: "markdown" };
           }
           return next;
@@ -1163,28 +1262,50 @@ async function performSubmit(
       // queued 是非终态（排队中），断流同样要收口（FR-006/DEC-009：标待补跑）
       const rowTerminal = !!(current && current.status && current.status !== "queued");
       if (current && current.role === "assistant" && !rowTerminal && !gotInterrupt) {
-        const brokenMessage = "⚠️ 连接中断（未收到完成信号），已生成的内容已保存，可以重试。";
+        const brokenMessage = billingEnabled
+          ? "连接已断开，已接受的任务会在后台继续。正在重新查询结果，请勿重复发送。"
+          : "⚠️ 连接中断（未收到完成信号），已生成的内容已保存，可以重试。";
         d.setLiveTraceId("");
         closeThoughts("interrupted");
         closeRows("interrupted");
-        toast.error(brokenMessage);
+        if (billingEnabled) toast.info(brokenMessage); else toast.error(brokenMessage);
         // FR-004 失败语义：未收到 final 的关流，服务端可能仍在跑——低频兜底观察
         watchPipelineAfterDisconnect(activeWorkspaceId);
         set((state) => ({
           messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({
             ...message,
-            status: "failed",
+            status: billingEnabled ? undefined : "failed",
+            billingDetached: billingEnabled,
             thoughts: thoughtSegments,
             ...(rowSegments.length ? { rows: rowSegments } : {}),
             content: breakNote(message, brokenMessage),
             contentFormat: "markdown",
-            ...queuedBreakPatch(message),
+            ...(billingEnabled ? { queuedInterrupted: false } : queuedBreakPatch(message)),
           })),
         }));
       }
     }
   } catch (submitError) {
+    if (billingEnabled && useBillingStore.getState().owner !== billingOwner) return;
     const errMsg = submitError instanceof Error ? submitError.message : "";
+    const rejected = /HTTP 4\d{2}|402|403|426|insufficient_credits|billing_upgrade_required|budget_required|model_unpriced|billing_invalid|预算|积分不足/.test(errMsg);
+    const explicitlyStopped = get().messages[assistantIdx]?.status === "stopped";
+    if (billingEnabled && !rejected && !explicitlyStopped && !(submitError instanceof DOMException && submitError.name === "AbortError")) {
+      closeThoughts("interrupted");
+      closeRows("interrupted");
+      const note = "连接已断开，已接受的任务会在后台继续。正在重新查询结果，请勿重复发送。";
+      set((state) => ({ messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, status: undefined, billingDetached: true, queuedInterrupted: false, thoughts: thoughtSegments, ...(rowSegments.length ? { rows: rowSegments } : {}), content: breakNote(message, note), contentFormat: "markdown" })) }));
+      toast.info(note);
+      watchPipelineAfterDisconnect(activeWorkspaceId);
+      return;
+    }
+    if (billingEnabled && rejected) {
+      closeThoughts("interrupted");
+      closeRows("interrupted");
+      set((state) => ({ messages: updateAssistantMessage(state.messages, assistantIdx, (message) => ({ ...message, status: "failed", content: errMsg || "操作未获接受，请检查积分与预算后再发送。", contentFormat: "text" })) }));
+      toast.error(errMsg || "请检查积分与预算");
+      return;
+    }
     if (errMsg.includes("积分") || errMsg.includes("403") || errMsg.includes("冻结")) {
       d.setLiveTraceId("");
       closeThoughts("interrupted");
@@ -1254,6 +1375,12 @@ async function performSubmit(
     if (reader) activeReaders.delete(reader);
     endStream(set);
     set({ streamReader: null });
+    if (billingEnabled && useBillingStore.getState().owner === billingOwner) {
+      void useBillingStore.getState().refresh();
+      if (get().messages[assistantIdx]?.billingDetached || billingReconcile) {
+        watchDetachedBilling(set, get, messageId, submittedThreadId, billingOperationId);
+      }
+    }
   }
 }
 
@@ -1261,6 +1388,75 @@ function handleStopGeneration(set: any, get: () => ExecutionState) {
   const d = requireDeps();
   const activeThreadId = d.getActiveThreadId();
   const liveTraceId = d.getLiveTraceId();
+  const targets = get().messages.flatMap((message, index, messages) => message.role === "assistant" && !message.awaitingInput &&
+    (!message.status || ["queued", "streaming"].includes(message.status))
+    ? [{ message, requestId: messages[index - 1]?.messageId, operationId: message.billingOperationId }] : []);
+  const managed = targets.some(({ message }) => message.billingManaged || message.billingOperationId) ||
+    useBillingStore.getState().account?.operations.some((operation) => operation.thread_id === activeThreadId &&
+      !["completed", "stopped", "failed", "budget_exhausted"].includes(operation.status) && (!liveTraceId || operation.trace_id === liveTraceId));
+  if (managed && activeThreadId) {
+    const billingOwner = useBillingStore.getState().owner;
+    const readers = new Set([...activeReaders, ...(get().streamReader ? [get().streamReader!] : [])]);
+    void (async () => {
+      try {
+        const response = await apiFetch(`${API_BASE_URL}/api/screenplay/stop`, {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thread_id: activeThreadId, trace_id: liveTraceId || "" }),
+        });
+        if (!response.ok) throw new Error("停止请求未成功，任务仍可能在后台运行，请重试停止。");
+        const receipt = await response.json() as { task_cancelled?: boolean };
+        if (useBillingStore.getState().owner !== billingOwner) return;
+        if (receipt.task_cancelled !== true) {
+          const account = await useBillingStore.getState().refresh();
+          const [saved, runState, operations] = await Promise.all([
+            restoreFromServerConversation(activeThreadId),
+            fetchThreadRunState(activeThreadId).catch(() => null),
+            Promise.all(targets.map(async (target) => {
+              const id = target.operationId ?? account?.operations.find((operation) => operation.request_id === target.requestId)?.operation_id;
+              return id ? fetchBillingOperation(id).catch(() => null) : null;
+            })),
+          ]);
+          if (useBillingStore.getState().owner !== billingOwner || d.getActiveThreadId() !== activeThreadId) return;
+          set((state: ExecutionState) => {
+            let messages = state.messages.map((message, index) => {
+              const targetIndex = targets.findIndex((target) => target.requestId ? state.messages[index - 1]?.messageId === target.requestId :
+                target.operationId ? message.billingOperationId === target.operationId : message === target.message);
+              const operation = operations[targetIndex];
+              if (message.role !== "assistant" || !operation || !["completed", "stopped", "failed", "budget_exhausted"].includes(operation.status)) return message;
+              const savedIndex = saved?.findIndex((entry) => entry.role === "user" && entry.messageId === targets[targetIndex].requestId) ?? -1;
+              const serverMessage = savedIndex >= 0 && saved?.[savedIndex + 1]?.role === "assistant" ? saved[savedIndex + 1] : null;
+              const result = operation.result;
+              const text = result && ["content", "markdown", "optimized", "question"].map((key) => result[key]).find((value) => typeof value === "string" && value);
+              const awaiting = operation.status === "completed" && runState?.status === "awaiting_input" && runState.trace_id === operation.trace_id;
+              return { ...message, ...(serverMessage ?? {}), billingOperationId: operation.operation_id, billingManaged: true, billingDetached: false,
+                billingOutcome: operation.status, status: awaiting ? undefined : operation.status === "budget_exhausted" ? "stopped" as const : operation.status as "completed" | "stopped" | "failed",
+                content: serverMessage?.content || (typeof text === "string" ? text : message.content) };
+            });
+            if (runState?.status === "awaiting_input" && operations.some((operation) => operation?.status === "completed" && operation.trace_id === runState.trace_id)) {
+              messages = reconcileMessagesWithRunState(messages, runState) ?? messages;
+            }
+            return { messages };
+          });
+          toast.info("停止未获确认，已重新查询原任务。请以任务和账单状态为准。");
+          return;
+        }
+        if (d.getActiveThreadId() !== activeThreadId) return;
+        set((state: ExecutionState) => ({ messages: state.messages.map((message, index) => {
+          if (message.role !== "assistant" || message.awaitingInput || (message.status && !["queued", "streaming"].includes(message.status))) return message;
+          if (!targets.some((target) => target.requestId ? state.messages[index - 1]?.messageId === target.requestId :
+            target.operationId ? message.billingOperationId === target.operationId : message === target.message)) return message;
+          const note = "已请求停止，已发生的用量按账单结算。";
+          return { ...message, status: "stopped" as const, queuedInterrupted: false, billingDetached: false,
+            content: !message.content || message.content === "正在执行..." ? note : `${message.content}\n\n${note}` };
+        }) }));
+        for (const reader of readers) void reader.cancel().catch(() => {});
+        void useBillingStore.getState().refresh();
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "无法停止任务，请重试");
+      }
+    })();
+    return;
+  }
 
   // FR-006 停止=清空队列（review R-002）：排队行先落 stopped，再取消流——
   // 否则断流兜底会把它们标成「待补跑」，下一条消息时被复活，违背停止语义。
@@ -1297,11 +1493,16 @@ function handleRetry(set: any, get: () => ExecutionState) {
     trackRegenerate(liveTraceId);
   }
   const messages = get().messages;
+  if (messages.at(-1)?.billingDetached) {
+    toast.info("原任务仍在后台运行，请查看任务结果或积分账单。");
+    void useBillingStore.getState().refresh();
+    return;
+  }
   // 尾部是排队中断对：补跑即重试（resendPausedMessages 会按序补发全部，
   // 避免同话术双发）
   const lastUserIdx = messages.map((m) => m.role).lastIndexOf("user");
   const pairAssistant = messages[lastUserIdx + 1];
-  if (pairAssistant?.role === "assistant" && pairAssistant.queuedInterrupted) {
+  if (pairAssistant?.role === "assistant" && pairAssistant.queuedInterrupted && !useBillingStore.getState().account?.enabled) {
     void resendPausedMessages(set, get);
     return;
   }

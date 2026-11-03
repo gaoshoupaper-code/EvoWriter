@@ -190,6 +190,9 @@ async function apiJson<T>(input: string, init: RequestInit, fetcher = apiFetch):
         const payload = JSON.parse(text) as { detail?: unknown; message?: unknown };
         if (typeof payload.detail === "string") {
           message = payload.detail;
+        } else if (payload.detail && typeof payload.detail === "object" &&
+          "message" in payload.detail && typeof payload.detail.message === "string") {
+          message = payload.detail.message;
         } else if (typeof payload.message === "string") {
           message = payload.message;
         }
@@ -1427,15 +1430,11 @@ export interface CreditTransaction {
   balance_after: number;
   ref_thread_id: string | null;
   ref_hold_id: string | null;
+  operation_id?: string | null;
+  legacy?: boolean;
   note: string | null;
   created_by: string | null;
   created_at: string;
-}
-
-export interface CreditConfigItem {
-  value: string;
-  description: string;
-  updated_at: string;
 }
 
 // ── 用户管理 ──────────────────────────────────────────────────
@@ -1465,11 +1464,12 @@ export async function adjustCredits(
   userId: string,
   amount: number,
   note: string,
+  requestId: string,
 ): Promise<{ status: string; balance: number }> {
   return apiJson(`/api/admin/users/${userId}/credits`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ amount, note }),
+    body: JSON.stringify({ amount, note, request_id: requestId }),
   });
 }
 
@@ -1482,11 +1482,13 @@ export async function fetchInviteCodes(): Promise<InviteCode[]> {
 export async function createInviteCodes(
   count: number,
   grantedCredits: number,
+  note: string,
+  requestId: string,
 ): Promise<string[]> {
   return apiJson<string[]>("/api/admin/invite-codes", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ count, granted_credits: grantedCredits }),
+    body: JSON.stringify({ count, granted_credits: grantedCredits, note, request_id: requestId }),
   });
 }
 
@@ -1502,23 +1504,85 @@ export async function fetchAllTransactions(limit = 100): Promise<CreditTransacti
   });
 }
 
-// ── 积分配置（暗调旋钮）──────────────────────────────────────
+export function fetchUserTransactions(userId: string, limit = 50): Promise<CreditTransaction[]> {
+  return apiJson(`/api/admin/users/${encodeURIComponent(userId)}/credits/transactions?limit=${limit}`, { method: "GET" });
+}
 
-export async function fetchCreditsConfig(): Promise<Record<string, CreditConfigItem>> {
-  return apiJson<Record<string, CreditConfigItem>>("/api/admin/credits/config", {
-    method: "GET",
+export interface BillingPrice {
+  model: string;
+  input_per_million: string;
+  output_per_million: string;
+  cached_per_million: string;
+  updated_at: string;
+}
+
+export interface BillingConfig {
+  enabled: boolean;
+  default_budgets: Record<string, number>;
+  contact_qq: string;
+  protocol: number;
+  prices: BillingPrice[];
+}
+
+export interface BillingOperation {
+  operation_id: string;
+  user_id: string;
+  thread_id: string;
+  request_id: string;
+  budget: number;
+  status: string;
+  consumed: number;
+  charged: number;
+  missing_usage: number;
+  trace_id: string | null;
+  created_at: string;
+  settled_at: string | null;
+}
+
+export interface BillingCall {
+  call_id: string;
+  model: string;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cached_tokens: number | null;
+  cost: string;
+  platform_cost: string | null;
+  billable: number;
+  usage_known: number;
+  created_at: string;
+}
+
+export interface BillingOperationDetail extends BillingOperation {
+  calls: BillingCall[];
+  prices: Record<string, BillingPrice>;
+  result: unknown;
+}
+
+export function fetchBillingConfig(): Promise<BillingConfig> {
+  return apiJson("/api/admin/billing/config", { method: "GET" });
+}
+
+export function saveBillingConfig(enabled: boolean, defaultBudgets: Record<string, number>): Promise<Omit<BillingConfig, "prices">> {
+  return apiJson("/api/admin/billing/config", {
+    method: "PUT", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled, default_budgets: defaultBudgets }),
   });
 }
 
-export async function updateCreditsConfig(
-  key: string,
-  value: string,
-): Promise<Record<string, unknown>> {
-  return apiJson(`/api/admin/credits/config/${key}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ value }),
+export function saveBillingPrice(model: string, price: Pick<BillingPrice, "input_per_million" | "output_per_million" | "cached_per_million">): Promise<BillingPrice> {
+  return apiJson(`/api/admin/billing/prices/${encodeURIComponent(model)}`, {
+    method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(price),
   });
+}
+
+export function fetchBillingOperations(limit = 50, userId = ""): Promise<BillingOperation[]> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (userId) query.set("user_id", userId);
+  return apiJson(`/api/admin/billing/operations?${query}`, { method: "GET" });
+}
+
+export function fetchBillingOperation(operationId: string): Promise<BillingOperationDetail> {
+  return apiJson(`/api/admin/billing/operations/${encodeURIComponent(operationId)}`, { method: "GET" });
 }
 
 // ════════════════════════════════════════════════════════════

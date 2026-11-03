@@ -34,6 +34,9 @@ class WorkspaceStyleRequest(BaseModel):
 class StyleOptimizeRequest(BaseModel):
     style_type: str = Field(description="meta_style | storybuilding_style | detail_outline_style | writing_style")
     content: str = Field(min_length=1)
+    billing_protocol: int | None = None
+    billing_budget: str | float | None = None
+    message_id: str | None = None
 
 
 class StyleOptimizeResponse(BaseModel):

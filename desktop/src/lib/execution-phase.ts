@@ -19,6 +19,7 @@
 import type { ChatMessage, ExecutionPhase } from "./types";
 
 export function derivePhaseFromMessage(message: ChatMessage): ExecutionPhase {
+  if (message.billingDetached) return "idle";
   if (message.awaitingInput) return "asking";
   if (message.status === "completed") return "delivering";
   if (message.status === "failed") return "failed";

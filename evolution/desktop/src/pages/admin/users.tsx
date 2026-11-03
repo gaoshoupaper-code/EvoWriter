@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import { formatCredits, parseCreditAmount } from "@/lib/billing";
 import { toast } from "sonner";
 import {
   Sheet,
@@ -20,7 +22,7 @@ import {
  * 用户管理（super_admin 专属）。
  *
  * 列出所有注册用户，支持：
- *   - 调积分（Sheet 表单，正=充值 / 负=扣减）
+ *   - 调积分（Sheet 表单，正=发放 / 负=扣减）
  *   - 重置密码（返回临时密码，toast 10s 展示）
  *   - 禁用 / 启用（updateUser disabled 切换；超管不可禁用）
  */
@@ -34,12 +36,15 @@ export default function AdminUsers() {
   const [creditsAmount, setCreditsAmount] = useState("");
   const [creditsNote, setCreditsNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const requestId = useRef("");
+  const [error, setError] = useState("");
 
   const refresh = useCallback(async () => {
     try {
       setUsers(await fetchUsers());
+      setError("");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "读取用户列表失败");
+      setError(err instanceof Error ? err.message : "读取用户列表失败");
     } finally {
       setLoading(false);
     }
@@ -50,6 +55,7 @@ export default function AdminUsers() {
   }, [refresh]);
 
   function openCredits(user: AdminUser) {
+    requestId.current = "";
     setCreditsTarget(user);
     setCreditsAmount("");
     setCreditsNote("");
@@ -57,16 +63,21 @@ export default function AdminUsers() {
   }
 
   async function handleAdjustCredits() {
-    if (!creditsTarget) return;
-    const amt = parseInt(creditsAmount, 10);
-    if (isNaN(amt)) {
-      toast.error("请输入有效数字");
+    if (!creditsTarget || submitting) return;
+    const amt = parseCreditAmount(creditsAmount);
+    if (!Number.isFinite(amt) || amt === 0) {
+      toast.error("请输入非零积分，最多保留两位小数");
       return;
     }
+    if (!creditsNote.trim()) {
+      toast.error("请填写调整原因");
+      return;
+    }
+    requestId.current ||= crypto.randomUUID();
     setSubmitting(true);
     try {
-      await adjustCredits(creditsTarget.user_id, amt, creditsNote.trim() || "管理员调整");
-      toast.success(`已调整 ${amt > 0 ? "+" : ""}${amt} 积分`);
+      await adjustCredits(creditsTarget.user_id, amt, creditsNote.trim(), requestId.current);
+      toast.success(`已调整 ${amt > 0 ? "+" : ""}${formatCredits(amt)} 积分`);
       setCreditsOpen(false);
       setCreditsTarget(null);
       await refresh();
@@ -108,12 +119,13 @@ export default function AdminUsers() {
         <h1>用户管理</h1>
         <p className="page-desc">管理所有注册用户、积分余额和账号状态</p>
       </header>
+      {error && <p role="alert" className="config-test-result fail">用户列表未更新：{error} <button className="config-button small" onClick={() => { setError(""); void refresh(); }}>重试</button></p>}
 
       <table className="data-table">
         <thead>
           <tr>
             <th>用户名</th>
-            <th>积分余额</th>
+            <th>可用积分</th>
             <th>角色</th>
             <th>状态</th>
             <th>作品数</th>
@@ -126,8 +138,8 @@ export default function AdminUsers() {
             <tr key={u.user_id}>
               <td className="mono">{u.username}</td>
               <td className="mono" style={{ fontWeight: 700 }}>
-                <span style={{ color: u.credits_balance <= 0 ? "var(--destructive)" : "inherit" }}>
-                  {u.credits_balance}
+                <span style={{ color: u.credits_balance <= 0 ? "var(--danger)" : "inherit" }}>
+                  {formatCredits(u.credits_balance)}
                 </span>
               </td>
               <td>
@@ -143,7 +155,7 @@ export default function AdminUsers() {
                 {u.disabled ? (
                   <Badge variant="destructive">已禁用</Badge>
                 ) : u.credits_balance <= 0 ? (
-                  <Badge variant="outline">已冻结</Badge>
+                  <Badge variant="outline">积分待补充</Badge>
                 ) : (
                   <Badge variant="completed">正常</Badge>
                 )}
@@ -155,6 +167,9 @@ export default function AdminUsers() {
                   <button className="config-button small" onClick={() => openCredits(u)}>
                     调积分
                   </button>
+                  <Link className="config-button small" to={`/admin/credits?${new URLSearchParams({ user_id: u.user_id })}`}>
+                    查看账单
+                  </Link>
                   <button
                     className="config-button small"
                     onClick={() => handleResetPassword(u)}
@@ -181,34 +196,37 @@ export default function AdminUsers() {
       <Sheet open={creditsOpen} onOpenChange={(o) => !submitting && setCreditsOpen(o)}>
         <SheetContent side="right">
           <SheetHeader>
-            <SheetTitle>调整积分 — {creditsTarget?.username}</SheetTitle>
+            <SheetTitle>调整积分 · {creditsTarget?.username}</SheetTitle>
             <SheetClose asChild>
               <button className="sheet-close-x">✕</button>
             </SheetClose>
           </SheetHeader>
           <div className="sheet-body">
             <label className="config-field">
-              <span className="config-label">调整额度（正=充值，负=扣减）</span>
+              <span className="config-label">调整额度（正=发放，负=扣减）</span>
               <input
                 className="config-input"
                 type="number"
+                step="0.01"
                 value={creditsAmount}
-                onChange={(e) => setCreditsAmount(e.target.value)}
-                placeholder="如 5000 或 -1000"
+                onChange={(e) => { requestId.current = ""; setCreditsAmount(e.target.value); }}
+                placeholder="如 12.34 或 -5.00"
                 disabled={submitting}
               />
             </label>
             <label className="config-field">
-              <span className="config-label">备注</span>
+              <span className="config-label">调整原因（必填）</span>
               <input
                 className="config-input"
                 value={creditsNote}
-                onChange={(e) => setCreditsNote(e.target.value)}
-                placeholder="调整原因（可选）"
+                onChange={(e) => { requestId.current = ""; setCreditsNote(e.target.value); }}
+                placeholder="填写发放或纠错原因"
+                maxLength={200}
+                required
                 disabled={submitting}
               />
             </label>
-            <p className="config-hint">当前余额：{creditsTarget?.credits_balance ?? 0}</p>
+            <p className="config-hint">可用积分：{formatCredits(creditsTarget?.credits_balance)}。减分不能动用预留积分，也不能产生负余额。</p>
             <div className="config-actions">
               <button
                 className="config-button primary"

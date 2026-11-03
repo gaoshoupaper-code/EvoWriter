@@ -7,6 +7,8 @@ import { WritingSkillsDialog } from "./SidebarSkills";
 import { useWritingSkillsStore } from "@/stores/writingSkills";
 import { WritingStylesDialog } from "./WritingStylesDialog";
 import { useWritingStylesStore } from "@/stores/writingStyles";
+import { BillingBalanceLink } from "@/components/billing/BillingPanel";
+import { useBillingStore } from "@/stores/billing";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -23,22 +25,27 @@ type SidebarFooterProps = {
   onLogout: () => void;
 };
 
-export function SidebarFooter({ theme, username, hasApiKey, onThemeToggle, onLogout }: SidebarFooterProps) {
+export function SidebarFooter({ theme, username, onThemeToggle, onLogout }: SidebarFooterProps) {
   const [passwordDialogOpen, setPasswordDialogOpen] = useState(false);
   const [skillsDialogOpen, setSkillsDialogOpen] = useState(false);
   const [stylesDialogOpen, setStylesDialogOpen] = useState(false);
   const dialogRequested = useRef<"password" | "skills" | "styles" | null>(null);
   const accountTrigger = useRef<HTMLButtonElement>(null);
   useEffect(() => {
+    useBillingStore.getState().setOwner(username);
+    void useBillingStore.getState().refresh();
+    const refreshBilling = () => { void useBillingStore.getState().refresh(); };
+    window.addEventListener("online", refreshBilling);
     useWritingSkillsStore.getState().clear();
     useWritingStylesStore.getState().clear();
     setSkillsDialogOpen(false);
     setStylesDialogOpen(false);
-    return () => { useWritingSkillsStore.getState().clear(); useWritingStylesStore.getState().clear(); };
+    return () => { window.removeEventListener("online", refreshBilling); useWritingSkillsStore.getState().clear(); useWritingStylesStore.getState().clear(); };
   }, [username]);
 
   return (
     <div className="sidebar-footer">
+      <BillingBalanceLink />
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button ref={accountTrigger} className="sidebar-account-trigger" type="button" aria-label="用户菜单" title={username || "用户"}>
@@ -64,9 +71,7 @@ export function SidebarFooter({ theme, username, hasApiKey, onThemeToggle, onLog
         >
           <div className="user-menu-header">
             <strong>{username || "用户"}</strong>
-            <span className={`user-menu-keybadge ${hasApiKey ? "ok" : "missing"}`}>
-              {hasApiKey ? "Key 已配置" : "Key 未配置"}
-            </span>
+            <span className="user-menu-keybadge ok">平台模型</span>
           </div>
           <DropdownMenuSeparator />
           <DropdownMenuPrimitive.Sub>
@@ -113,7 +118,7 @@ export function SidebarFooter({ theme, username, hasApiKey, onThemeToggle, onLog
             <KeyRound size={16} aria-hidden="true" />
             修改密码
           </DropdownMenuItem>
-          <DropdownMenuItem onSelect={onLogout}>
+          <DropdownMenuItem onSelect={() => { useBillingStore.getState().reset(); onLogout(); }}>
             <LogOut size={16} aria-hidden="true" />
             退出登录
           </DropdownMenuItem>
@@ -124,7 +129,7 @@ export function SidebarFooter({ theme, username, hasApiKey, onThemeToggle, onLog
       ) : null}
       {skillsDialogOpen ? <WritingSkillsDialog onClose={() => setSkillsDialogOpen(false)} returnFocusRef={accountTrigger} /> : null}
       {stylesDialogOpen ? <WritingStylesDialog key={username} mode="library" onClose={() => setStylesDialogOpen(false)} returnFocusRef={accountTrigger} /> : null}
-      <Link className="sidebar-settings-link" to="/settings" aria-label="设置（API Key）" title="设置（API Key）">
+      <Link className="sidebar-settings-link" to="/settings" aria-label="设置与积分账单" title="设置与积分账单">
         <Settings size={18} aria-hidden="true" />
       </Link>
     </div>

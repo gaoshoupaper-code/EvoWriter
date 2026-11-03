@@ -159,7 +159,7 @@ def test_stop_clear_skips_unowned_thread(tmp_path: Path, monkeypatch) -> None:
         run_gate, "get_conversation_gate",
         lambda cid: (_ for _ in ()).throw(AssertionError("foreign thread must not touch gate")),
     )
-    # 直接走端点（async）：foreign → queue_cleared=0，gate 未被触碰
+    # Foreign conversations must be rejected before touching their trace or queue.
     import asyncio
 
     from fastapi import FastAPI
@@ -181,8 +181,7 @@ def test_stop_clear_skips_unowned_thread(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(sp, "get_trace_recorder", lambda: _Rec())
     client = TestClient(app)
     resp = client.post("/screenplay/stop", json={"thread_id": "victim", "trace_id": "t"})
-    assert resp.status_code == 200
-    assert resp.json()["queue_cleared"] == 0
+    assert resp.status_code == 404
 
 
 def test_admit_refuses_cancelled_requeue(tmp_path: Path) -> None:

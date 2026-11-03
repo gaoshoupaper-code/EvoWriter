@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import dataclasses
 import time
+from uuid import uuid4
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
@@ -41,6 +42,7 @@ from pydantic import BaseModel
 from contracts.trace.usage import normalize_usage as _normalize_usage
 
 from app.platform.trace import TraceRecorder
+from app.platform.credits.runtime import current_billing
 
 
 class TraceMiddleware(AgentMiddleware):
@@ -86,6 +88,10 @@ class TraceMiddleware(AgentMiddleware):
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
         """拦截同步模型调用：记录开始 → 执行 → 记录完成/错误。"""
+        billing = current_billing()
+        call_id = uuid4().hex if billing else None
+        if billing:
+            billing.before_call(_model_name(request.model))
         started = time.perf_counter()
         self._record_model_start(request)
         try:
@@ -95,6 +101,8 @@ class TraceMiddleware(AgentMiddleware):
             # 直接放行，不记录 llm_error，避免监测面板误报。
             self._finalize_model_exception(request, started, exc)
             raise
+        if billing:
+            billing.record(response, call_id, _model_name(request.model))
         self._record_model_end(request, response, started)
         return response
 
@@ -111,6 +119,10 @@ class TraceMiddleware(AgentMiddleware):
         """
         if self.retry_runner is not None:
             return await self._awrap_model_call_with_retry(request, handler)
+        billing = current_billing()
+        call_id = uuid4().hex if billing else None
+        if billing:
+            billing.before_call(_model_name(request.model))
         started = time.perf_counter()
         self._record_model_start(request)
         try:
@@ -118,6 +130,8 @@ class TraceMiddleware(AgentMiddleware):
         except BaseException as exc:
             self._finalize_model_exception(request, started, exc)
             raise
+        if billing:
+            billing.record(response, call_id, _model_name(request.model))
         self._record_model_end(request, response, started)
         return response
 
@@ -131,10 +145,17 @@ class TraceMiddleware(AgentMiddleware):
         平台层只提供观测回调（record_attempt_failed/record_backoff），重试实现由
         领域层注入的 retry_runner 提供——保持 platform 不 import domains（分层铁律）。
         """
+        billing = current_billing()
+        call_id = uuid4().hex if billing else None
+        if billing:
+            billing.before_call(_model_name(request.model))
+        attempts = 0
         started = time.perf_counter()
         self._record_model_start(request)
 
         async def _invoke() -> ModelResponse:
+            nonlocal attempts
+            attempts += 1
             return await handler(request)
 
         try:
@@ -143,6 +164,8 @@ class TraceMiddleware(AgentMiddleware):
             # 预算用尽/不可重试：写最终 llm_error（duration 覆盖全部 attempt）。
             self._finalize_model_exception(request, started, exc)
             raise
+        if billing:
+            billing.record(response, call_id, _model_name(request.model), billable=attempts == 1)
         self._record_model_end(request, response, started)
         return response
 
@@ -196,6 +219,9 @@ class TraceMiddleware(AgentMiddleware):
 
     def wrap_tool_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:
         """拦截同步工具调用：记录开始 → 执行 → 记录完成/错误。"""
+        billing = current_billing()
+        if billing:
+            billing.check_cancelled()
         started = time.perf_counter()
         self._record_tool_start(request)
         try:
@@ -215,11 +241,16 @@ class TraceMiddleware(AgentMiddleware):
             else:
                 self._record_tool_error(request, started, exc)
             raise
+        if billing:
+            billing.check_cancelled()
         self._record_tool_end(request, response, started)
         return response
 
     async def awrap_tool_call(self, request: Any, handler: Callable[[Any], Awaitable[Any]]) -> Any:
         """拦截异步工具调用：记录开始 → 执行 → 记录完成/错误。"""
+        billing = current_billing()
+        if billing:
+            billing.check_cancelled()
         started = time.perf_counter()
         self._record_tool_start(request)
         try:
@@ -237,6 +268,8 @@ class TraceMiddleware(AgentMiddleware):
             else:
                 self._record_tool_error(request, started, exc)
             raise
+        if billing:
+            billing.check_cancelled()
         self._record_tool_end(request, response, started)
         return response
 

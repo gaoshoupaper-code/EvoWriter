@@ -1,4 +1,5 @@
 from __future__ import annotations
+from uuid import uuid4
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
@@ -72,5 +73,12 @@ class StyleOptimizer:
             SystemMessage(content=system_prompt),
             HumanMessage(content=f"请优化以下风格描述：\n\n{content}"),
         ]
-        response = await self._get_model().ainvoke(messages)
+        model = self._get_model()
+        from app.platform.credits.runtime import current_billing
+        billing = current_billing()
+        if billing:
+            billing.before_call(model.model_name)
+        response = await model.ainvoke(messages)
+        if billing:
+            billing.record(response, uuid4().hex, model.model_name)
         return response.content if hasattr(response, "content") else str(response)

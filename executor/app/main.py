@@ -9,6 +9,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from app.admin import admin_router, me_router
 from app.auth import CurrentUser, auth_router, current_user
@@ -58,6 +59,11 @@ init_database(_database)
 from app.platform.credits.config_service import CreditConfigService
 from app.platform.credits.service import CreditsService, init_credits_service
 init_credits_service(CreditsService(_database, CreditConfigService(_database)))
+from app.platform.credits.ledger import BillingError, BillingLedger, init_billing
+from app.platform.credits.runtime import init_billing_runs
+_billing = BillingLedger(_database)
+init_billing(_billing)
+_billing_runs = init_billing_runs(_billing)
 
 _checkpoints_root = Path(__file__).resolve().parents[1] / "checkpoints"
 _checkpoint_pool = CheckpointPool(_checkpoints_root)
@@ -121,6 +127,7 @@ async def _lifespan(application: FastAPI):
     )
     # 多用户：引导管理员账号（幂等）
     bootstrap_admin()
+    _billing_runs.start_recovery()
     # 基建指标埋点（REQ-20260918-144856 FR-001）：OTel → Collector → Prometheus。
     # OTEL_EXPORTER_OTLP_ENDPOINT 未配置（本地开发）时静默关闭，零开销直通。
     telemetry.setup_telemetry("executor", app=application)
@@ -142,6 +149,7 @@ async def _lifespan(application: FastAPI):
     start_production_reconcile_loop()
     pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
     yield
+    await _billing_runs.aclose()
     # 关闭绑定补账协程
     from app.platform.agent.binding_client import get_binding_client
     await get_binding_client().aclose_replay_loop()
@@ -176,6 +184,14 @@ app.include_router(style_router)
 app.include_router(auth_router)
 app.include_router(me_router)
 app.include_router(admin_router)
+from app.platform.credits.api import router as billing_router, admin_router as billing_admin_router
+app.include_router(billing_router)
+app.include_router(billing_admin_router)
+
+
+@app.exception_handler(BillingError)
+async def billing_error_handler(request: Request, exc: BillingError):
+    return JSONResponse(status_code=exc.status, content={"detail": {"code": exc.code, "message": str(exc)}})
 # PR-14：生成端点 router（从 main.py 抽出，路径前缀 /api）
 from app.routers.screenplay import router as screenplay_router
 from app.routers.character import router as character_router

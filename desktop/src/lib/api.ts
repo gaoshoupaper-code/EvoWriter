@@ -115,7 +115,9 @@ async function parseJsonResponse<T>(response: RelayResponse): Promise<T> {
     } catch {
       // 非 JSON 错误页沿用状态码提示。
     }
-    throw new Error(typeof detail === "string" && detail.trim() ? detail : `API returned ${response.status}`);
+    const message = typeof detail === "object" && detail !== null && "message" in detail
+      ? String(detail.message) : typeof detail === "string" ? detail : "";
+    throw new Error(message.trim() || `API returned ${response.status}`);
   }
 
   return (await response.json()) as T;
@@ -211,6 +213,68 @@ export async function fetchMyProfile() {
 
 export async function fetchMyCredits(): Promise<{ balance: number }> {
   return apiJson<{ balance: number }>(`${API_BASE_URL}/api/me/credits`);
+}
+
+export type BillingOperation = {
+  operation_id: string;
+  user_id: string;
+  thread_id: string;
+  request_id: string;
+  budget: number;
+  status: string;
+  consumed: number;
+  charged: number;
+  missing_usage: number;
+  trace_id: string | null;
+  created_at: string;
+  settled_at: string | null;
+};
+
+export type BillingTransaction = {
+  tx_id: string;
+  type: string;
+  amount: number;
+  balance_after: number;
+  note: string;
+  created_by: string;
+  created_at: string;
+  legacy?: boolean;
+};
+
+export type BillingConfig = {
+  enabled: boolean;
+  default_budgets: Record<string, number>;
+  contact_qq: string;
+  protocol: number;
+};
+
+export type BillingAccount = BillingConfig & {
+  balance: number;
+  total_balance: number;
+  reserved: number;
+  operations: BillingOperation[];
+  transactions: BillingTransaction[];
+};
+
+export type BillingOperationDetail = BillingOperation & {
+  result: Record<string, unknown> | null;
+  calls: {
+    model: string;
+    input_tokens: number | null;
+    output_tokens: number | null;
+    cached_tokens: number | null;
+    billable: number;
+    usage_known: number;
+    created_at: string;
+  }[];
+};
+
+export function fetchMyBilling() {
+  return apiJson<BillingAccount>("/api/me/billing");
+}
+
+export function fetchBillingOperation(operationId: string) {
+  return apiJson<BillingOperationDetail>(`/api/me/billing/operations/${encodeURIComponent(operationId)}`);
 }
 
 // ── Provider 配置历史（多条，可切换）──────────────────────

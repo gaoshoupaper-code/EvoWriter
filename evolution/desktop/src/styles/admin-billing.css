@@ -1,3 +1,6 @@
+.admin-layout .admin-tab { color: var(--muted); }
+.admin-layout .admin-tab:hover { color: var(--ink); }
+.admin-layout .admin-tab.active { color: var(--teal); border-bottom-color: var(--teal); }
 .billing-admin { min-width: 0; }
 .billing-admin-heading, .billing-admin-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .billing-admin-section { padding: 20px 0; border-top: 1px solid var(--border); }

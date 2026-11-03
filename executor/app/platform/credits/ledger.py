@@ -11,6 +11,12 @@ from app.platform.core.db import Database, _now
 
 logger = logging.getLogger(__name__)
 FINAL = {"completed", "stopped", "budget_exhausted", "failed"}
+SETTLEMENT_NOTES = {
+    "completed": "正常完成，按实际用量结算",
+    "stopped": "主动停止，按已用量结算",
+    "budget_exhausted": "预算用尽，按已用量结算",
+    "failed": "系统故障，本笔积分全部退回",
+}
 
 
 class BillingError(ValueError):
@@ -28,7 +34,7 @@ def decimal(value) -> Decimal:
             raise ValueError
         return result
     except (InvalidOperation, ValueError, TypeError):
-        raise BillingError("积分或价格必须是有限数字") from None
+        raise BillingError("积分或系数必须是有限数字") from None
 
 
 def cents(value, *, positive: bool = False) -> int:
@@ -146,7 +152,7 @@ class BillingLedger:
         key = model_key(model)
         values = [decimal(value) for value in (input_per_million, output_per_million, cached_per_million)]
         if not key or len(key) > 200 or any(value < 0 or value > Decimal("1000000000") for value in values):
-            raise BillingError("模型名称和成本单价无效")
+            raise BillingError("模型名称或积分系数无效")
         with self.db.transaction() as conn:
             self._admin(conn, admin_id)
             conn.execute(
@@ -284,7 +290,7 @@ class BillingLedger:
             prices = json.loads(operation["prices"])
             price = prices.get(model_key(model))
             if price is None:
-                raise BillingError("操作中的模型没有锁定价格", "model_unpriced", 409)
+                raise BillingError("操作中的模型没有锁定积分系数", "model_unpriced", 409)
             cost = Decimal(0)
             if known:
                 cost = ((input_tokens - cached_tokens) * decimal(price["input_per_million"]) +
@@ -323,7 +329,7 @@ class BillingLedger:
                 total = self._wallet(conn, row["user_id"]) - charge
                 conn.execute("UPDATE billing_wallets SET balance=? WHERE user_id=?", (total, row["user_id"]))
                 self._entry(conn, row["user_id"], "creation_refund" if outcome == "failed" else "creation_consume",
-                            -charge, total, outcome, "system", f"settle:{operation_id}", outcome, operation_id)
+                            -charge, total, SETTLEMENT_NOTES[outcome], "system", f"settle:{operation_id}", outcome, operation_id)
                 conn.execute("UPDATE billing_operations SET status=?,charged=?,settled_at=? WHERE operation_id=?",
                              (outcome, charge, _now(), operation_id))
             result = self._public(conn.execute("SELECT * FROM billing_operations WHERE operation_id=?", (operation_id,)).fetchone())

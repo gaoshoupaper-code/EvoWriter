@@ -1,4 +1,4 @@
-"""Public prices, owner-scoped statements and super-admin billing control."""
+"""Public rules, owner-scoped statements and private super-admin billing control."""
 from __future__ import annotations
 
 import asyncio

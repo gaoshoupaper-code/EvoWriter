@@ -53,6 +53,11 @@ logger = logging.getLogger(__name__)
 # 编辑重试上限：同一产物连续失败到该次数后封死 edit、强制 full（DEC-007）
 _EDIT_FAILURE_CAP = 3
 
+_TEXT_UNIT_GUIDANCE = (
+    "普通正文保持 300-400 字左右，在自然停顿落盘；"
+    "已匹配 Skill 的完整场景可超出普通批长，不拆批。"
+)
+
 SAVE_ARTIFACT_TOOL_DESCRIPTION = """按产物种类落盘（不接触文件路径）。每个点被作者确认后立即落盘。
 
 kind 取值：theme / outline / style / volume_outline(+volume) / chapter_outline(+chapter) / chapter_text(+chapter) / character(+name 人名，主角卡固定 name="主角")。
@@ -303,7 +308,11 @@ def build_save_artifact_tool(
             _register(rel, content, kind)
             failures.pop(rel, None)
             lines = len(content.splitlines())
-            return f"已落盘 {_describe(kind, volume, chapter, name)}（全量 {lines} 行）。"
+            text_info = (
+                f"本次正文单元约 {_body_char_count(content)} 字。{_TEXT_UNIT_GUIDANCE}"
+                if kind == KIND_TEXT else ""
+            )
+            return f"已落盘 {_describe(kind, volume, chapter, name)}（全量 {lines} 行）。{text_info}"
 
         # ── mode=append：正文分段生长（每批一段落一批）──
         # 追加到文件末尾，不做锚点匹配——50 字短段当锚点在文件里极易撞到重复句，
@@ -328,9 +337,14 @@ def build_save_artifact_tool(
             batch = append_batches.get(rel, 0) + 1
             append_batches[rel] = batch
             chars = _body_char_count(new_text)
+            text_info = (
+                f"本次追加约 {_body_char_count(body)} 字。{_TEXT_UNIT_GUIDANCE}"
+                if kind == KIND_TEXT else ""
+            )
             return (
                 f"已追加落盘 {_describe(kind, volume, chapter, name)}：本轮追加第 {batch} 次，"
                 f"正文本体累计约 {chars} 字。"
+                f"{text_info}"
                 "此序号仅计本轮追加保存次数，不含首次 full，不代表 Skill 篇幅预算。"
                 "按本章实际成功写入次数更新进度，依正文规程规划下一个单元；完整场景不拆批。"
             )

@@ -56,6 +56,17 @@ def test_append_receipt_does_not_reimpose_the_ordinary_batch_limit(tmp_path):
     assert "每批 300-400 字" not in result
     assert "保存次数" in result
     assert "预算" in result
+    assert f"本次追加约 {len(SCENE.replace(chr(10), ''))} 字" in result
+    assert "Skill 的完整场景" in result
+
+
+def test_first_scene_save_reports_actual_body_length_with_the_scene_exception(tmp_path):
+    """AC-002/003：章首匹配的整场保存也有真实字数，不能一律按普通批长截断。"""
+    result = _save(tmp_path).invoke({
+        "kind": "chapter_text", "chapter": 1, "mode": "full", "content": HEADER + SCENE,
+    })
+    assert f"本次正文单元约 {len(SCENE.replace(chr(10), ''))} 字" in result
+    assert "Skill 的完整场景" in result
 
 
 def test_failed_scene_append_leaves_the_saved_chapter_unchanged(tmp_path, monkeypatch):

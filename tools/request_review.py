@@ -82,6 +82,7 @@ def build_review_payload(
 def build_request_review_tool(
     workspace_root: Path | None = None, *, trace_id: str | None = None,
     resuming_review_ids: set[str] | None = None,
+    enforce_text_completion: bool = False,
 ) -> StructuredTool:
     def request_review(
         review_kind: str, question: str, options: list[ReviewOption] | None = None,
@@ -90,6 +91,18 @@ def build_request_review_tool(
         if review_kind not in REVIEW_KINDS:
             return f"review_kind 必须是 {'/'.join(REVIEW_KINDS)}，收到 {review_kind!r}；请重试。"
         review_id = getattr(runtime, "tool_call_id", None)
+        if (enforce_text_completion and workspace_root is not None and review_kind in {"batch", "stage"}
+                and runtime is not None and review_id not in (resuming_review_ids or set())):
+            from ..text_completion import delivery_block_reason, failed_review_note
+
+            state = getattr(runtime, "state", None)
+            if state is not None:
+                reason = delivery_block_reason(state, workspace_root)
+                if reason:
+                    return f"[交审失败] {reason}请先按真实保存与审稿结果完成本章。"
+                note = failed_review_note(state, workspace_root)
+                if note:
+                    question = f"{question}\n\n{note}"
         # 恢复会重进工具；已交审的调用必须先把用户意见送回模型。
         if (review_kind == "stage" and workspace_root is not None
                 and review_id not in (resuming_review_ids or set())):
@@ -135,8 +148,11 @@ def build(abc):
                 event.tool_call_id for event in (read_events(trace_id) or [])
                 if event.type == "hitl" and event.status == "awaiting_input" and event.tool_call_id
             }
+    from ..text_completion import enabled_for
+
     return build_request_review_tool(
         abc.workspace_path, trace_id=trace_id, resuming_review_ids=review_ids,
+        enforce_text_completion=enabled_for(abc),
     )
 
 

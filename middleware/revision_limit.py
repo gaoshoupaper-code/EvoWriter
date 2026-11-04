@@ -13,10 +13,12 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
+from pathlib import Path
 from typing import Any
 
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
+from langgraph.errors import GraphBubbleUp
 
 
 class RevisionLimitMiddleware(AgentMiddleware):
@@ -32,6 +34,7 @@ class RevisionLimitMiddleware(AgentMiddleware):
         limits: Mapping[str, int] | None = None,
         max_revisions: int = 1,
         review_name: str = "review",
+        workspace_root: Path | None = None,
     ) -> None:
         """
         Args:
@@ -45,6 +48,7 @@ class RevisionLimitMiddleware(AgentMiddleware):
         self.review_name = review_name
         self.max_revisions = self.limits.get(review_name, max_revisions)
         self._counts: dict[str, int] = {}
+        self.workspace_root = workspace_root
 
     # ------------------------------------------------------------------
     # 调用周期重置（子代理每次被 task 委托开始时触发）
@@ -97,24 +101,79 @@ class RevisionLimitMiddleware(AgentMiddleware):
     # 工具调用拦截（同步 / 异步）
     # ------------------------------------------------------------------
 
+    def _completion_guard(self, request: Any, target: str | None) -> ToolMessage | None:
+        if self.workspace_root is None or target != "review":
+            return None
+        from ..text_completion import review_block_reason
+
+        state = getattr(request, "state", {})
+        call = getattr(request, "tool_call", {})
+        reason = review_block_reason(state, self.workspace_root, (call.get("args") or {}).get("description", ""))
+        if reason:
+            return ToolMessage(content=f"[审稿拒绝] {reason}", status="error", tool_call_id=call.get("id", ""))
+        return None
+
+    def _completed_review(self, request: Any, target: str | None, result: Any, *, failed: bool = False) -> Any:
+        if self.workspace_root is None or target != "review":
+            return result
+        from ..text_completion import mark_review_result
+
+        call = getattr(request, "tool_call", {})
+        return mark_review_result(
+            result, state=getattr(request, "state", {}), root=self.workspace_root,
+            call_id=call.get("id", ""), description=(call.get("args") or {}).get("description", ""),
+            failed=failed,
+        )
+
+    def _failed_review(self, request: Any, target: str | None, error: Exception) -> Any:
+        if self.workspace_root is None or target != "review":
+            raise error
+        from ..text_completion import review_target
+
+        call = getattr(request, "tool_call", {})
+        if review_target(getattr(request, "state", {}), self.workspace_root, (call.get("args") or {}).get("description", "")) is None:
+            raise error
+        return self._completed_review(request, target, ToolMessage(
+            content=f"审稿执行失败：{type(error).__name__}: {error}",
+            status="error", tool_call_id=call.get("id", ""),
+        ), failed=True)
+
     def wrap_tool_call(self, request: Any, handler: Callable[[Any], Any]) -> Any:
         """拦截同步工具调用：按目标检查次数 → 放行或返回终止消息。"""
         target = self._matched_target(request)
+        blocked = self._completion_guard(request, target)
+        if blocked is not None:
+            return blocked
         if target is not None:
             count = self._counts.get(target, 0) + 1
             self._counts[target] = count
             if count > self.limits[target]:
                 return self._limit_message(request, target)
-        return handler(request)
+        try:
+            result = handler(request)
+        except GraphBubbleUp:
+            raise
+        except Exception as error:
+            return self._failed_review(request, target, error)
+        return self._completed_review(request, target, result)
 
     async def awrap_tool_call(self, request: Any, handler: Callable[[Any], Awaitable[Any]]) -> Any:
         target = self._matched_target(request)
+        blocked = self._completion_guard(request, target)
+        if blocked is not None:
+            return blocked
         if target is not None:
             count = self._counts.get(target, 0) + 1
             self._counts[target] = count
             if count > self.limits[target]:
                 return self._limit_message(request, target)
-        return await handler(request)
+        try:
+            result = await handler(request)
+        except GraphBubbleUp:
+            raise
+        except Exception as error:
+            return self._failed_review(request, target, error)
+        return self._completed_review(request, target, result)
 
 
 def _mapping_value(mapping: object, key: str) -> Any:
@@ -154,4 +213,6 @@ def build(abc):
         sub_cap = getattr(sub, "max_revisions", 0) if sub is not None else 0
         if sub_cap:
             limits[name] = sub_cap
-    return RevisionLimitMiddleware(limits=limits)
+    from ..text_completion import enabled_for
+
+    return RevisionLimitMiddleware(limits=limits, workspace_root=abc.workspace_path if enabled_for(abc) else None)

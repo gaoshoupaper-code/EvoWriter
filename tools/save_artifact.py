@@ -16,7 +16,7 @@
 强制引导 mode=full 提交完整内容（工具无法凭空补全全文，退化以「堵 edit、
 导流 full」实现）；成功落盘后计数清零。
 
-追加模式（正文分段生长）：mode="append" 把本批正文直接追加到文件末尾，不做
+追加模式（正文单元生长）：mode="append" 把本次完整正文单元追加到文件末尾，不做
 锚点匹配——正文一段 50 字上下，拿短段当锚点极易撞到重复句，撞车累积会触发
 上面的重试上限、被强制退回整篇重写，分段落盘就此失效。append 落盘成功后
 回执带本批序号与正文本体累计字数，给执笔人明确的节奏感与收束信号。full /
@@ -60,10 +60,10 @@ kind 取值：theme / outline / style / volume_outline(+volume) / chapter_outlin
 
 三种模式：
 - mode="full"：content = 该产物的完整新内容（新建文件、推翻重做大改用）。
-- mode="append"：content = 本批要追加到文件末尾的正文片段——正文分段生长专用：
-  第 1 批用 full 建文件（标题行+状态行+进度行），第 2 批起每批 append 一批，
-  回执带「第 N 批 / 正文本体累计约 X 字」。append 不做锚点匹配，短段锚点在
-  文件里容易撞重复句、撞车会累积失败计数被强制退回整篇重写，append 绕开这条路径。
+- mode="append"：content = 本次完整写作单元（普通批次或 Skill 完整场景）。
+  首个单元用 full 建文件，后续每个单元用 append；场景占 N 批仍只保存一次。
+  回执的追加序号仅计本轮 append 次数，不含首次 full，也不是 Skill 篇幅预算。
+  append 不做锚点匹配，避免短段重复导致整章重写。
 - mode="edit"（默认，推荐）：anchor + replacement——anchor 是文件里的原文片段
   （须逐字一致且在文件中唯一，建议带上标题行等上下文）；replacement 是替换后
   的文本（新增一张卡 = anchor 所在区块末尾 + 新卡片内容；状态行变更同理）。
@@ -82,11 +82,11 @@ class SaveArtifactInput(BaseModel):
     chapter: int | None = Field(default=None, ge=1, description="章号（chapter_outline/chapter_text 必填）")
     mode: str = Field(
         default="edit",
-        description='"edit"（默认，锚点校验编辑）| "full"（整文件替换）| "append"（追加到文件末尾，正文分批落盘用）',
+        description='"edit"（默认，锚点校验编辑）| "full"（整文件替换）| "append"（追加到文件末尾，普通批次或Skill完整场景）',
     )
     anchor: str | None = Field(default=None, description="edit 模式：要替换的原文片段（须唯一）")
     replacement: str | None = Field(default=None, description="edit 模式：替换后的文本")
-    content: str | None = Field(default=None, description="full 模式：完整新内容；append 模式：本批要追加的正文片段")
+    content: str | None = Field(default=None, description="full 模式：完整新内容；append 模式：本次完整正文单元（普通批次或Skill完整场景）")
     draft: bool = Field(default=False, description="仅卷纲：以修订草稿为编辑基线")
 
 
@@ -209,7 +209,7 @@ def build_save_artifact_tool(
     def _register(rel: str, text: str, kind: str) -> None:
         """落盘成功后登记读取状态：内容刚由本工具写出，后续 append/edit 视为已读。
 
-        正文分段生长（每 6 段 append 一批）依赖这一点——每批落盘后不必为了
+        正文单元连续落盘依赖这一点——每个单元落盘后不必为了
         下一批 append 而重读整章；不登记的话 append 会被上面的「先读后改」拦死。
         卷纲仍登记内容指纹（save 侧的卷纲变动复核口径不变）。
         """
@@ -329,9 +329,10 @@ def build_save_artifact_tool(
             append_batches[rel] = batch
             chars = _body_char_count(new_text)
             return (
-                f"已追加落盘 {_describe(kind, volume, chapter, name)}：第 {batch} 批，"
+                f"已追加落盘 {_describe(kind, volume, chapter, name)}：本轮追加第 {batch} 次，"
                 f"正文本体累计约 {chars} 字。"
-                "落盘后把文件头进度行改为本批实际批次数，再进入下一批规划（每批 300-400 字）。"
+                "此序号仅计本轮追加保存次数，不含首次 full，不代表 Skill 篇幅预算。"
+                "按本章实际成功写入次数更新进度，依正文规程规划下一个单元；完整场景不拆批。"
             )
 
         # ── mode=edit ──

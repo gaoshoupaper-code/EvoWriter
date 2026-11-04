@@ -223,6 +223,12 @@ def build_save_artifact_tool(
         enabled_skill_names: 同轮启用技能原名；None 兼容旧执行端的标题核验。
     """
     append_batches = append_batches if append_batches is not None else {}
+    skill_names_hint = (
+        "本轮已启用的 skill_name 原名："
+        + json.dumps(sorted(enabled_skill_names), ensure_ascii=False)
+        + "。只填原名，不附带标题中的描述。"
+        if enabled_skill_names is not None else ""
+    )
 
     def _register(rel: str, text: str, kind: str) -> None:
         """落盘成功后登记读取状态：内容刚由本工具写出，后续 append/edit 视为已读。
@@ -326,7 +332,11 @@ def build_save_artifact_tool(
                 or (enabled_skill_names is None and writing_context is not None
                     and f"### {skill_name}——" not in writing_context)
             ):
-                return "[save_artifact 拒绝·文件未变] skill_scene 需要填写当前已启用技能的原名；不能用未启用的技能绕过普通批长。"
+                return (
+                    "[save_artifact 拒绝·文件未变] skill_scene 需要填写当前已启用技能的原名；不能用未启用的技能绕过普通批长。"
+                    + skill_names_hint
+                    + "若剧情已匹配场景，请改正名称后整场重试，不得改为 ordinary 拆批保存。"
+                )
 
         if mode == "full":
             if content is None or not content.strip():
@@ -405,7 +415,7 @@ def build_save_artifact_tool(
 
     return StructuredTool.from_function(
         name="save_artifact",
-        description=SAVE_ARTIFACT_TOOL_DESCRIPTION,
+        description=SAVE_ARTIFACT_TOOL_DESCRIPTION + ("\n" + skill_names_hint if skill_names_hint else ""),
         func=_save,
         args_schema=SaveArtifactInput,
         infer_schema=False,

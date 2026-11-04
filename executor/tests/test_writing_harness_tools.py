@@ -614,7 +614,7 @@ def test_rhythm_table_section_replace(tmp_path: Path) -> None:
 
 _ALLOWED_PROPS = {
     "kind", "volume", "chapter", "name", "title", "mode", "anchor", "replacement",
-    "content", "section", "entries", "table", "note", "draft",
+    "content", "section", "entries", "table", "note", "draft", "unit_kind", "skill_name",
     "question", "options", "multi_select",
 }
 

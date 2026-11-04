@@ -133,12 +133,17 @@ def seed_book(workspace: Path, case: str) -> dict:
 
     scene = case not in {"no_match", "no_skill", "style_only"}
     budget = {"budget_one": 1, "budget_four": 4}.get(case, 3)
+    target_chars = (
+        2400 if case in {"middle", "overflow", "budget_four"}
+        else 1800 if case in {"opening", "budget_missing", "resume_before", "resume_after"}
+        else 1200
+    )
     plot = QUIET if not scene else (
         ("" if case == "opening" else BEFORE) + NEGOTIATION + AFTER)
     files = {
         "主题.md": "# 主题 · 夜航\n> 状态：定稿\n\n一句话主题：沈砚修闸换取夜航机会。\n核心爽点：靠手艺争取主动。\n",
         "总纲.md": "# 总纲 · 夜航\n> 状态：定稿\n\n## 核心纲\n| 卷 | 小目标 | 地图 | BOSS | 关键节点 |\n|---|---|---|---|---|\n| 一 | 修闸通航 | 渡口 | 无 | 查清黑色船票来历 |\n\n## 伏笔登记表\n暂无。\n",
-        "文风.md": "# 文风 · 夜航\n> 状态：定稿\n\n第三人称限知，贴近沈砚。单章目标2400字。叙述清楚自然，细节具体。无超能力，无等级数值，无感情线。\n",
+        "文风.md": f"# 文风 · 夜航\n> 状态：定稿\n\n第三人称限知，贴近沈砚。单章目标{target_chars}字。叙述清楚自然，细节具体。无超能力，无等级数值，无感情线。\n",
         "卷纲/第01卷.md": "# 第一卷 · 夜航\n> 状态：定稿\n\n## 发展阶段\n沈砚修闸通航。\n## 剧情推进表\n本卷章号范围：1-1\n| 章号 | 剧情安排 | 主角想要 | 当前矛盾 | 爽点推进 |\n|---|---|---|---|---|\n| 1 | 修闸前取得工具与灯油 | 今夜通航 | 钱少且时间紧 | 用手艺争取机会 |\n## 爽点质检表\n本章无支配或羞辱情节。\n## 卷末钩子\n黑色船票。\n",
         "章纲/第001章.md": (
             "# 第001章 · 灯下的船票\n> 状态：定稿\n\n"
@@ -187,7 +192,7 @@ def seed_book(workspace: Path, case: str) -> dict:
     elif case == "style_only":
         skill = "全章叙述自然具体，对话符合人物身份。禁用‘命运的齿轮’。本技能没有场景生成任务。"
     return {"expected_scene": scene, "budget": None if case == "budget_missing" else budget,
-            "skill": skill, "target_chars": 2400, "plot": plot}
+            "skill": skill, "target_chars": target_chars, "plot": plot}
 
 
 async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict:
@@ -235,6 +240,7 @@ async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict
                 current = chapter_path.read_text(encoding="utf-8") if chapter_path.exists() else ""
                 record = {"trace_id": trace_id, "sequence": event.sequence,
                           "call_id": values.get("tool_call_id"), "mode": args.get("mode", "edit"),
+                          "unit_kind": args.get("unit_kind"), "skill_name": args.get("skill_name"),
                           "piece": text, "piece_chars": len(body(text)), "saved_chars": len(body(current)),
                           "changed_saved_text": current != last_saved,
                           "scene": scene_evidence(text), "tool_output": values.get("tool_output"),
@@ -302,6 +308,22 @@ async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict
         await recorder.aclose()
     final = chapter_path.read_text(encoding="utf-8") if chapter_path.exists() else ""
     (case_dir / "chapter.md").write_text(final, encoding="utf-8")
+    execution_error = error
+    error_codes = [error] if error else []
+    status_match = re.search(r"(?m)^>\s*状态[：:]\s*([^\r\n]+)", "\n".join(final.splitlines()[:8]))
+    chapter_status = status_match.group(1).strip() if status_match else None
+    chapter_complete = bool(
+        chapter_status and any(value in chapter_status for value in ("初稿", "定稿"))
+        and not any(value in chapter_status for value in ("起草中", "进行中", "未完成", "未定稿"))
+    )
+    # A completed service turn can still leave only an unfinished chapter.
+    # This checks persisted status, not prose quality or the trace's completion flag.
+    if not chapter_complete:
+        error = "chapter_incomplete"
+        error_codes.append(error)
+    if case.startswith("resume_") and not injected:
+        error = "interruption_not_observed"
+        error_codes.append(error)
     events = []
     for trace_id in trace_ids:
         events.extend(event.model_dump(mode="json") for event in
@@ -321,8 +343,10 @@ async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict
                     if write["mode"] in {"append", "full"} and write["changed_saved_text"]]
     scene_writes = [write for write in draft_pieces if is_scene_piece(write["piece"])]
     summary = {
-        "case": case, "error": error, "error_frames": failure_frames,
+        "case": case, "error": error, "error_codes": error_codes,
+        "execution_error": execution_error, "error_frames": failure_frames,
         "production_commit": production_commit(),
+        "chapter_status": chapter_status, "chapter_complete": chapter_complete,
         "trace_ids": trace_ids, "statuses": statuses, "run_snapshots": snapshots,
         "final_chars": len(body(final)), "target_chars": fixture["target_chars"],
         "exceeded_target_by_ten_percent": len(body(final)) > fixture["target_chars"] * 1.1,

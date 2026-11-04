@@ -31,8 +31,10 @@ append/edit 视为已读，不必为此重读整章。
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from pathlib import Path
+from typing import Literal
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
@@ -69,6 +71,9 @@ kind 取值：theme / outline / style / volume_outline(+volume) / chapter_outlin
   首个单元用 full 建文件，后续每个单元用 append；场景占 N 批仍只保存一次。
   回执的追加序号仅计本轮 append 次数，不含首次 full，也不是 Skill 篇幅预算。
   append 不做锚点匹配，避免短段重复导致整章重写。
+  正文新建和追加必须注明 unit_kind：ordinary（普通单元）或 skill_scene（匹配的完整技能场景）。
+  skill_scene 同时填写作者已启用且当前剧情匹配的 skill_name 原名；普通单元过长会拒绝保存，先收束当前一步，不硬切句。
+  已有正文的 full 全量修订与 edit 沿用原规则，不按普通单元限长。
 - mode="edit"（默认，推荐）：anchor + replacement——anchor 是文件里的原文片段
   （须逐字一致且在文件中唯一，建议带上标题行等上下文）；replacement 是替换后
   的文本（新增一张卡 = anchor 所在区块末尾 + 新卡片内容；状态行变更同理）。
@@ -93,6 +98,10 @@ class SaveArtifactInput(BaseModel):
     replacement: str | None = Field(default=None, description="edit 模式：替换后的文本")
     content: str | None = Field(default=None, description="full 模式：完整新内容；append 模式：本次完整正文单元（普通批次或Skill完整场景）")
     draft: bool = Field(default=False, description="仅卷纲：以修订草稿为编辑基线")
+    unit_kind: Literal["ordinary", "skill_scene"] | None = Field(
+        default=None, description="正文新建/追加：ordinary普通单元；skill_scene当前剧情匹配的完整技能场景。修订与其他产物无需填写。",
+    )
+    skill_name: str | None = Field(default=None, description="skill_scene时填写已启用技能的原名；普通单元留空。")
 
 
 def _quote_norm(s: str) -> str:
@@ -197,6 +206,8 @@ def build_save_artifact_tool(
     *, recorder=None, trace_id: str | None = None,
     agent_name: str = "author-subagent",
     append_batches: dict | None = None,
+    writing_context: str | None = None,
+    enabled_skill_names: set[str] | None = None,
 ) -> StructuredTool:
     """构建落盘工具。
 
@@ -208,6 +219,8 @@ def build_save_artifact_tool(
         trace_id:        当前追踪会话标识（None = 无追踪场景）。
         agent_name:      取证事件的 agent 名（用 trace 埋点名，如 author-subagent）。
         append_batches:  追加批次计数（正文分段生长回执用；None = 工具自持）。
+        writing_context: 当前 author 规程与启用技能；None 保持旧调用兼容。
+        enabled_skill_names: 同轮启用技能原名；None 兼容旧执行端的标题核验。
     """
     append_batches = append_batches if append_batches is not None else {}
 
@@ -258,7 +271,8 @@ def build_save_artifact_tool(
               chapter: int | None = None,
               mode: str = "edit",
               anchor: str | None = None, replacement: str | None = None,
-              content: str | None = None, draft: bool = False) -> str:
+              content: str | None = None, draft: bool = False,
+              unit_kind: str | None = None, skill_name: str | None = None) -> str:
         if draft and kind != KIND_VOLUME:
             return "[save_artifact 失败] draft 仅卷纲可用。"
         try:
@@ -297,6 +311,23 @@ def build_save_artifact_tool(
             if read_entry.get("content_hash") != fingerprint:
                 return "[save_artifact 拒绝] 卷纲自读取后已变化，请重新 read_artifact 后合并修改。"
 
+        is_draft_unit = kind == KIND_TEXT and (mode == "append" or (mode == "full" and not exists))
+        if is_draft_unit:
+            if writing_context is not None and unit_kind is None:
+                return "[save_artifact 拒绝·文件未变] 请注明 unit_kind：普通单元 ordinary；匹配的完整技能场景 skill_scene，并填写 skill_name 原名。"
+            if unit_kind == "ordinary" and _body_char_count(content or "") > 450:
+                return (
+                    f"[save_artifact 拒绝·文件未变] 普通单元实际约 {_body_char_count(content or '')} 字，超过 450 字的自然停顿余量。"
+                    "请只推进当前一步，控制在 300-400 字，把后续普通剧情留到下一单元；不硬切句，也不将普通段落冒充技能场景。"
+                )
+            if unit_kind == "skill_scene" and (
+                not (skill_name or "").strip()
+                or (enabled_skill_names is not None and skill_name not in enabled_skill_names)
+                or (enabled_skill_names is None and writing_context is not None
+                    and f"### {skill_name}——" not in writing_context)
+            ):
+                return "[save_artifact 拒绝·文件未变] skill_scene 需要填写当前已启用技能的原名；不能用未启用的技能绕过普通批长。"
+
         if mode == "full":
             if content is None or not content.strip():
                 return "[save_artifact 失败] mode=full 需要 content（完整新内容）。"
@@ -310,7 +341,7 @@ def build_save_artifact_tool(
             lines = len(content.splitlines())
             text_info = (
                 f"本次正文单元约 {_body_char_count(content)} 字。{_TEXT_UNIT_GUIDANCE}"
-                if kind == KIND_TEXT else ""
+                if is_draft_unit else ""
             )
             return f"已落盘 {_describe(kind, volume, chapter, name)}（全量 {lines} 行）。{text_info}"
 
@@ -409,12 +440,16 @@ def build(abc):
         except Exception:  # noqa: BLE001 — 不可写时工具自持（回执序号从第 1 批重数）
             pass
     ctx = getattr(abc, "ctx", None)
+    styles = getattr(ctx, "styles", None) or {}
+    skill_names = styles.get("_writing_skill_names")
     return build_save_artifact_tool(
         abc.workspace_path, registry, failures,
         recorder=getattr(ctx, "trace_recorder", None),
         trace_id=getattr(ctx, "trace_id", None),
         agent_name=getattr(abc, "trace_name", None) or "author-subagent",
         append_batches=append_batches,
+        writing_context=styles.get("author"),
+        enabled_skill_names=set(json.loads(skill_names)) if skill_names is not None else None,
     )
 
 

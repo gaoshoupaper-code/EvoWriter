@@ -121,6 +121,19 @@ class TestCompose:
 # ── styles 合成与兜底（FR-003 失败语义）────────────────────
 
 class TestApply:
+    def test_scene_name_metadata_uses_the_same_exact_skill_snapshot(self, svc, seeded):
+        import json
+
+        owner, workspace_id, path, _ = seeded
+        snapshot = [{"name": "谈判——扩展", "description": "场景", "content": "只在谈判时使用，占3批。"}]
+        out = svc._apply_user_writing_skills(
+            styles={"author": "段规程正文"}, agent_name="author", workspace_id=workspace_id,
+            owner_id=owner, workspace_path=path, stage_skills=snapshot,
+        )
+        assert json.loads(out["_writing_skill_names"]) == ["谈判——扩展"]
+        assert "_writing_skill_names" not in out["author"]
+        assert "谈判——扩展" in out["author"]
+
     def test_appends_after_stage_prompt(self, svc, seeded):
         u1, ws_id, ws_path, _ = seeded
         styles = {"author": "段规程正文"}

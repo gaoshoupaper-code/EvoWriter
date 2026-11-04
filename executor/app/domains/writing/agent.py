@@ -546,6 +546,12 @@ class MetaAgentService(BaseAgentService):
             merged = dict(styles or {})
             if stage_skills is None:
                 stage_skills = self._list_enabled_stage_skills(workspace_id, owner_id, workspace_path) or []
+            from app.domains.writing.pipeline import classify_workspace, current_stage
+
+            if classify_workspace(workspace_path) == "five" and current_stage(workspace_path) == "text":
+                merged["_writing_skill_names"] = json.dumps(
+                    [skill["name"] for skill in stage_skills], ensure_ascii=False,
+                )
             suffix = self._compose_user_writing_skills(
                 workspace_id, owner_id, workspace_path, skills=stage_skills,
             )

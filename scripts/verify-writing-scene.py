@@ -314,7 +314,8 @@ def seed_book(workspace: Path, case: str) -> dict:
             "skill": skill, "target_chars": target_chars, "plot": plot}
 
 
-async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict:
+async def run_case(case: str, output: Path, runtime: Path, settings, db, *,
+                   initial_chapter: str | None = None, first_prompt: str | None = None) -> dict:
     from app.domains.writing.agent import MetaAgentService
     from app.domains.writing.styling.store import CreateTypeStore
     from app.platform.core.db import UserRepository, WritingSkillRepository
@@ -331,6 +332,11 @@ async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict
     thread = store.create_thread(owner, book.workspace_id, f"验收-{case}")
     workspace = Path(book.workspace_path)
     fixture = seed_book(workspace, case)
+    chapter_path = workspace / "正文/第001章.md"
+    if initial_chapter is not None:
+        chapter_path.parent.mkdir(parents=True, exist_ok=True)
+        chapter_path.write_text(initial_chapter, encoding="utf-8")
+        fixture["seeded_chapter_sha256"] = hashlib.sha256(initial_chapter.encode("utf-8")).hexdigest()
     skills = WritingSkillRepository(db)
     ids = []
     if fixture["skill"]:
@@ -342,7 +348,6 @@ async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict
     fixture["enabled_skill_names"] = sorted(enabled_skill_names)
     dump(case_dir / "fixture.json", fixture)
     shutil.copytree(workspace, case_dir / "input")
-    chapter_path = workspace / "正文/第001章.md"
     writes, reviews, trace_ids, statuses = [], [], [], []
     before_resume = None
     last_saved = chapter_path.read_text(encoding="utf-8") if chapter_path.exists() else ""
@@ -424,6 +429,8 @@ async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict
                 message = "写第1章。" if round_index == 0 else "继续完成第1章。"
                 if case == "overflow" and round_index == 0:
                     message = "继续完成第1章现有起草中正文。"
+                if round_index == 0 and first_prompt is not None:
+                    message = first_prompt
                 request = ScreenplayGenerateRequest(thread_id=thread.thread_id, prompt=message)
                 with (case_dir / f"round-{round_index + 1}.sse").open("w", encoding="utf-8") as stream:
                     try:

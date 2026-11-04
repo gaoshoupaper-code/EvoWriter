@@ -1,0 +1,403 @@
+#!/usr/bin/env python3
+"""Run scene acceptance cases against the production writing chain, on the server.
+
+Example (inside the executor container):
+    python /tmp/verify-writing-scene.py --output-dir /tmp/scene-check --cases middle,no_match
+
+Uses real model calls (provider tokens are consumed), isolated SQLite, synthetic
+authors and books. Never imports app.main or changes a real author's settings.
+Results are evidence for editorial review, not an automatic literary-quality grade.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import sys
+import tempfile
+import traceback
+import uuid
+
+
+CASES = (
+    "middle", "opening", "no_match", "no_skill", "style_only", "budget_one",
+    "budget_four", "budget_missing", "overflow", "resume_before", "resume_after",
+)
+NEGOTIATION = (
+    "沈砚到启明商行买灯油。贺掌柜报价八十枚银币，沈砚只有六十枚。"
+    "沈砚先要求降价，贺掌柜明确拒绝。沈砚发现商行货船被坏水闸堵住，"
+    "提出今夜免费修水闸换取降价。贺掌柜因货船不能再耽搁而接受六十枚银币。"
+    "沈砚交出铜印作抵押，约定午夜前修好，否则铜印被没收。"
+    "报价、拒绝、交换条件、带代价的约定都实际发生；让步原因清楚。"
+)
+BEFORE = (
+    "沈砚先在渡口办理夜航登记，核验旧票和路线，发现船要滞留到天明。"
+    "铜印一直收在内袋，身上只有六十枚银币；登记时尚未见到贺掌柜。"
+)
+AFTER = (
+    "沈砚拿到灯油后出门，检查灯芯，沿河堤寻找南门的修闸入口。"
+    "他避开塌陷的石阶，核对水位，确认要从闸底入手。"
+    "章末钩子：南门门缝里被人塞进一张黑色船票，落款竟是沈砚的名字。"
+)
+QUIET = (
+    "沈砚在渡口登记夜航，核验旧票，查清封航原因。随后他回空仓取工具，"
+    "逐项核验损耗，沿河堤寻找南门的修闸入口，避开塌陷石阶并核对水位。"
+    "本章没有买卖、讨价还价或谈判，不出现贺掌柜。"
+    "章末钩子：南门门缝里出现一张黑色船票，落款竟是沈砚的名字。"
+)
+
+
+def dump(path: Path, value) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def error_frames(exc: BaseException) -> list[dict]:
+    # Stack locations are useful diagnostics without exception messages/locals,
+    # which can contain credentials from a failed HTTP request.
+    return [{"file": frame.filename, "line": frame.lineno, "function": frame.name}
+            for frame in traceback.extract_tb(exc.__traceback__)]
+
+
+def body(text: str) -> str:
+    return "\n".join(line for line in text.splitlines()
+                     if not line.startswith(("#", "> 状态"))).strip()
+
+
+def text_of(args: dict) -> str:
+    return str(args.get("content") or args.get("replacement") or "")
+
+
+def scene_evidence(text: str) -> dict:
+    """Check actual prose, keeping excerpts so a reader can verify the inference."""
+    patterns = {
+        "offer": r"(?:八十|80)(?:枚)?(?:银币)?",
+        "refusal": r"拒绝|不卖|不行|不成|摇头|不肯|不答应|休想|不降",
+        "exchange": r"水闸|修闸",
+        "cost": r"铜印",
+        "agreed_price": r"(?:六十|60)(?:枚)?(?:银币)?",
+    }
+    matches = {}
+    for name, pattern in patterns.items():
+        found = re.search(pattern, text)
+        matches[name] = None if found is None else {
+            "offset": found.start(),
+            "excerpt": text[max(0, found.start() - 45):found.end() + 90],
+        }
+    return {"all_anchors_present": all(matches.values()), "anchors": matches,
+            "note": "正文证据候选；仍须人工核对拒绝、交换因果、约定及代价，不能仅凭词语判通过。"}
+
+
+def is_scene_piece(text: str) -> bool:
+    return bool(re.search(r"(?:八十|80)(?:枚)?", text)) and "贺" in text
+
+
+def add_import_paths() -> None:
+    root = Path(__file__).resolve().parent.parent
+    for candidate in (root, root / "executor", Path.cwd(), Path.cwd() / "executor",
+                      Path("/app"), Path("/app/executor")):
+        if (candidate / "app/platform").is_dir() or (candidate / "contracts").is_dir():
+            sys.path.insert(0, str(candidate))
+
+
+def isolate_settings(runtime: Path):
+    from app.platform.core.settings import get_settings
+    from app.platform.agent.binding_client import _resolve_executor_path
+
+    original = get_settings()
+    source_known = _resolve_executor_path(original.known_production_path)
+    # Secret-bearing model caches stay outside the deliverable evidence directory.
+    overrides = {
+        "DB_PATH": runtime / "acceptance.db", "WORKSPACE_ROOT": runtime / "workspace",
+        "MEMORY_DIR": runtime / "memory", "LLM_CONFIG_CACHE_DIR": runtime / "llm-cache",
+        "ARTIFACT_CACHE_DIR": runtime / "artifacts", "BINDING_SPOOL_DIR": runtime / "bindings",
+        "KNOWN_PRODUCTION_PATH": runtime / "known-production.json",
+        "OUTCOME_BUFFER_PATH": runtime / "outcomes.db", "EVOLUTION_NOTIFY_URL": "",
+    }
+    if source_known.is_file():
+        shutil.copy2(source_known, overrides["KNOWN_PRODUCTION_PATH"])
+    for key, value in overrides.items():
+        os.environ[key] = str(value)
+    get_settings.cache_clear()
+    return get_settings()
+
+
+def seed_book(workspace: Path, case: str) -> dict:
+    from contracts.writing_artifacts import WritingState, save_writing_state
+
+    scene = case not in {"no_match", "no_skill", "style_only"}
+    budget = {"budget_one": 1, "budget_four": 4}.get(case, 3)
+    plot = QUIET if not scene else (
+        ("" if case == "opening" else BEFORE) + NEGOTIATION + AFTER)
+    files = {
+        "主题.md": "# 主题 · 夜航\n> 状态：定稿\n\n一句话主题：沈砚修闸换取夜航机会。\n核心爽点：靠手艺争取主动。\n",
+        "总纲.md": "# 总纲 · 夜航\n> 状态：定稿\n\n## 核心纲\n| 卷 | 小目标 | 地图 | BOSS | 关键节点 |\n|---|---|---|---|---|\n| 一 | 修闸通航 | 渡口 | 无 | 查清黑色船票来历 |\n\n## 伏笔登记表\n暂无。\n",
+        "文风.md": "# 文风 · 夜航\n> 状态：定稿\n\n第三人称限知，贴近沈砚。单章目标2400字。叙述清楚自然，细节具体。无超能力，无等级数值，无感情线。\n",
+        "卷纲/第01卷.md": "# 第一卷 · 夜航\n> 状态：定稿\n\n## 发展阶段\n沈砚修闸通航。\n## 剧情推进表\n本卷章号范围：1-1\n| 章号 | 剧情安排 | 主角想要 | 当前矛盾 | 爽点推进 |\n|---|---|---|---|---|\n| 1 | 修闸前取得工具与灯油 | 今夜通航 | 钱少且时间紧 | 用手艺争取机会 |\n## 爽点质检表\n本章无支配或羞辱情节。\n## 卷末钩子\n黑色船票。\n",
+        "章纲/第001章.md": (
+            "# 第001章 · 灯下的船票\n> 状态：定稿\n\n"
+            f"**概括**：{plot}\n\n**矛盾驱动**：沈砚需要今夜修闸通航，钱与时间均有限。\n"
+            "**主角状态**：沈砚清醒克制，会修水闸，随身六十枚银币与一枚铜印。\n"
+            "**供给点**：依靠观察和手艺找到出路，不凭空获得物资。\n"
+            "**爽点与标签**：小；争取主动；不写支配、调教或羞辱。\n"
+            "**钩子**：南门门缝出现黑色船票，落款是沈砚的名字。\n"
+            "**伏笔操作**：埋下黑色船票，当前章不解释来历。\n"
+            f"**开头方案**：{'贺掌柜当面报出灯油价格。' if case == 'opening' else '沈砚办理渡口登记，发现今夜无法开船。'}\n"
+            "**修法承接**：无。\n**既有人物**：沈砚、贺掌柜；不新增具名角色。\n"
+        ),
+    }
+    for rel, content in files.items():
+        target = workspace / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+    save_writing_state(workspace, WritingState(
+        stage="text", confirmed_stage="text", stage_modes={"text": "auto"}, text_batch_size=1))
+    if case == "overflow":
+        # A persisted, near-target draft makes the chapter-budget conflict observable.
+        observations = [
+            "涨水淹了旧刻线", "横梁有一道新裂纹", "绳扣被水泡松", "西岸的路已塌了半边",
+            "旧票背面留着昨夜的验讫印", "夜航名册没有漏页", "仓门锁芯仍能转动", "石阶长着湿苔",
+            "借来的扳手有缺口", "灯芯尚未剪齐", "系船柱已经松动", "仓内没有可用灯油",
+            "河水里夹着碎木", "工具箱底板有些受潮", "登记处只剩一盏灯", "南门的路牌倒在草中",
+            "远处传来一声断续的钟响", "封航告示钉在门框上", "夜风从破瓦间钻进来", "旧图上标着泄水口",
+        ]
+        paragraphs = [
+            f"沈砚查到第{index + 1}处时，发现{detail}。他没有急着动手，先把眼前的情况记在旧票空白处，"
+            "再和沿路看见的水势核对。今晚剩下的时间不多，贸然试错只会白费力气。"
+            "他确认笔记没有沾水，便收好旧票，继续往下一处走。"
+            for index, detail in enumerate(observations)
+        ]
+        prefix = "# 第001章 · 灯下的船票\n> 状态：起草中\n\n" + "\n\n".join(paragraphs)
+        target = workspace / "正文/第001章.md"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(prefix + "\n\n沈砚清点六十枚银币，按住内袋里的铜印，走进启明商行。\n", encoding="utf-8")
+    skill = None
+    if case not in {"no_skill", "style_only"}:
+        allocation = "" if case == "budget_missing" else f"本场景占{budget}批的篇幅。\n"
+        skill = ("只在剧情真正进入当面买卖谈判时使用；不凭空增加谈判。\n" + allocation +
+                 "写足报价、拒绝、交换条件、附带代价的约定四个过程。"
+                 "报价必须来自卖方，拒绝后买方才找到可交换的条件；卖方的让步有具体利益，"
+                 "约定明确双方所得与违约代价。用动作、对话和反应呈现，不用结果概述替代过程。")
+    elif case == "style_only":
+        skill = "全章叙述自然具体，对话符合人物身份。禁用‘命运的齿轮’。本技能没有场景生成任务。"
+    return {"expected_scene": scene, "budget": None if case == "budget_missing" else budget,
+            "skill": skill, "target_chars": 2400, "plot": plot}
+
+
+async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict:
+    from app.domains.writing.agent import MetaAgentService
+    from app.domains.writing.styling.store import CreateTypeStore
+    from app.platform.core.db import UserRepository, WritingSkillRepository
+    from app.platform.state.thread_store import ThreadStore
+    from app.platform.trace.recorder import TraceRecorder
+    from app.schemas.screenplay import ScreenplayGenerateRequest
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    case_dir = output / case
+    case_dir.mkdir()
+    owner = UserRepository(db).create(username=f"scene_{uuid.uuid4().hex}", password=uuid.uuid4().hex)["user_id"]
+    store = ThreadStore(db, runtime / "workspace")
+    book = store.create_workspace(owner, f"验收-{case}")
+    thread = store.create_thread(owner, book.workspace_id, f"验收-{case}")
+    workspace = Path(book.workspace_path)
+    fixture = seed_book(workspace, case)
+    skills = WritingSkillRepository(db)
+    ids = []
+    if fixture["skill"]:
+        ids.append(skills.create(owner_id=owner, name="验收文风" if case == "style_only" else "验收谈判",
+                                 description="隔离验收夹具", content=fixture["skill"], stage="text")["skill_id"])
+    skills.set_enabled_for_stage(owner, "text", ids)
+    dump(case_dir / "fixture.json", fixture)
+    shutil.copytree(workspace, case_dir / "input")
+    chapter_path = workspace / "正文/第001章.md"
+    writes, reviews, trace_ids, statuses = [], [], [], []
+    before_resume = None
+    last_saved = chapter_path.read_text(encoding="utf-8") if chapter_path.exists() else ""
+    injected = False
+
+    class Recorder(TraceRecorder):
+        def append_event(self, trace_id, values):
+            nonlocal injected, last_saved
+            event = super().append_event(trace_id, values)
+            if trace_id not in trace_ids:
+                trace_ids.append(trace_id)
+            args = values.get("tool_args") or {}
+            chapter_save = (values.get("tool_name") == "save_artifact" and
+                            args.get("kind") == "chapter_text")
+            text = text_of(args)
+            if chapter_save and values.get("type") == "tool_end":
+                current = chapter_path.read_text(encoding="utf-8") if chapter_path.exists() else ""
+                record = {"trace_id": trace_id, "sequence": event.sequence,
+                          "call_id": values.get("tool_call_id"), "mode": args.get("mode", "edit"),
+                          "piece": text, "piece_chars": len(body(text)), "saved_chars": len(body(current)),
+                          "changed_saved_text": current != last_saved,
+                          "scene": scene_evidence(text), "tool_output": values.get("tool_output"),
+                          "snapshot": f"writes/{len(writes) + 1:03d}.md"}
+                writes.append(record)
+                last_saved = current
+                target = case_dir / record["snapshot"]
+                target.parent.mkdir(exist_ok=True)
+                target.write_text(current, encoding="utf-8")
+            if values.get("type") == "tool_start" and values.get("tool_name") == "task" and args.get("subagent_type") == "review":
+                current = chapter_path.read_text(encoding="utf-8") if chapter_path.exists() else ""
+                reviews.append({"trace_id": trace_id, "sequence": event.sequence,
+                                "writes_before_review": len(writes), "chars": len(body(current)),
+                                "hook_present": "黑色船票" in current,
+                                "state_lines": [line for line in current.splitlines() if line.startswith("> 状态")],
+                                "scene": scene_evidence(current)})
+            boundary = "tool_start" if case == "resume_before" else "tool_end"
+            if (case.startswith("resume_") and not injected and chapter_save and
+                    values.get("type") == boundary and is_scene_piece(text)):
+                # Fault injection occurs at the real tool boundary, after real model
+                # generation. No model/tool result or checkpoint is substituted.
+                injected = True
+                self.flush_sync(trace_id)
+                raise asyncio.CancelledError(f"acceptance:{case}")
+            return event
+
+    recorder = Recorder()
+    recorder.start_drain()
+    checkpoint_path = runtime / f"{case}-checkpoints.db"
+    error = None
+    failure_frames = []
+    rounds = 2 if case.startswith("resume_") else 1
+    try:
+        for round_index in range(rounds):
+            # Reopening the saver and rebuilding the service tests persisted recovery.
+            async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as saver:
+                await saver.setup()
+                service = MetaAgentService(settings, runtime / "workspace", recorder,
+                                           CreateTypeStore(db, store.workspaces), saver)
+                message = "写第1章。" if round_index == 0 else "继续完成第1章。"
+                if case == "overflow" and round_index == 0:
+                    message = "继续完成第1章现有起草中正文。"
+                request = ScreenplayGenerateRequest(thread_id=thread.thread_id, prompt=message)
+                with (case_dir / f"round-{round_index + 1}.sse").open("w", encoding="utf-8") as stream:
+                    try:
+                        async for frame in service.generate_stream(request, thread, owner_id=owner, run_purpose="optimization"):
+                            stream.write(frame)
+                            stream.flush()
+                            if frame.startswith("event: status"):
+                                for line in frame.splitlines():
+                                    if line.startswith("data: "):
+                                        statuses.append(json.loads(line[6:]))
+                    except asyncio.CancelledError:
+                        if not injected:
+                            raise
+                if round_index == 0 and case.startswith("resume_"):
+                    before_resume = chapter_path.read_text(encoding="utf-8") if chapter_path.exists() else ""
+                    (case_dir / "before-resume.md").write_text(before_resume, encoding="utf-8")
+                    if not injected:
+                        break
+    except Exception as exc:
+        error = type(exc).__name__
+        failure_frames = error_frames(exc)
+    finally:
+        await recorder.aclose()
+    final = chapter_path.read_text(encoding="utf-8") if chapter_path.exists() else ""
+    (case_dir / "chapter.md").write_text(final, encoding="utf-8")
+    events = []
+    for trace_id in trace_ids:
+        events.extend(event.model_dump(mode="json") for event in
+                      recorder.read_trace_events(trace_id, hydrate_payloads=True) or [])
+    dump(case_dir / "events-hydrated.json", events)
+    dump(case_dir / "writes.json", writes)
+    dump(case_dir / "reviews.json", reviews)
+    snapshots = []
+    for trace_id in trace_ids:
+        run = recorder.find_run_by_trace_id(trace_id, workspace_path=str(workspace))
+        if run:
+            snapshots.append({"trace_id": trace_id, "status": run.status,
+                              "run_snapshot": run.model_dump(mode="json").get("run_snapshot", {})})
+    from app.platform.agent.loader import production_commit
+    first_review = reviews[0]["writes_before_review"] if reviews else len(writes)
+    draft_pieces = [write for write in writes[:first_review]
+                    if write["mode"] in {"append", "full"} and write["changed_saved_text"]]
+    scene_writes = [write for write in draft_pieces if is_scene_piece(write["piece"])]
+    summary = {
+        "case": case, "error": error, "error_frames": failure_frames,
+        "production_commit": production_commit(),
+        "trace_ids": trace_ids, "statuses": statuses, "run_snapshots": snapshots,
+        "final_chars": len(body(final)), "target_chars": fixture["target_chars"],
+        "exceeded_target_by_ten_percent": len(body(final)) > fixture["target_chars"] * 1.1,
+        "save_tool_end_count": len(writes),
+        "changed_save_count": sum(write["changed_saved_text"] for write in writes),
+        "draft_piece_lengths": [write["piece_chars"] for write in draft_pieces],
+        "scene_write_candidates": [{"sequence": write["sequence"], "chars": write["piece_chars"],
+                                    "all_anchors_present": write["scene"]["all_anchors_present"]} for write in scene_writes],
+        "complete_scene_in_one_piece_observed": bool(scene_writes and scene_writes[0]["scene"]["all_anchors_present"]),
+        "final_scene_evidence": scene_evidence(body(final)), "review_calls": reviews,
+        "interruption_injected": injected, "saved_before_resume_chars": len(body(before_resume or "")),
+        "saved_before_resume_sha256": hashlib.sha256((before_resume or "").encode()).hexdigest() if before_resume is not None else None,
+        "exact_saved_prefix_preserved": final.startswith(before_resume) if before_resume else None,
+        "requires_editorial_review": True,
+        "review_instructions": [
+            "核对正文中的四个过程与让步原因；词语出现不等于因果成立。",
+            "对照 writes.json 与逐次快照，区分失败尝试、起草追加、审稿修订；N 不等于调用次数。",
+            "检查场景前后的普通批次、真实触发位置、时间/数字/因果/道具与章末钩子。",
+            "恢复用例检查实际已保存内容及重启后的写入；审稿改字可能改变精确前缀，不能只看哈希。",
+        ],
+    }
+    dump(case_dir / "summary.json", summary)
+    shutil.copytree(workspace / ".writing", case_dir / "writing-state", dirs_exist_ok=True)
+    return summary
+
+
+async def execute(args, output: Path) -> dict:
+    add_import_paths()
+    from app.platform.core.db import Database, init_database
+    from app.platform.core.security import generate_master_key, load_master_key
+    from app.platform.memory.store import MemoryStorePool, init_memory_store_pool
+
+    with tempfile.TemporaryDirectory(prefix="writer-scene-runtime-") as temp:
+        runtime = Path(temp)
+        settings = isolate_settings(runtime)
+        db = Database(runtime / "acceptance.db", load_master_key(generate_master_key()))
+        init_database(db)
+        memory_pool = MemoryStorePool(runtime / "memory")
+        init_memory_store_pool(memory_pool)
+        results = []
+        try:
+            for case in args.cases:
+                print(json.dumps({"case": case, "status": "running"}), flush=True)
+                result = await run_case(case, output, runtime, settings, db)
+                results.append(result)
+                dump(output / "summary.json", {"cases": results, "requires_editorial_review": True})
+                print(json.dumps({"case": case, "status": "evidence_saved", "error": bool(result["error"]),
+                                  "chars": result["final_chars"], "commit": result["production_commit"]}), flush=True)
+        finally:
+            await memory_pool.aclose_all()
+            db.close()
+        return {"cases": results, "requires_editorial_review": True}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--cases", default="middle,no_match", help="Comma-separated case names, or all")
+    args = parser.parse_args()
+    args.cases = list(CASES) if args.cases == "all" else list(dict.fromkeys(args.cases.split(",")))
+    unknown = set(args.cases) - set(CASES)
+    if unknown:
+        parser.error(f"Unknown cases: {', '.join(sorted(unknown))}")
+    output = args.output_dir.resolve() / (datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
+    output.mkdir(parents=True)
+    print(json.dumps({"output_dir": str(output)}), flush=True)
+    try:
+        result = asyncio.run(execute(args, output))
+        return int(any(case["error"] for case in result["cases"]))
+    except Exception as exc:
+        # Avoid printing configuration, HTTP headers, or exception text containing credentials.
+        dump(output / "fatal.json", {"error_type": type(exc).__name__, "frames": error_frames(exc)})
+        print(json.dumps({"status": "failed", "error_type": type(exc).__name__}), flush=True)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -284,6 +284,27 @@ def build_save_artifact_tool(
         + "。只填原名，不附带标题中的描述。"
         if enabled_skill_names is not None else ""
     )
+    workspace_fingerprint = (
+        hashlib.sha256(str(workspace_root.resolve()).encode("utf-8")).hexdigest()
+        if writing_context is not None else ""
+    )
+
+    def _saved_receipt(receipt: str, kind: str, chapter: int | None, path: Path,
+                       is_writing_unit: bool = False) -> str | tuple[str, dict]:
+        if writing_context is None or kind != KIND_TEXT:
+            return receipt
+        try:
+            actual = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            # 正文已保存；无法复核真实状态时不声称有完成凭证。
+            return receipt
+        lines, end = _header_metadata(actual)
+        status = next((re.split(r"[｜|]", line[len("> 状态："):].strip(), maxsplit=1)[0].strip()
+                       for line in lines[:end] if line.startswith("> 状态：")), "")
+        return receipt, {"writer_text": {
+            "workspace": workspace_fingerprint, "chapter": chapter, "event": "save",
+            "is_writing_unit": is_writing_unit, "status": status,
+        }}
 
     def _register(rel: str, text: str, kind: str) -> None:
         """落盘成功后登记读取状态：内容刚由本工具写出，后续 append/edit 视为已读。
@@ -333,7 +354,7 @@ def build_save_artifact_tool(
               mode: str = "edit",
               anchor: str | None = None, replacement: str | None = None,
               content: str | None = None, draft: bool = False,
-              unit_kind: str | None = None, skill_name: str | None = None) -> str:
+              unit_kind: str | None = None, skill_name: str | None = None) -> str | tuple[str, dict]:
         if draft and kind != KIND_VOLUME:
             return "[save_artifact 失败] draft 仅卷纲可用。"
         try:
@@ -426,7 +447,8 @@ def build_save_artifact_tool(
                 f"本次正文单元约 {_body_char_count(content)} 字。{_TEXT_UNIT_GUIDANCE}"
                 if is_draft_unit else ""
             )
-            return f"已落盘 {_describe(kind, volume, chapter, name)}（全量 {lines} 行）。{text_info}{_progress_receipt(progress)}"
+            receipt = f"已落盘 {_describe(kind, volume, chapter, name)}（全量 {lines} 行）。{text_info}{_progress_receipt(progress)}"
+            return _saved_receipt(receipt, kind, chapter, path, is_draft_unit)
 
         # ── mode=append：正文分段生长（每批一段落一批）──
         # 追加到文件末尾，不做锚点匹配——50 字短段当锚点在文件里极易撞到重复句，
@@ -464,7 +486,7 @@ def build_save_artifact_tool(
                 progress_guidance = "历史次数未知，不补造累计次数；本轮追加序号仅供续写参考，完整场景不拆批。"
             else:
                 progress_guidance = "按本章实际成功写入次数更新进度，依正文规程规划下一个单元；完整场景不拆批。"
-            return (
+            receipt = (
                 f"已追加落盘 {_describe(kind, volume, chapter, name)}：本轮追加第 {batch} 次，"
                 f"正文本体累计约 {chars} 字。"
                 f"{text_info}"
@@ -472,6 +494,7 @@ def build_save_artifact_tool(
                 "此序号仅计本轮追加保存次数，不含首次 full，不代表 Skill 篇幅预算。"
                 f"{progress_guidance}"
             )
+            return _saved_receipt(receipt, kind, chapter, path, is_draft_unit)
 
         # ── mode=edit ──
         if failures.get(rel, 0) >= _EDIT_FAILURE_CAP:
@@ -498,14 +521,20 @@ def build_save_artifact_tool(
         _capture_revision(rel, new_text)
         _register(rel, new_text, kind)
         failures.pop(rel, None)
-        return f"已落盘 {_describe(kind, volume, chapter, name)}（校验编辑：替换 {hits} 处，仅目标区段变更）。{_progress_receipt(progress)}"
+        receipt = f"已落盘 {_describe(kind, volume, chapter, name)}（校验编辑：替换 {hits} 处，仅目标区段变更）。{_progress_receipt(progress)}"
+        return _saved_receipt(receipt, kind, chapter, path)
+
+    def _native_save(*args, **kwargs):
+        result = _save(*args, **kwargs)
+        return result if isinstance(result, tuple) else (result, None)
 
     return StructuredTool.from_function(
         name="save_artifact",
         description=SAVE_ARTIFACT_TOOL_DESCRIPTION + ("\n" + skill_names_hint if skill_names_hint else ""),
-        func=_save,
+        func=_native_save,
         args_schema=SaveArtifactInput,
         infer_schema=False,
+        response_format="content_and_artifact",
     )
 
 

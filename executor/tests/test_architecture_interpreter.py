@@ -86,7 +86,7 @@ def test_manifest_shape_single_agent():
     assert main.delegates == ["review", "volume_qc"]
     assert [a.name for a in manifest.sub_agents] == ["review", "volume_qc"]
     # 调用纠错不能替换原阶段硬闸，两个机制独立挂载。
-    assert main.middleware == ["stage_gate", "tool_call_recovery"]
+    assert main.middleware == ["stage_gate", "text_completion", "tool_call_recovery"]
     assert main.skills == []
     assert main.disable_file_tools is True  # 路径收权（FR-003）
     assert main.write_permissions == []

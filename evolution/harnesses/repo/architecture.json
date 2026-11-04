@@ -9,6 +9,7 @@
    "prompt": "prompts/author_base.md",
    "middleware": [
     "stage_gate",
+    "text_completion",
     "tool_call_recovery"
    ],
    "skills": [],

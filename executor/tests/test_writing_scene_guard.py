@@ -121,6 +121,23 @@ def test_em_dash_skill_name_requires_the_entire_trusted_name(tmp_path, name):
         assert not (tmp_path / REL).exists()
 
 
+def test_wrong_heading_name_can_be_corrected_without_splitting_the_scene(tmp_path):
+    tool = _tool(tmp_path)
+    assert f'"{SKILL}"' in tool.description
+
+    rejected = _save(tool, content=SCENE, unit_kind="skill_scene", skill_name=SKILL + "——场景说明")
+
+    assert "拒绝" in rejected
+    assert f'"{SKILL}"' in rejected
+    assert "不得改为 ordinary" in rejected
+    assert not (tmp_path / REL).exists()
+
+    saved = _save(tool, content=SCENE, unit_kind="skill_scene", skill_name=SKILL)
+
+    assert "已落盘" in saved
+    assert (tmp_path / REL).read_text(encoding="utf-8") == HEADER + SCENE
+
+
 @pytest.mark.parametrize("mode", ["full", "append"])
 def test_empty_trusted_skill_set_cannot_claim_a_skill_from_prompt_text(tmp_path, mode):
     previous = HEADER + "已保存前文。\n" if mode == "append" else None

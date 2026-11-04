@@ -28,6 +28,7 @@ import uuid
 CASES = (
     "middle", "opening", "no_match", "no_skill", "style_only", "budget_one",
     "budget_four", "budget_missing", "overflow", "resume_before", "resume_after",
+    "tail", "long_chapter",
 )
 NEGOTIATION = (
     "沈砚到启明商行买灯油。贺掌柜报价八十枚银币，沈砚只有六十枚。"
@@ -50,6 +51,30 @@ QUIET = (
     "逐项核验损耗，沿河堤寻找南门的修闸入口，避开塌陷石阶并核对水位。"
     "本章没有买卖、讨价还价或谈判，不出现贺掌柜。"
     "章末钩子：南门门缝里出现一张黑色船票，落款竟是沈砚的名字。"
+)
+TAIL_APPROACH = (
+    "沈砚先沿河堤寻找南门修闸入口，避开塌陷石阶，核对石标尺上的水位。"
+    "他结合维护图确认闸底尚有落脚位置，但没有耐潮灯油就无法进入暗渠检修，"
+    "因此折返启明商行买油。"
+)
+LONG_CHAPTER = (
+    "本章按以下先后经过推进，不跳过原因与处理结果。"
+    "沈砚先到渡所登记夜航，得知闸门卡死，旧票只能在今夜使用。"
+    "他核验旧票背面的验讫印，发现原登记的南堤路线已经停用。"
+    "他逐项对照封航告示与维护图，查清可以经上游栈桥绕行到涵洞入口。"
+    "为避免白跑，他回空仓清点铁钳、校准尺、麻绳与油灯，列出随身工具清单。"
+    "铁钳的齿口磨损，他从旧备件盒找出替换钳头，装好后夹木块试验咬合。"
+    "麻绳中段受潮发霉，他剪去损伤段，重新打绳扣，并用重工具箱试验承重。"
+    "校准尺的刻度沾了油污，他擦净刻度，对照木案上的旧基准线核准读数。"
+    "油灯试燃时火苗过小，他发现灯芯太短，换用箱中备用灯芯，补入仓内已有灯油并扣紧灯罩。"
+    "他按维护图上的作业顺序分装工具，将六十枚银币和铜印藏好，不消费也不抵押。"
+    "沿南堤走到断阶时，他用铁钎试探石沿，确认负重通过有坍塌风险，改走已经查清的上游栈桥。"
+    "栈桥木板湿滑，他用试验过的绳索固定背囊，降低重心，逐段试稳后通过。"
+    "到石标尺前，他发现旧泥痕会误导读数，先擦净标尺，再比对当前水线与维护图。"
+    "确认通往涵洞的落脚位置后，他向值更人出示旧票与工具清单，按登记规矩领取南门钥匙。"
+    "钥匙进入锁孔却转不动，他检查锈蚀位置，用随身工具和少量灯油处理，再试开锁。"
+    "南门打开一线，沈砚从门缝发现一张黑色船票，落款竟是自己的名字，本章到此结束。"
+    "全章没有买卖、报价、降价或谈判，不出现贺掌柜，不进入修闸后的情节。"
 )
 
 
@@ -94,8 +119,19 @@ def scene_evidence(text: str) -> dict:
             "note": "正文证据候选；仍须人工核对拒绝、交换因果、约定及代价，不能仅凭词语判通过。"}
 
 
-def is_scene_piece(text: str) -> bool:
-    return bool(re.search(r"(?:八十|80)(?:枚)?", text)) and "贺" in text
+def is_injected_cancel(exc: BaseException, marker: str) -> bool:
+    if not isinstance(exc, asyncio.CancelledError) and type(exc).__name__ != "NodeCancelledError":
+        return False
+    pending, seen = [exc], set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, asyncio.CancelledError) and str(current) == marker:
+            return True
+        pending.extend(item for item in (current.__cause__, current.__context__) if item is not None)
+    return False
 
 
 def add_import_paths() -> None:
@@ -131,15 +167,22 @@ def isolate_settings(runtime: Path):
 def seed_book(workspace: Path, case: str) -> dict:
     from contracts.writing_artifacts import WritingState, save_writing_state
 
-    scene = case not in {"no_match", "no_skill", "style_only"}
+    scene = case not in {"no_match", "no_skill", "style_only", "long_chapter"}
     budget = {"budget_one": 1, "budget_four": 4}.get(case, 3)
     target_chars = (
-        2400 if case in {"middle", "overflow", "budget_four"}
+        4200 if case == "long_chapter"
+        else 2400 if case in {"middle", "overflow", "budget_four", "tail"}
         else 1800 if case in {"opening", "budget_missing", "resume_before", "resume_after"}
         else 1200
     )
     plot = QUIET if not scene else (
         ("" if case == "opening" else BEFORE) + NEGOTIATION + AFTER)
+    hook = "南门门缝出现黑色船票，落款是沈砚的名字。"
+    if case == "tail":
+        hook = "贺掌柜交付油罐时，沈砚从油罐夹层发现黑色船票，落款是沈砚的名字。"
+        plot = BEFORE + TAIL_APPROACH + NEGOTIATION + f"章末钩子：{hook}本章到此结束，不再返回河堤。"
+    elif case == "long_chapter":
+        plot = LONG_CHAPTER
     files = {
         "主题.md": "# 主题 · 夜航\n> 状态：定稿\n\n一句话主题：沈砚修闸换取夜航机会。\n核心爽点：靠手艺争取主动。\n",
         "总纲.md": "# 总纲 · 夜航\n> 状态：定稿\n\n## 核心纲\n| 卷 | 小目标 | 地图 | BOSS | 关键节点 |\n|---|---|---|---|---|\n| 一 | 修闸通航 | 渡口 | 无 | 查清黑色船票来历 |\n\n## 伏笔登记表\n暂无。\n",
@@ -151,7 +194,7 @@ def seed_book(workspace: Path, case: str) -> dict:
             "**主角状态**：沈砚清醒克制，会修水闸，随身六十枚银币与一枚铜印。\n"
             "**供给点**：依靠观察和手艺找到出路，不凭空获得物资。\n"
             "**爽点与标签**：小；争取主动；不写支配、调教或羞辱。\n"
-            "**钩子**：南门门缝出现黑色船票，落款是沈砚的名字。\n"
+            f"**钩子**：{hook}\n"
             "**伏笔操作**：埋下黑色船票，当前章不解释来历。\n"
             f"**开头方案**：{'贺掌柜当面报出灯油价格。' if case == 'opening' else '沈砚办理渡口登记，发现今夜无法开船。'}\n"
             "**修法承接**：无。\n**既有人物**：沈砚、贺掌柜；不新增具名角色。\n"
@@ -218,6 +261,9 @@ async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict
         ids.append(skills.create(owner_id=owner, name="验收文风" if case == "style_only" else "验收谈判",
                                  description="隔离验收夹具", content=fixture["skill"], stage="text")["skill_id"])
     skills.set_enabled_for_stage(owner, "text", ids)
+    enabled_skill_names = {skill["name"] for skill in skills.list_enabled_for_owner(owner)
+                           if skill["stage"] == "text"}
+    fixture["enabled_skill_names"] = sorted(enabled_skill_names)
     dump(case_dir / "fixture.json", fixture)
     shutil.copytree(workspace, case_dir / "input")
     chapter_path = workspace / "正文/第001章.md"
@@ -225,24 +271,33 @@ async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict
     before_resume = None
     last_saved = chapter_path.read_text(encoding="utf-8") if chapter_path.exists() else ""
     injected = False
+    injection = None
+    recovery_started = recovery_returned = False
 
     class Recorder(TraceRecorder):
         def append_event(self, trace_id, values):
-            nonlocal injected, last_saved
+            nonlocal injected, injection, last_saved
             event = super().append_event(trace_id, values)
             if trace_id not in trace_ids:
                 trace_ids.append(trace_id)
             args = values.get("tool_args") or {}
             chapter_save = (values.get("tool_name") == "save_artifact" and
                             args.get("kind") == "chapter_text")
+            valid_scene_request = (chapter_save and args.get("mode") in {"full", "append"}
+                                   and args.get("unit_kind") == "skill_scene"
+                                   and args.get("skill_name") in enabled_skill_names)
             text = text_of(args)
+            saved_scene = False
             if chapter_save and values.get("type") == "tool_end":
                 current = chapter_path.read_text(encoding="utf-8") if chapter_path.exists() else ""
+                reply = values.get("tool_output") or {}
+                reply_text = str(reply.get("content", "")) if isinstance(reply, dict) else str(reply)
                 record = {"trace_id": trace_id, "sequence": event.sequence,
                           "call_id": values.get("tool_call_id"), "mode": args.get("mode", "edit"),
                           "unit_kind": args.get("unit_kind"), "skill_name": args.get("skill_name"),
                           "piece": text, "piece_chars": len(body(text)), "saved_chars": len(body(current)),
                           "changed_saved_text": current != last_saved,
+                          "save_succeeded": reply_text.startswith(("已落盘", "已追加落盘")),
                           "scene": scene_evidence(text), "tool_output": values.get("tool_output"),
                           "snapshot": f"writes/{len(writes) + 1:03d}.md"}
                 writes.append(record)
@@ -250,6 +305,8 @@ async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict
                 target = case_dir / record["snapshot"]
                 target.parent.mkdir(exist_ok=True)
                 target.write_text(current, encoding="utf-8")
+                saved_scene = (valid_scene_request and record["save_succeeded"]
+                               and record["changed_saved_text"])
             if values.get("type") == "tool_start" and values.get("tool_name") == "task" and args.get("subagent_type") == "review":
                 current = chapter_path.read_text(encoding="utf-8") if chapter_path.exists() else ""
                 reviews.append({"trace_id": trace_id, "sequence": event.sequence,
@@ -258,13 +315,21 @@ async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict
                                 "state_lines": [line for line in current.splitlines() if line.startswith("> 状态")],
                                 "scene": scene_evidence(current)})
             boundary = "tool_start" if case == "resume_before" else "tool_end"
-            if (case.startswith("resume_") and not injected and chapter_save and
-                    values.get("type") == boundary and is_scene_piece(text)):
+            if (case.startswith("resume_") and not injected and valid_scene_request
+                    and values.get("type") == boundary
+                    and (case == "resume_before" or saved_scene)):
                 # Fault injection occurs at the real tool boundary, after real model
                 # generation. No model/tool result or checkpoint is substituted.
                 injected = True
+                marker = f"acceptance:{case}:{values.get('tool_call_id')}"
+                injection = {"round": round_index + 1, "trace_id": trace_id,
+                             "sequence": event.sequence, "event_type": values.get("type"),
+                             "call_id": values.get("tool_call_id"), "unit_kind": args.get("unit_kind"),
+                             "skill_name": args.get("skill_name"), "mode": args.get("mode"),
+                             "saved_scene": saved_scene, "marker": marker, "caught": False}
+                dump(case_dir / "injection.json", injection)
                 self.flush_sync(trace_id)
-                raise asyncio.CancelledError(f"acceptance:{case}")
+                raise asyncio.CancelledError(marker)
             return event
 
     recorder = Recorder()
@@ -293,9 +358,18 @@ async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict
                                 for line in frame.splitlines():
                                     if line.startswith("data: "):
                                         statuses.append(json.loads(line[6:]))
-                    except asyncio.CancelledError:
-                        if not injected:
+                                        if round_index == 1 and statuses[-1].get("status") == "started":
+                                            recovery_started = True
+                    except (asyncio.CancelledError, Exception) as exc:
+                        if (not injection or injection["round"] != round_index + 1
+                                or not is_injected_cancel(exc, injection["marker"])):
                             raise
+                        injection.update({"caught": True, "exception_type": type(exc).__name__,
+                                          "exception_frames": error_frames(exc)})
+                        dump(case_dir / "injection.json", injection)
+                    else:
+                        if round_index == 1:
+                            recovery_returned = True
                 if round_index == 0 and case.startswith("resume_"):
                     before_resume = chapter_path.read_text(encoding="utf-8") if chapter_path.exists() else ""
                     (case_dir / "before-resume.md").write_text(before_resume, encoding="utf-8")
@@ -321,8 +395,13 @@ async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict
     if not chapter_complete:
         error = "chapter_incomplete"
         error_codes.append(error)
-    if case.startswith("resume_") and not injected:
+    interruption_observed = bool(injection and injection["caught"])
+    recovery_observed = recovery_started and recovery_returned
+    if case.startswith("resume_") and not interruption_observed:
         error = "interruption_not_observed"
+        error_codes.append(error)
+    elif case.startswith("resume_") and not recovery_observed:
+        error = "recovery_not_observed"
         error_codes.append(error)
     events = []
     for trace_id in trace_ids:
@@ -341,7 +420,7 @@ async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict
     first_review = reviews[0]["writes_before_review"] if reviews else len(writes)
     draft_pieces = [write for write in writes[:first_review]
                     if write["mode"] in {"append", "full"} and write["changed_saved_text"]]
-    scene_writes = [write for write in draft_pieces if is_scene_piece(write["piece"])]
+    scene_writes = [write for write in draft_pieces if write["unit_kind"] == "skill_scene"]
     summary = {
         "case": case, "error": error, "error_codes": error_codes,
         "execution_error": execution_error, "error_frames": failure_frames,
@@ -354,10 +433,15 @@ async def run_case(case: str, output: Path, runtime: Path, settings, db) -> dict
         "changed_save_count": sum(write["changed_saved_text"] for write in writes),
         "draft_piece_lengths": [write["piece_chars"] for write in draft_pieces],
         "scene_write_candidates": [{"sequence": write["sequence"], "chars": write["piece_chars"],
+                                    "unit_kind": write["unit_kind"], "skill_name": write["skill_name"],
+                                    "enabled_name_matches": write["skill_name"] in enabled_skill_names,
                                     "all_anchors_present": write["scene"]["all_anchors_present"]} for write in scene_writes],
         "complete_scene_in_one_piece_observed": bool(scene_writes and scene_writes[0]["scene"]["all_anchors_present"]),
         "final_scene_evidence": scene_evidence(body(final)), "review_calls": reviews,
-        "interruption_injected": injected, "saved_before_resume_chars": len(body(before_resume or "")),
+        "interruption_injected": injected, "interruption_observed": interruption_observed,
+        "injection": injection, "recovery_started": recovery_started,
+        "recovery_returned": recovery_returned, "recovery_observed": recovery_observed,
+        "saved_before_resume_chars": len(body(before_resume or "")),
         "saved_before_resume_sha256": hashlib.sha256((before_resume or "").encode()).hexdigest() if before_resume is not None else None,
         "exact_saved_prefix_preserved": final.startswith(before_resume) if before_resume else None,
         "requires_editorial_review": True,

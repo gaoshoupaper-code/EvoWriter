@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -54,6 +55,11 @@ logger = logging.getLogger(__name__)
 
 # 编辑重试上限：同一产物连续失败到该次数后封死 edit、强制 full（DEC-007）
 _EDIT_FAILURE_CAP = 3
+_PROGRESS_LINE = re.compile(r"> 进度：已落 ([0-9]+) 批")
+_UNKNOWN_PROGRESS_REJECTION = (
+    "[save_artifact 拒绝·文件未变] 历史次数未知，不补造累计次数。"
+    "请移除本次提交新增的数字进度行，保留原稿后重试。"
+)
 
 _TEXT_UNIT_GUIDANCE = (
     "普通正文保持 300-400 字左右，在自然停顿落盘；"
@@ -70,6 +76,7 @@ kind 取值：theme / outline / style / volume_outline(+volume) / chapter_outlin
 - mode="append"：content = 本次完整写作单元（普通批次或 Skill 完整场景）。
   首个单元用 full 建文件，后续每个单元用 append；场景占 N 批仍只保存一次。
   回执的追加序号仅计本轮 append 次数，不含首次 full，也不是 Skill 篇幅预算。
+  正文新建由工具建立进度 1；已有标准进度由工具维护，修订不增加总数。
   append 不做锚点匹配，避免短段重复导致整章重写。
   正文新建和追加必须注明 unit_kind：ordinary（普通单元）或 skill_scene（匹配的完整技能场景）。
   skill_scene 同时填写作者已启用且当前剧情匹配的 skill_name 原名；普通单元过长会拒绝保存，先收束当前一步，不硬切句。
@@ -185,6 +192,54 @@ def _body_char_count(text: str) -> int:
             continue
         total += len(s)
     return total
+
+
+def _header_metadata(text: str) -> tuple[list[str], int]:
+    """只读开头连续的元数据行，不越过空行或正文。"""
+    lines = text.splitlines(keepends=True)
+    if not lines or not lines[0].startswith(("# ", "> 状态：")):
+        return lines, 0
+    end = 1 if lines[0].startswith("# ") else 0
+    while end < len(lines) and lines[end].startswith(("> 状态：", "> 进度：")):
+        end += 1
+    return lines, end
+
+
+def _progress_count(text: str) -> int | None:
+    lines, end = _header_metadata(text)
+    for line in lines[:end]:
+        match = _PROGRESS_LINE.fullmatch(line.rstrip("\r\n"))
+        if match:
+            return int(match.group(1))
+    return None
+
+
+def _with_progress(text: str, count: int, previous: str = "") -> str:
+    """正文修订可改状态与正文，但不能改掉已知的落盘总数。"""
+    line = f"> 进度：已落 {count} 批"
+    lines, end = _header_metadata(text)
+    newline = "\r\n" if "\r\n" in text else "\n"
+    if not end and previous:
+        old_lines, end = _header_metadata(previous)
+        # 全量修订漏掉整个文件头时，沿用旧元数据，正文仍按修订内容保存。
+        prefix = "".join(old_lines[:end]).rstrip("\r\n") + newline * 2
+        lines = (prefix + text).splitlines(keepends=True)
+    for index in range(end):
+        if lines[index].startswith("> 进度："):
+            ending = lines[index][len(lines[index].rstrip("\r\n")):]
+            lines[index] = line + ending
+            return "".join(lines)
+    if end and not lines[end - 1].endswith("\n"):
+        lines[end - 1] += newline
+    lines.insert(end, line + newline)
+    return "".join(lines)
+
+
+def _progress_receipt(count: int | None) -> str:
+    return (
+        f"本章已保存 {count} 个正文单元（含首次 full 和成功 append，不代表 Skill 篇幅预算）。"
+        if count is not None else ""
+    )
 
 
 def _describe(kind: str, volume: int | None, chapter: int | None, name: str | None = None) -> str:
@@ -317,7 +372,9 @@ def build_save_artifact_tool(
             if read_entry.get("content_hash") != fingerprint:
                 return "[save_artifact 拒绝] 卷纲自读取后已变化，请重新 read_artifact 后合并修改。"
 
-        is_draft_unit = kind == KIND_TEXT and (mode == "append" or (mode == "full" and not exists))
+        track_progress = kind == KIND_TEXT and writing_context is not None
+        uninitialized = not exists or (track_progress and not current.strip())
+        is_draft_unit = kind == KIND_TEXT and (mode == "append" or (mode == "full" and uninitialized))
         if is_draft_unit:
             if writing_context is not None and unit_kind is None:
                 return "[save_artifact 拒绝·文件未变] 请注明 unit_kind：普通单元 ordinary；匹配的完整技能场景 skill_scene，并填写 skill_name 原名。"
@@ -338,9 +395,25 @@ def build_save_artifact_tool(
                     + "若剧情已匹配场景，请改正名称后整场重试，不得改为 ordinary 拆批保存。"
                 )
 
+        if track_progress and mode == "append" and uninitialized:
+            return "[save_artifact 拒绝·文件未变] 正文尚未初始化，请先用 mode=full 建立标题、状态和进度 1，再追加正文单元。"
+        progress = _progress_count(current) if track_progress else None
         if mode == "full":
             if content is None or not content.strip():
                 return "[save_artifact 失败] mode=full 需要 content（完整新内容）。"
+            if track_progress:
+                if uninitialized:
+                    header, end = _header_metadata(content)
+                    if end < 2 or not header[0].startswith("# ") or not header[1].startswith("> 状态："):
+                        return (
+                            "[save_artifact 拒绝·文件未变] 新建正文文件头须先有标题行，再有状态行。"
+                            "请补齐 # 第NNN章 · 章名 与 > 状态：起草中｜日期 后重试。"
+                        )
+                    progress = 1
+                elif progress is None and _progress_count(content) is not None:
+                    return _UNKNOWN_PROGRESS_REJECTION
+                if progress is not None:
+                    content = _with_progress(content, progress, current)
             try:
                 _atomic_write(path, content)
             except OSError as exc:
@@ -353,7 +426,7 @@ def build_save_artifact_tool(
                 f"本次正文单元约 {_body_char_count(content)} 字。{_TEXT_UNIT_GUIDANCE}"
                 if is_draft_unit else ""
             )
-            return f"已落盘 {_describe(kind, volume, chapter, name)}（全量 {lines} 行）。{text_info}"
+            return f"已落盘 {_describe(kind, volume, chapter, name)}（全量 {lines} 行）。{text_info}{_progress_receipt(progress)}"
 
         # ── mode=append：正文分段生长（每批一段落一批）──
         # 追加到文件末尾，不做锚点匹配——50 字短段当锚点在文件里极易撞到重复句，
@@ -369,6 +442,9 @@ def build_save_artifact_tool(
                 new_text = current.rstrip("\n") + "\n\n" + body + "\n"
             else:
                 new_text = body + "\n"
+            if progress is not None:
+                progress += 1
+                new_text = _with_progress(new_text, progress)
             try:
                 _atomic_write(path, new_text)
             except OSError as exc:
@@ -382,12 +458,19 @@ def build_save_artifact_tool(
                 f"本次追加约 {_body_char_count(body)} 字。{_TEXT_UNIT_GUIDANCE}"
                 if kind == KIND_TEXT else ""
             )
+            if progress is not None:
+                progress_guidance = "进度已由工具随正文同步，依正文规程规划下一个单元；完整场景不拆批。"
+            elif track_progress:
+                progress_guidance = "历史次数未知，不补造累计次数；本轮追加序号仅供续写参考，完整场景不拆批。"
+            else:
+                progress_guidance = "按本章实际成功写入次数更新进度，依正文规程规划下一个单元；完整场景不拆批。"
             return (
                 f"已追加落盘 {_describe(kind, volume, chapter, name)}：本轮追加第 {batch} 次，"
                 f"正文本体累计约 {chars} 字。"
                 f"{text_info}"
+                f"{_progress_receipt(progress)}"
                 "此序号仅计本轮追加保存次数，不含首次 full，不代表 Skill 篇幅预算。"
-                "按本章实际成功写入次数更新进度，依正文规程规划下一个单元；完整场景不拆批。"
+                f"{progress_guidance}"
             )
 
         # ── mode=edit ──
@@ -404,6 +487,10 @@ def build_save_artifact_tool(
             failures[rel] = failures.get(rel, 0) + 1
             return f"[save_artifact 失败·文件未变] {result}"
         new_text, hits = result
+        if track_progress and progress is None and _progress_count(new_text) is not None:
+            return _UNKNOWN_PROGRESS_REJECTION
+        if progress is not None:
+            new_text = _with_progress(new_text, progress, current)
         try:
             _atomic_write(path, new_text)
         except OSError as exc:
@@ -411,7 +498,7 @@ def build_save_artifact_tool(
         _capture_revision(rel, new_text)
         _register(rel, new_text, kind)
         failures.pop(rel, None)
-        return f"已落盘 {_describe(kind, volume, chapter, name)}（校验编辑：替换 {hits} 处，仅目标区段变更）。"
+        return f"已落盘 {_describe(kind, volume, chapter, name)}（校验编辑：替换 {hits} 处，仅目标区段变更）。{_progress_receipt(progress)}"
 
     return StructuredTool.from_function(
         name="save_artifact",

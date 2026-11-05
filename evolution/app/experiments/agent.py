@@ -6,6 +6,8 @@ import json
 import subprocess
 from pathlib import Path
 
+from openai import APIConnectionError, APIStatusError
+
 from app.core import db
 from app.core.settings import settings
 from app.experiments import clients, repo
@@ -37,7 +39,12 @@ def improve_candidate(run: dict, round_record: dict, evidence: list[dict]) -> di
     round_record["session_id"] = f"{run['id']}-r{round_record['round']}"
     round_record["work_root"] = str(root)
     repo.put_run(run)
-    result = asyncio.run(_improve(run, round_record, root, evidence))
+    try:
+        result = asyncio.run(_improve(run, round_record, root, evidence))
+    except (APIConnectionError, APIStatusError) as exc:
+        if isinstance(exc, APIConnectionError) or exc.status_code in {408, 409, 429} or exc.status_code >= 500:
+            raise clients.ServiceUnavailable("进化模型暂时不可用：" + type(exc).__name__) from exc
+        raise
     if not result["validated"]:
         raise ValueError("候选源码校验未通过")
     changed = _git(root, "status", "--porcelain")
@@ -171,7 +178,8 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
         async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
             agent = create_deep_agent(model=model, tools=tools, system_prompt=prompt, middleware=middleware,
                                       subagents=None, backend=backend, checkpointer=checkpointer)
-            await _run_agent_streamed(agent, "请改进以下优化集问题并完整校验收尾：\n" + json.dumps(evidence, ensure_ascii=False), config, ctx)
+            await _run_agent_streamed(agent, "请改进以下优化集问题并完整校验收尾：\n" + json.dumps(evidence, ensure_ascii=False), config, ctx,
+                                      input_message_id=session_id + "-optimization")
         if ctx.validation_result is None:
             # A recovered checkpoint can already contain the final change log.
             validate_changes.invoke({})

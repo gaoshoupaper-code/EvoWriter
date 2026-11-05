@@ -62,6 +62,8 @@ async def _run_agent_streamed(
     user_input: str,
     config: dict[str, Any],
     ctx: "EvolveContext",
+    *,
+    input_message_id: str | None = None,
 ) -> None:
     """astream_events + EvolveEventSink → 消息持久化 + 流式广播（REQ-20261019-183921）。
 
@@ -87,8 +89,12 @@ async def _run_agent_streamed(
     hub = get_stream_hub()
     sink = EvolveEventSink(session_id=ctx.session_id)
     last_assistant_msg_id: str | None = None
+    message = {"role": "user", "content": user_input}
+    if input_message_id is not None:
+        # Retrying one automatic round replaces its saved input instead of appending it.
+        message["id"] = input_message_id
     agent_events = agent.astream_events(
-        {"messages": [{"role": "user", "content": user_input}]},
+        {"messages": [message]},
         config=config,
         version="v2",
     )

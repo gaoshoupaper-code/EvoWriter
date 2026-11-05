@@ -108,3 +108,89 @@ def test_restored_final_volume_without_qc_evidence_must_resume_checking(tmp_path
     execution = FrozenExecution(request, object(), tmp_path, object(), workspace)
     with pytest.raises(RuntimeError, match="必须补齐实际质检"):
         asyncio.run(drive_task(request, workspace, Service(), thread, execution, store))
+
+
+def _text_driver(tmp_path):
+    request = TargetTaskRequest(task_id="continue-text", attempt_id="first", source_commit="a" * 40,
+                                target={"task_type": "chapter_text", "chapter": 1},
+                                input={"confirmation_rules": "自动决定并执行，不等待人工"})
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    store = TargetTaskStore(tmp_path / "jobs")
+    store.create(request)
+    thread = ThreadSummary(thread_id="text-thread", workspace_id="ws", session_name="test",
+                           workspace_path=str(workspace), created_at="now", updated_at="now")
+    execution = FrozenExecution(request, object(), tmp_path, object(), workspace)
+    recorder = SimpleNamespace(read_trace_events=lambda *args: [], append_event=lambda *args: None,
+                               complete_run=lambda *args: None)
+    return request, workspace, store, thread, execution, recorder
+
+
+def _save_reviewed_text(workspace, execution):
+    path = workspace / "正文/第001章.md"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text("# 第001章\n> 状态：初稿\n保存的完整初稿。", encoding="utf-8")
+    execution.observe_event({"event": "on_tool_start", "name": "task", "run_id": "real-review",
+                             "data": {"input": {"subagent_type": "review", "description": "审稿第1章"}}})
+    execution.observe_event({"event": "on_tool_end", "name": "task", "run_id": "real-review",
+                             "data": {"output": "补充冲突与行动。"}})
+    path.write_text("# 第001章\n> 状态：初稿\n按审稿意见补充了冲突与行动。", encoding="utf-8")
+    execution.observe_event({"event": "on_tool_end", "name": "save_artifact", "run_id": "real-revision",
+                             "data": {"output": "已实际保存"}})
+
+
+def test_final_without_saved_artifact_continues_the_same_checkpoint(tmp_path):
+    request, workspace, store, thread, execution, recorder = _text_driver(tmp_path)
+    calls = []
+
+    class Service:
+        trace_recorder = recorder
+
+        async def generate_stream(self, payload, current_thread, **kwargs):
+            calls.append(current_thread.thread_id)
+            if len(calls) == 2:
+                _save_reviewed_text(workspace, execution)
+            yield 'event: final\ndata: {"content":"已起草一部分，下一轮继续"}\n\n'
+
+    checks = asyncio.run(drive_task(request, workspace, Service(), thread, execution, store))
+    assert checks["complete"]
+    assert len(calls) == 2 and calls[0] == calls[1]
+
+
+def test_saved_draft_without_review_continues_until_actual_review_and_revision(tmp_path):
+    request, workspace, store, thread, execution, recorder = _text_driver(tmp_path)
+    calls = []
+
+    class Service:
+        trace_recorder = recorder
+
+        async def generate_stream(self, payload, current_thread, **kwargs):
+            calls.append(current_thread.thread_id)
+            if len(calls) == 1:
+                (workspace / "正文").mkdir()
+                (workspace / "正文/第001章.md").write_text("# 第001章\n> 状态：初稿\n未审稿的实际初稿。", encoding="utf-8")
+            else:
+                _save_reviewed_text(workspace, execution)
+            yield 'event: final\ndata: {"content":"本轮完成"}\n\n'
+
+    checks = asyncio.run(drive_task(request, workspace, Service(), thread, execution, store))
+    assert checks["complete"] and checks["text_evidence"]["revised"]
+    assert len(calls) == 2 and calls[0] == calls[1]
+
+
+def test_repeated_final_without_durable_progress_stops_after_three_rounds(tmp_path):
+    request, workspace, store, thread, execution, recorder = _text_driver(tmp_path)
+    calls = []
+
+    class Service:
+        trace_recorder = recorder
+
+        async def generate_stream(self, payload, current_thread, **kwargs):
+            calls.append(current_thread.thread_id)
+            assert len(calls) <= 3, "无持久进展循环没有停止"
+            yield 'event: final\ndata: {"content":"没有落盘的重复回复"}\n\n'
+
+    with pytest.raises(ValueError, match="进展"):
+        asyncio.run(drive_task(request, workspace, Service(), thread, execution, store))
+    assert len(calls) == 3 and len(set(calls)) == 1
+    assert not store.get(request.task_id).completed

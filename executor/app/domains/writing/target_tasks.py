@@ -434,16 +434,22 @@ async def drive_task(request, workspace, service, thread, execution, store):
         phase = f"{execution.stage}:{execution.volume or execution.chapter or ''}"
         metadata = store.record(task_id)["metadata"]
         resume_trace = metadata.get("resume_trace") if metadata.get("phase") == phase else None
-        if metadata.get("phase") != phase or not resume_trace:
+        if metadata.get("phase") != phase:
             step_number += 1
+        stalled_rounds = metadata.get("stalled_rounds", 0) if metadata.get("phase") == phase else 0
         current_thread = thread.model_copy(update={"thread_id": f"{thread.thread_id}-{step_number}"})
         before = _fingerprint(workspace)
+        before_evidence = json.dumps(execution.evidence, sort_keys=True, ensure_ascii=False)
         prompt = (
             f"全自动目标任务：{request.target.model_dump_json()}。当前目标阶段：{phase}。\n"
             f"完整需求：\n{request.input.demand_md}\n"
             f"预设确认规则：\n{request.input.confirmation_rules}\n"
             f"本次尚缺的检查：{checks['missing']}\n"
-            "本任务不含人工精修，前文章节使用已提供的实际稿件。按当前目标继续。"
+            "本任务不含人工精修，前文章节使用已提供的实际稿件。\n"
+            "按同一会话中已起草的内容继续推进当前目标，不等待人工发出下一轮指令。"
+            "必须使用 save_artifact 保存实际产物；普通回复、片段和进度标记不算交付。"
+            "正文必须调用实际 review 审稿并完成所需修订；卷纲必须取得实际 volume_qc 质检。"
+            "如果上一轮只回复了内容，先将该内容继续完善并保存，再补齐本次尚缺的检查。"
         )
         payload = ScreenplayGenerateRequest(thread_id=current_thread.thread_id, prompt=prompt,
                                             message_id=f"{task_id}-{step_number}-{uuid.uuid4().hex}")
@@ -475,9 +481,6 @@ async def drive_task(request, workspace, service, thread, execution, store):
         store.journal(task_id, metadata={"evidence": execution.evidence})
         store.update(task_id, artifacts=collect_artifacts(workspace), usage=_usage(service.trace_recorder, trace_ids))
         latest = trace_ids[-1] if trace_ids else None
-        if execution.stage == "volume" and is_final_status(_read(workspace, f"卷纲/第{execution.volume:02d}卷.md")):
-            if not execution.evidence.get("volume_qc", {}).get(str(execution.volume), {}).get("success"):
-                raise ValueError("卷纲未取得实际成功的质检结果")
         if interrupted:
             boundary = json.dumps([phase, before, interrupted], sort_keys=True, ensure_ascii=False)
             if boundary in seen_boundaries:
@@ -499,12 +502,14 @@ async def drive_task(request, workspace, service, thread, execution, store):
             store.journal(task_id, metadata={"resume_trace": None})
             if not final:
                 raise ValueError("生成流未完成且未提供可续跑确认点")
-            if _fingerprint(workspace) == before and not completion_checks(request.target, workspace, text_evidence=execution.evidence)["complete"]:
-                raise ValueError("生成回复已结束，但目标产物没有进展")
-        if request.target.task_type == "chapter_text":
-            text_checks = completion_checks(request.target, workspace, text_evidence=execution.evidence)
-            if not text_checks["complete"] and (final or (interrupted and interrupted.get("kind") == "review")):
-                raise ValueError("、".join(text_checks["missing"]))
+        after_evidence = json.dumps(execution.evidence, sort_keys=True, ensure_ascii=False)
+        if _fingerprint(workspace) != before or after_evidence != before_evidence:
+            stalled_rounds = 0
+        elif final:
+            stalled_rounds += 1
+        store.journal(task_id, metadata={"stalled_rounds": stalled_rounds})
+        if stalled_rounds >= 3:
+            raise ValueError("连续3轮生成回复没有保存产物或取得实际审修进展，目标未完成")
 
 
 async def _run_worker(root: Path, task_id: str, stopped, parent_pid, *, prepared_model=None, isolated=False):

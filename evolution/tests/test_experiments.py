@@ -157,6 +157,80 @@ class ComparisonTest(unittest.TestCase):
 
 
 class RecoveryAndIsolationTest(DatabaseTest):
+    def test_model_rate_limit_recovers_the_same_improvement_round(self):
+        import httpx
+        from langchain_openai.chat_models.base import OpenAIRateLimitError
+        from unittest.mock import AsyncMock
+        from app.core.settings import settings
+        from app.experiments import repo, runner
+        run = run_record()
+        run.update(status="running", phase="evolving", current_round=0, max_rounds=1, best_candidate=None)
+        run["settings"]["max_rounds"] = 1
+        run["private"] = {"packages": {"opt": {"id": "opt", "title": "优化样本", "task_type": "volume_outlines",
+                                                "input_revision": "3" * 64, "input": {}, "target": {}}}}
+        repo.put_run(run)
+        response = httpx.Response(429, request=httpx.Request("POST", "https://model.invalid/chat/completions"))
+        limited = OpenAIRateLimitError("provider temporarily rate limited", response=response, body={"code": "rate_limit"})
+        successful = {"validated": True, "summary": "已验证的改进", "usage": {"known": False}}
+        def git_result(_root, *arguments):
+            return "b" * 40 if arguments == ("rev-parse", "HEAD") else ""
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(settings, "evolution_db", str(Path(directory) / "evolution.db")), \
+             patch("app.experiments.agent._improve", new_callable=AsyncMock, side_effect=[limited, successful]) as improve, \
+             patch("app.experiments.agent._git", side_effect=git_result), \
+             patch("app.experiments.clients.prepare_artifact", return_value={"digest": "2" * 64}):
+            root = Path(directory) / "experiments" / run["id"] / "round-1"
+            (root / ".git").mkdir(parents=True)
+            runner.advance_one(run["id"])
+            recovering = repo.get_run(run["id"])
+            self.assertEqual(recovering["status"], "recovering")
+            self.assertEqual(recovering["current_round"], 1)
+            self.assertEqual(recovering["rounds"][0]["status"], "evolving")
+            self.assertNotIn("round_failed", [event["kind"] for event in recovering["events"]])
+            runner.advance_one(run["id"])
+            resumed = repo.get_run(run["id"])
+            self.assertEqual(resumed["phase"], "exploration")
+            self.assertEqual(resumed["current_round"], 1)
+            self.assertEqual(len(resumed["rounds"]), 1)
+            self.assertEqual(improve.call_args_list[0].args[1]["session_id"], improve.call_args_list[1].args[1]["session_id"])
+            self.assertEqual(improve.call_args_list[0].args[2], improve.call_args_list[1].args[2])
+
+    def test_improvement_retry_does_not_append_duplicate_checkpoint_input(self):
+        from langchain_core.messages import AIMessage, HumanMessage
+        from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+        from langgraph.graph import END, START, MessagesState, StateGraph
+        from app.evolve.agent.agent import _run_agent_streamed
+        from app.evolve.ctx import EvolveContext
+        async def check(path):
+            calls = 0
+            async def model(_state):
+                nonlocal calls
+                calls += 1
+                if calls < 3:
+                    raise RuntimeError("provider temporarily rate limited")
+                return {"messages": [AIMessage(content="已完成")]}
+            async with AsyncSqliteSaver.from_conn_string(path) as checkpoint:
+                graph = StateGraph(MessagesState)
+                graph.add_node("model", model)
+                graph.add_edge(START, "model")
+                graph.add_edge("model", END)
+                agent = graph.compile(checkpointer=checkpoint)
+                config = {"configurable": {"thread_id": "retry-same-round"}}
+                context = EvolveContext("retry-same-round")
+                for _ in range(2):
+                    with self.assertRaisesRegex(RuntimeError, "rate limited"):
+                        await _run_agent_streamed(agent, "固定优化证据", config, context,
+                                                  input_message_id="retry-same-round-input")
+                await _run_agent_streamed(agent, "固定优化证据", config, context,
+                                          input_message_id="retry-same-round-input")
+                state = await agent.aget_state(config)
+                humans = [message for message in state.values["messages"] if isinstance(message, HumanMessage)]
+                self.assertEqual(len(humans), 1)
+                self.assertEqual(humans[0].content, "固定优化证据")
+                self.assertEqual(calls, 3)
+        with tempfile.TemporaryDirectory() as directory:
+            asyncio.run(check(str(Path(directory) / "checkpoint.sqlite")))
+
     def test_stop_missing_task_finishes_but_service_outage_keeps_waiting(self):
         from app.experiments import clients, repo, runner
         run = run_record()

@@ -256,6 +256,16 @@ class BillingLedger:
                                        (user_id, request_id)).fetchone()
             return self._public(row) if row else None
 
+    def can_continue(self, operation_id):
+        """A saved settlement intent closes execution before its ledger replay."""
+        receipt = self.receipts / f"{operation_id}.json"
+        if receipt.exists():
+            return False
+        with self.db._lock:
+            row = self.db.conn.execute("SELECT status FROM billing_operations WHERE operation_id=?", (operation_id,)).fetchone()
+            pending = self.db.conn.execute("SELECT 1 FROM billing_finalizations WHERE operation_id=?", (operation_id,)).fetchone()
+            return bool(row and row["status"] in {"reserved", "running"} and not pending and not receipt.exists())
+
     @staticmethod
     def _finalization(conn, operation_id, outcome):
         if outcome not in FINAL:

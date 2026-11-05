@@ -7,11 +7,15 @@ import {
   type TargetTask, type TargetTaskStart, type TargetTaskType,
 } from "@/lib/api";
 import { refreshWorkspaceContent } from "@/lib/usePanelPolling";
+import { BillingBudget } from "@/components/billing/BillingPanel";
+import { useBillingStore } from "@/stores/billing";
 import "./automatic-task.css";
 
 const ACTIVE = new Set(["pending", "running", "recovering", "stopping"]);
 const STATUS: Record<string, string> = { pending: "待运行", running: "运行中", recovering: "恢复中", completed: "已完成", failed: "失败", interrupted: "已中断", stopping: "停止中", stopped: "已停止" };
 const PHASE: Record<string, string> = { theme: "主题", outline: "总纲", volume: "卷纲", chapter: "章纲", text: "正文", review: "审稿", revision: "修订" };
+const BUDGET_PHASE: Record<TargetTaskType, string> = { volume_outlines: "volume", chapter_outlines: "chapter", chapter_text: "text" };
+let messageSequence = 0;
 
 type Props = { workspaceId: string; threadId?: string; disabled?: boolean; onBusyChange?: (busy: boolean) => void };
 
@@ -27,22 +31,38 @@ export function AutomaticTaskPanel({ workspaceId, threadId, disabled = false, on
   const [checking, setChecking] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const owner = useBillingStore((state) => state.owner);
   const currentTask = useRef<TargetTask | null>(null);
+  const submission = useRef<{ key: string; payload: TargetTaskStart } | null>(null);
+  const previousBudget = useRef<{ owner: string; phase: string; budget: string; budgetEdited: boolean } | null>(null);
   const generation = useRef(0);
   const scope = useRef(workspaceId);
   const pending = useRef(false);
   scope.current = workspaceId;
   const active = !!task && ACTIVE.has(task.status);
 
+  function restoreBudget() {
+    const previous = previousBudget.current;
+    previousBudget.current = null;
+    const billing = useBillingStore.getState();
+    if (previous && billing.owner === previous.owner) {
+      billing.selectPhase(previous.phase);
+      if (previous.budgetEdited) billing.setBudget(previous.budget);
+    }
+  }
+  function closeForm() { setExpanded(false); restoreBudget(); }
+
   useEffect(() => {
-    onBusyChange?.(active);
-  }, [active, onBusyChange]);
+    onBusyChange?.(active || busy);
+  }, [active, busy, onBusyChange]);
   useEffect(() => () => onBusyChange?.(false), [onBusyChange]);
+  useEffect(() => () => restoreBudget(), []);
 
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
     generation.current += 1; currentTask.current = null; pending.current = false;
+    submission.current = null; restoreBudget();
     setTask(null); setChecking(true); setBusy(false); setError(""); setExpanded(false);
     setDemand(""); setRules(""); setVolumeIds(""); setVolumeCount(""); setChapter("");
     if (!workspaceId) { setChecking(false); return; }
@@ -56,6 +76,7 @@ export function AutomaticTaskPanel({ workspaceId, threadId, disabled = false, on
           if (alive && sequence === generation.current) {
             currentTask.current = result; setTask(result); setError("");
             if (result && (ACTIVE.has(result.status) || previous?.updated_at !== result.updated_at)) void refreshWorkspaceContent(workspaceId);
+            if (result && !ACTIVE.has(result.status) && previous?.updated_at !== result.updated_at) void useBillingStore.getState().refresh();
           }
         } catch (cause) { if (alive && sequence === generation.current) setError(cause instanceof Error ? cause.message : "读取全自动任务失败"); }
         finally { if (alive) setChecking(false); }
@@ -64,20 +85,22 @@ export function AutomaticTaskPanel({ workspaceId, threadId, disabled = false, on
     }
     void refresh();
     return () => { alive = false; generation.current += 1; clearTimeout(timer); };
-  }, [workspaceId]);
+  }, [workspaceId, owner]);
 
-  async function operate(action: () => Promise<TargetTask>) {
+  async function operate(action: (isCurrent: () => boolean) => Promise<TargetTask>) {
     if (pending.current) return;
     const sequence = ++generation.current;
+    const startedOwner = useBillingStore.getState().owner;
+    const isCurrent = () => scope.current === workspaceId && sequence === generation.current && useBillingStore.getState().owner === startedOwner;
     pending.current = true; setBusy(true); setError("");
     try {
-      const result = await action();
-      if (scope.current === workspaceId && sequence === generation.current) {
-        currentTask.current = result; setTask(result); setExpanded(false);
+      const result = await action(isCurrent);
+      if (isCurrent()) {
+        currentTask.current = result; setTask(result); closeForm();
         void refreshWorkspaceContent(workspaceId);
       }
-    } catch (cause) { if (scope.current === workspaceId && sequence === generation.current) setError(cause instanceof Error ? cause.message : "全自动任务操作失败"); }
-    finally { if (scope.current === workspaceId && sequence === generation.current) { pending.current = false; setBusy(false); } }
+    } catch (cause) { if (isCurrent()) setError(cause instanceof Error ? cause.message : "全自动任务操作失败"); }
+    finally { if (isCurrent()) { pending.current = false; setBusy(false); void useBillingStore.getState().refresh(); } }
   }
   function start(event: React.FormEvent) {
     event.preventDefault(); if (!workspaceId || active || disabled || checking || busy) return;
@@ -98,11 +121,39 @@ export function AutomaticTaskPanel({ workspaceId, threadId, disabled = false, on
       target = { task_type: kind, volume_ids: [], chapter: number };
     }
     if (!rules.trim()) { setError("请填写预设确认规则。"); return; }
-    const payload: TargetTaskStart = { target, confirmation_rules: rules.trim(), ...(threadId ? { thread_id: threadId } : {}), ...(demand.trim() ? { demand_md: demand.trim() } : {}) };
-    void operate(() => startTargetTask(workspaceId, payload));
+    const input = { target, confirmation_rules: rules.trim(), ...(threadId ? { thread_id: threadId } : {}), ...(demand.trim() ? { demand_md: demand.trim() } : {}) };
+    const billing = useBillingStore.getState();
+    const visibleBudget = billing.budget;
+    const key = JSON.stringify([workspaceId, owner, input, billing.account?.enabled, billing.account?.enabled ? visibleBudget.trim() : null]);
+    void operate(async (isCurrent) => {
+      let request = submission.current;
+      if (request?.key !== key) {
+        // The ordinary composer shares this store. Keep the budget visible at submission.
+        if (billing.phase !== BUDGET_PHASE[kind]) {
+          billing.selectPhase(BUDGET_PHASE[kind]); billing.setBudget(visibleBudget);
+        }
+        const budget = await billing.submissionBudget(BUDGET_PHASE[kind]);
+        if (!isCurrent()) throw new Error("账号或作品已切换，请重新确认任务");
+        request = { key, payload: { ...input, billing_protocol: 2,
+          message_id: `target-${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${++messageSequence}`}`,
+          ...(budget === undefined ? {} : { billing_budget: budget }),
+        } };
+        submission.current = request;
+      }
+      // An unknown response may already have reserved this budget; retry the same request.
+      const result = await startTargetTask(workspaceId, request.payload);
+      if (isCurrent()) submission.current = null;
+      return result;
+    });
   }
   return <section className="automatic-task-panel" aria-label="全自动目标任务">
-    <div className="automatic-task-heading"><button type="button" className="automatic-task-toggle" aria-expanded={expanded} disabled={!workspaceId || disabled || checking || active || busy} onClick={() => setExpanded((value) => !value)}><Bot size={15} aria-hidden="true" />全自动任务</button>
+    <div className="automatic-task-heading"><button type="button" className="automatic-task-toggle" aria-expanded={expanded} disabled={!workspaceId || disabled || checking || active || busy} onClick={() => {
+      if (expanded) { closeForm(); return; }
+      submission.current = null;
+      const billing = useBillingStore.getState();
+      previousBudget.current = { owner: billing.owner, phase: billing.phase, budget: billing.budget, budgetEdited: billing.budgetEdited };
+      setExpanded(true); void billing.refresh();
+    }}><Bot size={15} aria-hidden="true" />全自动任务</button>
       {task && <span role="status" className={`automatic-task-status ${task.status}`}><span>{STATUS[task.status] ?? task.status}</span>{task.phase ? ` · ${PHASE[task.phase] ?? task.phase}` : ""}</span>}
       {active && <button type="button" className="automatic-task-stop" disabled={busy || task?.status === "stopping"} onClick={() => task && void operate(() => stopTargetTask(workspaceId, task.task_id))}><Square size={12} aria-hidden="true" />停止全自动任务</button>}
     </div>
@@ -117,7 +168,8 @@ export function AutomaticTaskPanel({ workspaceId, threadId, disabled = false, on
           <label>目标章号<input type="number" required min={1} step={1} value={chapter} onChange={(event) => setChapter(event.target.value)} /></label>}
       {kind === "volume_outlines" && <label className="automatic-task-wide">完整需求（已有需求时可留空）<textarea rows={3} value={demand} onChange={(event) => setDemand(event.target.value)} /></label>}
       <label className="automatic-task-wide">预设确认规则<textarea required rows={3} value={rules} placeholder="写明可自动确认的选择。缺少必需资料时结束并说明原因。" onChange={(event) => setRules(event.target.value)} /></label>
-      <div className="automatic-task-actions"><button type="submit" disabled={busy || checking || disabled}>{busy ? "启动中…" : "开始全自动任务"}</button><button type="button" onClick={() => setExpanded(false)}>收起</button></div>
+      <div className="automatic-task-wide"><BillingBudget phase={BUDGET_PHASE[kind]} /></div>
+      <div className="automatic-task-actions"><button type="submit" disabled={busy || checking || disabled}>{busy ? "启动中…" : "开始全自动任务"}</button><button type="button" onClick={closeForm}>收起</button></div>
     </form>}
     {task && <details className="automatic-task-evidence"><summary>任务记录 · 已保存 {Object.keys(task.artifacts).length} 份产物</summary>
       <p className="automatic-task-note">{task.completed ? "目标及必要检查已完成。" : active ? "正在执行，产物会持续保存。" : "保留已生成内容及执行结果。"} · 尝试 {task.attempts} 次</p>

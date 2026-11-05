@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import threading
 import uuid
 
 from contracts.target_tasks import TargetSpec, TargetTaskRequest, TargetTaskResult, TaskInput
@@ -491,7 +492,7 @@ async def drive_task(request, workspace, service, thread, execution, store):
                 if after == before and not completion_checks(request.target, workspace, text_evidence=execution.evidence)["complete"]:
                     raise ValueError("交审时目标产物未取得进展")
                 if latest:
-                    service.trace_recorder.append_event(latest, {"type": "run_meta", "source": "system", "input": {
+                    service.trace_recorder.append_event(latest, {"type": "run_meta", "status": "completed", "source": "system", "input": {
                         "target_confirmation": {"rules": request.input.confirmation_rules, "review": interrupted}}})
                     service.trace_recorder.complete_run(current_thread, latest)
                 on_run_complete(workspace, "author")
@@ -532,7 +533,7 @@ async def _run_worker(root: Path, task_id: str, stopped, parent_pid, *, prepared
 
     async def watch_stop():
         while True:
-            if stopped.is_set() or (directory / "stop").exists() or os.getppid() != parent_pid:
+            if stopped.is_set() or (directory / "stop").exists() or (parent_pid is not None and os.getppid() != parent_pid):
                 active.cancel()
                 return
             await asyncio.sleep(0.2)
@@ -573,10 +574,26 @@ async def _run_worker(root: Path, task_id: str, stopped, parent_pid, *, prepared
             store.update(task_id, status="completed", completed=True, checks=checks, error=None,
                          artifacts=collect_artifacts(workspace), usage=_usage(recorder, store.get(task_id).trace_ids))
     except asyncio.CancelledError:
-        explicit = (directory / "stop").exists() or stopped.is_set()
+        from app.platform.credits.runtime import current_billing, get_billing_runs
+        billing = current_billing()
+        billing_run = get_billing_runs().runs.get(billing.operation_id) if billing else None
+        explicit = (directory / "stop").exists() or stopped.is_set() or bool(billing_run and billing_run.stopped)
         store.update(task_id, status="stopped" if explicit else "interrupted", completed=False,
                      error="用户停止" if explicit else "执行服务中断，等待核对恢复", artifacts=collect_artifacts(workspace))
+        if billing:
+            raise
     except BaseException as exc:
+        from app.platform.credits.runtime import BudgetExhausted, OperationClosed, OperationStopped, current_billing, get_billing_runs
+        billing = current_billing()
+        billing_run = get_billing_runs().runs.get(billing.operation_id) if billing else None
+        if isinstance(exc, OperationClosed):
+            store.update(task_id, status="stopped", completed=False, error=str(exc), artifacts=collect_artifacts(workspace))
+            raise
+        if billing and (billing.exhausted or (billing_run and billing_run.stopped)
+                        or isinstance(exc, (BudgetExhausted, OperationStopped))):
+            error = BudgetExhausted() if billing.exhausted else OperationStopped()
+            store.update(task_id, status="stopped", completed=False, error=str(error), artifacts=collect_artifacts(workspace))
+            raise error
         logger.exception("目标任务失败 task=%s", task_id)
         try:
             artifacts = collect_artifacts(workspace)
@@ -820,7 +837,8 @@ class TargetTaskManager:
             self.store._write(task_id, journal)
         return raw
 
-    def submit(self, request: TargetTaskRequest, *, workspace=None, thread=None, owner_id=None):
+    def submit(self, request: TargetTaskRequest, *, workspace=None, thread=None, owner_id=None,
+               billing_operation=None, public_fingerprint=None):
         existing = self.result(request.task_id)
         if existing is not None:
             result, _ = self.store.create(request)
@@ -828,6 +846,9 @@ class TargetTaskManager:
             return self.result(request.task_id)
         validate_input(request.target, request.input)
         metadata = {"workspace": str(workspace or self.store.directory(request.task_id) / "workspace"), "owner_id": owner_id}
+        if owner_id:
+            metadata.update(billing_operation_id=billing_operation["operation_id"] if billing_operation else None,
+                            billing_disabled_at_start=billing_operation is None, public_fingerprint=public_fingerprint)
         if thread is None:
             from app.schemas.screenplay import ThreadSummary
             now = _now()
@@ -884,7 +905,82 @@ class TargetTaskManager:
         trusted["verified"] = False
         self.store.approve(task_id, trusted)
         self._snapshots[task_id] = deepcopy(trusted)
+        if trusted["metadata"].get("owner_id"):
+            operation_id = trusted["metadata"].get("billing_operation_id")
+            if operation_id:
+                from app.platform.credits.ledger import FINAL, get_billing
+                from app.platform.credits.runtime import get_billing_runs
+                operation = get_billing().operation(operation_id, trusted["metadata"]["owner_id"])
+                if operation["status"] in FINAL:
+                    self.store.update(task_id, status="stopped", completed=False,
+                                      error="本次预算操作已结算；请确认新预算后继续已有内容。")
+                    self.verify_result(task_id, trusted)
+                    self._release_workspace(task_id, trusted)
+                    return
+                run = get_billing_runs().submit(operation, lambda: self._normal_source(task_id))
+                self.monitors[task_id] = run.task
+            else:
+                from app.platform.credits.ledger import get_billing
+                if not trusted["metadata"].get("billing_disabled_at_start") and get_billing().config()["enabled"]:
+                    self.store.update(task_id, status="stopped", completed=False, error="请确认本次积分预算后继续已有内容。")
+                    self.verify_result(task_id, trusted)
+                    self._release_workspace(task_id, trusted)
+                    return
+                self.monitors[task_id] = asyncio.create_task(self._run_normal(task_id))
+            return
         self.monitors[task_id] = asyncio.create_task(self._monitor(task_id))
+
+    async def _normal_source(self, task_id):
+        from app.platform.credits.runtime import OperationClosed, OperationStopped, current_billing, sse
+        await self._run_normal(task_id)
+        billing = current_billing()
+        if billing and not billing.ledger.can_continue(billing.operation_id):
+            raise OperationClosed()
+        result = self.result(task_id)
+        if result.trace_ids:
+            yield sse("status", {"trace_id": result.trace_ids[-1]})
+        if result.completed and result.status == "completed":
+            yield sse("final", {"task_id": task_id, "status": result.status})
+        elif result.status == "stopped":
+            raise OperationStopped()
+        else:
+            raise RuntimeError("全自动创作未完成，保留已有现场。")
+
+    async def _run_normal(self, task_id):
+        from app.platform.credits.runtime import BudgetExhausted, OperationClosed, OperationStopped, current_billing
+        trusted = self._snapshots[task_id]
+        try:
+            billing = current_billing()
+            if billing and not billing.ledger.can_continue(billing.operation_id):
+                raise OperationClosed()
+            while self.store.worker_alive(task_id):
+                await asyncio.sleep(0.5)
+            with _file_lock(self.store.directory(task_id) / "worker.lock", blocking=False):
+                result = self.store.get(task_id)
+                if result.status not in TERMINAL:
+                    if (self.store.directory(task_id) / "stop").exists():
+                        self.store.update(task_id, status="stopped", completed=False)
+                    else:
+                        await asyncio.to_thread(self.ensure_package, task_id)
+                        await _run_worker(self.store.root, task_id, threading.Event(), None)
+        except asyncio.CancelledError:
+            if self.store.get(task_id).status not in TERMINAL:
+                explicit = (self.store.directory(task_id) / "stop").exists()
+                self.store.update(task_id, status="stopped" if explicit else "interrupted", completed=False,
+                                  error="用户停止" if explicit else "执行服务中断，已有现场保留")
+            raise
+        except (BudgetExhausted, OperationClosed, OperationStopped) as exc:
+            if self.store.get(task_id).status not in TERMINAL:
+                self.store.update(task_id, status="stopped", completed=False, error=str(exc))
+            raise
+        except Exception as exc:
+            if self.store.get(task_id).status not in TERMINAL:
+                self.store.update(task_id, status="failed", completed=False, error=type(exc).__name__)
+            raise
+        finally:
+            self.verify_result(task_id, trusted)
+            await asyncio.to_thread(self._register_traces, task_id)
+            self._release_workspace(task_id, trusted)
 
     async def _monitor(self, task_id):
         trusted = self._snapshots[task_id]
@@ -992,6 +1088,27 @@ class TargetTaskManager:
             return result
         (self.store.directory(task_id) / "stop").touch()
         self.store.update(task_id, status="stopping", completed=False)
+        trusted = self._snapshots.get(task_id) or self.store.trusted(task_id)
+        if trusted["metadata"].get("owner_id"):
+            monitor = self.monitors.get(task_id)
+            operation_id = trusted["metadata"].get("billing_operation_id")
+            if operation_id:
+                from app.platform.credits.ledger import get_billing
+                from app.platform.credits.runtime import get_billing_runs
+                operation = get_billing().operation(operation_id, trusted["metadata"]["owner_id"])
+                get_billing_runs().request_stop(operation["user_id"], operation["thread_id"], None)
+            elif monitor and not monitor.done():
+                monitor.cancel()
+            if monitor and not monitor.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(monitor), timeout=10)
+                except TimeoutError:
+                    return self.store.update(task_id, status="stopping", completed=False, error="停止已受理，正在核实执行者退出")
+                except asyncio.CancelledError:
+                    pass
+            result = self.result(task_id)
+            if result.status in TERMINAL:
+                return result
         pair = self.processes.get(task_id)
         if pair:
             from app.platform.isolation.worker_process import _force_terminate

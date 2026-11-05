@@ -1020,6 +1020,7 @@ export type TargetTaskType = "volume_outlines" | "chapter_outlines" | "chapter_t
 export type TargetTaskStart = {
   target: { task_type: TargetTaskType; volume_ids: number[]; chapter?: number };
   confirmation_rules: string; thread_id?: string; demand_md?: string;
+  billing_protocol: 2; message_id: string; billing_budget?: number;
 };
 export type TargetTask = {
   task_id: string; status: "pending" | "running" | "recovering" | "completed" | "failed" | "interrupted" | "stopping" | "stopped";

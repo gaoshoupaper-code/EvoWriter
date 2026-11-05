@@ -26,6 +26,11 @@ class OperationStopped(BillingError):
         super().__init__("操作已停止，按已用积分结算。", "user_stopped", 409)
 
 
+class OperationClosed(BillingError):
+    def __init__(self):
+        super().__init__("本次积分操作已开始结算；请确认新预算后继续已有内容。", "operation_ended", 409)
+
+
 def current_billing():
     return _current.get()
 
@@ -87,6 +92,8 @@ class BillingContext:
 
     def before_call(self, model):
         self.check_cancelled()
+        if not self.ledger.can_continue(self.operation_id):
+            raise OperationClosed()
         if model_key(model) not in self.prices:
             raise BillingError("当前模型未配置本次操作的积分系数", "model_unpriced", 409)
         if self.ledger.exhausted(self.operation_id):
@@ -212,18 +219,23 @@ class BillingRuns:
             outcome = "budget_exhausted"
         except OperationStopped:
             outcome = "stopped"
+        except OperationClosed as exc:
+            # A previous process already owns the durable settlement intent.
+            outcome = None
+            run.error = str(exc)
         except Exception:
             logger.exception("创作操作失败 operation=%s", key)
             run.error = "系统故障，本次操作积分退还；已有内容已保存。"
         finally:
-            if context is not None and context.exhausted:
+            if outcome is not None and context is not None and context.exhausted:
                 outcome = "budget_exhausted"
                 run.emit(sse("credit_exhausted", {"message": str(BudgetExhausted()), "operation_id": key}))
             elif outcome == "failed":
                 run.error = run.error or "系统故障，本次操作积分退还；已有内容已保存。"
                 run.emit(sse("billing_error", {"message": run.error, "operation_id": key}))
             try:
-                result = self.ledger.finish(key, outcome)
+                result = (self.ledger.find_request(run.operation["user_id"], run.operation["request_id"])
+                          if outcome is None else self.ledger.finish(key, outcome))
             except Exception:
                 logger.exception("结算恢复凭据暂不可用 operation=%s", key)
                 result = None
@@ -274,7 +286,7 @@ class BillingRuns:
         return count
 
     def start_recovery(self):
-        self.ledger.recover(set())
+        self.ledger.recover({key for key, value in self.runs.items() if not value.completed})
         async def scan():
             while True:
                 await asyncio.sleep(30)

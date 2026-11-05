@@ -211,6 +211,15 @@ def get_tool_context() -> EvolveContext | None:
     return _current_ctx.get()
 
 
+def harness_work_root():
+    """Automatic experiments use a private checkout without changing shared settings."""
+    from pathlib import Path
+    from app.core.settings import settings
+    ctx = get_tool_context()
+    root = getattr(ctx, "harness_root", None) if ctx else None
+    return Path(root) if root else settings.harness_work_dir_path
+
+
 __all__ = [
     "EvolveContext",
     "set_tool_context",

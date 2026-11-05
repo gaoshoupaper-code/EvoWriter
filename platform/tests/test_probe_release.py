@@ -12,6 +12,12 @@ from app.core.ledger import Ledger
 class _FakeResponse:
     status_code = 200
 
+    def __init__(self, commit):
+        self.commit = commit
+
+    def json(self):
+        return {"status": "reloaded", "commit": self.commit}
+
 
 def _remove_snapshot(work):
     (work / "middleware" / "artifact_snapshot.py").unlink()
@@ -209,7 +215,8 @@ def test_probe_rejected_when_assemble_writes_untracked_file(client, harness_git)
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "rejected"
-    assert "不干净" in body["reason"]
+    # The OS boundary now rejects the write before it can dirty the checkout.
+    assert "PermissionError" in body["reason"]
 
 
 # ── promote 晋升 ──────────────────────────────────────────────────
@@ -220,7 +227,7 @@ def _mock_notify_ok(monkeypatch):
 
     def fake_post(url, json=None, headers=None, timeout=None):
         calls.append({"url": url, "json": json, "headers": headers})
-        return _FakeResponse()
+        return _FakeResponse(json["commit"])
 
     monkeypatch.setattr(release_mod.httpx, "post", fake_post)
     monkeypatch.setattr(release_mod.time, "sleep", lambda _s: None)

@@ -25,6 +25,7 @@ from contracts.platform.entities import (
     SurfaceFingerprint,
 )
 from contracts.platform.api import (
+    ArtifactPrepareRequest,
     ArtifactMeta,
     BindingAck,
     BindingCreate,
@@ -35,11 +36,13 @@ from contracts.platform.api import (
     PromoteRequest,
     PromoteResult,
     ResumeCheck,
+    RestoreRequest,
     VersionLine,
     VersionsStatus,
 )
 
 __all__ = [
+    "ArtifactPrepareRequest",
     "ArtifactMeta",
     "BindingAck",
     "BindingCreate",
@@ -53,6 +56,7 @@ __all__ = [
     "PromoteRequest",
     "PromoteResult",
     "ResumeCheck",
+    "RestoreRequest",
     "SurfaceFingerprint",
     "VersionLine",
     "VersionsStatus",

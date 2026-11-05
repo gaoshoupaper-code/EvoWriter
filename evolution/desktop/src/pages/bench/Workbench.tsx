@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { toast } from "sonner";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { batchStatusLabel, batchStatusClass } from "@/components/bench/batchStatus";
+import { EvolutionExperiments } from "@/components/bench/EvolutionExperiments";
 import {
   runBenchmark,
   listBenchmarkBatches,
@@ -166,6 +167,8 @@ export default function BenchWorkbench() {
           {hasActive && "（有批次运行中，5 秒自动刷新）"}
         </p>
       </header>
+
+      <EvolutionExperiments />
 
       {/* 发起评测（FR-002：case 子集勾选，DEC-008） */}
       <section className="test-start">

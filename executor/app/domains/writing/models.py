@@ -42,7 +42,7 @@ def build_writer_model(
     from app.platform.llm_config.loader import get_active_llm_config
 
     # evolution 激活配置（拉取失败/未配置时为 None，降级到环境变量）
-    evo_config = get_active_llm_config()
+    evo_config = None if api_key and base_url and model_name_override else get_active_llm_config()
 
     # model：显式 override > 绑定快照 > evolution > settings.writer_model
     effective_model = (

@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
+import { StagePackages } from "@/components/bench/StagePackages";
 import {
   createGoldenCase,
   getCaseContent,
@@ -136,6 +137,9 @@ export default function BenchDataset() {
           </button>
         </div>
       </header>
+
+      <StagePackages />
+      <h2>历史 golden 数据</h2>
 
       {loading ? (
         <div className="page-loading">加载 golden 集…</div>

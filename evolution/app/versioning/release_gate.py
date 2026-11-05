@@ -71,7 +71,7 @@ def promote_release(source_commit: str, version_note: str = "") -> PromoteResult
             f"{_platform_url()}/api/release/promote",
             json=PromoteRequest(
                 source_commit=source_commit, version_note=version_note
-            ).model_dump(),
+            ).model_dump(exclude_none=True),
             timeout=PROMOTE_TIMEOUT_SECONDS,
         )
     except httpx.HTTPError as exc:

@@ -102,6 +102,12 @@ def translation_client(translation_env):
 class _FakeResponse:
     status_code = 200
 
+    def __init__(self, commit):
+        self.commit = commit
+
+    def json(self):
+        return {"status": "reloaded", "commit": self.commit}
+
 
 def _mock_notify_ok(monkeypatch):
     """promote 的 reload 通知打桩（测试环境无 executor 可达）。"""
@@ -109,7 +115,7 @@ def _mock_notify_ok(monkeypatch):
 
     def fake_post(url, json=None, headers=None, timeout=None):
         calls.append({"url": url, "json": json})
-        return _FakeResponse()
+        return _FakeResponse(json["commit"])
 
     monkeypatch.setattr(release_mod.httpx, "post", fake_post)
     monkeypatch.setattr(release_mod.time, "sleep", lambda _s: None)

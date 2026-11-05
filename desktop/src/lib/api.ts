@@ -1015,3 +1015,30 @@ export async function setEnabledWritingSkills(stage: WritingStage, skillIds: str
     },
   );
 }
+
+export type TargetTaskType = "volume_outlines" | "chapter_outlines" | "chapter_text";
+export type TargetTaskStart = {
+  target: { task_type: TargetTaskType; volume_ids: number[]; chapter?: number };
+  confirmation_rules: string; thread_id?: string; demand_md?: string;
+};
+export type TargetTask = {
+  task_id: string; status: "pending" | "running" | "recovering" | "completed" | "failed" | "interrupted" | "stopping" | "stopped";
+  phase: string; completed: boolean; trace_ids: string[]; artifacts: Record<string, string>;
+  checks: Record<string, unknown>; error?: string | null; usage: Record<string, unknown>;
+  input_revision: string; source_commit: string; artifact_digest?: string | null;
+  attempts: number; created_at: string; updated_at: string;
+};
+export function listTargetTasks(workspaceId: string): Promise<{ tasks: TargetTask[] }> {
+  return apiJson(`${API_BASE_URL}/api/workspaces/${encodeURIComponent(workspaceId)}/target-tasks`);
+}
+export function startTargetTask(workspaceId: string, payload: TargetTaskStart): Promise<TargetTask> {
+  return apiJson(`${API_BASE_URL}/api/workspaces/${encodeURIComponent(workspaceId)}/target-tasks`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload),
+  });
+}
+export function getTargetTask(workspaceId: string, taskId: string): Promise<TargetTask> {
+  return apiJson(`${API_BASE_URL}/api/workspaces/${encodeURIComponent(workspaceId)}/target-tasks/${encodeURIComponent(taskId)}`);
+}
+export function stopTargetTask(workspaceId: string, taskId: string): Promise<TargetTask> {
+  return apiJson(`${API_BASE_URL}/api/workspaces/${encodeURIComponent(workspaceId)}/target-tasks/${encodeURIComponent(taskId)}/stop`, { method: "POST" });
+}

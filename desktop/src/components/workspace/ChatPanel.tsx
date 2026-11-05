@@ -18,6 +18,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useContentStore } from "@/stores/content";
 import { useStageSessionStore } from "@/stores/stage-session";
 import { BillingBudget } from "@/components/billing/BillingPanel";
+import { AutomaticTaskPanel } from "./AutomaticTaskPanel";
+import { useWorkspaceStore } from "@/stores/workspace";
 
 type ChatPanelProps = {
   messages: ChatMessage[];
@@ -56,6 +58,8 @@ export function ChatPanel({
   const listRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState(false);
   const [canExpand, setCanExpand] = useState(false);
+  const [automaticBusy, setAutomaticBusy] = useState(false);
+  const workspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
 
   const historyView = useStageSessionStore((s) => s.historyView);
   const pendingTransition = useStageSessionStore((s) => s.pendingTransition);
@@ -106,18 +110,26 @@ export function ChatPanel({
     event.preventDefault();
     // FR-006（REQ-20261019-222403）：生成中不再禁发——同会话消息排队串行，
     // 只有等拍板选项时才拦（选了选项等于回答）。
-    if (!awaitingWithOptions) event.currentTarget.form?.requestSubmit();
+    if (!awaitingWithOptions && !automaticBusy) event.currentTarget.form?.requestSubmit();
   }
+
+  const automaticPanel = !characterRepair && hasActiveWorkspace && workspaceId && pipeline?.kind === "five" ? <AutomaticTaskPanel
+    workspaceId={workspaceId} threadId={activeThreadId} disabled={loading} onBusyChange={setAutomaticBusy}
+  /> : null;
 
   // ── 历史浏览态：整个对话区（消息+输入）换成只读历史面板（FR-008）──
   if (historyView && !characterRepair) {
     return (
       <section className="conversation-panel panel-surface" aria-label="创作对话">
-        <div className="panel-heading conversation-heading">
-          <StageBar
-            onOpenStageHistory={(stage) => openStageHistory(stage)}
-            onRestart={() => restartThread()}
-          />
+        <div className="conversation-top">
+          <div className="panel-heading conversation-heading">
+            <StageBar
+              onOpenStageHistory={(stage) => openStageHistory(stage)}
+              onRestart={() => restartThread()}
+              externalBusy={automaticBusy}
+            />
+          </div>
+          {automaticPanel}
         </div>
         <StageHistoryPanel onDeleteThread={onDeleteThread} />
       </section>
@@ -134,11 +146,15 @@ export function ChatPanel({
     >
       {/* 标题带（REQ-20261018-175526 DEC-001/FR-001）：阶段条取代会话操作区——
           用户可见范围内没有新建/切换会话入口，会话由阶段自动管理 */}
-      <div className="panel-heading conversation-heading">
-        <StageBar
-          onOpenStageHistory={(stage) => openStageHistory(stage)}
-          onRestart={() => restartThread()}
-        />
+      <div className="conversation-top">
+        <div className="panel-heading conversation-heading">
+          <StageBar
+            onOpenStageHistory={(stage) => openStageHistory(stage)}
+            onRestart={() => restartThread()}
+            externalBusy={automaticBusy}
+          />
+        </div>
+        {automaticPanel}
       </div>
 
       {/* 五段制（REQ-20261018-115508 DEC-003）：砍表单纯对话开场——
@@ -277,7 +293,10 @@ export function ChatPanel({
 
       {/* composer：无卡时输入框是唯一输入（DEC-005 单输入面）；
           完成卡片挂起时输入框保持可用——直接发送即隐式切换（DEC-012） */}
-      <form className="chat-composer" onSubmit={onSubmit}>
+      <form className="chat-composer" onSubmit={(event) => {
+        if (automaticBusy) { event.preventDefault(); return; }
+        onSubmit(event);
+      }}>
         <BillingBudget phase={characterRepair ? "character" : pipeline?.phase ?? "default"} />
         {characterRepair ? <div className="character-repair-banner"><p role="status">正在重做人物卡。请说明人物和重做要求。</p><button className="sidebar-skill-new" type="button" onClick={onExitCharacterRepair}>返回写作</button></div> : null}
         <div className={`chat-input-wrap${expanded ? " expanded" : ""}`}>
@@ -289,9 +308,10 @@ export function ChatPanel({
             rows={1}
             onChange={(event) => onPromptChange(event.target.value)}
             onKeyDown={handleInputKeyDown}
-            disabled={awaitingWithOptions}
+            disabled={awaitingWithOptions || automaticBusy}
             placeholder={
-              awaitingWithOptions
+              automaticBusy ? "全自动任务执行中，可在任务栏停止"
+              : awaitingWithOptions
                 ? "请在上方拍板卡选择并提交"
                 : loading
                   ? "生成中，可以直接输入并回车排队发送"
@@ -316,7 +336,7 @@ export function ChatPanel({
                 <Square size={14} fill="currentColor" aria-hidden="true" />
               </button>
             ) : (
-              <button className="send-button" type="submit" disabled={awaitingWithOptions} aria-label="发送" title="发送">
+              <button className="send-button" type="submit" disabled={awaitingWithOptions || automaticBusy} aria-label="发送" title="发送">
                 <ArrowUp size={16} aria-hidden="true" />
               </button>
             )}

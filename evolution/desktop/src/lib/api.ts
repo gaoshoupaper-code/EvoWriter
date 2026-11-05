@@ -193,6 +193,14 @@ async function apiJson<T>(input: string, init: RequestInit, fetcher = apiFetch):
         } else if (payload.detail && typeof payload.detail === "object" &&
           "message" in payload.detail && typeof payload.detail.message === "string") {
           message = payload.detail.message;
+        } else if (Array.isArray(payload.detail)) {
+          message = payload.detail.map((issue: unknown) => {
+            if (!issue || typeof issue !== "object") return "";
+            const item = issue as { loc?: unknown[]; msg?: string };
+            const field = Array.isArray(item.loc) ? item.loc.filter((part) => part !== "body").join(".") : "";
+            const reason = item.msg === "Field required" ? "缺少必填项" : item.msg || "输入不合法";
+            return [field, reason].filter(Boolean).join("：");
+          }).filter(Boolean).join("\n") || "输入校验失败";
         } else if (typeof payload.message === "string") {
           message = payload.message;
         }
@@ -1956,5 +1964,52 @@ export async function exportTraceContent(
   return evoJson(`/api/trace-content/traces/${encodeURIComponent(traceId)}/export`, {
     method: "GET",
   });
+}
+
+export type * from "./experiment-types";
+import type {
+  Experiment, ExperimentOptions, ExperimentPackage, ExperimentPackageInput, ExperimentInput,
+  ExperimentRule, ExperimentRuleInput, ExperimentStart, ExperimentSummary, ExperimentTaskType,
+} from "./experiment-types";
+
+export function listExperimentPackages(): Promise<{ items: ExperimentPackage[]; can_read_content: boolean }> {
+  return evoJson("/api/experiments/packages", { method: "GET" });
+}
+export function importExperimentPackage(payload: ExperimentPackageInput): Promise<ExperimentPackage> {
+  return evoJson("/api/experiments/packages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+}
+export function getExperimentPackageTemplates(): Promise<{ items: ExperimentPackageInput[] }> {
+  return evoJson("/api/experiments/packages/templates", { method: "GET" });
+}
+export function getExperimentPackage(id: string): Promise<ExperimentPackage & { input: ExperimentInput }> {
+  return evoJson(`/api/experiments/packages/${encodeURIComponent(id)}`, { method: "GET" });
+}
+export function listExperimentRules(taskType?: ExperimentTaskType): Promise<{ items: ExperimentRule[] }> {
+  const query = taskType ? `?task_type=${encodeURIComponent(taskType)}` : "";
+  return evoJson(`/api/experiments/rules${query}`, { method: "GET" });
+}
+export function saveExperimentRule(payload: ExperimentRuleInput): Promise<ExperimentRule> {
+  return evoJson("/api/experiments/rules", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+}
+export function getExperimentOptions(): Promise<ExperimentOptions> {
+  return evoJson("/api/experiments/options", { method: "GET" });
+}
+export function listExperiments(): Promise<{ items: ExperimentSummary[] }> {
+  return evoJson("/api/experiments/runs", { method: "GET" });
+}
+export function startExperiment(payload: ExperimentStart): Promise<Experiment> {
+  return evoJson("/api/experiments/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+}
+export function getExperiment(id: string): Promise<Experiment> {
+  return evoJson(`/api/experiments/runs/${encodeURIComponent(id)}`, { method: "GET" });
+}
+export function stopExperiment(id: string): Promise<Experiment> {
+  return evoJson(`/api/experiments/runs/${encodeURIComponent(id)}/stop`, { method: "POST" });
+}
+export function publishExperiment(id: string): Promise<Experiment> {
+  return evoJson(`/api/experiments/runs/${encodeURIComponent(id)}/publish`, { method: "POST" });
+}
+export function restoreExperiment(id: string): Promise<Experiment> {
+  return evoJson(`/api/experiments/runs/${encodeURIComponent(id)}/restore`, { method: "POST" });
 }
 

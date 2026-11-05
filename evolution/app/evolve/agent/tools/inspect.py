@@ -17,8 +17,8 @@ from typing import Any
 
 from langchain_core.tools import tool
 
-from app.core.settings import settings
 from app.evolve.hook_protocol import format_hook_table
+from app.evolve.ctx import harness_work_root
 
 logger = logging.getLogger("evolution.evolve.agent.tools.inspect")
 
@@ -38,7 +38,7 @@ def make_inspect_tools() -> list:
         - skills/     技能包（可改）
         - __init__.py assemble 装配入口（只读）
         """
-        pkg_dir = settings.harness_work_dir_path
+        pkg_dir = harness_work_root()
         if not pkg_dir.is_dir():
             return f"错误：harness 包目录不存在 {pkg_dir}"
 
@@ -79,7 +79,7 @@ def make_inspect_tools() -> list:
         Args:
             file_path: 相对 harness 包根的源码文件路径
         """
-        pkg_dir = settings.harness_work_dir_path
+        pkg_dir = harness_work_root()
         # 安全：resolve 后检查不越界
         full = (pkg_dir / file_path).resolve()
         try:
@@ -116,7 +116,7 @@ def make_inspect_tools() -> list:
         组装 subagent、调 create_deep_agent 返回完整 agent。
         读它能理解各要素怎么被装配到一起的。
         """
-        pkg_dir = settings.harness_work_dir_path
+        pkg_dir = harness_work_root()
         assemble_path = pkg_dir / "__init__.py"
         if not assemble_path.is_file():
             return "错误：assemble 入口文件不存在"

@@ -17,11 +17,13 @@ import { PIPELINE_STEPS } from "@/lib/pipeline-steps";
 type StageBarProps = {
   onOpenStageHistory: (stage: string) => void;
   onRestart: () => void | Promise<void>;
+  externalBusy?: boolean;
 };
 
-export function StageBar({ onOpenStageHistory, onRestart }: StageBarProps) {
+export function StageBar({ onOpenStageHistory, onRestart, externalBusy = false }: StageBarProps) {
   const pipeline = useContentStore((s) => s.outlinePipeline);
-  const loading = useExecutionStore((s) => s.loading);
+  const executionLoading = useExecutionStore((s) => s.loading);
+  const loading = executionLoading || externalBusy;
   const [restartBusy, setRestartBusy] = useState(false);
 
   const isFive = pipeline?.kind === "five";

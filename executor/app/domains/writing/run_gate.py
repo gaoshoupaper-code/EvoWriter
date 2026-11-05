@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import threading
 from pathlib import Path
 
@@ -73,6 +74,31 @@ def get_workspace_mutation_lock(workspace_path: str | Path):
             lock = threading.RLock()
             _workspace_mutation_locks[key] = lock
         return lock
+
+
+def active_target_task(workspace_path: str | Path) -> str | None:
+    path = Path(workspace_path) / ".writing" / "target-task.json"
+    if not path.is_file():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))["task_id"]
+
+
+def claim_target_workspace(workspace_path: str | Path, task_id: str) -> None:
+    path = Path(workspace_path) / ".writing" / "target-task.json"
+    with get_workspace_mutation_lock(workspace_path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with path.open("x", encoding="utf-8") as stream:
+                json.dump({"task_id": task_id}, stream)
+        except FileExistsError:
+            if active_target_task(workspace_path) != task_id:
+                raise ValueError("作品已有全自动任务，请先停止现有任务。") from None
+
+
+def release_target_workspace(workspace_path: str | Path, task_id: str) -> None:
+    with get_workspace_mutation_lock(workspace_path):
+        if active_target_task(workspace_path) == task_id:
+            (Path(workspace_path) / ".writing" / "target-task.json").unlink(missing_ok=True)
 
 
 def get_conversation_gate(conversation_id: str) -> ConversationGate:

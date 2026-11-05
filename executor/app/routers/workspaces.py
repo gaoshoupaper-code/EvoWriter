@@ -13,7 +13,7 @@ import logging
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from watchfiles import awatch
 
@@ -63,7 +63,18 @@ from app.schemas.screenplay import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
+async def _guard_target_writes(request: Request, user: CurrentUser = Depends(current_user)):
+    workspace_id = request.path_params.get("workspace_id")
+    if workspace_id and request.method not in {"GET", "HEAD", "OPTIONS"}:
+        from app.domains.writing.run_gate import active_target_task
+        workspace = get_thread_store().get_workspace(user.user_id, workspace_id)
+        if workspace is None:
+            raise HTTPException(404, "Workspace not found")
+        if active_target_task(workspace.workspace_path):
+            raise HTTPException(409, "作品正在执行全自动任务，请先停止任务再修改产物或阶段。")
+
+
+router = APIRouter(dependencies=[Depends(_guard_target_writes)])
 
 # outline 产物目录内文件上限（防异常 workspace 撑爆载荷）。五段制长跑百章级
 # 网文 章纲+正文 可达数百文件（C7 修复：200→2000；legacy 工作区沿用小上限）

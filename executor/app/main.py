@@ -125,6 +125,9 @@ async def _lifespan(application: FastAPI):
         agent_service=agent_service, character_service=character_service,
         style_optimizer=style_optimizer,
     )
+    from app.domains.writing.target_tasks import get_manager as get_target_task_manager
+    get_target_task_manager().recorder = trace_recorder
+    get_target_task_manager().recover()
     # 多用户：引导管理员账号（幂等）
     bootstrap_admin()
     _billing_runs.start_recovery()
@@ -149,6 +152,7 @@ async def _lifespan(application: FastAPI):
     start_production_reconcile_loop()
     pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
     yield
+    await get_target_task_manager().close()
     await _billing_runs.aclose()
     # 关闭绑定补账协程
     from app.platform.agent.binding_client import get_binding_client
@@ -209,6 +213,9 @@ app.include_router(writing_skills_router, prefix="/api")
 from app.routers.writing_styles import router as writing_styles_router
 app.include_router(writing_styles_router, prefix="/api")
 app.include_router(internal_router)  # /internal 前缀已在 router 内定义，供 evolution 轮询
+from app.routers.target_tasks import router as target_task_router, internal_router as internal_target_task_router
+app.include_router(target_task_router)
+app.include_router(internal_target_task_router)
 
 
 @app.middleware("http")

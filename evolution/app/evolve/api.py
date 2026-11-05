@@ -23,7 +23,7 @@ import logging
 import uuid
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -46,7 +46,21 @@ from app.trace.facts import (
 
 logger = logging.getLogger("evolution.evolve.api")
 
-router = APIRouter(tags=["evolve"])
+async def _guard_experiment_session(request: Request) -> None:
+    """Automatic rounds must not expose source text or bypass experiment controls."""
+    session_id = request.path_params.get("session_id")
+    if not session_id:
+        return
+    session = ev_db.get_session(session_id)
+    if session is None or not str(session.get("case_id") or "").startswith("experiment:"):
+        return
+    if request.method != "GET":
+        raise HTTPException(status_code=409, detail="自动实验会话请通过实验接口操作。")
+    from app.trace.access import require_full_content_access
+    require_full_content_access(request)
+
+
+router = APIRouter(tags=["evolve"], dependencies=[Depends(_guard_experiment_session)])
 
 # session_id → 后台进化 task。stop 端点靠它 cancel 正在跑的 Agent。
 # 原先用 FastAPI BackgroundTasks.add_task 不持有 task 引用，外部无法取消；

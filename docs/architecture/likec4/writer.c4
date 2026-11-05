@@ -1,0 +1,99 @@
+specification {
+  element actor { style { shape person } }
+  element system
+  element service
+  element client { style { shape browser } }
+  element component
+  element external
+}
+
+model {
+  author = actor '作者'
+  developer = actor '开发者'
+  llm = external '模型供应商'
+
+  writer = system 'Writer' {
+    desktop = client 'desktop/' {
+      description '正常创作：逐步交互与三类全自动目标任务'
+    }
+    evolutionDesktop = client 'evolution/desktop/' {
+      description '资料包、规则版本、实验报告、终验和人工发布'
+    }
+    executor = service 'executor/' {
+      routers = component 'app/routers/'
+      writing = component 'app/domains/writing/' {
+        description '目标驱动器复用正式生成、审稿、工具和 checkpoint'
+      }
+      platform = component 'app/platform/' {
+        description '隔离进程、固定包、模型、存储与 trace'
+      }
+    }
+    evolution = service 'evolution/' {
+      experiments = component 'app/experiments/' {
+        description '资料包与规则版本、持久实验、探索与独立终验隔离'
+      }
+      evolve = component 'app/evolve/' {
+        description '受控 Harness 探查、改动和验证'
+      }
+      core = component 'app/core/'
+    }
+    platform = service 'platform/' {
+      description '候选制品准备、版本账本、发布 CAS 与加载确认'
+    }
+    contracts = component 'contracts/' {
+      description '零业务依赖的共享任务、输入版本和发布契约'
+    }
+    harness = component 'evolution/harnesses/repo/' {
+      description '独立 Git 仓库；冻结 commit 后试跑，人审后晋升'
+    }
+  }
+
+  author -> writer.desktop '设置目标，查看或停止任务'
+  developer -> writer.evolutionDesktop '准备资料包，审阅实验与发布'
+  writer.desktop -> writer.executor.routers 'HTTP /api/workspaces/*/target-tasks'
+  writer.evolutionDesktop -> writer.evolution.experiments 'HTTP /api/experiments'
+  writer.executor.routers -> writer.executor.writing '目标任务与正式生成入口'
+  writer.executor.writing -> writer.executor.platform '隔离运行、模型与 trace'
+  writer.executor.platform -> llm '模型调用'
+  writer.evolution.experiments -> writer.evolution.core '事务、密钥与配置'
+  writer.evolution.experiments -> writer.evolution.evolve '仅提供优化证据，受控改动'
+  writer.evolution.evolve -> writer.harness '隔离副本修改并冻结 commit'
+  writer.evolution.experiments -> writer.executor.routers 'HTTP /internal/target-tasks：幂等执行、查询与停止'
+  writer.executor.platform -> writer.evolution.experiments 'HTTP /api/ingestion：固定模型凭据与 trace 通知'
+  writer.evolution.experiments -> writer.platform 'HTTP /api/artifacts/prepare；人审后 CAS 发布'
+  writer.platform -> writer.harness '读取冻结候选，不修改生产工作区'
+  writer.platform -> writer.executor.routers 'HTTP /internal/platform/reload：核对实际 commit'
+  writer.executor.platform -> writer.platform 'HTTP /api：制品、绑定与生产对账'
+  writer.executor.writing -> writer.contracts '目标、输入版本和结果'
+  writer.evolution.experiments -> writer.contracts '目标任务与发布数据形状'
+  writer.platform -> writer.contracts '版本、制品和 CAS'
+}
+
+views {
+  view index {
+    title 'Writer：三段自动创作与自进化'
+    include *
+  }
+  view evolution of writer.evolution {
+    title 'evolution：实验与受控进化'
+    include *
+  }
+  view executor of writer.executor {
+    title 'executor：复用正式生成链'
+    include *
+  }
+  dynamic view selfEvolution {
+    title '固定输入、独立终验与人工发布'
+    developer -> writer.evolutionDesktop '导入资料包，设置主攻类和门槛'
+    writer.evolutionDesktop -> writer.evolution '启动并保存固定条件'
+    writer.evolution -> writer.platform 'HTTP /api/artifacts/prepare：准备候选，不晋升'
+    writer.evolution -> writer.executor 'HTTP /internal/target-tasks：执行固定目标'
+    writer.executor -> llm '正式生成链及 Agent 审稿修订'
+    writer.executor -> writer.evolution 'HTTP /api/ingestion：trace 通知'
+    writer.evolution -> llm '异源评分；终验题不提供给进化 Agent'
+    writer.evolutionDesktop -> developer '展示优化与终验回归报告'
+    developer -> writer.evolutionDesktop '人工确认固定候选'
+    writer.evolution -> writer.platform 'HTTP /api/release/promote：核对原生产版本'
+    writer.platform -> writer.executor 'HTTP /internal/platform/reload：确认实际生效'
+  }
+}

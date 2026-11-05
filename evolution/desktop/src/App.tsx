@@ -16,6 +16,7 @@ import BenchBatchDetail from "@/pages/bench/BatchDetail";
 import BenchRules from "@/pages/bench/Rules";
 import BenchDataset from "@/pages/bench/Dataset";
 import BenchArtifacts from "@/pages/bench/Artifacts";
+import ExperimentDetail from "@/pages/bench/ExperimentDetail";
 import Tests from "@/pages/tests";
 import TraceDetail from "@/pages/trace-detail";
 import AdminUsers from "@/pages/admin/users";
@@ -62,6 +63,7 @@ function App() {
 
           {/* 评测板块（REQ-20260921-135543 FR-001：独立分组 4 入口 + 旧路由重定向） */}
           <Route path="/bench" element={<BenchWorkbench />} />
+          <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
           <Route path="/bench/batches/:batchId" element={<BenchBatchDetail />} />
           <Route path="/bench/rules" element={<BenchRules />} />
           <Route path="/bench/dataset" element={<BenchDataset />} />

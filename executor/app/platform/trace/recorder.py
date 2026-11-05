@@ -34,6 +34,7 @@ from contracts.trace.payload import (
 )
 from contracts.trace.w3c import create_trace_context
 from contracts.trace.usage import TraceMetricsAccumulator
+from contracts.trace.files import open_anchored_text
 
 # ── 写盘解耦参数 ──────────────────────────────────────────────
 # 根因：append_event 原来在事件循环线程上同步 open("a")+write，单次生成会写
@@ -1068,13 +1069,15 @@ class TraceRecorder:
             if not index_path.exists():
                 continue
             try:
-                with index_path.open("r", encoding="utf-8") as f:
+                with open_anchored_text(Path(ws_path), "traces/index.json") as f:
                     runs = json.load(f)
-            except (json.JSONDecodeError, OSError):
+            except (ValueError, OSError):
                 continue
             if not isinstance(runs, dict):
                 continue
             for tid, run_data in runs.items():
+                if not self._valid_external_entry(run_data, tid):
+                    continue
                 if run_data.get("status") != "awaiting_input":
                     continue
                 # 从 jsonl 读最后一条 run_awaiting 时间戳判断超时
@@ -1099,7 +1102,8 @@ class TraceRecorder:
         """从 jsonl 读最后一条 run_awaiting 事件的时间戳（倒序找）。"""
         try:
             # 倒序读，找最后一条 run_awaiting
-            lines = trace_path.read_text(encoding="utf-8").splitlines()
+            with open_anchored_text(trace_path.parent, trace_path.name) as file:
+                lines = file.read().splitlines()
             for line in reversed(lines):
                 stripped = line.strip()
                 if not stripped:
@@ -1111,7 +1115,7 @@ class TraceRecorder:
                 if data.get("type") == "run_awaiting":
                     return data.get("timestamp")
             return None
-        except OSError:
+        except (OSError, ValueError):
             return None
 
     def _cancel_zombie(self, trace_id: str, run_data: dict[str, Any], ws_path: str) -> None:
@@ -1228,17 +1232,26 @@ class TraceRecorder:
         """读 workspace/traces/index.json，返回指定 trace_id 的 run 条目（None=缺失/不可读）。
 
         register_external_run / find_run_by_trace_id / 磁盘发现共用此读取路径，
-        避免 open+json.load 的样板重复。TOCTOU 安全：直接 open，异常即视为缺失。
+        目录FD固定读取边界，逐层拒绝符号链接；异常视为缺失。
         """
-        index_path = Path(workspace_path) / "traces" / "index.json"
         try:
-            with index_path.open("r", encoding="utf-8") as f:
+            with open_anchored_text(Path(workspace_path), "traces/index.json") as f:
                 runs = json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except (ValueError, OSError):
             return None
         if not isinstance(runs, dict):
             return None
-        return runs.get(trace_id)
+        entry = runs.get(trace_id)
+        return entry if self._valid_external_entry(entry, trace_id) else None
+
+    @staticmethod
+    def _valid_external_entry(entry, trace_id):
+        if not isinstance(entry, dict) or entry.get("trace_id") != trace_id:
+            return False
+        name = entry.get("path")
+        if not isinstance(name, str) or not name.startswith("traces/") or not name.endswith(".jsonl"):
+            return False
+        return "\\" not in name and ":" not in name and all(part not in {"", ".", ".."} for part in name.split("/"))
 
     def register_external_run(self, trace_id: str, workspace_path: str) -> bool:
         """登记一个由本进程之外创建的 trace（隔离子进程 A/B 测试，FR-001）。
@@ -1255,6 +1268,9 @@ class TraceRecorder:
         workspace 下没有该 trace 的 index，调用方可稍后重试（吸收跨进程竞态）。
         """
         if self._load_run_index_entry(workspace_path, trace_id) is None:
+            return False
+        previous = self._trace_workspace.get(trace_id)
+        if previous is not None and Path(previous).absolute() != Path(workspace_path).absolute():
             return False
         # 登记即可：find_run_by_trace_id / read_trace_events 都基于此索引定位。
         self._trace_workspace[trace_id] = workspace_path
@@ -1368,13 +1384,15 @@ class TraceRecorder:
             if not index_path.exists():
                 continue
             try:
-                with index_path.open("r", encoding="utf-8") as f:
+                with open_anchored_text(Path(ws_path), "traces/index.json") as f:
                     runs = json.load(f)
-            except (json.JSONDecodeError, OSError):
+            except (ValueError, OSError):
                 continue
             if not isinstance(runs, dict):
                 continue
             for tid, run_data in runs.items():
+                if not self._valid_external_entry(run_data, tid):
+                    continue
                 started = str(run_data.get("started_at", ""))
                 if since_iso and started < since_iso:
                     continue
@@ -1853,7 +1871,7 @@ class TraceRecorder:
             temporary.unlink(missing_ok=True)
 
     def _read_run_detail(self, thread: ThreadSummary, trace_id: str) -> TraceDetail | None:
-        run_data = self._read_run_index(thread).get(trace_id)
+        run_data = self._load_run_index_entry(thread.workspace_path, trace_id)
         if run_data is None:
             return None
         run = TraceRunSummary.model_validate(run_data)
@@ -1874,7 +1892,7 @@ class TraceRecorder:
 
     def _read_events(self, trace_path: Path, *, hydrate_payloads: bool = False) -> list[TraceLogEvent]:
         events_by_id: dict[str, TraceLogEvent] = {}
-        with trace_path.open("r", encoding="utf-8") as file:
+        with open_anchored_text(trace_path.parent, trace_path.name) as file:
             for line in file:
                 stripped = line.strip()
                 if not stripped:
@@ -2141,7 +2159,7 @@ class TraceRecorder:
         index_path = self._index_path(thread)
         if not index_path.exists():
             return {}
-        with index_path.open("r", encoding="utf-8") as file:
+        with open_anchored_text(Path(thread.workspace_path), "traces/index.json") as file:
             data = json.load(file)
         if not isinstance(data, dict):
             raise ValueError(f"Invalid trace index format: {index_path}")

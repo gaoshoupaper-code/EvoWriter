@@ -751,6 +751,10 @@ def init_db() -> None:
         # 发版终态与版本闭环：evolve_points 补 landed_session_id/version 列（REQ-20261004-212948）
         _migrate_evolve_release_tracking(conn)
 
+    # New experiment records are additive; historical benchmarks remain untouched.
+    from app.experiments.repo import init_schema as init_experiment_schema
+    init_experiment_schema()
+
 
 def _migrate_ep_agent_seq_unique(conn: sqlite3.Connection) -> None:
     """幂等迁移：evolve_points 建 Agent 内序号唯一部分索引（FR-002）。

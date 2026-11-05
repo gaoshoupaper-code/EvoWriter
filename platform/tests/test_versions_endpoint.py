@@ -7,13 +7,19 @@ from app import release as release_mod
 class _FakeResponse:
     status_code = 200
 
+    def __init__(self, commit):
+        self.commit = commit
+
+    def json(self):
+        return {"status": "reloaded", "commit": self.commit}
+
 
 def _mock_notify_ok(monkeypatch):
     """reload 通知打桩（避免真连 executor + 3×2s 重试等待）。"""
     monkeypatch.setattr(
         release_mod.httpx,
         "post",
-        lambda url, json=None, headers=None, timeout=None: _FakeResponse(),
+        lambda url, json=None, headers=None, timeout=None: _FakeResponse(json["commit"]),
     )
     monkeypatch.setattr(release_mod.time, "sleep", lambda _s: None)
 

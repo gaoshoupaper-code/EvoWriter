@@ -53,6 +53,7 @@ from app.benchmark.api import router as benchmark_router
 from app.trace.recorder import EvolutionTraceRecorder
 from app.trace_payloads import start_payload_lifecycle_scheduler
 from app.view.workbenches import router as trace_workbenches_router
+from app.experiments.api import router as experiments_router, internal_router as experiment_internal_router
 
 
 @asynccontextmanager
@@ -107,9 +108,13 @@ async def lifespan(app: FastAPI):
     checkpoint_pool = EvolveCheckpointPool(settings.evolve_checkpoints_path)
     init_checkpoint_pool(checkpoint_pool)
 
+    from app.experiments import runner as experiment_runner
+    experiment_runner.startup(recorder)
+
     yield
 
     # 关闭：停 recorder drain + flush 残余事件落盘（D5）+ 关闭所有 checkpoint saver。
+    experiment_runner.shutdown()
     await recorder.aclose()
     # 观测收尾：flush 余量指标（每进程代最后一个 ≤30s 导出批次，review 整改）。
     telemetry.shutdown()
@@ -171,6 +176,8 @@ app.include_router(dataset_router, prefix="/api")
 # Promote 闸门（数据闭环设计：生产 trace → 数据集的清洗 + 标注流水线）
 # Benchmark 矩阵 + Runner（数据闭环设计：跨版本对比 + golden 升级重跑）
 app.include_router(benchmark_router, prefix="/api")
+app.include_router(experiments_router, prefix="/api")
+app.include_router(experiment_internal_router, prefix="/api")
 # 大模型 API 配置（桌面化改造，2026-07-07：桌面端唯一 key 配置入口）
 from app.config.api import router as config_router
 app.include_router(config_router, prefix="/api")

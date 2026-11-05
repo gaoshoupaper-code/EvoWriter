@@ -43,6 +43,11 @@ vi.mock("@/lib/api", () => ({
   getBenchmarkDeliveries: vi.fn(),
   getArtifactRevisionContent: vi.fn(),
   exportTraceContent: vi.fn(),
+  listExperimentPackages: vi.fn(),
+  getExperimentPackageTemplates: vi.fn(),
+  listExperimentRules: vi.fn(),
+  getExperimentOptions: vi.fn(),
+  listExperiments: vi.fn(),
 }));
 
 import * as apiModule from "@/lib/api";
@@ -124,6 +129,11 @@ beforeAll(() => {
 beforeEach(() => {
   vi.clearAllMocks();
   setupCommonMocks();
+  api.listExperimentPackages.mockResolvedValue({ items: [], can_read_content: false });
+  api.getExperimentPackageTemplates.mockResolvedValue({ items: [] });
+  api.listExperimentRules.mockResolvedValue({ items: [] });
+  api.getExperimentOptions.mockResolvedValue({ task_types: ["volume_outlines", "chapter_outlines", "chapter_text"], versions: [], production_version: null, models: [], judge_groups: [] });
+  api.listExperiments.mockResolvedValue({ items: [] });
 });
 
 // ── AC-001：侧栏评测分组 ──

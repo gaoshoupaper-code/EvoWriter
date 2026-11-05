@@ -7,6 +7,8 @@
 """
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, Field
 
 from contracts.platform.entities import (
@@ -114,6 +116,12 @@ class ProbeRequest(BaseModel):
     source_commit: str = Field(min_length=1)
 
 
+class ArtifactPrepareRequest(BaseModel):
+    """Prepare an immutable candidate without moving production."""
+
+    source_commit: str = Field(pattern=r"^[0-9a-f]{7,64}$")
+
+
 class ProbeResult(BaseModel):
     """门禁结果：status=ready 才允许 promote。"""
 
@@ -127,6 +135,14 @@ class PromoteRequest(BaseModel):
 
     source_commit: str = Field(min_length=1)
     version_note: str = ""
+    expected_production_commit: str | None = None
+    expected_production_version: int | None = Field(default=None, ge=1)
+
+
+class RestoreRequest(PromoteRequest):
+    """Restore a known release only while the failed release is still current."""
+
+    expected_production_commit: str = Field(min_length=1)
 
 
 class PromoteResult(BaseModel):
@@ -136,6 +152,8 @@ class PromoteResult(BaseModel):
     commit: str
     artifact_digest: str | None
     reload_notified: bool
+    activation_status: Literal["activated", "unconfirmed"] = "unconfirmed"
+    observed_commit: str | None = None
 
 
 # ── reload 通知（Platform → executor，晋升后触发）────────────────

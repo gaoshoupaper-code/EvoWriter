@@ -17,6 +17,7 @@ from typing import Any
 from uuid import uuid4
 
 from . import TracePayloadRef
+from .files import open_anchored_text
 
 
 class PayloadRejected(ValueError):
@@ -166,8 +167,13 @@ class ContentAddressedPayloadStore:
         )
 
     def get(self, payload_id: str) -> Any:
-        path = self.root / f"{payload_id}.json"
-        return json.loads(path.read_text(encoding="utf-8"))
+        if not re.fullmatch(r"[0-9a-f]{64}", payload_id):
+            raise ValueError("Invalid payload content address")
+        with open_anchored_text(self.root, f"{payload_id}.json") as stream:
+            content = stream.read()
+        if hashlib.sha256(content.encode("utf-8")).hexdigest() != payload_id:
+            raise ValueError("Payload content address mismatch")
+        return json.loads(content)
 
     def delete(self, payload_id: str) -> None:
         (self.root / f"{payload_id}.json").unlink(missing_ok=True)

@@ -10,6 +10,7 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
 from contracts.platform import (
+    ArtifactPrepareRequest,
     ArtifactMeta,
     BindingAck,
     BindingCreate,
@@ -20,13 +21,14 @@ from contracts.platform import (
     PromoteRequest,
     PromoteResult,
     ResumeCheck,
+    RestoreRequest,
     VersionLine,
     VersionsStatus,
 )
 
 from app import artifacts, bindings, release
 from app.agent.probe import probe_candidate
-from app.core.ledger import ledger_from_settings
+from app.core.ledger import ProductionChanged, ledger_from_settings
 from app.manifests import ensure_manifest
 
 router = APIRouter(prefix="/api", tags=["platform"])
@@ -89,6 +91,16 @@ def get_artifact_meta(commit: str) -> ArtifactMeta:
     return built.meta
 
 
+@router.post("/artifacts/prepare", response_model=ArtifactMeta)
+def prepare_artifact(body: ArtifactPrepareRequest) -> ArtifactMeta:
+    try:
+        return release.prepare_candidate(body.source_commit)
+    except release.ProbeRejected as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @router.get("/artifacts/{commit}/download")
 def download_artifact(commit: str) -> FileResponse:
     """下载 tar.gz（executor 校验 digest 后装配，DEC-012）。未打包 → 404。"""
@@ -135,8 +147,30 @@ def probe(body: ProbeRequest) -> ProbeResult:
 def promote(body: PromoteRequest) -> PromoteResult:
     """晋升生产。前置：该 commit 必须 probe ready（promote 内部重跑门禁）。"""
     try:
-        return release.promote(body.source_commit, body.version_note)
+        return release.promote(
+            body.source_commit, body.version_note,
+            expected_production_commit=body.expected_production_commit,
+            expected_production_version=body.expected_production_version,
+        )
+    except ProductionChanged as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
     except release.ProbeRejected as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/release/restore", response_model=PromoteResult)
+def restore(body: RestoreRequest) -> PromoteResult:
+    if not ledger_from_settings().has_version_commit(body.source_commit):
+        raise HTTPException(status_code=409, detail="只能恢复已发布的历史版本")
+    try:
+        return release.promote(
+            body.source_commit, body.version_note or "restore previous release",
+            expected_production_commit=body.expected_production_commit,
+            expected_production_version=body.expected_production_version,
+        )
+    except (ProductionChanged, release.ProbeRejected) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

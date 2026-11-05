@@ -8,6 +8,11 @@ DeepAgent 框架本身不变（CON-005），只是被装进隔离子进程跑。
 
 from __future__ import annotations
 
-from .worker_process import IsolatedGenerationWorker, WorkerResult
-
 __all__ = ["IsolatedGenerationWorker", "WorkerResult"]
+
+
+def __getattr__(name):
+    if name in __all__:
+        from . import worker_process
+        return getattr(worker_process, name)
+    raise AttributeError(name)

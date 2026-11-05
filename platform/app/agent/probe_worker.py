@@ -11,12 +11,13 @@ __path__ 固定，子模块交错解析不可控）。子进程里以 executor �
 PYTHONPATH 由父进程注入（仓库根 + executor 目录），本文件只依赖 stdlib +
 contracts + langchain-core + executor 的 app 包。
 
-输出：stdout 一行 JSON {status: ready|rejected, reason, identity}。
+输出：专用 FD 一份 JSON；stdout 仅供日志。
 任何异常收敛为 rejected（门禁语义：失败=拒绝，不 500）。
 """
 from __future__ import annotations
 
 import json
+import os
 import sys
 import uuid
 from dataclasses import dataclass
@@ -211,35 +212,43 @@ def _check_hook_signatures(checkout: Path, mod_prefix: str = "") -> str | None:
 
 def main() -> int:
     import subprocess
-    import tempfile
 
     from contracts.runtime_context import RuntimeContext
     from langchain_core.language_models.fake_chat_models import FakeListChatModel
 
     checkout = Path(sys.argv[1]).resolve()
     commit = sys.argv[2]
+    verdict_fd = int(sys.argv[4])
     module_name = f"platform_probe_{uuid.uuid4().hex}"
 
     def _reject(reason: str) -> int:
-        print(json.dumps({"status": "rejected", "reason": reason}, ensure_ascii=False))
+        os.write(verdict_fd, json.dumps({"status": "rejected", "reason": reason}, ensure_ascii=False).encode("utf-8"))
         return 0
 
     try:
         if not (checkout / "middleware" / "artifact_snapshot.py").is_file():
             return _reject(f"candidate {commit} 缺少 middleware/artifact_snapshot.py")
+        workspace = Path(sys.argv[3]).resolve()
+        from app.platform.isolation.sandbox import restrict_process, runtime_read_paths
+
+        # The real import executes evolvable Python; a separate interpreter
+        # alone cannot protect the ledger, other checkouts or service files.
+        restrict_process(
+            read_paths=[*runtime_read_paths(), checkout, Path("/usr/bin/git"), Path("/usr/lib/git-core")],
+            write_paths=[workspace, Path("/dev/null")], connect_ports=(), allow_exec=True,
+            keep_fds=(verdict_fd,),
+        )
         package = _load_package(checkout, module_name)
-        with tempfile.TemporaryDirectory(prefix="platform_probe_workspace_") as tmp:
-            workspace = Path(tmp)
-            context = RuntimeContext(
-                model=FakeListChatModel(responses=["ok"]),
-                backend=ProbeBackend(root_dir=workspace, virtual_mode=True),
-                checkpointer=None,
-                workspace_path=workspace,
-                trace_id="harness-probe",
-                trace_recorder=_ProbeRecorder(),
-                artifact_snapshot_callback=lambda _data: None,
-            )
-            graph = package.assemble(context)
+        context = RuntimeContext(
+            model=FakeListChatModel(responses=["ok"]),
+            backend=ProbeBackend(root_dir=workspace, virtual_mode=True),
+            checkpointer=None,
+            workspace_path=workspace,
+            trace_id="harness-probe",
+            trace_recorder=_ProbeRecorder(),
+            artifact_snapshot_callback=lambda _data: None,
+        )
+        graph = package.assemble(context)
         # assemble 契约必须产出图：返回 None 说明包坏了或副作用吞了返回值，
         # 「不抛异常」不等于可发布（review #7）
         if graph is None:
@@ -268,14 +277,15 @@ def main() -> int:
         hook_violation = _check_hook_signatures(checkout, module_name)
         if hook_violation:
             return _reject(f"candidate {commit} {hook_violation}")
-        print(json.dumps({
+        os.write(verdict_fd, json.dumps({
             "status": "ready",
+            "checked_commit": commit,
             "identity": {
                 "harness_commit": commit,
                 "harness_dirty": False,
                 "artifact_snapshot_middleware": True,
             },
-        }, ensure_ascii=False))
+        }, ensure_ascii=False).encode("utf-8"))
         return 0
     except Exception as exc:  # noqa: BLE001 — 门禁语义：一切异常 = rejected
         return _reject(f"{type(exc).__name__}: {exc}")

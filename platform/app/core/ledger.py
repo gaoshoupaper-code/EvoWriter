@@ -79,6 +79,10 @@ class ProductionPointer:
     promoted_at: str
 
 
+class ProductionChanged(RuntimeError):
+    """The review baseline is no longer the production pointer."""
+
+
 class Ledger:
     """账本读写门面。每次操作独立短连接，不持有长连接（线程安全）。"""
 
@@ -324,6 +328,8 @@ class Ledger:
         note: str,
         artifact_digest: str,
         fingerprint: SurfaceFingerprint,
+        expected_production_commit: str | None = None,
+        expected_production_version: int | None = None,
     ) -> int:
         """单事务完成晋升：versions 追加 + 旧 production 标 superseded +
         新 manifest 建档/转 production + meta 指针切换。
@@ -337,6 +343,18 @@ class Ledger:
         with self.connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
             try:
+                current = dict(conn.execute(
+                    "SELECT key, value FROM meta WHERE key IN (?, ?)",
+                    (KEY_PRODUCTION_COMMIT, KEY_PRODUCTION_VERSION),
+                ).fetchall())
+                if (
+                    expected_production_commit is not None
+                    and current.get(KEY_PRODUCTION_COMMIT) != expected_production_commit
+                ) or (
+                    expected_production_version is not None
+                    and current.get(KEY_PRODUCTION_VERSION) != str(expected_production_version)
+                ):
+                    raise ProductionChanged("生产版本已变化，候选已过期，请重新验证")
                 row = conn.execute(
                     "SELECT COALESCE(MAX(version), 0) + 1 AS v FROM versions"
                 ).fetchone()
@@ -416,6 +434,7 @@ def ledger_from_settings():
 
 __all__ = [
     "Ledger",
+    "ProductionChanged",
     "ProductionPointer",
     "ledger_from_settings",
     "utcnow_iso",

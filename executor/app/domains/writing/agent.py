@@ -25,6 +25,7 @@ from app.domains.writing.run_gate import get_conversation_gate, get_workspace_mu
 from app.domains.writing.style_assets import WritingStyleError
 from app.domains.writing.expert_agent.services.storyline_graph import generate_storyline_graph
 from app.domains.writing.models import build_writer_model
+from app.domains.writing.target_execution import current_execution
 from app.platform.agent.middleware import (
     TraceCallbackHandler,
     TraceMiddleware,
@@ -110,7 +111,7 @@ def _compose_mode_assembly(
         raise RuntimeError(
             f"中性段规程缺失: stage={stage}（FR-007 fail-fast，不裸奔装配）"
         )
-    mode = stage_mode(workspace_path, stage)
+    mode = "auto" if current_execution() is not None else stage_mode(workspace_path, stage)
     guide_text = guide_fn(mode)
     if not guide_text:
         raise RuntimeError(
@@ -258,6 +259,28 @@ def _get_memory_recall_cls(pkg=None):
     except Exception as e:
         logger.debug("MemoryRecallMiddleware 加载失败（走全量注入）：%s", e)
         return None
+
+
+def resolve_run_package(binding=None):
+    """Resolve the package named by the Run, without changing production state."""
+    from app.platform.agent import loader
+    execution = current_execution()
+    if execution is not None:
+        return execution.package, execution.package_root, execution.request.source_commit
+    commit = getattr(binding, "harness_commit", None)
+    if isinstance(commit, str) and commit:
+        import sys
+        from app.platform.agent.artifact_client import get_artifact_client
+        root = get_artifact_client().ensure_artifact(commit)
+        name = f"harness_bound_{commit}"
+        package = sys.modules.get(name) or loader.load_package(root, name)
+        return package, root, commit
+    package = loader.load_current_package()
+    try:
+        root = loader.production_checkout()
+    except RuntimeError:
+        root = Path(getattr(package, "__file__", ".")).resolve().parent
+    return package, root, loader.production_commit()
 
 
 def _make_artifact_snapshot_cb(recorder, trace_id: str | None):
@@ -565,6 +588,8 @@ class MetaAgentService(BaseAgentService):
                 merged["review"] = review_suffix
             return merged
         except Exception:  # noqa: BLE001 — 注入失败退回无技能装配，不阻塞
+            if current_execution() is not None:
+                raise
             logger.warning("用户写作技能注入失败，跳过", exc_info=True)
             return styles
 
@@ -619,6 +644,11 @@ class MetaAgentService(BaseAgentService):
         from app.platform.core.db import WritingSkillRepository, get_database
         from contracts.writing_artifacts import STAGE_LABELS, character_generation_block_reason
 
+        from app.domains.writing.run_gate import active_target_task
+        active_target = active_target_task(workspace_path)
+        execution = current_execution()
+        if active_target and (execution is None or execution.request.task_id != active_target):
+            return "作品正在执行全自动任务，请先停止任务再开始逐步创作。"
         if classify_workspace(workspace_path) != "five":
             return "旧版作品为只读，不能重做人物卡。" if character_repair else None
         if character_repair:
@@ -626,6 +656,8 @@ class MetaAgentService(BaseAgentService):
         reason = character_generation_block_reason(workspace_path)
         if reason:
             return reason
+        if execution is not None:
+            return None
         if owner_id:
             stage = current_stage(workspace_path)
             if stage not in WritingSkillRepository.STAGE_VALUES:
@@ -696,27 +728,26 @@ class MetaAgentService(BaseAgentService):
             供事后追溯「这条 trace 当时装配的 harness commit 与 LLM 配置」。
         """
         from contracts.runtime_context import RuntimeContext
-        from app.platform.agent.loader import load_current_package
         from app.platform.agent.runtime import artifact_capture_scope
         from app.domains.writing.models import build_writer_model
         from app.platform.agent.middleware import TraceMiddleware
 
         # FR-007（REQ-20260920-150149）：免计费——CreditsService/CreditsMiddleware
         # 不再注入（关闭不拆：platform/credits 代码与 DB 保留）。
+        execution = current_execution()
         if model is None:
-            model = build_writer_model(self.settings, llm_override=llm_override)
+            model = execution.model if execution is not None else build_writer_model(self.settings, llm_override=llm_override)
         if checkpointer is None:
             checkpointer = self.checkpointer
-        pkg = load_current_package()
+        pkg, package_root, package_commit = resolve_run_package(binding)
 
         if trace_id:
             try:
-                from app.platform.agent.loader import production_checkout, production_commit
                 from app.platform.agent.runtime_identity import build_runtime_identity
 
-                harness_commit = production_commit()
+                harness_commit = package_commit
                 run_snapshot = build_runtime_identity(
-                    harness_root=production_checkout(),
+                    harness_root=package_root,
                     harness_commit=harness_commit,
                 )
                 run_snapshot.update({
@@ -740,6 +771,8 @@ class MetaAgentService(BaseAgentService):
                 # FR-004：Run 绑定摘要并进快照（bound commit/degraded/manifest 级联可追溯）
                 if binding is not None:
                     run_snapshot["binding"] = binding.model_dump(mode="json")
+                if execution is not None:
+                    run_snapshot["target_task"] = execution.identity()
                 # 三步管线（FR-002 泳道打标→主控打标）：进化端 trace 按 agent 归因
                 if agent_name:
                     run_snapshot["pipeline_agent"] = agent_name
@@ -754,7 +787,7 @@ class MetaAgentService(BaseAgentService):
         # 风格解析（D4 就地转换：scope 名 key，styling 字段名查值）
         # 无激活风格时 styles=None，包内用裸 prompt（无 suffix）。
         styles: dict[str, str] | None = None
-        if workspace_id:
+        if workspace_id and execution is None:
             style_map = {
                 "meta": ("meta_style", None),  # (字段名, subagent style_key)，meta 无 subagent key
                 "storybuilding": ("storybuilding_style", "storybuilding_style"),
@@ -804,7 +837,9 @@ class MetaAgentService(BaseAgentService):
 
                 # 同一轮 author、review 和卷纲回写使用同一次账号快照。
                 enabled_skills: list[dict] = []
-                if workspace_id and owner_id:
+                if execution is not None:
+                    enabled_skills = execution.skills
+                elif workspace_id and owner_id:
                     try:
                         from app.platform.core.db import WritingSkillRepository, get_database
 
@@ -857,7 +892,7 @@ class MetaAgentService(BaseAgentService):
             # NWM 记忆系统：per-workspace backend（workspace_id 定位 memory.db）。
             # pool 未初始化或配置缺失时返回 None → writing 走 ContextAssembler 全量注入。
             memory_backend=get_memory_backend(f"{owner_id}_{workspace_path.name}"),
-            memory_recall_middleware_cls=_get_memory_recall_cls(),  # 从 harness 包加载
+            memory_recall_middleware_cls=_get_memory_recall_cls(pkg),  # 与本轮固定包一致
             # 第二期证据采集（2026-07）：产物快照 callback。
             # 包内 _make_artifact_snapshot_callback 优先用执行端传入的 callback。
             # 任务契约快照在 generate_stream 里直接 emit（不走 callback，因为它是任务级一次性事件）。
@@ -883,7 +918,8 @@ class MetaAgentService(BaseAgentService):
 
         loader 未配置/降级返回 None（快照缺省，绑定照签——llm_config 非必填）。
         """
-        return build_llm_snapshot()
+        execution = current_execution()
+        return execution.request.model_snapshot if execution is not None else build_llm_snapshot()
 
     def _resolve_binding_commit(self) -> str:
         """解析 Run 绑定用的 harness commit（绑定必须指向明确的装配版本）。
@@ -893,6 +929,9 @@ class MetaAgentService(BaseAgentService):
         同一 Run 内后续 _assemble_via_package 的 load_current_package 直接命中
         缓存，不再多一次 HTTP。都拿不到返回空串（跳过签发）。
         """
+        execution = current_execution()
+        if execution is not None:
+            return execution.request.source_commit
         from app.platform.agent.loader import load_current_package, production_commit
 
         commit = production_commit()
@@ -913,6 +952,13 @@ class MetaAgentService(BaseAgentService):
         （含 degraded 本地降级记录）写进 trace run_snapshot 的 binding 字段。
         """
         snapshot = self._build_llm_snapshot()
+        execution = current_execution()
+        if execution is not None:
+            if execution.isolated:
+                return snapshot, None
+            # Experimental bindings must not replace the known-production fallback cache.
+            from app.domains.writing.target_tasks import bind_frozen_run
+            return snapshot, bind_frozen_run(execution.request, trace_id, self.settings)
         try:
             commit = self._resolve_binding_commit()
             if not commit:
@@ -941,6 +987,9 @@ class MetaAgentService(BaseAgentService):
         抢注绑定即可窃取）。受控配置为 None（未配置 LLM）时同样弃用快照：
         无从证明快照端点可信，model 锁定随之放弃——安全优先。
         """
+        execution = current_execution()
+        if execution is not None:
+            return execution.request.model_snapshot
         try:
             from app.platform.agent.binding_client import get_binding_client
 
@@ -970,6 +1019,9 @@ class MetaAgentService(BaseAgentService):
         Returns: ResumeCheck | None。None（无绑定记录，如迁移前 legacy Run）或
         decision=compatible → 照旧恢复。
         """
+        if current_execution() is not None:
+            # The driver resumes only its own saved thread under the same immutable package.
+            return None
         from app.platform.agent.binding_client import get_binding_client
 
         return get_binding_client().resume_check(trace_id)
@@ -1466,6 +1518,10 @@ class MetaAgentService(BaseAgentService):
                 if not is_new:
                     # FR-004：续跑 Run 的模型配置用绑定快照（无绑定/查询失败降级现有链）
                     llm_override = bound_snapshot
+                    resumed = self.trace_recorder.find_run_by_trace_id(trace_id_in, workspace_path=str(workspace_path))
+                    snapshot = getattr(resumed, "run_snapshot", {})
+                    if isinstance(snapshot, dict) and isinstance(snapshot.get("binding"), dict):
+                        binding = BindingRecord.model_validate(snapshot["binding"])
             else:
                 with get_workspace_mutation_lock(workspace_path):
                     self._assert_style_annotation_task_current(thread, user_text)
@@ -1493,7 +1549,8 @@ class MetaAgentService(BaseAgentService):
             assistant_id = conv_log.open_assistant(
                 conversation_id, trace.trace_id, character_repair=character_repair,
             )
-            model = (
+            execution = current_execution()
+            model = execution.model if execution is not None else (
                 build_writer_model(self.settings, llm_override=llm_override)
                 if llm_override is not None
                 else self._resolve_model(owner_id)
@@ -1596,6 +1653,8 @@ class MetaAgentService(BaseAgentService):
             # 领域事件分发：章节号/字数/task 派发等 writing 专属逻辑封装在 WritingEventSink（M4 抽离）
             # FR-002：传入 trace_recorder + trace_id，供 sink 构造章节抽取入库埋点回调（写 trace run_meta）。
             sink = WritingEventSink(thread, self.trace_recorder, trace.trace_id)
+            if execution is not None:
+                sink = execution.observe(sink)
 
             # 自动模式代答循环（REQ-20261026-191719 FR-007 / DEC-010 / DEC-016）：
             # auto 段内 agent 违纪调 confirm_with_user（kind=choice）不挂起——系统

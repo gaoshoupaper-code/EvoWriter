@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { getBenchmarkRubric, type BenchmarkRubric } from "@/lib/api";
+import { StageRules } from "@/components/bench/StageRules";
 
 /**
  * 评测规则页（REQ-20260921-135543 FR-007，DEC-003/021；v4 适配 REQ-20260921-210038）。
@@ -31,8 +32,11 @@ export default function BenchRules() {
     <div className="bench-page bench-rules-page">
       <header className="page-header">
         <h1>评测规则</h1>
-        <p className="page-desc">当前评分标准全文（只读 · 改动走代码发版）</p>
+        <p className="page-desc">三段规则版本与历史评分标准</p>
       </header>
+
+      <StageRules />
+      <h2>历史评分标准（只读）</h2>
 
       {loading ? (
         <div className="page-loading">加载评分标准…</div>

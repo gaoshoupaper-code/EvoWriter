@@ -19,6 +19,7 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from contracts.platform import ProbeResult
@@ -41,9 +42,15 @@ def _worker_env() -> dict[str, str]:
             f"executor 代码目录不可用: {executor_dir}（probe 无法装配薄包装 harness，"
             f"检查 PLATFORM_EXECUTOR_CODE_PATH）"
         )
-    env = os.environ.copy()
+    # Candidate imports receive runtime settings, never service credentials.
+    env = {key: value for key, value in os.environ.items()
+           if key in {"PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT"}}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
     env["PYTHONPATH"] = os.pathsep.join(
-        p for p in (str(project_root()), str(executor_dir), env.get("PYTHONPATH", ""))
+        p for p in (str(project_root()), str(executor_dir))
         if p
     )
     return env
@@ -63,22 +70,36 @@ def probe_candidate(
     try:
         checkout = checkout_commit(source_commit)
         worker = Path(__file__).resolve().parent / "probe_worker.py"
-        result = subprocess.run(
-            [sys.executable, str(worker), str(checkout), source_commit],
-            capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SECONDS,
-            env=_worker_env(),
-        )
-        if result.returncode != 0 or not result.stdout.strip():
+        # Cleanup belongs to the trusted parent: the sandbox cannot remove its
+        # workspace directory from an otherwise protected parent directory.
+        with tempfile.TemporaryDirectory(prefix="platform_probe_workspace_") as workspace, tempfile.TemporaryFile() as verdict:
+            result = subprocess.run(
+                [sys.executable, str(worker), str(checkout), source_commit, workspace, str(verdict.fileno())],
+                capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SECONDS,
+                env=_worker_env(), pass_fds=(verdict.fileno(),),
+            )
+            verdict.seek(0)
+            raw_verdict = verdict.read(16385)
+        if result.returncode != 0 or not raw_verdict or len(raw_verdict) > 16384:
             rejected = ProbeResult(
                 status="rejected",
                 reason=f"probe worker 异常退出 rc={result.returncode}: "
                        f"{result.stderr.strip()[-500:]}",
             )
             return (rejected, None) if keep_checkout else rejected
-        payload = json.loads(result.stdout.strip().splitlines()[-1])
+        # Candidate stdout is a log stream and cannot certify assembly success.
+        payload = json.loads(raw_verdict)
         if payload.get("status") == "ready":
+            actual = subprocess.run(["git", "rev-parse", "HEAD"], cwd=checkout, capture_output=True, text=True, timeout=30)
+            dirty = subprocess.run(["git", "status", "--porcelain"], cwd=checkout, capture_output=True, text=True, timeout=30)
+            if (actual.returncode or not actual.stdout.strip().startswith(source_commit)
+                    or dirty.returncode or dirty.stdout.strip()
+                    or not (checkout / "middleware" / "artifact_snapshot.py").is_file()
+                    or payload.get("checked_commit") != source_commit):
+                raise ValueError("装配完成凭据与父进程核对的源码状态不一致")
             logger.info("probe 通过: commit=%s", source_commit)
-            ready = ProbeResult(status="ready", runtime_identity=payload.get("identity"))
+            ready = ProbeResult(status="ready", runtime_identity={"harness_commit": source_commit,
+                "harness_dirty": False, "artifact_snapshot_middleware": True})
             if keep_checkout:
                 handed_off, checkout = checkout, None  # 交给调用方，finally 不清理
                 return ready, handed_off

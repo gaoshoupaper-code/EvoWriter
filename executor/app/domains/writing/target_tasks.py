@@ -441,11 +441,25 @@ async def drive_task(request, workspace, service, thread, execution, store):
         current_thread = thread.model_copy(update={"thread_id": f"{thread.thread_id}-{step_number}"})
         before = _fingerprint(workspace)
         before_evidence = json.dumps(execution.evidence, sort_keys=True, ensure_ascii=False)
+        chapter_checks = ""
+        if request.target.task_type == "chapter_outlines":
+            issues = {}
+            for name in checks["missing"]:
+                if name.startswith("章纲/") and name.endswith(".md"):
+                    text = _read(workspace, name)
+                    issues[name] = {"未定稿": not is_final_status(text),
+                                    "缺少字段": [field for field in _CHAPTER_FIELDS if field not in text]}
+            chapter_checks = (
+                "每章章纲须定稿，并逐项写出实际内容：" + "、".join(_CHAPTER_FIELDS) + "。\n"
+                "逐章结构缺项：" + json.dumps(issues, ensure_ascii=False) + "\n"
+                "已保存或已标定稿仍可能缺字段；先补齐具体缺项再交审。\n"
+            )
         prompt = (
             f"全自动目标任务：{request.target.model_dump_json()}。当前目标阶段：{phase}。\n"
             f"完整需求：\n{request.input.demand_md}\n"
             f"预设确认规则：\n{request.input.confirmation_rules}\n"
             f"本次尚缺的检查：{checks['missing']}\n"
+            f"{chapter_checks}"
             "本任务不含人工精修，前文章节使用已提供的实际稿件。\n"
             "按同一会话中已起草的内容继续推进当前目标，不等待人工发出下一轮指令。"
             "必须使用 save_artifact 保存实际产物；普通回复、片段和进度标记不算交付。"

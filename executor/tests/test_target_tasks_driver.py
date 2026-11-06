@@ -57,6 +57,59 @@ def test_four_volumes_run_in_order_without_text_generation(tmp_path):
     assert len(store.get(request.task_id).trace_ids) == 4
 
 
+def test_final_chapter_files_with_missing_fields_receive_specific_repair_instructions(tmp_path):
+    from app.platform.trace.recorder import TraceRecorder
+    import json
+
+    request = TargetTaskRequest(
+        task_id="repair-four", attempt_id="first", source_commit="a" * 40,
+        target={"task_type": "chapter_outlines", "volume_ids": [1, 2, 3, 4]},
+        input={"confirmation_rules": "自行补齐并确认，不等待人工", "files": {
+            "主题.md": "主题", "总纲.md": "总纲", "文风.md": "文风",
+            **{f"卷纲/第{n:02d}卷.md": f"> 状态：定稿\n本卷章号范围：{n}-{n}" for n in range(1, 5)},
+        }},
+    )
+    workspace = tmp_path / "workspace"
+    materialize_input(workspace, request.input)
+    store = TargetTaskStore(tmp_path / "jobs")
+    store.create(request)
+    thread = ThreadSummary(thread_id="repair", workspace_id="book", session_name="test",
+                           workspace_path=str(workspace), created_at="now", updated_at="now")
+    recorder = TraceRecorder()
+    calls = []
+
+    class Service:
+        trace_recorder = recorder
+
+        async def generate_stream(self, payload, current_thread, **kwargs):
+            calls.append(payload.prompt)
+            (workspace / "章纲").mkdir(exist_ok=True)
+            if len(calls) == 2:
+                for number in range(1, 5):
+                    assert f"章纲/第{number:03d}章.md" in payload.prompt
+                for field in ("章节概括", "矛盾驱动", "主角状态", "供给点", "章末钩子", "开头方案", "修法承接", "伏笔操作"):
+                    assert field in payload.prompt
+                diagnostic = next(line for line in payload.prompt.splitlines() if line.startswith("逐章结构缺项："))
+                issues = json.loads(diagnostic.split("：", 1)[1])
+                assert not issues["章纲/第001章.md"]["未定稿"]
+                assert "供给点" not in issues["章纲/第001章.md"]["缺少字段"]
+                assert "供给点" in issues["章纲/第002章.md"]["缺少字段"]
+                assert "章末钩子" not in issues["章纲/第002章.md"]["缺少字段"]
+            for number in range(1, 5):
+                content = f"# 第{number}章\n> 状态：定稿\n本章事件：起身送信。"
+                content += "\n供给点：观察路线。" if number == 1 else "\n章末钩子：出现阻碍。"
+                if len(calls) == 2:
+                    content = _chapter(number)
+                (workspace / "章纲" / f"第{number:03d}章.md").write_text(content, encoding="utf-8")
+            trace_id = recorder.create_run(current_thread, "screenplay.generate.stream").trace_id
+            yield f'event: status\ndata: {json.dumps({"trace_id": trace_id})}\n\n'
+            yield 'event: interrupt\ndata: {"kind":"review","review_kind":"stage"}\n\n'
+
+    execution = FrozenExecution(request, object(), tmp_path / "package", object(), workspace)
+    checks = asyncio.run(drive_task(request, workspace, Service(), thread, execution, store))
+    assert checks["complete"] and len(calls) == 2
+
+
 def test_restored_review_evidence_finishes_without_regeneration(tmp_path):
     request = TargetTaskRequest(
         task_id="saved-text", attempt_id="first", source_commit="a" * 40,

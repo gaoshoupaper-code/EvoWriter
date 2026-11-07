@@ -38,7 +38,8 @@ def _content(value):
 
 def _failed(value):
     if isinstance(value, str):
-        return value.startswith(("[save_artifact 失败", "[save_artifact 拒绝", "[交审失败]", "Error:"))
+        return value.startswith(("[save_artifact 失败", "[save_artifact 拒绝", "[交审失败]", "Error:",
+                                 "已达到本轮审查上限"))
     if getattr(value, "status", None) == "error":
         return True
     update = getattr(value, "update", None)
@@ -50,7 +51,7 @@ def _failed(value):
         if isinstance(value.get("messages"), list):
             return any(_failed(message) for message in value["messages"])
         return value.get("status") == "error" or _failed(value.get("content", value.get("text", "")))
-    return False
+    return _failed(_content(value))
 
 
 def manuscript_body(value: str) -> str:
@@ -177,9 +178,10 @@ class FrozenExecution:
                     "revised": False,
                 })
             else:
-                self.evidence.setdefault("volume_qc", {})[str(volume)] = {
-                    "success": success, "output": text,
-                }
+                receipts = self.evidence.setdefault("volume_qc", {})
+                # A later empty or refused attempt cannot erase an actual QC run.
+                if success or not receipts.get(str(volume), {}).get("success"):
+                    receipts[str(volume)] = {"success": success, "output": text}
         elif kind == "on_tool_end" and name == "save_artifact" and not _failed(data.get("output")):
             if self.evidence.get("review") == "success":
                 before = manuscript_body(self.evidence.get("initial_draft", ""))

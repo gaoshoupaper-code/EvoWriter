@@ -6,7 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 
-from openai import APIConnectionError, APIStatusError
+from openai import APIConnectionError, APIStatusError, DefaultAsyncHttpxClient
 
 from app.core import db
 from app.core.settings import settings
@@ -159,8 +159,6 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     tools += [item for item in make_flow_tools() if item.name != "validate_changes"] + [validate_changes]
     _ensure_gp_disabled()
     credentials = repo.decrypt_credentials(run["private"]["evolver"])
-    model = ChatOpenAI(model=credentials["model"].split(":", 1)[-1], base_url=credentials["base_url"],
-                       api_key=credentials["api_key"], temperature=.2, max_tokens=8192, request_timeout=300, max_retries=1)
     middleware = [NoFilesystemToolsMiddleware(), ExperimentSourceGuard(), FlowGuardMiddleware()]
     if ctx.recorder and ctx.trace_id_self:
         middleware.append(TraceMiddleware(recorder=ctx.recorder, trace_id=ctx.trace_id_self, agent_name="experiment-evolver"))
@@ -177,7 +175,13 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     if ctx.recorder and ctx.trace_id_self:
         config["callbacks"] = [TraceCallbackHandler(ctx.recorder, ctx.trace_id_self)]
     try:
-        async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
+        # ChatOpenAI's default HTTP pool is cached across rounds, but each round
+        # has its own asyncio.run loop. Close this round's pool before that loop.
+        async with DefaultAsyncHttpxClient(timeout=300) as http_client, \
+                AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
+            model = ChatOpenAI(model=credentials["model"].split(":", 1)[-1], base_url=credentials["base_url"],
+                               api_key=credentials["api_key"], temperature=.2, max_tokens=8192,
+                               request_timeout=300, max_retries=1, http_async_client=http_client)
             agent = create_deep_agent(model=model, tools=tools, system_prompt=prompt, middleware=middleware,
                                       subagents=None, backend=backend, checkpointer=checkpointer)
             await _run_agent_streamed(agent, "请改进以下优化与回归问题并完整校验收尾：\n" + json.dumps(evidence, ensure_ascii=False), config, ctx,

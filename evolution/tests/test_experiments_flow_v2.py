@@ -18,6 +18,41 @@ class FlowV2Test(fixtures.DatabaseTest):
     create_experiment = fixtures.ExperimentLifecycleTest.create_experiment
     completed_task = staticmethod(fixtures.ExperimentLifecycleTest.completed_task)
 
+    def test_optimization_failure_retries_with_fixed_baseline_until_round_limit(self):
+        from app.experiments import repo, runner
+        run = self.create_experiment()
+        baseline = copy.deepcopy(run["baseline"])
+        improvements = []
+
+        def improve(active_run, record, _evidence):
+            improvements.append((record["round"], record["base_commit"], copy.deepcopy(active_run["baseline"])))
+            return {"commit": ("b" if record["round"] == 1 else "c") * 40,
+                    "digest": str(record["round"] + 1) * 64, "summary": "尝试改版", "diff": "+修复"}
+
+        def score(_run, sample):
+            # Each candidate improves, but neither reaches the frozen 0.5 threshold.
+            value = 3.0 if sample["arm"] == "baseline" else 3.0 + sample["round"] / 10
+            return {"overall": value, "dimensions": {}, "reasons": {}}
+
+        with patch("app.experiments.clients.start_task", side_effect=self.completed_task), \
+             patch("app.experiments.evaluation.score_sample", side_effect=score), \
+             patch("app.experiments.agent.improve_candidate", side_effect=improve) as improve_candidate:
+            for _ in range(40):
+                runner.advance_one(run["id"])
+
+        actual = repo.get_run(run["id"])
+        self.assertEqual(actual["status"], "exhausted")
+        self.assertEqual(actual["current_round"], 2)
+        self.assertEqual(improve_candidate.call_count, 2)
+        self.assertEqual(improvements, [(1, baseline["commit"], baseline), (2, baseline["commit"], baseline)])
+        self.assertEqual(actual["baseline"], baseline)
+        self.assertIsNone(actual["best_candidate"])
+        self.assertEqual([record["status"] for record in actual["rounds"]], ["not_improved", "not_improved"])
+        self.assertTrue(all(record["report"]["baseline"]["quality"] == 3.0 for record in actual["rounds"]))
+        self.assertEqual(len([sample for sample in actual["samples"] if sample["phase"] == "baseline"]), 1)
+        self.assertEqual([sample["round"] for sample in actual["samples"] if sample["phase"] == "exploration"], [1, 2])
+        self.assertFalse(any(sample["phase"] in {"regression", "validation"} for sample in actual["samples"]))
+
     def test_regression_failure_retries_before_independent_validation(self):
         from app.experiments import repo, runner
         run = self.create_experiment()

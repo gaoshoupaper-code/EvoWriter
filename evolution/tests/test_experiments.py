@@ -135,6 +135,16 @@ print('three real executor validations passed')
 
 
 class ComparisonTest(unittest.TestCase):
+    def test_quality_gain_accepts_exact_threshold_and_rejects_below_it(self):
+        from app.experiments.evaluation import compare_results
+        baseline = [{"package_id": "one", "repeat": 1, "completed": True, "scores": {"overall": 3.8}}]
+        for quality, passed in ((3.8999, False), (3.9, True), (3.9001, True)):
+            with self.subTest(quality=quality):
+                candidate = [{"package_id": "one", "repeat": 1, "completed": True, "scores": {"overall": quality}}]
+                report = compare_results(baseline, candidate, completion_rate=1.0, quality_gain=.1)
+                self.assertEqual(report["passed"], passed)
+                self.assertAlmostEqual(report["quality_delta"], quality - 3.8)
+
     def test_new_failure_cannot_disappear_behind_high_quality(self):
         from app.experiments.evaluation import compare_results
         baseline = [{"package_id": key, "repeat": 1, "completed": True, "scores": {"overall": 3.0}} for key in ("one", "two")]

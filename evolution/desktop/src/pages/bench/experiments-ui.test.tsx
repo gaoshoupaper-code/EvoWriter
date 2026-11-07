@@ -18,19 +18,20 @@ vi.mock("@/lib/download", () => ({ downloadTextFile: vi.fn() }));
 
 const api = vi.mocked(apiModule);
 const kinds = ["volume_outlines", "chapter_outlines", "chapter_text"] as const;
-const labels = ["整本卷纲", "4 卷章纲", "单章正文"];
+const labels = ["整本卷纲", "单章章纲", "单章正文"];
 const rules = kinds.map((task_type, i) => ({
-  id: `rule-${i}`, task_type, version: 1, name: `${labels[i]}规则`,
+  id: `rule-${i}`, task_type, profile: "stage-eval-v2", version: 1, name: `${labels[i]}规则`,
   dimensions: [{ key: "需求兑现", question: "是否兑现需求？", weight: 1,
     anchors: { "1": "严重缺失", "2": "多处缺失", "3": "基本完成", "4": "完整落实", "5": "充分落实" } }],
   discipline_rules: ["引用产物证据"], created_at: "2026-11-06T01:00:00Z",
 }));
 const pkg = (id: string, title: string, task_type: string, purpose: string) => ({
-  id, title, task_type, purpose, target: { task_type, volume_ids: [1, 2, 3, 4] },
+  id, title, task_type, purpose, suite: "stage-smoke-v1", target: { task_type, volume_ids: [1], ...(task_type !== "volume_outlines" ? { chapter: 1 } : {}) },
   input_revision: "fixed-input", created_at: "2026-11-06T01:00:00Z",
 });
 const packages = [
   pkg("opt-1", "优化题一", kinds[0], "optimization"),
+  pkg("opt-2", "优化题二", kinds[0], "optimization"),
   pkg("val-1", "终验题一", kinds[0], "validation"),
   pkg("reg-1", "章纲回归", kinds[1], "regression"),
   pkg("reg-2", "正文回归", kinds[2], "regression"),
@@ -55,7 +56,7 @@ beforeEach(() => {
   api.getExperimentOptions.mockResolvedValue({
     task_types: [...kinds], versions: [{ version: 6, commit: "baseline123", note: "当前生产" }], production_version: 6,
     models: [{ id: 11, name: "创作模型", model: "writer-model", base_url: "", is_active: true }],
-    judge_groups: [{ id: 5, name: "异源评委", members: [] }],
+    judge_groups: [{ id: 5, name: "异源评委", members: [{ config_id: 12, name: "评测模型", model: "judge-model" }] }],
   } as never);
 });
 
@@ -86,6 +87,7 @@ describe("进化端实验交互 / AC-001、AC-012、AC-020、AC-022", () => {
   it("编辑规则另存新版本，保留评分维度与档位", async () => {
     api.saveExperimentRule.mockResolvedValue({ ...rules[0], id: "rule-new", version: 2 } as never);
     render(<StageRules />);
+    fireEvent.click(await screen.findByRole("button", { name: "编辑规则" }));
     fireEvent.change(await screen.findByLabelText("需求兑现评分问题"), { target: { value: "是否落实全部明确要求？" } });
     fireEvent.click(screen.getByRole("button", { name: "保存为新版本" }));
     await waitFor(() => expect(api.saveExperimentRule).toHaveBeenCalledWith(expect.objectContaining({
@@ -93,28 +95,27 @@ describe("进化端实验交互 / AC-001、AC-012、AC-020、AC-022", () => {
     })));
   });
 
-  it("启动时显式选择各用途样本并冻结三类规则与门槛", async () => {
+  it("高级设置可改门槛，自动匹配各用途样本并冻结三类规则", async () => {
     api.startExperiment.mockResolvedValue(experiment({ status: "pending" }) as never);
     render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
-    fireEvent.change(await screen.findByLabelText("实验名称"), { target: { value: "卷纲优化" } });
-    fireEvent.change(screen.getByLabelText("原版基线"), { target: { value: "6" } });
-    fireEvent.change(screen.getByLabelText("创作模型"), { target: { value: "11" } });
-    fireEvent.change(screen.getByLabelText("异源评委组"), { target: { value: "5" } });
+    fireEvent.change(await screen.findByLabelText("Harness 版本"), { target: { value: "6" } });
+    fireEvent.change(screen.getByLabelText("执行模型"), { target: { value: "11" } });
+    fireEvent.change(screen.getByLabelText("评测模型"), { target: { value: "5" } });
+    fireEvent.click(screen.getByText("高级设置"));
     fireEvent.change(screen.getByLabelText("完成率下限（%）"), { target: { value: "90" } });
     fireEvent.change(screen.getByLabelText("主攻最低涨幅"), { target: { value: "0.2" } });
-    fireEvent.change(screen.getByLabelText("4 卷章纲退化容忍"), { target: { value: "0.1" } });
+    fireEvent.change(screen.getByLabelText("单章章纲退化容忍"), { target: { value: "0.1" } });
     fireEvent.change(screen.getByLabelText("单章正文退化容忍"), { target: { value: "0.1" } });
     fireEvent.change(screen.getByLabelText("最大迭代轮数"), { target: { value: "3" } });
-    for (const title of ["优化题一", "终验题一", "章纲回归", "正文回归"]) fireEvent.click(screen.getByLabelText(title));
     fireEvent.click(screen.getByRole("button", { name: "启动自进化实验" }));
-    await waitFor(() => expect(api.startExperiment).toHaveBeenCalledWith({
-      name: "卷纲优化", task_type: kinds[0], baseline_version: 6, model_config_id: 11, judge_group_id: 5,
+    await waitFor(() => expect(api.startExperiment).toHaveBeenCalledWith(expect.objectContaining({
+      task_type: kinds[0], baseline_version: 6, model_config_id: 11, judge_group_id: 5,
       rule_versions: { volume_outlines: "rule-0", chapter_outlines: "rule-1", chapter_text: "rule-2" },
-      optimization_ids: ["opt-1"], validation_ids: ["val-1"],
+      optimization_ids: ["opt-1", "opt-2"], validation_ids: ["val-1"],
       regression_ids: { chapter_outlines: ["reg-1"], chapter_text: ["reg-2"] },
       thresholds: { completion_rate: 0.9, quality_gain: 0.2, regression_tolerance: { chapter_outlines: 0.1, chapter_text: 0.1 } },
       max_rounds: 3,
-    }));
+    })));
   });
 
   it("过期候选展示原因并禁用发布", async () => {
@@ -125,6 +126,54 @@ describe("进化端实验交互 / AC-001、AC-012、AC-020、AC-022", () => {
     expect(await screen.findByText("生产版本已变化")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "批准并发布候选" })).toBeDisabled();
     expect(api.publishExperiment).not.toHaveBeenCalled();
+  });
+
+  it("详情展示冻结双模型，进度条使用当前环节的任务总数", async () => {
+    api.getExperiment.mockResolvedValue(experiment({ flow_version: 2, status: "running", phase: "regression",
+      models: { executor: { id: 11, name: "冻结执行配置", model: "fixed-writer" },
+        judges: [{ id: 12, name: "冻结评测配置", model: "fixed-judge" }], evolver: null },
+      progress: { total: 20, done: 14, completed: 14,
+        phase: { name: "regression", round: 1, total: 6, done: 2, completed: 2, active: 1 } },
+    }) as never);
+    render(<MemoryRouter initialEntries={["/bench/experiments/experiment-1"]}><Routes>
+      <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
+    </Routes></MemoryRouter>);
+    expect(await screen.findByText("fixed-writer")).toBeInTheDocument();
+    expect(screen.getByText("fixed-judge")).toBeInTheDocument();
+    const progress = screen.getByRole("progressbar", { name: "当前环节进度" });
+    expect(progress).toHaveAttribute("max", "6");
+    expect(progress).toHaveAttribute("value", "2");
+  });
+
+  it.each([
+    ["chapter:25", "生成第25章章纲"],
+    ["text:1", "生成第1章正文"],
+    ["volume:2", "生成第2卷卷纲"],
+    ["theme:", "生成主题"],
+    ["custom:4", "执行阶段：custom:4"],
+  ])("执行阶段 %s 在当前任务和逐题表中均显示为中文", async (executionPhase, expected) => {
+    api.getExperiment.mockResolvedValue(experiment({ flow_version: 2, status: "running", phase: "baseline", samples: [{
+      id: "sample-active", task_id: "task-active", package_id: "package-active", package_title: "运行样本",
+      task_type: "volume_outlines", phase: "baseline", arm: "baseline", round: 0, repeat: 1, attempt: 1,
+      status: "running", execution_phase: executionPhase, completed: false, trace_ids: [],
+      checks: {}, scores: null, error: null, artifacts: {}, usage: {}, input_revision: "fixed-input", source_commit: "baseline123",
+    }] }) as never);
+    render(<MemoryRouter initialEntries={["/bench/experiments/experiment-1"]}><Routes>
+      <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
+    </Routes></MemoryRouter>);
+    expect(await screen.findAllByText(expected)).toHaveLength(2);
+  });
+
+  it.each(["failed", "exhausted", "stopped"])("%s 且无候选时详情不再显示改版中", async (status) => {
+    api.getExperiment.mockResolvedValue(experiment({ flow_version: 2, status, phase: "evolving",
+      current_candidate: null, best_candidate: null, can_publish: false,
+    }) as never);
+    render(<MemoryRouter initialEntries={["/bench/experiments/experiment-1"]}><Routes>
+      <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
+    </Routes></MemoryRouter>);
+    const fact = (await screen.findByText("Harness 原版 → 当前候选")).closest("div")!;
+    expect(fact).toHaveTextContent("未生成候选");
+    expect(fact).not.toHaveTextContent("改版中");
   });
 
   it("发布后未确认加载，不展示已生效", async () => {

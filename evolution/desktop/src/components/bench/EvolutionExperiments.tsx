@@ -1,10 +1,15 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
+import { Play, RefreshCw, SlidersHorizontal } from "lucide-react";
 import {
   getExperimentOptions, listExperimentPackages, listExperimentRules, listExperiments, startExperiment,
   type ExperimentOptions, type ExperimentPackage, type ExperimentRule, type ExperimentStart, type ExperimentSummary,
 } from "@/lib/api";
-import { EXPERIMENT_STATUS, PHASE_LABELS, TASK_LABELS, TASK_TYPES, type ExperimentTaskType } from "@/lib/experiment-types";
+import {
+  BUILTIN_SUITE, RULE_PROFILE, EXPERIMENT_STATUS, TASK_LABELS, TASK_TYPES,
+  candidatePlaceholder, experimentTaskLabel, type ExperimentTaskType,
+} from "@/lib/experiment-types";
+import { ExperimentProgress, ExperimentScores, ModelIdentity } from "./ExperimentEvidence";
 import "./experiments.css";
 
 export function EvolutionExperiments() {
@@ -13,40 +18,82 @@ export function EvolutionExperiments() {
   const [packages, setPackages] = useState<ExperimentPackage[]>([]);
   const [rules, setRules] = useState<ExperimentRule[]>([]);
   const [runs, setRuns] = useState<ExperimentSummary[]>([]);
-  const [name, setName] = useState("");
   const [kind, setKind] = useState<ExperimentTaskType>("volume_outlines");
   const [baseline, setBaseline] = useState("");
   const [model, setModel] = useState("");
   const [judges, setJudges] = useState("");
   const [ruleIds, setRuleIds] = useState<Partial<Record<ExperimentTaskType, string>>>({});
-  const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [completion, setCompletion] = useState("");
-  const [gain, setGain] = useState("");
+  const [completion, setCompletion] = useState("100");
+  const [gain, setGain] = useState("0.1");
   const [tolerances, setTolerances] = useState<Partial<Record<ExperimentTaskType, string>>>({});
-  const [rounds, setRounds] = useState("");
+  const [rounds, setRounds] = useState("3");
+  const [advanced, setAdvanced] = useState(false);
+  const [customData, setCustomData] = useState(false);
+  const [chosenIds, setChosenIds] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
   const [listError, setListError] = useState("");
   const [reload, setReload] = useState(0);
   const others = TASK_TYPES.filter((type) => type !== kind);
+  const selectedGroup = options?.judge_groups.find((group) => String(group.id) === judges);
+  const suite = options?.builtin_suite?.id ?? BUILTIN_SUITE;
+  const samples = packages.filter((item) => item.suite === suite);
+  const compatibleSamples = packages.filter((item) => item.task_type === "volume_outlines"
+    ? item.target.volume_ids.join(",") === "1,2,3" && item.target.chapters_per_volume === 20
+    : item.target.chapter != null);
+  const selectedSamples = customData ? compatibleSamples.filter((item) => chosenIds.has(item.id)) : samples;
+  const selectedIds = (type: ExperimentTaskType, purpose: ExperimentPackage["purpose"]) =>
+    selectedSamples.filter((item) => item.task_type === type && item.purpose === purpose).map((item) => item.id);
+  const optimization = selectedIds(kind, "optimization");
+  const validation = selectedIds(kind, "validation");
+  const missing = !loading ? [
+    ...((customData ? !optimization.length : optimization.length !== 2) ? ["主攻优化题" + (customData ? "至少选择 1 条" : "需 2 条，当前 " + optimization.length + " 条")] : []),
+    ...((customData ? !validation.length : validation.length !== 1) ? ["独立终验题" + (customData ? "至少选择 1 条" : "需 1 条，当前 " + validation.length + " 条")] : []),
+    ...others.filter((type) => customData ? !selectedIds(type, "regression").length : selectedIds(type, "regression").length !== 1).map((type) => TASK_LABELS[type] + "缺少回归题"),
+    ...TASK_TYPES.filter((type) => !ruleIds[type]).map((type) => TASK_LABELS[type] + "缺少对应的新规则"),
+    ...(!options?.versions.length ? ["没有可用的 Harness 版本"] : []),
+    ...(!options?.models.some((item) => item.has_key !== false) ? ["没有可用的执行模型"] : []),
+    ...(!options?.judge_groups.some((group) => group.members.length && group.members.every((member) => member.has_key !== false && !member.stale)) ? ["没有已配置的评测模型"] : []),
+  ] : [];
 
   useEffect(() => {
     let alive = true;
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setOptions(null);
     Promise.all([getExperimentOptions(), listExperimentPackages(), listExperimentRules()]).then(([configuration, data, scoring]) => {
       if (!alive) return;
       setOptions(configuration); setPackages(data.items); setRules(scoring.items);
+      setCustomData(false); setChosenIds(new Set(data.items.filter((item) => item.suite === (configuration.builtin_suite?.id ?? BUILTIN_SUITE)).map((item) => item.id)));
       setBaseline(configuration.production_version == null ? "" : String(configuration.production_version));
-      const activeModel = configuration.models.find((item) => item.is_active);
+      const activeModel = configuration.models.find((item) => item.is_active && item.has_key !== false);
       setModel(activeModel ? String(activeModel.id) : "");
+      setJudges((current) => configuration.judge_groups.some((group) => String(group.id) === current) ? current : "");
       const latest: Partial<Record<ExperimentTaskType, string>> = {};
-      for (const type of TASK_TYPES) latest[type] = scoring.items.filter((rule) => rule.task_type === type).sort((a, b) => b.version - a.version)[0]?.id;
+      for (const type of TASK_TYPES) {
+        const candidates = scoring.items.filter((rule) => rule.task_type === type && rule.profile === RULE_PROFILE).sort((a, b) => b.version - a.version);
+        const preferred = configuration.defaults?.rule_versions[type];
+        latest[type] = candidates.find((rule) => rule.id === preferred)?.id ?? candidates[0]?.id;
+      }
       setRuleIds(latest);
+      setCompletion(String((configuration.defaults?.thresholds.completion_rate ?? 1) * 100));
+      setGain(String(configuration.defaults?.thresholds.quality_gain ?? 0.1));
+      setRounds(String(configuration.defaults?.max_rounds ?? 3));
+      setTolerances(Object.fromEntries(TASK_TYPES.map((type) => [type, String(configuration.defaults?.thresholds.regression_tolerance[type] ?? 0)])));
     }).catch((cause) => { if (alive) setError(cause instanceof Error ? cause.message : "读取实验设置失败"); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
   }, [reload]);
+
+  function samplePicker(title: string, type: ExperimentTaskType, purpose: ExperimentPackage["purpose"]) {
+    const items = compatibleSamples.filter((item) => item.task_type === type && item.purpose === purpose);
+    return <fieldset className="experiment-picker" disabled={starting}><legend>{title}</legend>
+      {items.length ? items.map((item) => <label key={item.id}><input type="checkbox" aria-label={item.title} checked={chosenIds.has(item.id)} onChange={() => {
+        setChosenIds((current) => { const next = new Set(current); if (next.has(item.id)) next.delete(item.id); else next.add(item.id); return next; });
+      }} /><span>{item.title}</span><small>{item.suite === suite ? "内置" : "自备"}</small></label>) :
+        <p className="experiment-note">没有适用样本。请到<Link to="/bench/dataset">评测数据集</Link>导入。</p>}
+    </fieldset>;
+  }
+
   useEffect(() => {
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
@@ -54,43 +101,25 @@ export function EvolutionExperiments() {
       try {
         const result = await listExperiments();
         if (alive) { setRuns(result.items); setListError(""); }
-      } catch (cause) { if (alive) setListError(cause instanceof Error ? cause.message : "读取实验列表失败"); }
+      } catch (cause) { if (alive) setListError(cause instanceof Error ? cause.message : "读取实验记录失败"); }
       if (alive) timer = setTimeout(refresh, 5000);
     };
     void refresh();
     return () => { alive = false; clearTimeout(timer); };
   }, [reload]);
 
-  function toggle(id: string) {
-    setSelected((current) => { const next = new Set(current); if (next.has(id)) next.delete(id); else next.add(id); return next; });
-  }
-  function picker(title: string, type: ExperimentTaskType, purpose: ExperimentPackage["purpose"]) {
-    const items = packages.filter((item) => item.task_type === type && item.purpose === purpose);
-    return <fieldset className="experiment-picker" disabled={starting}><legend>{title}</legend>
-      {items.length ? items.map((item) => <label key={item.id}><input type="checkbox" checked={selected.has(item.id)} onChange={() => toggle(item.id)} aria-label={item.title} />
-        <span>{item.title}</span><small className="mono" title={item.input_revision}>{item.input_revision.slice(0, 12)}</small></label>) :
-        <p className="experiment-note">没有适用样本。请到<Link to="/bench/dataset">评测数据集</Link>导入。</p>}
-    </fieldset>;
-  }
   async function start(event: React.FormEvent) {
     event.preventDefault(); if (starting) return;
     setError("");
-    const selectedIds = (type: ExperimentTaskType, purpose: ExperimentPackage["purpose"]) => packages
-      .filter((item) => item.task_type === type && item.purpose === purpose && selected.has(item.id)).map((item) => item.id);
-    const optimization = selectedIds(kind, "optimization"), validation = selectedIds(kind, "validation");
-    if (!optimization.length || !validation.length || others.some((type) => !selectedIds(type, "regression").length)) {
-      setError("请选择主攻优化题、独立终验题，以及另外两类回归题。"); return;
-    }
-    if (!name.trim() || !baseline || !model || !judges || TASK_TYPES.some((type) => !ruleIds[type])) {
-      setError("请完整填写实验名称、原版基线、创作模型、异源评委及三类规则。"); return;
-    }
+    if (missing.length) { setError(missing.join("；")); return; }
+    if (!baseline || !model || !judges) { setError("请选择 Harness、执行模型和评测模型。"); return; }
     const numeric = [completion, gain, rounds, ...others.map((type) => tolerances[type] ?? "")];
-    if (numeric.some((value) => !value.trim() || !Number.isFinite(Number(value))) || Number(completion) < 0 || Number(completion) > 100 || Number(gain) < 0 ||
-      !Number.isSafeInteger(Number(rounds)) || Number(rounds) < 1 || others.some((type) => Number(tolerances[type]) < 0)) {
+    if (numeric.some((value) => !value.trim() || !Number.isFinite(Number(value))) || Number(completion) < 0 || Number(completion) > 100 ||
+      Number(gain) < 0 || !Number.isSafeInteger(Number(rounds)) || Number(rounds) < 1 || others.some((type) => Number(tolerances[type]) < 0)) {
       setError("请填写有效门槛；完成率为 0–100%，最大轮数为正整数。"); return;
     }
     const payload: ExperimentStart = {
-      name: name.trim(), task_type: kind, baseline_version: Number(baseline), model_config_id: Number(model), judge_group_id: Number(judges),
+      task_type: kind, baseline_version: Number(baseline), model_config_id: Number(model), judge_group_id: Number(judges),
       rule_versions: ruleIds as Record<ExperimentTaskType, string>, optimization_ids: optimization, validation_ids: validation,
       regression_ids: Object.fromEntries(others.map((type) => [type, selectedIds(type, "regression")])),
       thresholds: { completion_rate: Number(completion) / 100, quality_gain: Number(gain),
@@ -98,45 +127,95 @@ export function EvolutionExperiments() {
       max_rounds: Number(rounds),
     };
     setStarting(true);
-    try { const result = await startExperiment(payload); navigate(`/bench/experiments/${encodeURIComponent(result.id)}`); }
+    try { const result = await startExperiment(payload); navigate("/bench/experiments/" + encodeURIComponent(result.id)); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "启动实验失败"); }
     finally { setStarting(false); }
   }
-  return <section className="experiment-section" aria-labelledby="evolution-experiments-title">
-    <div className="experiment-heading"><div><h2 id="evolution-experiments-title">自进化实验</h2><p className="experiment-note">每次主攻一类。探索每例一次，终验新旧版各三次；通过后由人决定发布。</p></div>
-      <button className="config-button" type="button" disabled={loading || starting} onClick={() => setReload((value) => value + 1)}>刷新配置</button></div>
+
+  return <section className="experiment-section experiment-console" aria-labelledby="evolution-experiments-title">
+    <div className="experiment-heading"><div><h2 id="evolution-experiments-title">启动自动进化</h2>
+      <p className="experiment-note">选好目标与模型，自动完成评测、改版和复测。独立终验通过后，由你决定发布。</p></div>
+      <button className="config-button" type="button" disabled={loading || starting} onClick={() => setReload((value) => value + 1)}><RefreshCw size={14} />刷新配置</button>
+    </div>
     {error && <p role="alert" className="experiment-error">{error}</p>}
-    {loading ? <p role="status">正在加载实验配置…</p> : options && <form className="experiment-form" onSubmit={(event) => void start(event)}>
-      <fieldset disabled={starting} className="experiment-form-main"><legend className="sr-only">固定实验条件</legend>
-        <div className="experiment-fields"><label>实验名称<input className="config-input" required value={name} onChange={(event) => setName(event.target.value)} /></label>
-          <label>主攻类型<select className="config-input" value={kind} onChange={(event) => { setKind(event.target.value as ExperimentTaskType); setSelected(new Set()); }}>
+    {loading ? <p role="status">正在加载实验设置…</p> : options && <form className="experiment-form" onSubmit={(event) => void start(event)}>
+      <fieldset disabled={starting} className="experiment-form-main">
+        <legend className="sr-only">实验常用选择</legend>
+        <div className="experiment-launch-grid">
+          <label>主攻阶段<select className="config-input" value={kind} onChange={(event) => { setKind(event.target.value as ExperimentTaskType); setCustomData(false); }}>
             {TASK_TYPES.map((type) => <option key={type} value={type}>{TASK_LABELS[type]}</option>)}</select></label>
-          <label>原版基线<select className="config-input" required value={baseline} onChange={(event) => setBaseline(event.target.value)}><option value="">选择版本</option>
-            {options.versions.map((version) => <option key={version.version} value={version.version}>v{version.version}{version.version === options.production_version ? " · 当前生产" : ""} · {version.note}</option>)}</select></label>
-          <label>创作模型<select className="config-input" required value={model} onChange={(event) => setModel(event.target.value)}><option value="">选择模型</option>
-            {options.models.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.model}</option>)}</select></label>
-          <label>异源评委组<select className="config-input" required value={judges} onChange={(event) => setJudges(event.target.value)}><option value="">选择评委组</option>
-            {options.judge_groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></label></div>
-        {!options.judge_groups.length && <p className="experiment-error">尚无评委组，请联系管理员配置异源评委。</p>}
-        <div className="experiment-fields">{TASK_TYPES.map((type) => <label key={type}>{TASK_LABELS[type]}规则版本<select className="config-input" required value={ruleIds[type] ?? ""} onChange={(event) => setRuleIds({ ...ruleIds, [type]: event.target.value })}>
-          <option value="">选择规则</option>{rules.filter((rule) => rule.task_type === type).sort((a, b) => b.version - a.version).map((rule) => <option key={rule.id} value={rule.id}>v{rule.version} · {rule.name}</option>)}</select></label>)}</div>
-        <div className="experiment-fields"><label>完成率下限（%）<input className="config-input" type="number" required min={0} max={100} step="any" value={completion} onChange={(event) => setCompletion(event.target.value)} /></label>
-          <label>主攻最低涨幅<input className="config-input" type="number" required min={0} step="any" value={gain} onChange={(event) => setGain(event.target.value)} /></label>
-          {others.map((type) => <label key={type}>{TASK_LABELS[type]}退化容忍<input className="config-input" type="number" required min={0} step="any" value={tolerances[type] ?? ""} onChange={(event) => setTolerances({ ...tolerances, [type]: event.target.value })} /></label>)}
-          <label>最大迭代轮数<input className="config-input" type="number" required min={1} step={1} value={rounds} onChange={(event) => setRounds(event.target.value)} /></label></div>
+          <label>Harness 版本<select className="config-input" required value={baseline} onChange={(event) => setBaseline(event.target.value)}>
+            <option value="">选择版本</option>{options.versions.map((version) => <option key={version.version} value={version.version}>
+              v{version.version}{version.version === options.production_version ? " · 当前生产" : ""}{version.note ? " · " + version.note : ""}
+            </option>)}</select></label>
+          <label>执行模型<select className="config-input" required value={model} onChange={(event) => setModel(event.target.value)}>
+            <option value="">选择执行模型</option>{options.models.map((item) => <option key={item.id} value={item.id} disabled={item.has_key === false}>
+              {item.name} · {item.model}{item.has_key === false ? " · 缺少凭据" : ""}
+            </option>)}</select></label>
+          <label>评测模型<select className="config-input" required value={judges} onChange={(event) => setJudges(event.target.value)}>
+            <option value="">选择异源评测模型</option>{options.judge_groups.map((group) => <option key={group.id} value={group.id}
+              disabled={!group.members.length || group.members.some((member) => member.has_key === false || member.stale)}>
+              {group.name} · {group.members.map((member) => member.model).join(" + ") || "未配置模型"}
+            </option>)}</select></label>
+        </div>
       </fieldset>
-      <details open className="experiment-selection"><summary>本次使用的固定样本</summary>
-        {picker("主攻优化题", kind, "optimization")}{picker("主攻独立终验题", kind, "validation")}
-        {others.map((type) => <div key={type}>{picker(`${TASK_LABELS[type]}回归题`, type, "regression")}</div>)}
+      {!!missing.length && <div role="alert" className="experiment-readiness"><strong>实验资料尚未就绪</strong>
+        <ul>{missing.map((message) => <li key={message}>{message}</li>)}</ul>
+        <Link to="/bench/dataset" className="action-link">查看试验数据集</Link>
+      </div>}
+      {!options.judge_groups.length && <p className="experiment-error">暂无评测模型，请先在模型配置中设置异源评委组。</p>}
+      <div className="experiment-launch-summary" aria-label="启动前配置摘要">
+        <div><span>本次数据</span><strong>{TASK_LABELS[kind]} · {optimization.length} 条优化 / {validation.length} 条独立终验</strong>
+          <small>{others.map((type) => TASK_LABELS[type] + "回归 " + selectedIds(type, "regression").length + " 条").join(" · ")}</small></div>
+        <div><span>过关门槛</span><strong>完成率 ≥ {completion}% · 主攻涨幅 ≥ {gain} / 5</strong>
+          <small>其他阶段容忍 {others.map((type) => tolerances[type] ?? "0").join(" / ")} 分退化 · 最多 {rounds} 轮</small></div>
+        <div><span>评测模型</span><strong>{selectedGroup?.members.map((member) => member.model).join(" + ") || "等待选择"}</strong>
+          <small>规则、输入与模型在启动后固定</small></div>
+      </div>
+      <details className="experiment-advanced" open={advanced}>
+        <summary aria-expanded={advanced} onClick={(event) => { event.preventDefault(); setAdvanced((current) => !current); }}><SlidersHorizontal size={15} />高级设置</summary>
+        {advanced && <>
+        <fieldset className="experiment-form-main" disabled={starting}><legend className="sr-only">固定门槛与规则</legend>
+          <div className="experiment-fields">{TASK_TYPES.map((type) => <label key={type}>{TASK_LABELS[type]}规则版本
+            <select className="config-input" required value={ruleIds[type] ?? ""} onChange={(event) => setRuleIds({ ...ruleIds, [type]: event.target.value })}>
+              <option value="">选择规则</option>{rules.filter((rule) => rule.task_type === type && rule.profile === RULE_PROFILE).sort((a, b) => b.version - a.version).map((rule) =>
+                <option key={rule.id} value={rule.id}>v{rule.version} · {rule.name}</option>)}</select></label>)}</div>
+          <div className="experiment-fields"><label>完成率下限（%）<input className="config-input" type="number" required min={0} max={100} step="any" value={completion} onChange={(event) => setCompletion(event.target.value)} /></label>
+            <label>主攻最低涨幅<input className="config-input" type="number" required min={0} step="any" value={gain} onChange={(event) => setGain(event.target.value)} /></label>
+            {others.map((type) => <label key={type}>{TASK_LABELS[type]}退化容忍<input className="config-input" type="number" required min={0} step="any" value={tolerances[type] ?? ""} onChange={(event) => setTolerances({ ...tolerances, [type]: event.target.value })} /></label>)}
+            <label>最大迭代轮数<input className="config-input" type="number" required min={1} step={1} value={rounds} onChange={(event) => setRounds(event.target.value)} /></label>
+          </div>
+        </fieldset>
+        <div className="experiment-sample-summary">{[
+          ...selectedSamples.filter((item) => item.task_type === kind && item.purpose !== "regression"),
+          ...selectedSamples.filter((item) => others.includes(item.task_type) && item.purpose === "regression"),
+        ].map((item) => <div key={item.id}><span>{item.purpose === "optimization" ? "优化" : item.purpose === "validation" ? "独立终验" : TASK_LABELS[item.task_type] + "回归"}</span><strong>{item.title}</strong></div>)}</div>
+        <label className="experiment-custom-data"><input type="checkbox" checked={customData} disabled={starting} onChange={(event) => setCustomData(event.target.checked)} />自选样本</label>
+        {customData && <div>{samplePicker("主攻优化题", kind, "optimization")}{samplePicker("主攻独立终验题", kind, "validation")}
+          {others.map((type) => <div key={type}>{samplePicker(TASK_LABELS[type] + "回归题", type, "regression")}</div>)}</div>}
+        <p className="experiment-note">优化每题一次；回归与终验由新旧版本各运行三次。独立终验内容不提供给进化 Agent。</p>
+        </>}
       </details>
-      <p className="experiment-note">启动后固定输入、模型、规则与门槛。终验题及逐题证据不向进化 Agent 开放。</p>
-      <button className="config-button primary" type="submit" disabled={starting}>{starting ? "正在启动…" : "启动自进化实验"}</button>
+      <div className="experiment-launch-footer"><button className="config-button primary" type="submit" disabled={starting || missing.length > 0}>
+        <Play size={15} />{starting ? "正在启动…" : "启动自进化实验"}</button><span className="experiment-note">自动命名，启动后即可查看实时进度。</span></div>
     </form>}
-    <h3>实验记录</h3>{listError && <p role="alert" className="experiment-error">{listError}</p>}
-    {!runs.length ? <p className="experiment-note">暂无实验记录。</p> : <div className="experiment-table-scroll"><table className="data-table"><thead><tr><th>实验</th><th>主攻</th><th>状态</th><th>阶段</th><th>轮次</th><th>原版</th><th>更新时间</th></tr></thead><tbody>
-      {runs.map((run) => <tr key={run.id}><td><Link className="action-link" to={`/bench/experiments/${encodeURIComponent(run.id)}`}>{run.name}</Link></td><td>{TASK_LABELS[run.task_type]}</td>
-        <td>{EXPERIMENT_STATUS[run.status] ?? run.status}</td><td>{PHASE_LABELS[run.phase] ?? run.phase}</td><td>{run.current_round} / {run.max_rounds}</td><td>v{run.baseline.version}</td>
-        <td>{run.updated_at.slice(0, 19).replace("T", " ")}</td></tr>)}
-    </tbody></table></div>}
+    <div className="experiment-heading experiment-records-heading"><div><h2>实验记录</h2><p className="experiment-note">一行一次完整进化。优化分与独立终验分分别展示，每 5 秒更新。</p></div><Link className="action-link" to="/bench/dataset">查看数据集</Link></div>
+    {listError && <p role="alert" className="experiment-error">{listError}</p>}
+    {!runs.length ? <p className="experiment-empty">暂无实验。选择目标与模型后，启动第一次自动进化。</p> :
+      <div className="experiment-table-scroll"><table className="data-table experiment-runs-table" aria-label="实验记录"><thead><tr>
+        <th>实验 / 主攻阶段</th><th>Harness 原版 → 候选</th><th>执行模型</th><th>评测模型</th><th>状态 / 当前环节</th><th>质量分 · 1–5</th>
+      </tr></thead><tbody>{runs.map((run) => {
+        const current = run.current_candidate ?? (run.current_round === run.best_candidate?.round ? run.best_candidate : null);
+        return <tr key={run.id}><td><span className="experiment-type-label">{experimentTaskLabel(run.task_type, run.flow_version)}</span>
+          <Link className="experiment-run-name" to={"/bench/experiments/" + encodeURIComponent(run.id)}>{run.name}</Link>
+          <small className="experiment-cell-note">{new Date(run.updated_at).toLocaleString("zh-CN", { hour12: false })}</small></td>
+          <td><strong>v{run.baseline.version}</strong><span className="experiment-cell-note">→ {current ? "候选第 " + current.round + " 轮" : candidatePlaceholder(run.phase, run.status, run.current_round)}</span>
+            {run.best_candidate && current?.round !== run.best_candidate.round && <small className="experiment-cell-note">保留最佳：第 {run.best_candidate.round} 轮</small>}</td>
+          <td><ModelIdentity model={run.models?.executor} /></td>
+          <td>{run.models?.judges?.length ? run.models.judges.map((judge, index) => <ModelIdentity key={judge.id ?? index} model={judge} />) : <span className="experiment-note">未记录模型</span>}</td>
+          <td><span className={"experiment-state " + run.status}>{EXPERIMENT_STATUS[run.status] ?? run.status}</span><ExperimentProgress experiment={run} compact /></td>
+          <td><ExperimentScores report={run.report} /></td>
+        </tr>;
+      })}</tbody></table></div>}
   </section>;
 }

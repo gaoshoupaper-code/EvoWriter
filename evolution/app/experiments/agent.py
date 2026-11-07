@@ -52,6 +52,8 @@ def improve_candidate(run: dict, round_record: dict, evidence: list[dict]) -> di
         _git(root, "add", "--all", "--", ".", ":(exclude)registry.json")
         _git(root, "-c", "user.name=Writer Evolution", "-c", "user.email=evolution@writer.local", "commit", "-m", f"Experiment {run['id']} round {round_record['round']}")
     commit = _git(root, "rev-parse", "HEAD")
+    if run.get("flow_version") == 2 and commit == round_record["base_commit"]:
+        raise ValueError("候选未产生 Harness 改动，不能作为改版进入复测")
     _git(root, "push", "origin", f"HEAD:refs/heads/codex/{run['id']}-r{round_record['round']}")
     diff = _git(root, "diff", round_record["base_commit"], commit, "--", ".", ":(exclude)registry.json")
     frozen = {"commit": commit, "diff": diff, **result}
@@ -169,7 +171,7 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
         "不得修改registry.json、.git、数据集、评测、权限、服务框架；不得寻找终验或其他作品数据。"
         "工具只包含Harness源码读写与校验；不得调用发布。先探查并write_design_doc，再修改、validate_changes、write_change_log。"
         "每次只处理有证据的问题，保留现有质量检查和取证行为。"
-        "你收到的证据只来自优化集；不要推测或索取终验内容。"
+        "你收到的证据来自优化集及允许复用的回归题；不要推测或索取独立终验内容。"
     )
     config = {"configurable": {"thread_id": session_id}, "recursion_limit": 200}
     if ctx.recorder and ctx.trace_id_self:
@@ -178,7 +180,7 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
         async with AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
             agent = create_deep_agent(model=model, tools=tools, system_prompt=prompt, middleware=middleware,
                                       subagents=None, backend=backend, checkpointer=checkpointer)
-            await _run_agent_streamed(agent, "请改进以下优化集问题并完整校验收尾：\n" + json.dumps(evidence, ensure_ascii=False), config, ctx,
+            await _run_agent_streamed(agent, "请改进以下优化与回归问题并完整校验收尾：\n" + json.dumps(evidence, ensure_ascii=False), config, ctx,
                                       input_message_id=session_id + "-optimization")
         if ctx.validation_result is None:
             # A recovered checkpoint can already contain the final change log.

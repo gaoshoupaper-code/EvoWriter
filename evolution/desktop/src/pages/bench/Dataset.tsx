@@ -124,22 +124,20 @@ export default function BenchDataset() {
           <div>
             <h1>评测数据集</h1>
             <p className="page-desc">
-              golden 标准集（冻结基准，评测用）· 共 {cases.length} case
+              三个阶段分别准备固定输入，独立终验与回归各有专用样本。
             </p>
           </div>
-          <button
-            className="config-button"
-            onClick={handleRerun}
-            disabled={rerunning}
-            title="golden 变更后重跑最近 3 个版本建立新基线"
-          >
-            {rerunning ? "重跑触发中…" : "重跑最近 3 个版本"}
-          </button>
         </div>
       </header>
 
       <StagePackages />
-      <h2>历史 golden 数据</h2>
+      <details className="experiment-history">
+        <summary>历史 golden 数据 · {cases.length} 条</summary>
+        <p className="experiment-note">旧数据和历史报告保持原有含义，独立于本次十二条试验套件。</p>
+        <button className="config-button" onClick={handleRerun} disabled={rerunning}
+          title="golden 变更后重跑最近 3 个版本建立新基线">
+          {rerunning ? "重跑触发中…" : "重跑最近 3 个版本"}
+        </button>
 
       {loading ? (
         <div className="page-loading">加载 golden 集…</div>
@@ -270,6 +268,7 @@ export default function BenchDataset() {
           </section>
         </>
       )}
+      </details>
     </div>
   );
 }

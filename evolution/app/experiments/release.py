@@ -20,6 +20,7 @@ def check_stale(run: dict) -> bool:
 
 
 def _confirm(run: dict, response: dict, *, restoring: bool = False) -> dict:
+    run.pop("recovery_error", None)
     commit = response["commit"]
     try:
         observed = clients.runtime()
@@ -46,6 +47,62 @@ def _confirm(run: dict, response: dict, *, restoring: bool = False) -> dict:
     return run
 
 
+def needs_recovery(run: dict) -> bool:
+    return run.get("status") == "publishing" or run.get("rollback_status") == "restoring" or (
+        run.get("status") == "publish_failed" and run.get("publish_status") == "unconfirmed" and bool(run.get("published")))
+
+
+def _same_release(left: dict, right: dict) -> bool:
+    return left.get("commit") == right.get("commit") and left.get("version") == right.get("version")
+
+
+def _recover_locked(run: dict) -> dict:
+    """Observe the durable operation; recovery never grants a fresh promotion."""
+    current = clients.production()
+    if run.get("rollback_status") in {"restoring", "failed"} or run.get("restored"):
+        authorized = run.get("restore_requested_by") or any(event.get("kind") == "restore_requested" for event in run.get("events", []))
+        previous, published = _original_production(run), run.get("published", {})
+        restored = run.get("restored")
+        if authorized and restored and _same_release(current, restored):
+            return _confirm(run, current, restoring=True)
+        if authorized and current.get("commit") == previous["commit"] and current.get("version", 0) > published.get("version", 0):
+            run["restored"] = current
+            repo.put_run(run)
+            return _confirm(run, current, restoring=True)
+        run.update(rollback_status="failed", load_error="恢复中断；尚未核实旧版已恢复。请核对后人工重试。")
+        repo.event(run, "restore_unconfirmed", run["load_error"])
+        repo.put_run(run)
+        return run
+    candidate = run.get("best_candidate") or {}
+    authorized = bool(run.get("report", {}).get("passed")) and bool(candidate.get("commit")) and (
+        run.get("approved_commit") == candidate["commit"] and bool(run.get("approved_by")))
+    if not authorized:
+        run.update(status="publish_failed", publish_status="failed", load_error="缺少固定候选的人工批准记录；未自动发起发布。")
+    elif run.get("published") and _same_release(current, run["published"]):
+        return _confirm(run, current)
+    elif current.get("commit") == candidate.get("commit") and current.get("artifact_digest") == candidate.get("digest") and not _same_release(current, _original_production(run)):
+        run["published"] = current
+        repo.put_run(run)
+        return _confirm(run, current)
+    elif _same_release(current, _original_production(run)):
+        run.update(status="publish_failed", publish_status="failed", load_error="发布中断；生产尚未晋级，请人工重试发布。")
+    else:
+        run.update(status="stale", publish_status="failed", stale_reason="发布后生产版本已变化；拒绝覆盖。")
+    repo.event(run, "publication_reconciled", run.get("stale_reason") or run.get("load_error") or "发布状态已核对。")
+    repo.put_run(run)
+    return run
+
+
+def recover_run(run_id: str) -> dict:
+    with repo.run_lock(run_id):
+        run = repo.get_run(run_id)
+        if run is None:
+            raise KeyError(run_id)
+        if not needs_recovery(run):
+            return run
+        return _recover_locked(run)
+
+
 def publish_run(run_id: str, actor: str) -> dict:
     with repo.run_lock(run_id):
         run = repo.get_run(run_id)
@@ -56,6 +113,15 @@ def publish_run(run_id: str, actor: str) -> dict:
         if run["status"] not in {"awaiting_review", "publish_failed", "publishing"} or not run.get("report", {}).get("passed") or not run.get("best_candidate"):
             raise ValueError("仅通过完整终验且未过期的固定候选可发布")
         candidate = run["best_candidate"]
+        approved = run.get("approved_commit") == candidate["commit"] and bool(run.get("approved_by"))
+        checked_original = False
+        if not run.get("published") and (run["status"] == "publishing" or (run["status"] == "publish_failed" and approved)):
+            run = _recover_locked(run)
+            if run["status"] != "publish_failed" or run.get("published"):
+                return run
+            # Reconciliation already checked the old production identity. The
+            # promotion CAS protects the remaining race with a delayed request.
+            checked_original = approved
         if run.get("published"):
             current = clients.production()
             if current["commit"] != run["published"]["commit"] or current["version"] != run["published"]["version"]:
@@ -63,7 +129,7 @@ def publish_run(run_id: str, actor: str) -> dict:
                 repo.put_run(run)
                 raise ValueError(run["stale_reason"])
             return _confirm(run, run["published"])
-        if check_stale(run):
+        if not checked_original and check_stale(run):
             raise ValueError(run["stale_reason"])
         expected = _original_production(run)
         run.update(status="publishing", phase="publish", publish_status="publishing", approved_commit=candidate["commit"], approved_by=actor)
@@ -104,11 +170,15 @@ def restore_run(run_id: str, actor: str) -> dict:
             raise KeyError(run_id)
         if run.get("rollback_status") == "restored":
             return run
+        if run.get("rollback_status") in {"restoring", "failed"} or run.get("restored"):
+            run = _recover_locked(run)
+            if run.get("rollback_status") == "restored" or run.get("restored"):
+                return run
         if run["status"] not in {"publish_failed", "activated"} or not run.get("published"):
             raise ValueError("当前没有可恢复的本次发布记录")
         previous = _original_production(run)
         published = run["published"]
-        run["rollback_status"] = "restoring"
+        run.update(rollback_status="restoring", restore_requested_by=actor)
         repo.event(run, "restore_requested", f"人工请求恢复原生产版本，操作者 {actor}。")
         repo.put_run(run)
         try:
@@ -118,6 +188,7 @@ def restore_run(run_id: str, actor: str) -> dict:
             if response["commit"] != previous["commit"]:
                 raise ValueError("恢复版本不一致")
             run["restored"] = response
+            repo.put_run(run)
             return _confirm(run, response, restoring=True)
         except Exception as exc:
             run.update(rollback_status="failed", load_error=f"恢复失败：{type(exc).__name__}")

@@ -163,12 +163,15 @@ export default function BenchWorkbench() {
       <header className="page-header">
         <h1>评测工作台</h1>
         <p className="page-desc">
-          发起评测批次（golden × harness 版本 × N seed）· 监控进度
-          {hasActive && "（有批次运行中，5 秒自动刷新）"}
+          选择主攻阶段，自动评测、改版与复测，清楚查看进度和产物。
         </p>
       </header>
 
       <EvolutionExperiments />
+
+      <details className="experiment-history">
+        <summary>历史评测与版本趋势{hasActive && <span className="experiment-cell-note"> · 有历史批次运行中</span>}</summary>
+        <p className="experiment-note">以下为旧 golden 评测，保留原规则和批次记录，与上方三阶段自动进化分开。</p>
 
       {/* 发起评测（FR-002：case 子集勾选，DEC-008） */}
       <section className="test-start">
@@ -370,6 +373,7 @@ export default function BenchWorkbench() {
           <LeaderboardTab />
         </TabsContent>
       </Tabs>
+      </details>
     </div>
   );
 }

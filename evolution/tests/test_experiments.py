@@ -395,7 +395,7 @@ class ExperimentLifecycleTest(DatabaseTest):
         from app.experiments import repo, runner
         run = self.create_experiment()
         def score(_run, sample):
-            value = 3.0 if sample["arm"] == "baseline" else (4.0 if sample["phase"] == "exploration" else 2.0)
+            value = 3.0 if sample["arm"] == "baseline" else (2.0 if sample["phase"] == "validation" else 4.0)
             return {"overall": value, "dimensions": {}, "reasons": {}}
         with patch("app.experiments.clients.start_task", side_effect=self.completed_task), \
              patch("app.experiments.evaluation.score_sample", side_effect=score), \

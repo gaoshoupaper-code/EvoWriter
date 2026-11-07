@@ -102,6 +102,8 @@ def score_sample(run: dict, sample: dict) -> dict:
                 ]
                 last_error = None
                 for attempt in range(2):
+                    if attempt and runner.wait_for_stop(run["id"], 2):
+                        raise asyncio.CancelledError()
                     if runner.is_stopped(run["id"]):
                         raise asyncio.CancelledError()
                     call_id = "judge-" + uuid4().hex
@@ -137,7 +139,7 @@ def score_sample(run: dict, sample: dict) -> dict:
                         last_error = None
                         break
                     except Exception as exc:
-                        last_error = f"{dimension['key']}评测异常：{type(exc).__name__}"
+                        last_error = f"{dimension['key']}评测异常：{type(exc).__name__}：{str(exc)[:200]}"
                         if trace_id and not received:
                             recorder.append_event(trace_id, {"type": "llm_error", "status": "failed", "source": "runtime",
                                 "run_id": call_id, "agent_name": "experiment-judge", "model_name": judge["model"], "error": last_error})
@@ -150,7 +152,8 @@ def score_sample(run: dict, sample: dict) -> dict:
         for dimension in rule["dimensions"]:
             available = [(judge, progress[str(judge["id"]) + ":" + dimension["key"]]) for judge in judges if str(judge["id"]) + ":" + dimension["key"] in progress]
             if len(available) < quorum:
-                raise RuntimeError(f"{dimension['key']}有效评委数不足，保留产物等待恢复评分")
+                details = "；".join(errors.get(str(judge["id"]) + ":" + dimension["key"], "") for judge in judges)
+                raise RuntimeError(f"{dimension['key']}有效评委数不足：{details}；保留产物等待恢复评分")
             values = [value for judge, value in available]
             dimensions[dimension["key"]] = sum(value["score"] for value in values) / len(values)
             reasons[dimension["key"]] = [{"judge_id": judge["id"], **value} for judge, value in available]

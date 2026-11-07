@@ -29,6 +29,7 @@ class _ArtifactCaptureBinding:
     trace_id: str
     workspace_root: Path
     strict: bool
+    extra_middleware: tuple[Any, ...] = ()
 
 
 _ARTIFACT_CAPTURE_BINDING: ContextVar[_ArtifactCaptureBinding | None] = ContextVar(
@@ -38,7 +39,8 @@ _ARTIFACT_CAPTURE_BINDING: ContextVar[_ArtifactCaptureBinding | None] = ContextV
 
 @contextmanager
 def artifact_capture_scope(
-    *, recorder: Any, trace_id: str, workspace_root: Path, strict: bool
+    *, recorder: Any, trace_id: str, workspace_root: Path, strict: bool,
+    extra_middleware: tuple[Any, ...] = (),
 ) -> Iterator[None]:
     """让装配期间的所有 DeepAgent（含嵌套/review）继承平台取证。"""
     token = _ARTIFACT_CAPTURE_BINDING.set(
@@ -47,6 +49,7 @@ def artifact_capture_scope(
             trace_id=trace_id,
             workspace_root=workspace_root,
             strict=strict,
+            extra_middleware=extra_middleware,
         )
     )
     try:
@@ -87,7 +90,7 @@ def _with_capture(
     middleware: list[Any], binding: _ArtifactCaptureBinding, agent_name: str
 ) -> list[Any]:
     if any(isinstance(item, PlatformArtifactCaptureMiddleware) for item in middleware):
-        return middleware
+        return [*[item for item in binding.extra_middleware if item not in middleware], *middleware]
     capture = PlatformArtifactCaptureMiddleware(
         recorder=binding.recorder,
         trace_id=binding.trace_id,
@@ -95,7 +98,7 @@ def _with_capture(
         agent_name=agent_name,
         strict=binding.strict,
     )
-    result = [capture, *middleware]
+    result = [capture, *binding.extra_middleware, *middleware]
     record_stack = getattr(binding.recorder, "record_middleware_assembly", None)
     if callable(record_stack):
         record_stack(binding.trace_id, agent_name, result)

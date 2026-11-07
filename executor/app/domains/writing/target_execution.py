@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 from contracts.target_tasks import TargetTaskRequest
+from app.platform.agent.runtime.types import AgentMiddleware
+from langchain_core.messages import ToolMessage
 
 
 _execution: ContextVar[FrozenExecution | None] = ContextVar("writing_target_execution", default=None)
@@ -54,6 +56,48 @@ def _failed(value):
 def manuscript_body(value: str) -> str:
     return "\n".join(line for line in value.splitlines()
                      if not line.startswith(("# ", "> 状态", "> 进度", "> Skill", "> 场景"))).strip()
+
+
+class TargetScopeMiddleware(AgentMiddleware):
+    """Single-chapter evaluation must not inherit ordinary multi-card batches."""
+
+    def __init__(self, execution):
+        self.execution = execution
+
+    def _block(self, request):
+        target = self.execution.request.target
+        if target.task_type != "chapter_outlines" or target.chapter is None:
+            return None
+        call = request.tool_call
+        name, args = call.get("name"), call.get("args") or {}
+        reason = None
+        if name == "save_artifact":
+            kind = args.get("kind")
+            if kind in {"chapter_outline", "chapter_text"} and (kind != "chapter_outline" or args.get("chapter") != target.chapter):
+                reason = f"本次只能保存第{target.chapter}章章纲，不生成其他章纲或正文。"
+            elif kind == "volume_outline" and args.get("volume") not in target.volume_ids:
+                reason = "本次只能回写目标章所属卷的任务副本。"
+        elif name == "rewrite_rhythm_table":
+            from contracts.writing_artifacts import parse_volume_chapter_range
+            volume = args.get("volume")
+            original = self.execution.request.input.files.get(f"卷纲/第{target.volume_ids[0]:02d}卷.md", "")
+            span = parse_volume_chapter_range(str(args.get("table") or ""))
+            if volume not in target.volume_ids or span is None or span != parse_volume_chapter_range(original):
+                reason = "单章任务只允许在所属卷原章号范围内回写，不增减章节。"
+        elif name in {"write_file", "edit_file"}:
+            reason = "单章任务必须通过语义产物工具保存指定章纲。"
+        if reason:
+            return ToolMessage(content="[目标范围] " + reason, tool_call_id=call.get("id") or "",
+                               name=name, status="error", response_metadata={"business_intercept": True})
+        return None
+
+    def wrap_tool_call(self, request, handler):
+        blocked = self._block(request)
+        return blocked if blocked is not None else handler(request)
+
+    async def awrap_tool_call(self, request, handler):
+        blocked = self._block(request)
+        return blocked if blocked is not None else await handler(request)
 
 
 @dataclass

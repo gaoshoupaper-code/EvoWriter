@@ -82,6 +82,8 @@ def validate_input(target: TargetSpec, data: TaskInput):
         required = ["主题.md", "总纲.md", "文风.md"]
         if target.task_type == "chapter_outlines":
             required += [f"卷纲/第{n:02d}卷.md" for n in target.volume_ids]
+            if target.chapter is not None and target.chapter > 1:
+                required.append(f"章纲/第{target.chapter - 1:03d}章.md")
         else:
             required.append(f"章纲/第{target.chapter:03d}章.md")
             if not any(name.startswith("卷纲/") for name in data.files):
@@ -98,13 +100,16 @@ def validate_input(target: TargetSpec, data: TaskInput):
             name = f"卷纲/第{volume:02d}卷.md"
             if parse_volume_chapter_range(data.files[name]) is None:
                 raise ValueError(f"{name} 缺少合法且唯一的本卷章号范围")
+    if target.task_type in {"chapter_outlines", "chapter_text"} and target.chapter is not None:
+        ranges = [parse_volume_chapter_range(data.files.get(f"卷纲/第{volume:02d}卷.md", ""))
+                  for volume in target.volume_ids] if target.volume_ids else [
+                      parse_volume_chapter_range(text) for name, text in data.files.items() if name.startswith("卷纲/")]
+        if not any(span and span[0] <= target.chapter <= span[1] for span in ranges):
+            raise ValueError("目标章节不在提供的卷纲章号范围内")
     if target.task_type == "chapter_text":
         existing = data.files.get(f"正文/第{target.chapter:03d}章.md", "")
         if re.search(r">\s*状态[：:][^\n]*人修定稿", existing):
             raise ValueError("目标正文已人修定稿，请先显式删除重做后再启动任务")
-        ranges = [parse_volume_chapter_range(text) for name, text in data.files.items() if name.startswith("卷纲/")]
-        if not any(span and span[0] <= target.chapter <= span[1] for span in ranges):
-            raise ValueError("目标章节不在提供的卷纲章号范围内")
 
 
 def _read(workspace, name):
@@ -119,14 +124,39 @@ def _chapter_ready(text):
     return is_final_status(text) and all(field in text for field in _CHAPTER_FIELDS)
 
 
+def _volume_ready(target, volume, text):
+    span = parse_volume_chapter_range(text)
+    if not is_final_status(text) or span is None:
+        return False
+    count = target.chapters_per_volume
+    if count is None:
+        return True
+    if span != ((volume - 1) * count + 1, volume * count):
+        return False
+    table = re.search(r"(?m)^[ \t]*\|[ \t]*(?:章号|章节|章节号)[ \t]*\|[^\n]*(?:\n[ \t]*\|[^\n]*)*", text)
+    if table is None:
+        return False
+    planned = []
+    for line in table.group().splitlines()[1:]:
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        chapter = re.fullmatch(r"(?:第\s*)?(\d+)\s*(?:章)?", cells[0])
+        if chapter:
+            if len(cells) < 5 or any(not cell for cell in cells[1:5]):
+                return False
+            planned.append(int(chapter[1]))
+    return len(planned) == count and all(chapter == span[0] + index for index, chapter in enumerate(planned))
+
+
 def completion_checks(target: TargetSpec, workspace: Path, *, text_evidence=None):
     missing, ranges = [], {}
     if target.task_type == "volume_outlines":
         for volume in target.volume_ids:
             name = f"卷纲/第{volume:02d}卷.md"
             text = _read(workspace, name)
-            if not is_final_status(text) or parse_volume_chapter_range(text) is None:
+            if not _volume_ready(target, volume, text):
                 missing.append(name)
+            else:
+                ranges[str(volume)] = list(parse_volume_chapter_range(text))
     elif target.task_type == "chapter_outlines":
         occupied = set()
         for volume in target.volume_ids:
@@ -136,7 +166,10 @@ def completion_checks(target: TargetSpec, workspace: Path, *, text_evidence=None
                 missing.append(name + "：章号范围无效")
                 continue
             ranges[str(volume)] = list(span)
-            chapters = set(range(span[0], span[1] + 1))
+            if target.chapter is not None and not span[0] <= target.chapter <= span[1]:
+                missing.append(name + "：目标章节不在卷纲范围内")
+                continue
+            chapters = {target.chapter} if target.chapter is not None else set(range(span[0], span[1] + 1))
             if occupied & chapters:
                 missing.append(name + "：目标卷章号范围重叠")
             occupied.update(chapters)
@@ -245,7 +278,8 @@ class TargetTaskStore:
             request_data = request.model_dump(mode="json")
             identity = {k: v for k, v in request_data.items() if k not in {"attempt_id", "traceparent"}}
             if old is not None:
-                previous = {k: v for k, v in old["request"].items() if k not in {"attempt_id", "traceparent"}}
+                old_request = TargetTaskRequest.model_validate(old["request"]).model_dump(mode="json")
+                previous = {k: v for k, v in old_request.items() if k not in {"attempt_id", "traceparent"}}
                 if identity != previous:
                     raise ValueError("同一任务编号不能用于不同输入或版本（任务冲突）")
                 return self.get(request.task_id), False
@@ -356,9 +390,13 @@ def _next_step(target, workspace):
             raise ValueError("总纲全书卷数与声明目标范围不一致")
         for volume in target.volume_ids:
             text = _read(workspace, f"卷纲/第{volume:02d}卷.md")
-            if not is_final_status(text) or parse_volume_chapter_range(text) is None:
+            if not _volume_ready(target, volume, text):
                 return "volume", volume, None
     elif target.task_type == "chapter_outlines":
+        if target.chapter is not None:
+            if not _chapter_ready(_read(workspace, f"章纲/第{target.chapter:03d}章.md")):
+                return "chapter", target.volume_ids[0], target.chapter
+            return None
         for volume in target.volume_ids:
             span = parse_volume_chapter_range(_read(workspace, f"卷纲/第{volume:02d}卷.md"))
             if span is None:
@@ -432,7 +470,7 @@ async def drive_task(request, workspace, service, thread, execution, store):
         state.confirmed_stage = execution.stage
         state.stage = execution.stage
         save_writing_state(workspace, state)
-        phase = f"{execution.stage}:{execution.volume or execution.chapter or ''}"
+        phase = f"{execution.stage}:{execution.chapter or execution.volume or ''}"
         metadata = store.record(task_id)["metadata"]
         resume_trace = metadata.get("resume_trace") if metadata.get("phase") == phase else None
         if metadata.get("phase") != phase:
@@ -454,6 +492,12 @@ async def drive_task(request, workspace, service, thread, execution, store):
                 "逐章结构缺项：" + json.dumps(issues, ensure_ascii=False) + "\n"
                 "已保存或已标定稿仍可能缺字段；先补齐具体缺项再交审。\n"
             )
+            if request.target.chapter is not None:
+                chapter_checks += (
+                    f"本次只生成第{request.target.chapter}章章纲；所属卷仅提供上下文。"
+                    "本次任务范围为单章，不按普通创作的三章或五章批次扩展。"
+                    "不得生成其他章纲或正文，不增减卷内章号范围。\n"
+                )
         prompt = (
             f"全自动目标任务：{request.target.model_dump_json()}。当前目标阶段：{phase}。\n"
             f"完整需求：\n{request.input.demand_md}\n"
@@ -805,6 +849,18 @@ class TargetTaskManager:
             if raw.status == "completed" or raw.completed:
                 evidence = self._trace_evidence(request, workspace, raw.trace_ids)
                 checks = completion_checks(request.target, workspace, text_evidence=evidence)
+                if request.target.task_type == "chapter_outlines" and request.target.chapter is not None:
+                    expected = f"章纲/第{request.target.chapter:03d}章.md"
+                    outside = [name for name in artifacts.keys() | request.input.files.keys()
+                               if name.startswith(("章纲/", "正文/")) and name != expected
+                               and artifacts.get(name) != request.input.files.get(name)]
+                    for name in outside:
+                        checks["missing"].append("单章任务越界修改：" + name)
+                    for volume in request.target.volume_ids:
+                        name = f"卷纲/第{volume:02d}卷.md"
+                        if parse_volume_chapter_range(artifacts.get(name, "")) != parse_volume_chapter_range(request.input.files[name]):
+                            checks["missing"].append(name + "：单章任务改变了原章号范围")
+                    checks["complete"] = not checks["missing"]
                 if request.target.task_type == "chapter_text":
                     saved = artifacts.get(f"正文/第{request.target.chapter:03d}章.md", "")
                     if hashlib.sha256(saved.encode("utf-8")).hexdigest() != evidence.get("last_saved_text_sha256"):

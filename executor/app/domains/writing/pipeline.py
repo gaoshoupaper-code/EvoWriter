@@ -140,10 +140,11 @@ def _unit_detail(workspace: Path, stage: str) -> str:
     from app.domains.writing.target_execution import current_execution
     execution = current_execution()
     if execution is not None:
+        if execution.chapter is not None:
+            kind = "章纲" if execution.request.target.task_type == "chapter_outlines" else "正文"
+            return f"当前目标：第 {execution.chapter} 章{kind}。本次目标范围：仅此一章。"
         if execution.volume is not None:
             return f"当前目标卷：第 {execution.volume} 卷。任务范围：{execution.request.target.volume_ids}。"
-        if execution.chapter is not None:
-            return f"当前目标：第 {execution.chapter} 章正文。正文批次大小：1 章。"
     prog = scan_writing_progress(workspace)
     if stage == "volume":
         # 最新卷还在起草、待审或补章时继续处理该卷；只有卷内章纲和正文

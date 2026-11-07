@@ -51,6 +51,7 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
             safe = {key: sample[key] for key in (
                 "id", "phase", "round", "arm", "package_id", "package_title", "task_type", "repeat", "attempt",
                 "status", "task_id", "trace_ids", "evaluation_trace_ids", "completed", "input_revision", "source_commit", "artifact_digest", "usage",
+                "execution_phase", "target", "score_retry_at", "scoring_attempts",
             ) if key in sample}
             checks = sample.get("checks") or {}
             safe["checks"] = {key: checks[key] for key in ("complete", "passed", "missing", "volume_ranges") if key in checks}
@@ -64,15 +65,28 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
             safe_samples.append(safe)
         value["samples"] = safe_samples
         value["rounds"] = [{**{key: item[key] for key in (
-            "round", "status", "source_commit", "base_commit", "digest", "report", "trace_ids", "usage",
+            "round", "status", "source_commit", "base_commit", "digest", "report", "regressions", "trace_ids", "usage",
         ) if key in item}, "summary": "", "diff": "", "error": "本轮异常，完整原因需正文读取权限。" if item.get("error") else None}
             for item in value.get("rounds", [])]
     value.update(can_read_content=can_read_content,
-        can_publish=run["status"] == "awaiting_review" and bool(run.get("report", {}).get("passed")),
+        can_publish=run["status"] in {"awaiting_review", "publish_failed"} and not run.get("stale_reason")
+            and run.get("rollback_status") not in {"restoring", "restored"}
+            and bool(run.get("report", {}).get("passed")) and bool(run.get("best_candidate")),
+        can_restore=bool(run.get("published")) and run["status"] in {"activated", "publish_failed"} and run.get("rollback_status") != "restored",
+        models=repo.public_models(run),
         stale_reason=run.get("stale_reason"), usage=_usage(run))
+    current = next((item for item in run.get("rounds", []) if item.get("round") == run.get("current_round")), None)
+    value["current_candidate"] = ({"commit": current["source_commit"], "round": current["round"], "digest": current.get("digest")}
+                                  if current and current.get("source_commit") else None)
     value["progress"] = {"total": len(run.get("samples", [])),
         "done": sum(sample.get("status") in {"completed", "failed", "stopped"} for sample in run.get("samples", [])),
         "completed": sum(bool(sample.get("completed")) for sample in run.get("samples", []))}
+    phase_samples = [sample for sample in run.get("samples", []) if sample.get("phase") == run.get("phase")
+                     and (sample.get("round", 0) == run.get("current_round", 0) or run.get("phase") == "baseline")]
+    value["progress"]["phase"] = {"name": run.get("phase"), "round": run.get("current_round", 0), "total": len(phase_samples),
+        "done": sum(sample.get("status") in {"completed", "failed", "stopped"} for sample in phase_samples),
+        "completed": sum(bool(sample.get("completed")) for sample in phase_samples),
+        "active": sum(sample.get("status") in {"running", "scoring", "interrupted"} for sample in phase_samples)}
     if summary:
         for field in ("rounds", "samples", "events"):
             value.pop(field, None)
@@ -127,8 +141,17 @@ def experiment_options():
     except (clients.ServiceUnavailable, clients.TaskNotFound) as exc:
         _failure(exc)
     groups = list_judge_groups()
+    rule_versions = {}
+    for kind in TASK_TYPES:
+        current = [rule for rule in rubrics.list_rules(kind) if rule.get("profile") == "stage-eval-v2"]
+        if current:
+            rule_versions[kind] = max(current, key=lambda rule: rule["version"])["id"]
     return {"task_types": list(TASK_TYPES), "versions": versions["items"], "production_version": versions["production_version"],
-            "models": db.LlmConfigsRepository.list_all("executor"), "judge_groups": groups["groups"] if "groups" in groups else groups.get("items", [])}
+            "models": [{key: item.get(key) for key in ("id", "name", "model", "is_active", "has_key")} for item in db.LlmConfigsRepository.list_all("executor")],
+            "judge_groups": groups["groups"] if "groups" in groups else groups.get("items", []),
+            "defaults": {"rule_versions": rule_versions, "thresholds": {"completion_rate": 1, "quality_gain": .1,
+                "regression_tolerance": {kind: 0 for kind in TASK_TYPES}}, "max_rounds": 3},
+            "builtin_suite": {"id": "stage-smoke-v1", "total": 12}}
 
 
 @router.post("/runs", status_code=201)

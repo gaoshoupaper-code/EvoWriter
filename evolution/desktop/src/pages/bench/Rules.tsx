@@ -32,11 +32,12 @@ export default function BenchRules() {
     <div className="bench-page bench-rules-page">
       <header className="page-header">
         <h1>评测规则</h1>
-        <p className="page-desc">三段规则版本与历史评分标准</p>
+        <p className="page-desc">按阶段查看完成检查、评分维度与判分标准。</p>
       </header>
 
       <StageRules />
-      <h2>历史评分标准（只读）</h2>
+      <details className="experiment-history">
+      <summary>历史评分标准（只读）</summary>
 
       {loading ? (
         <div className="page-loading">加载评分标准…</div>
@@ -105,6 +106,7 @@ export default function BenchRules() {
       ) : (
         <div className="monitor-empty">暂无评分标准数据</div>
       )}
+      </details>
     </div>
   );
 }

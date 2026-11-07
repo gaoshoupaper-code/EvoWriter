@@ -25,7 +25,7 @@ from app.domains.writing.run_gate import get_conversation_gate, get_workspace_mu
 from app.domains.writing.style_assets import WritingStyleError
 from app.domains.writing.expert_agent.services.storyline_graph import generate_storyline_graph
 from app.domains.writing.models import build_writer_model
-from app.domains.writing.target_execution import current_execution
+from app.domains.writing.target_execution import current_execution, TargetScopeMiddleware
 from app.platform.agent.middleware import (
     TraceCallbackHandler,
     TraceMiddleware,
@@ -899,12 +899,17 @@ class MetaAgentService(BaseAgentService):
             artifact_snapshot_callback=_make_artifact_snapshot_cb(self.trace_recorder, trace_id),
         )
 
+        scope_middleware = (TargetScopeMiddleware(execution),) if (
+            execution is not None and execution.request.target.task_type == "chapter_outlines"
+            and execution.request.target.chapter is not None
+        ) else ()
         with artifact_capture_scope(
             recorder=self.trace_recorder,
             trace_id=trace_id or "",
             workspace_root=workspace_path,
             strict=strict_evidence,
-        ) if trace_id else nullcontext():
+            extra_middleware=scope_middleware,
+        ) if trace_id or scope_middleware else nullcontext():
             return pkg.assemble(ctx, agent_name=agent_name)
 
     # get_thread_checkpoint 复用 BaseAgentService 基类实现（PR-10 已提取，

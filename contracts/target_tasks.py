@@ -6,7 +6,7 @@ import json
 from pathlib import PurePosixPath
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator, model_serializer
 
 from contracts.platform.entities import LlmConfigSnapshot
 
@@ -23,6 +23,15 @@ class TargetSpec(BaseModel):
     task_type: TaskType
     volume_ids: list[int] = Field(default_factory=list)
     chapter: int | None = Field(default=None, ge=1)
+    chapters_per_volume: int | None = Field(default=None, ge=1)
+
+    @model_serializer(mode="wrap")
+    def serialize_scope(self, handler):
+        value = handler(self)
+        # Legacy public request fingerprints must not gain a new null field.
+        if self.chapters_per_volume is None:
+            value.pop("chapters_per_volume", None)
+        return value
 
     @model_validator(mode="after")
     def validate_scope(self) -> "TargetSpec":
@@ -36,12 +45,16 @@ class TargetSpec(BaseModel):
             if not self.volume_ids or any(number != index for index, number in enumerate(self.volume_ids, 1)):
                 raise ValueError("整本卷纲必须声明从第1卷开始的完整目标范围")
         elif self.task_type == "chapter_outlines":
-            if len(self.volume_ids) != 4:
+            if self.chapter is not None and len(self.volume_ids) != 1:
+                raise ValueError("单章章纲必须指定一个所属卷和目标章号")
+            if self.chapter is None and len(self.volume_ids) != 4:
                 raise ValueError("章纲任务必须指定四个目标卷")
         elif self.chapter is None:
             raise ValueError("正文任务必须指定目标章号")
-        if self.task_type != "chapter_text" and self.chapter is not None:
-            raise ValueError("卷纲和章纲任务不接受单章目标")
+        if self.task_type == "volume_outlines" and self.chapter is not None:
+            raise ValueError("整本卷纲不接受单章目标")
+        if self.chapters_per_volume is not None and self.task_type != "volume_outlines":
+            raise ValueError("仅整本卷纲可以固定每卷章数")
         return self
 
 

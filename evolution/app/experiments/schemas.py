@@ -38,6 +38,7 @@ class Dimension(StrictModel):
 class RuleCreate(StrictModel):
     task_type: TaskType
     name: str = Field(min_length=1, max_length=200)
+    profile: Literal["stage-eval-v2"] | None = None
     dimensions: list[Dimension] = Field(min_length=1)
     discipline_rules: list[str] = Field(min_length=1)
 
@@ -52,9 +53,9 @@ class RuleCreate(StrictModel):
 
 
 class Thresholds(StrictModel):
-    completion_rate: float = Field(ge=0, le=1, allow_inf_nan=False)
-    quality_gain: float = Field(ge=0, allow_inf_nan=False)
-    regression_tolerance: dict[TaskType, float]
+    completion_rate: float = Field(default=1, ge=0, le=1, allow_inf_nan=False)
+    quality_gain: float = Field(default=.1, ge=0, allow_inf_nan=False)
+    regression_tolerance: dict[TaskType, float] = Field(default_factory=dict)
 
     @field_validator("regression_tolerance")
     @classmethod
@@ -66,7 +67,7 @@ class Thresholds(StrictModel):
 
 
 class RunCreate(StrictModel):
-    name: str = Field(min_length=1, max_length=200)
+    name: str | None = Field(default=None, min_length=1, max_length=200)
     task_type: TaskType
     baseline_version: int = Field(ge=1)
     model_config_id: int = Field(ge=1)
@@ -75,12 +76,14 @@ class RunCreate(StrictModel):
     optimization_ids: list[str] = Field(min_length=1)
     validation_ids: list[str] = Field(min_length=1)
     regression_ids: dict[TaskType, list[str]]
-    thresholds: Thresholds
-    max_rounds: int = Field(ge=1)
+    thresholds: Thresholds = Field(default_factory=Thresholds)
+    max_rounds: int = Field(default=3, ge=1)
 
     @model_validator(mode="after")
     def validate_sets(self):
         other_types = set(TASK_TYPES) - {self.task_type}
+        if not self.thresholds.regression_tolerance:
+            self.thresholds.regression_tolerance = {kind: 0 for kind in other_types}
         if set(self.rule_versions) != set(TASK_TYPES):
             raise ValueError("必须指定三类任务各自的评分规则版本")
         if set(self.regression_ids) != other_types or any(not ids for ids in self.regression_ids.values()):

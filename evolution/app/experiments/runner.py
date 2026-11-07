@@ -5,10 +5,11 @@ import copy
 import asyncio
 import json
 import threading
+import time
 
 from app.core import db
 from app.experiments import clients, evaluation, repo
-from app.experiments.schemas import RunCreate, TASK_TYPES
+from app.experiments.schemas import PackageCreate, RunCreate, TASK_TYPES
 
 ACTIVE = {"pending", "running", "recovering", "stopping"}
 _workers: dict[str, threading.Thread] = {}
@@ -28,8 +29,14 @@ def is_stopped(run_id: str) -> bool:
     return _shutdown.is_set() or bool(event and event.is_set())
 
 
+def wait_for_stop(run_id: str, seconds: float) -> bool:
+    with _guard:
+        stop = _stops.setdefault(run_id, threading.Event())
+    return stop.wait(seconds) or _shutdown.is_set()
+
+
 def create_run(request: RunCreate, actor: str) -> dict:
-    from app.experiments import rubrics
+    from app.experiments import packages, rubrics
     all_versions = clients.versions()
     selected = next((item for item in all_versions["items"] if item["version"] == request.baseline_version), None)
     if selected is None:
@@ -64,6 +71,7 @@ def create_run(request: RunCreate, actor: str) -> dict:
         package = repo.get_package(identifier)
         if package is None or package["task_type"] != kind or package["purpose"] != purpose:
             raise ValueError(f"样本 {identifier} 不存在或类型、用途不匹配")
+        packages.validate_package(PackageCreate.model_validate({key: package[key] for key in ("title", "purpose", "target", "input")}))
         fingerprint = (kind, package["input_revision"], json.dumps(package["target"], sort_keys=True))
         previous_purpose = input_purposes.get(fingerprint)
         if previous_purpose is not None and previous_purpose != purpose:
@@ -72,7 +80,7 @@ def create_run(request: RunCreate, actor: str) -> dict:
         frozen_packages[identifier] = package
     prepared = clients.prepare_artifact(selected["commit"])
     now = repo.now()
-    run = {"id": repo.identifier("experiment"), "name": request.name, "task_type": request.task_type,
+    run = {"id": repo.identifier("experiment"), "name": request.name, "task_type": request.task_type, "flow_version": 2,
            "status": "pending", "phase": "baseline", "current_round": 0, "max_rounds": request.max_rounds,
            "settings": request.model_dump(mode="json"),
            "baseline": {"version": selected["version"], "commit": selected["commit"], "artifact_digest": prepared["digest"]},
@@ -82,10 +90,14 @@ def create_run(request: RunCreate, actor: str) -> dict:
            "rollback_status": None, "created_at": now, "updated_at": now,
            "private": {"model": model, "judges": judges, "evolver": evolver, "rules": frozen_rules,
                        "packages": frozen_packages, "actor": actor}}
+    run["models"] = repo.public_models(run)
     repo.event(run, "created", "实验条件已固定；准备运行原始对照。")
     _add_samples(run, request.optimization_ids, arm="baseline", phase="baseline", round_=0, repeats=1,
                  commit=selected["commit"], digest=prepared["digest"])
-    repo.put_run(run)
+    with _guard:
+        run["name"] = request.name or repo.next_run_name(request.task_type)
+        run["settings"]["name"] = run["name"]
+        repo.put_run(run)
     return run
 
 
@@ -102,7 +114,8 @@ def _add_samples(run: dict, package_ids: list[str], *, arm: str, phase: str, rou
                 "repeat": repeat, "attempt": 1, "status": "pending", "task_id": identifier,
                 "trace_ids": [], "completed": False, "checks": {}, "scores": None, "error": None,
                 "artifacts": {}, "usage": {}, "input_revision": package["input_revision"],
-                "source_commit": commit, "artifact_digest": digest})
+                "source_commit": commit, "artifact_digest": digest, "target": copy.deepcopy(package["target"]),
+                "execution_phase": None})
 
 
 def process_sample(run: dict, sample: dict) -> None:
@@ -135,7 +148,10 @@ def process_sample(run: dict, sample: dict) -> None:
                 return
         if not task.get("status"):
             return
-        sample.update(trace_ids=task.get("trace_ids", []), checks=task.get("checks", {}),
+        execution_phase = task.get("phase")
+        if execution_phase and sample.get("execution_phase") != execution_phase:
+            repo.event(run, "execution_progress", f"{sample['package_title']}：{execution_phase}")
+        sample.update(trace_ids=task.get("trace_ids", []), checks=task.get("checks", {}), execution_phase=execution_phase,
                       artifacts=task.get("artifacts", {}), completed=bool(task.get("completed")),
                       usage={**sample.get("usage", {}), "generation": task.get("usage", {})})
         status = task["status"]
@@ -161,6 +177,7 @@ def process_sample(run: dict, sample: dict) -> None:
             repo.put_run(run)
             return
         sample["generation_status"] = "completed"
+        repo.event(run, "generated", f"{sample['package_title']}：生成完成，开始评分。")
         repo.put_run(run)
     if sample.get("scores") is not None:
         sample["status"] = "completed"
@@ -170,18 +187,26 @@ def process_sample(run: dict, sample: dict) -> None:
     try:
         sample["scores"] = evaluation.score_sample(run, sample)
         sample.update(status="completed", error=None)
+        sample.pop("score_retry_at", None)
     except Exception as exc:
-        sample.update(status="evaluation_error", error=f"评测异常：{type(exc).__name__}，保留原产物待恢复评分")
-        repo.event(run, "evaluation_error", sample["error"])
+        attempts = sample.get("scoring_attempts", 0) + 1
+        delay = min(60, 5 * attempts)
+        sample.update(status="evaluation_error", scoring_attempts=attempts, score_retry_at=time.time() + delay,
+                      error=f"评测异常：{type(exc).__name__}：{str(exc)[:240]}；保留原产物，{delay} 秒后重试评分。")
+        repo.event(run, "evaluation_error", f"样本 {sample['id']} 评测异常：{type(exc).__name__}；保留原产物，{delay} 秒后重试评分。")
     repo.put_run(run)
 
 
 def optimization_evidence(run: dict) -> list[dict]:
     allowed = set(run["settings"]["optimization_ids"])
+    phases = {"baseline", "exploration"}
+    if run.get("flow_version") == 2:
+        allowed.update(identifier for identifiers in run["settings"].get("regression_ids", {}).values() for identifier in identifiers)
+        phases.add("regression")
     return [{key: copy.deepcopy(sample.get(key)) for key in
-             ("package_id", "phase", "completed", "checks", "scores", "error", "artifacts", "trace_ids")}
+             ("package_id", "phase", "round", "arm", "completed", "checks", "scores", "error", "artifacts", "trace_ids")}
             for sample in run.get("samples", [])
-            if sample.get("package_id") in allowed and sample.get("phase") in {"baseline", "exploration"}]
+            if sample.get("package_id") in allowed and sample.get("phase") in phases]
 
 
 def _finish(run: dict, status: str, reason: str) -> None:
@@ -196,13 +221,56 @@ def _run_pending(run: dict, samples: list[dict]) -> bool:
         return False
     # A judging outage must not keep other samples from generating.
     pending.sort(key=lambda sample: sample["status"] == "evaluation_error")
-    process_sample(run, pending[0])
+    ready = next((sample for sample in pending if sample.get("score_retry_at", 0) <= time.time()), None)
+    if ready:
+        process_sample(run, ready)
     return True
 
 
+def _final_samples(run: dict, phase: str) -> list[dict]:
+    return [sample for sample in run["samples"] if sample["phase"] == phase and sample["round"] == run["current_round"]]
+
+
+def _start_checks(run: dict, phase: str, candidate: dict) -> None:
+    selections = run["settings"]["regression_ids"].values() if phase == "regression" else [run["settings"]["validation_ids"]]
+    for identifiers in selections:
+        for arm, version in (("baseline", run["baseline"]), ("candidate", candidate)):
+            _add_samples(run, identifiers, arm=arm, phase=phase, round_=run["current_round"], repeats=3,
+                         commit=version["commit"], digest=version.get("digest") or version["artifact_digest"])
+    run["phase"] = phase
+    repo.event(run, phase, "优化达标，进入另外两类回归。" if phase == "regression" else "优化与回归已通过，固定候选进入独立终验。")
+
+
+def _current_candidate(run: dict) -> dict:
+    record = next(item for item in run["rounds"] if item["round"] == run["current_round"])
+    report = record["report"]
+    return {"commit": record["source_commit"], "digest": record["digest"], "round": record["round"],
+            "quality": report["candidate"]["quality"], "completion_rate": report["candidate"]["completion_rate"]}
+
+
+def _compare_final(run: dict, samples: list[dict], kind: str, gain: float) -> dict:
+    left = [sample for sample in samples if sample["task_type"] == kind and sample["arm"] == "baseline"]
+    right = [sample for sample in samples if sample["task_type"] == kind and sample["arm"] == "candidate"]
+    report = evaluation.compare_results(left, right, completion_rate=run["settings"]["thresholds"]["completion_rate"], quality_gain=gain)
+    identifiers = run["settings"]["validation_ids"] if kind == run["task_type"] else run["settings"]["regression_ids"][kind]
+    expected = {(identifier, repeat) for identifier in identifiers for repeat in (1, 2, 3)}
+    if any({(sample["package_id"], sample["repeat"]) for sample in arm} != expected or len(arm) != len(expected) for arm in (left, right)):
+        report["passed"] = False
+        report["problems"].append("缺少指定样本的新旧版各三次实际运行记录")
+    return report
+
+
 def advance_one(run_id: str) -> None:
-    from app.experiments import agent
+    from app.experiments import agent, release
     run = repo.get_run(run_id)
+    if run and release.needs_recovery(run):
+        try:
+            release.recover_run(run_id)
+        except clients.ServiceUnavailable as exc:
+            run["recovery_error"] = str(exc)
+            repo.event(run, "recovering", str(exc))
+            repo.put_run(run)
+        return
     if not run or run["status"] not in ACTIVE:
         return
     if run["status"] == "stopping" or is_stopped(run_id):
@@ -234,11 +302,13 @@ def advance_one(run_id: str) -> None:
         _finish(run, "stopped", "用户已停止实验；保留已有内容。")
         return
     run["status"] = "running"
+    run.pop("recovery_error", None)
     try:
         if run["phase"] == "baseline":
             if _run_pending(run, [sample for sample in run["samples"] if sample["phase"] == "baseline"]):
                 return
             run["phase"] = "evolving"
+            repo.event(run, "evolving", "原版评测完成，开始自动改进 Harness。")
         elif run["phase"] == "evolving":
             round_record = next((item for item in run["rounds"] if item["round"] == run["current_round"] and item["status"] == "evolving"), None)
             if round_record is None:
@@ -258,13 +328,14 @@ def advance_one(run_id: str) -> None:
                 round_record.update(status="exploration", source_commit=result["commit"], digest=result["digest"],
                                     summary=result["summary"], diff=result["diff"], usage=result.get("usage", {}))
                 run["phase"] = "exploration"
+                repo.event(run, "exploration", f"第 {run['current_round']} 轮候选已固定，开始优化复测。")
                 _add_samples(run, run["settings"]["optimization_ids"], arm="candidate", phase="exploration",
                              round_=run["current_round"], repeats=1, commit=result["commit"], digest=result["digest"])
             except clients.ServiceUnavailable:
                 raise
             except Exception as exc:
-                round_record.update(status="failed", error=f"候选改进失败：{type(exc).__name__}")
-                repo.event(run, "round_failed", round_record["error"])
+                round_record.update(status="failed", error=f"候选改进失败：{type(exc).__name__}：{str(exc)[:240]}")
+                repo.event(run, "round_failed", f"第 {run['current_round']} 轮候选改进失败：{type(exc).__name__}；完整原因见轮次报告。")
         elif run["phase"] == "exploration":
             candidate = [sample for sample in run["samples"] if sample["phase"] == "exploration" and sample["round"] == run["current_round"]]
             if _run_pending(run, candidate):
@@ -275,7 +346,13 @@ def advance_one(run_id: str) -> None:
             round_record = run["rounds"][-1]
             round_record.update(report=report, status="passed" if report["passed"] else "not_improved")
             run["report"]["exploration"] = report
+            run["report"]["exploration_round"] = run["current_round"]
             if report["passed"]:
+                if run.get("flow_version") == 2:
+                    _start_checks(run, "regression", _current_candidate(run))
+                    round_record["status"] = "regression"
+                    repo.put_run(run)
+                    return
                 run["best_candidate"] = {"commit": round_record["source_commit"], "digest": round_record["digest"],
                     "round": run["current_round"], "quality": report["candidate"]["quality"], "completion_rate": report["candidate"]["completion_rate"]}
                 run["phase"] = "validation"
@@ -288,7 +365,44 @@ def advance_one(run_id: str) -> None:
                 repo.event(run, "validation", "探索达标；固定候选进入独立终验与另外两类回归。")
             else:
                 run["phase"] = "evolving"
+                repo.event(run, "not_improved", "优化复测未达门槛，按剩余轮数继续改版。")
+        elif run["phase"] == "regression" and run.get("flow_version") == 2:
+            selected = _final_samples(run, "regression")
+            if _run_pending(run, selected):
+                return
+            thresholds = run["settings"]["thresholds"]
+            reports = {}
+            for kind in TASK_TYPES:
+                if kind == run["task_type"]:
+                    continue
+                reports[kind] = _compare_final(run, selected, kind, -thresholds["regression_tolerance"][kind])
+            run["report"].update(regressions=reports, regression_round=run["current_round"])
+            round_record = run["rounds"][-1]
+            round_record["regressions"] = reports
+            if all(report["passed"] for report in reports.values()):
+                run["best_candidate"] = _current_candidate(run)
+                round_record["status"] = "validation"
+                _start_checks(run, "validation", run["best_candidate"])
+            else:
+                round_record["status"] = "regression_failed"
+                run["phase"] = "evolving"
+                repo.event(run, "regression_failed", "回归未达门槛，保留失败证据，按剩余轮数继续改版。")
         elif run["phase"] == "validation":
+            if run.get("flow_version") == 2:
+                selected = _final_samples(run, "validation")
+                if _run_pending(run, selected):
+                    return
+                thresholds = run["settings"]["thresholds"]
+                report = _compare_final(run, selected, run["task_type"], thresholds["quality_gain"])
+                regressions = run["report"].get("regressions", {})
+                passed = report["passed"] and run["report"].get("regression_round") == run["current_round"] and all(
+                    regressions.get(kind, {}).get("passed", False) for kind in TASK_TYPES if kind != run["task_type"])
+                run["report"].update(passed=passed, validation=report, validation_round=run["current_round"])
+                run["rounds"][-1]["status"] = "passed" if passed else "validation_failed"
+                run["phase"] = "review"
+                _finish(run, "awaiting_review" if passed else "validation_failed",
+                        "优化、回归与独立终验已通过，等待人工决定发布。" if passed else "独立终验未达门槛；本次实验结束，不继续使用终验反馈改版。")
+                return
             selected = [sample for sample in run["samples"] if sample["phase"] in {"validation", "regression"}]
             if _run_pending(run, selected):
                 return
@@ -329,10 +443,11 @@ def request_stop(run_id: str) -> dict:
 
 
 def _worker(run_id: str) -> None:
+    from app.experiments import release
     try:
         while not _shutdown.is_set():
             run = repo.get_run(run_id)
-            if not run or run["status"] not in ACTIVE:
+            if not run or (run["status"] not in ACTIVE and not release.needs_recovery(run)):
                 break
             try:
                 advance_one(run_id)
@@ -359,8 +474,13 @@ def start_worker(run_id: str) -> None:
 
 
 def recover_runs() -> None:
+    from app.experiments import release
     for run in repo.list_runs():
-        if run["status"] in ACTIVE:
+        if release.needs_recovery(run):
+            repo.event(run, "recovering", "服务已恢复，先核对本次发布或恢复是否已实际生效。")
+            repo.put_run(run)
+            start_worker(run["id"])
+        elif run["status"] in ACTIVE:
             if run["status"] != "stopping":
                 run["status"] = "recovering"
                 repo.event(run, "recovering", "服务已恢复，先核对已保存的任务和评分。")

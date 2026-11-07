@@ -164,6 +164,7 @@ describe("Shell 导航（AC-001）", () => {
 describe("工作台（AC-003/004/005）", () => {
   /** 触发前先选评测组（FR-002 of 162207：一律走组）。 */
   async function selectJudgeGroup() {
+    fireEvent.click(screen.getByText(/^历史评测与版本趋势/));
     fireEvent.change(
       await screen.findByRole("combobox", { name: /评测组/ }),
       { target: { value: "1" } },
@@ -205,6 +206,7 @@ describe("工作台（AC-003/004/005）", () => {
         <Workbench />
       </MemoryRouter>,
     );
+    fireEvent.click(screen.getByText(/^历史评测与版本趋势/));
     fireEvent.click(await screen.findByText(/触发全量评测/));
     await new Promise((r) => setTimeout(r, 50));
     expect(api.runBenchmark).not.toHaveBeenCalled();
@@ -250,6 +252,7 @@ describe("工作台（AC-003/004/005）", () => {
     );
 
     // 批次列表（AC-004）：id 取 slice(0,8)
+    fireEvent.click(screen.getByText(/^历史评测与版本趋势/));
     expect(await screen.findByText("batch-xy")).toBeInTheDocument();
     expect(screen.getByText("12/12")).toBeInTheDocument();
 

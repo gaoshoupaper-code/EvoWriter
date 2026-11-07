@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 from uuid import uuid4
 
@@ -33,6 +33,8 @@ def init_schema() -> None:
             connection.execute(f"CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL)")
     from app.experiments.rubrics import seed_rules
     seed_rules()
+    from app.experiments.seed_data import seed_packages
+    seed_packages()
 
 
 def insert(table: str, payload: dict[str, Any]) -> None:
@@ -93,7 +95,7 @@ def event(run: dict, kind: str, message: str) -> None:
 
 
 def freeze_credentials(config_id: int) -> dict:
-    row = db.query_one("SELECT id,model,base_url,api_key_enc,scope FROM llm_configs WHERE id=?", (config_id,))
+    row = db.query_one("SELECT id,name,model,base_url,api_key_enc,scope FROM llm_configs WHERE id=?", (config_id,))
     if not row or not row["api_key_enc"] or not row["model"] or not row["base_url"]:
         raise ValueError(f"模型配置 #{config_id} 缺少模型、地址或凭据")
     return dict(row)
@@ -114,3 +116,28 @@ def frozen_model_credentials(run_id: str) -> dict:
 
 def public_settings(settings: dict) -> dict:
     return copy.deepcopy(settings)
+
+
+def public_model(snapshot: dict | None) -> dict | None:
+    if not snapshot or not snapshot.get("model"):
+        return None
+    return {"id": snapshot.get("id"), "name": snapshot.get("name") or snapshot["model"], "model": snapshot["model"]}
+
+
+def public_models(run: dict) -> dict:
+    private = run.get("private", {})
+    frozen = run.get("models", {})
+    return {
+        "executor": public_model(frozen.get("executor") or private.get("model")),
+        "judges": [value for item in frozen.get("judges", private.get("judges", [])) if (value := public_model(item))],
+        "evolver": public_model(frozen.get("evolver") or private.get("evolver")),
+    }
+
+
+def next_run_name(task_type: str) -> str:
+    labels = {"volume_outlines": "整本卷纲", "chapter_outlines": "单章章纲", "chapter_text": "单章正文"}
+    date = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
+    prefix = f"{labels[task_type]} · {date} · "
+    numbers = [int(value["name"][len(prefix):]) for value in list_runs()
+               if value.get("name", "").startswith(prefix) and value["name"][len(prefix):].isdigit()]
+    return prefix + f"{max(numbers, default=0) + 1:03d}"

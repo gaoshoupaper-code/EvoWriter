@@ -12,6 +12,7 @@ from app.experiments import clients, evaluation, repo
 from app.experiments.schemas import PackageCreate, RunCreate, TASK_TYPES
 
 ACTIVE = {"pending", "running", "recovering", "stopping"}
+_SCORING_FAILURE_LIMIT = 3
 _workers: dict[str, threading.Thread] = {}
 _stops: dict[str, threading.Event] = {}
 _guard = threading.Lock()
@@ -118,6 +119,17 @@ def _add_samples(run: dict, package_ids: list[str], *, arm: str, phase: str, rou
                 "execution_phase": None})
 
 
+def _stop_scoring_retries(run: dict, sample: dict, cause: Exception | None = None) -> None:
+    if sample.get("status") == "failed" and "score_retry_at" not in sample:
+        return
+    message = f"评分失败已达{_SCORING_FAILURE_LIMIT}轮上限，停止自动重试；原产物和已保存的部分评分保留。"
+    detail = f"评测异常：{type(cause).__name__}：{str(cause)[:240]}；" if cause else ""
+    sample.update(status="failed", error=detail + message)
+    sample.pop("score_retry_at", None)
+    repo.event(run, "evaluation_error", f"样本 {sample['id']}：{message}")
+    repo.put_run(run)
+
+
 def process_sample(run: dict, sample: dict) -> None:
     if sample.get("generation_status") != "completed":
         package = run["private"]["packages"][sample["package_id"]]
@@ -182,6 +194,9 @@ def process_sample(run: dict, sample: dict) -> None:
     if sample.get("scores") is not None:
         sample["status"] = "completed"
         return
+    if sample.get("scoring_attempts", 0) >= _SCORING_FAILURE_LIMIT:
+        _stop_scoring_retries(run, sample)
+        return
     sample["status"] = "scoring"
     repo.put_run(run)
     try:
@@ -190,8 +205,12 @@ def process_sample(run: dict, sample: dict) -> None:
         sample.pop("score_retry_at", None)
     except Exception as exc:
         attempts = sample.get("scoring_attempts", 0) + 1
+        sample["scoring_attempts"] = attempts
+        if attempts >= _SCORING_FAILURE_LIMIT:
+            _stop_scoring_retries(run, sample, exc)
+            return
         delay = min(60, 5 * attempts)
-        sample.update(status="evaluation_error", scoring_attempts=attempts, score_retry_at=time.time() + delay,
+        sample.update(status="evaluation_error", score_retry_at=time.time() + delay,
                       error=f"评测异常：{type(exc).__name__}：{str(exc)[:240]}；保留原产物，{delay} 秒后重试评分。")
         repo.event(run, "evaluation_error", f"样本 {sample['id']} 评测异常：{type(exc).__name__}；保留原产物，{delay} 秒后重试评分。")
     repo.put_run(run)
@@ -221,7 +240,8 @@ def _run_pending(run: dict, samples: list[dict]) -> bool:
         return False
     # A judging outage must not keep other samples from generating.
     pending.sort(key=lambda sample: sample["status"] == "evaluation_error")
-    ready = next((sample for sample in pending if sample.get("score_retry_at", 0) <= time.time()), None)
+    ready = next((sample for sample in pending if sample.get("score_retry_at", 0) <= time.time()
+                  or (sample.get("scores") is None and sample.get("scoring_attempts", 0) >= _SCORING_FAILURE_LIMIT)), None)
     if ready:
         process_sample(run, ready)
     return True

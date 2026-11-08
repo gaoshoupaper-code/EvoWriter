@@ -106,6 +106,20 @@ export type ExperimentModel = { id?: number | null; name: string; model: string 
 export type ExperimentModels = {
   executor: ExperimentModel | null; judges: ExperimentModel[]; evolver?: ExperimentModel | null;
 };
+export type ExperimentUsageGroup = {
+  calls: number; failed_calls: number;
+  input_tokens: number | null; output_tokens: number | null; total_tokens: number | null;
+  known: boolean; partial: boolean;
+};
+export type ExperimentUsageSummary = {
+  generation: ExperimentUsageGroup; evaluation: ExperimentUsageGroup; evolution: ExperimentUsageGroup; known: boolean;
+};
+export type ExperimentEvaluationCall = {
+  sample_id: string; judge_id: string | number | null; dimension: string; status: string;
+  usage: { input_tokens?: number | null; output_tokens?: number | null; total_tokens?: number | null;
+    prompt_tokens?: number | null; completion_tokens?: number | null } | null;
+};
+export type ExperimentEvaluationUsagePage = { items: ExperimentEvaluationCall[]; total: number; offset: number; limit: number };
 export type ExperimentSample = {
   id: string; phase: string; round: number; arm: "baseline" | "candidate"; package_id: string;
   package_title: string; task_type: ExperimentTaskType; repeat: number; attempt: number; status: string;
@@ -134,8 +148,8 @@ export type Experiment = {
     regressions?: Partial<Record<ExperimentTaskType, ExperimentComparison>>; reason?: string;
     exploration_round?: number; regression_round?: number; validation_round?: number };
   events: { id: string; kind: string; message: string; created_at: string }[];
-  usage: Record<string, unknown>; can_read_content: boolean; can_publish: boolean; can_restore?: boolean;
+  usage: ExperimentUsageSummary; can_read_content: boolean; can_publish: boolean; can_restore?: boolean;
   stale_reason: string | null; publish_status: string; loaded_revision: string | null;
   load_error: string | null; rollback_status: string | null; created_at: string; updated_at: string;
 };
-export type ExperimentSummary = Omit<Experiment, "rounds" | "samples" | "events">;
+export type ExperimentSummary = Omit<Experiment, "rounds" | "samples" | "events" | "usage">;

@@ -91,6 +91,8 @@ function eventRunToActiveRun(run: Record<string, unknown> | null, fallbackTraceI
 export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null, traceId: string, lastMetrics?: TraceMetrics) => void, observationScope: ObservationScope = "user") {
   const [activeRuns, setActiveRuns] = useState<ActiveRun[]>([]);
   const [transport, setTransport] = useState<TransportMode>("connecting");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const activeRunsRef = useRef<ActiveRun[]>([]);
   const snapshotInFlightRef = useRef(false);
 
@@ -126,9 +128,11 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
   const refreshSnapshot = useCallback(async () => {
     if (snapshotInFlightRef.current) return;
     snapshotInFlightRef.current = true;
+    setLoading(true);
     try {
       const runs = await getActiveRuns(observationScope);
       if (cancelledRef.current) return;
+      setError(null);
       updateRuns((prev) => {
         // 墓碑：run_finished 刚到的行，1s 轮询缓存快照里可能还在——过滤防复活。
         const now = Date.now();
@@ -155,12 +159,14 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
         });
         return eventOnly.length > 0 ? [...fresh, ...eventOnly] : fresh;
       });
-    } catch {
+    } catch (caught) {
       if (!cancelledRef.current) {
+        setError(caught instanceof Error ? caught.message : "活跃运行加载失败");
         updateRuns((prev) => prev.map((run) => ({ ...run, stats_stale: true })));
       }
     } finally {
       snapshotInFlightRef.current = false;
+      if (!cancelledRef.current) setLoading(false);
     }
   }, [observationScope, updateRuns]);
 
@@ -383,5 +389,5 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 只在挂载时建连；回调经 ref 透传。
   }, []);
 
-  return { activeRuns, transport };
+  return { activeRuns, transport, loading, error, refresh: refreshSnapshot };
 }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { listExperiments, type ExperimentSummary } from "@/lib/api";
 
-export function useExperiments() {
+export function useExperiments(active?: boolean) {
   const [runs, setRuns] = useState<ExperimentSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -12,7 +12,7 @@ export function useExperiments() {
     let timer: ReturnType<typeof setTimeout>;
     async function poll() {
       try {
-        const response = await listExperiments();
+        const response = await listExperiments(active);
         if (alive) {
           setRuns([...response.items].sort((a, b) => (b.created_at ?? "").localeCompare(a.created_at ?? "") || a.id.localeCompare(b.id)));
           setError("");
@@ -23,6 +23,6 @@ export function useExperiments() {
     }
     void poll();
     return () => { alive = false; clearTimeout(timer); };
-  }, [revision]);
+  }, [active, revision]);
   return { runs, loading, error, refresh };
 }

@@ -14,6 +14,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import type { UnlistenFn } from "@tauri-apps/api/event";
+import type { ActiveRun } from "@/lib/types";
 
 type TauriEvent = { event: string; payload: unknown };
 type Listener = (e: TauriEvent) => void;
@@ -104,7 +105,7 @@ function runFinishedFrame(seq: number, traceId: string, status = "completed") {
 }
 
 /** 快照接口（GET /api/active-runs）返回的行形状。 */
-function makeSnapshotRun(traceId: string, sessionName = "快照任务") {
+function makeSnapshotRun(traceId: string, sessionName = "快照任务"): ActiveRun {
   return {
     trace_id: traceId,
     workspace_id: "ws",
@@ -154,6 +155,25 @@ async function mount() {
   await act(async () => {});
   return utils;
 }
+
+it("快照加载和错误独立可见，刷新失败保留旧运行并允许重试", async () => {
+  let resolve!: (rows: ReturnType<typeof makeSnapshotRun>[]) => void;
+  mockedGetActiveRuns.mockReturnValueOnce(new Promise((yes) => { resolve = yes; }));
+  const { result } = await mount();
+  expect(result.current.loading).toBe(true);
+  expect(result.current.error).toBeNull();
+  await act(async () => { resolve([makeSnapshotRun("preserved")]); });
+  expect(result.current.loading).toBe(false);
+  mockedGetActiveRuns.mockRejectedValueOnce(new Error("快照接口失败"));
+  await act(async () => { await result.current.refresh(); });
+  expect(result.current.activeRuns[0].trace_id).toBe("preserved");
+  expect(result.current.activeRuns[0].stats_stale).toBe(true);
+  expect(result.current.error).toBe("快照接口失败");
+  mockedGetActiveRuns.mockResolvedValueOnce([makeSnapshotRun("recovered")]);
+  await act(async () => { await result.current.refresh(); });
+  expect(result.current.error).toBeNull();
+  expect(result.current.activeRuns[0].trace_id).toBe("recovered");
+});
 
 /** 只统计 stream_request 调用（stream_cancel 也是 invoke，须排除，review R4）。 */
 function streamRequestCalls(): unknown[][] {

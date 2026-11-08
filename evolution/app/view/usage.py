@@ -95,7 +95,7 @@ def _usage_totals(group: str, active: list[dict[str, Any]]) -> dict[str, dict[st
                    SUM(COALESCE(n.usage_total,n.usage_input+n.usage_output)) AS tokens,
                    COUNT(n.node_id) AS calls,
                    COUNT(COALESCE(n.usage_total,n.usage_input+n.usage_output)) AS known
-            FROM runs r LEFT JOIN nodes n ON n.trace_id=r.trace_id AND n.kind='llm'
+            FROM runs r LEFT JOIN nodes n INDEXED BY idx_nodes_trace ON n.trace_id=r.trace_id AND n.kind='llm'
             WHERE {scope_sql('user')} GROUP BY r.trace_id"""
     )
     contributions = [{"group_id": row["group_id"], "tokens": row["tokens"],

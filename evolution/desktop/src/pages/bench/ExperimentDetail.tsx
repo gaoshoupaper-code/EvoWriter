@@ -16,6 +16,7 @@ import { downloadTextFile } from "@/lib/download";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import TraceDetailPage from "@/pages/trace-detail";
 import { ExperimentArtifacts } from "@/components/bench/ExperimentArtifacts";
+import { ExperimentUsage } from "@/components/bench/ExperimentUsage";
 import "@/components/bench/experiments.css";
 
 const STOPPABLE = new Set(["pending", "running", "recovering", "stopping"]);
@@ -164,7 +165,7 @@ export default function ExperimentDetail() {
         {experiment.best_candidate && <div><dt>保留最佳完整标识</dt><dd><code>{experiment.best_candidate.commit}</code></dd></div>}
         <div><dt>进化模型</dt><dd><ModelIdentity model={experiment.models?.evolver} /></dd></div>
       </dl><EvidenceValues value={experiment.settings} /></details>
-      <details><summary>调用用量，未知值单独标记</summary><EvidenceValues value={experiment.usage} /></details>
+      <ExperimentUsage experimentId={experimentId} usage={experiment.usage} />
     </section>
 
     <section className="experiment-section experiment-publication"><div className="experiment-heading"><div><h2>人工审阅与发布</h2>

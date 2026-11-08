@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import copy
 import hmac
+from itertools import islice
 
+from contracts.trace.usage import normalize_usage
 from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.core import db
@@ -28,24 +30,58 @@ def _can_read(request: Request) -> bool:
     return bool(getattr(request.state, "is_super_admin", False))
 
 
+def _usage_group(records) -> dict:
+    fields = ("input_tokens", "output_tokens", "total_tokens")
+    totals = dict.fromkeys(fields, 0)
+    counts = dict.fromkeys(fields, 0)
+    calls = failed_calls = complete = 0
+    for usage, status in records:
+        calls += 1
+        failed_calls += status == "failed"
+        usage = usage or {}
+        tokens = normalize_usage(usage)
+        for field in fields:
+            if tokens[field] is not None:
+                totals[field] += tokens[field]
+                counts[field] += 1
+        complete += (all(tokens[field] is not None for field in fields)
+                     and usage.get("known") is not False
+                     and not any(usage.get(field + "_partial") for field in ("input", "output", "total")))
+    known = calls > 0 and complete == calls
+    return {"calls": calls, "failed_calls": failed_calls,
+            **{field: totals[field] if counts[field] else None for field in fields},
+            "known": known, "partial": any(counts.values()) and not known}
+
+
 def _usage(run: dict) -> dict:
-    generations = [sample.get("usage", {}).get("generation", {}) for sample in run.get("samples", []) if sample.get("request_saved")]
-    judges = [attempt for sample in run.get("samples", []) for attempt in sample.get("usage", {}).get("judge_attempts", [])]
-    evolutions = [item.get("usage", {}) for item in run.get("rounds", [])]
-    return {"generation": generations, "evaluation": judges, "evolution": evolutions,
-            "known": bool(generations) and all(value.get("known", False) for value in generations) and all(item.get("usage") for item in judges) and all(value.get("known", False) for value in evolutions)}
+    generation = _usage_group((sample.get("usage", {}).get("generation", {}),
+                               sample.get("generation_status") or sample.get("status"))
+                              for sample in run.get("samples", []) if sample.get("request_saved"))
+    evaluation = _usage_group((attempt.get("usage"), attempt.get("status"))
+                              for sample in run.get("samples", [])
+                              for attempt in sample.get("usage", {}).get("judge_attempts", []))
+    evolution = _usage_group((item.get("usage", {}), item.get("status")) for item in run.get("rounds", []))
+    return {"generation": generation, "evaluation": evaluation, "evolution": evolution,
+            "known": generation["calls"] > 0 and all(group["known"] for group in
+                (generation, evaluation, evolution) if group["calls"])}
 
 
 def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> dict:
-    value = copy.deepcopy(run)
-    value.pop("private", None)
-    for item in value.get("rounds", []):
-        item.pop("work_root", None)
-        item.pop("frozen_candidate", None)
-    for sample in value.get("samples", []):
-        sample.pop("judge_results", None)
-        sample.pop("judge_errors", None)
-    if not can_read_content:
+    # Project before copying: discarded histories can contain tens of thousands of calls.
+    omitted = {"private", "rounds", "samples", "usage"}
+    if summary:
+        omitted.add("events")
+    value = copy.deepcopy({key: item for key, item in run.items() if key not in omitted})
+    if not summary:
+        value["rounds"] = [copy.deepcopy({key: item for key, item in round_.items()
+            if key not in {"work_root", "frozen_candidate"}}) for round_ in run.get("rounds", [])]
+        value["samples"] = []
+        for sample in run.get("samples", []):
+            public = {key: item for key, item in sample.items() if key not in {"judge_results", "judge_errors", "usage"}}
+            public["usage"] = {key: item for key, item in sample.get("usage", {}).items() if key != "judge_attempts"}
+            value["samples"].append(copy.deepcopy(public))
+        value["usage"] = _usage(run)
+    if not can_read_content and not summary:
         safe_samples = []
         for sample in value.get("samples", []):
             safe = {key: sample[key] for key in (
@@ -74,7 +110,7 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
             and bool(run.get("report", {}).get("passed")) and bool(run.get("best_candidate")),
         can_restore=bool(run.get("published")) and run["status"] in {"activated", "publish_failed"} and run.get("rollback_status") != "restored",
         models=repo.public_models(run),
-        stale_reason=run.get("stale_reason"), usage=_usage(run))
+        stale_reason=run.get("stale_reason"))
     current = next((item for item in run.get("rounds", []) if item.get("round") == run.get("current_round")), None)
     value["current_candidate"] = ({"commit": current["source_commit"], "round": current["round"], "digest": current.get("digest")}
                                   if current and current.get("source_commit") else None)
@@ -87,9 +123,6 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
         "done": sum(sample.get("status") in {"completed", "failed", "stopped"} for sample in phase_samples),
         "completed": sum(bool(sample.get("completed")) for sample in phase_samples),
         "active": sum(sample.get("status") in {"running", "scoring", "interrupted"} for sample in phase_samples)}
-    if summary:
-        for field in ("rounds", "samples", "events"):
-            value.pop(field, None)
     return value
 
 
@@ -165,8 +198,10 @@ def start_run(body: RunCreate, request: Request):
 
 
 @router.get("/runs")
-def list_runs(request: Request):
-    return {"items": [public_run(run, can_read_content=_can_read(request), summary=True) for run in repo.list_runs()]}
+def list_runs(request: Request, active: bool = False):
+    active_statuses = {"pending", "running", "recovering", "stopping", "publishing"}
+    return {"items": [public_run(run, can_read_content=_can_read(request), summary=True)
+                      for run in repo.list_runs() if not active or run["status"] in active_statuses]}
 
 
 @router.get("/runs/{run_id}")
@@ -182,6 +217,21 @@ def run_detail(run_id: str, request: Request):
             value.update(can_publish=False, stale_reason="暂时无法核对生产版本")
             return value
     return public_run(run, can_read_content=_can_read(request))
+
+
+@router.get("/runs/{run_id}/usage/evaluation")
+def evaluation_usage(run_id: str, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
+    run = repo.get_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="实验不存在")
+    samples = run.get("samples", [])
+    total = sum(len(sample.get("usage", {}).get("judge_attempts", [])) for sample in samples)
+    attempts = ((sample["id"], attempt) for sample in samples
+                for attempt in sample.get("usage", {}).get("judge_attempts", []))
+    return {"items": [{"sample_id": sample_id, **{key: copy.deepcopy(attempt.get(key))
+        for key in ("judge_id", "dimension", "status", "usage")}}
+        for sample_id, attempt in islice(attempts, offset, offset + limit)],
+        "total": total, "offset": offset, "limit": limit}
 
 
 @router.post("/runs/{run_id}/stop")

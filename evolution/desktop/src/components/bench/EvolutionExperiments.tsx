@@ -19,7 +19,7 @@ export function EvolutionExperiments() {
   const [options, setOptions] = useState<ExperimentOptions | null>(null);
   const [packages, setPackages] = useState<ExperimentPackage[]>([]);
   const [rules, setRules] = useState<ExperimentRule[]>([]);
-  const { runs, loading: listLoading, error: listError } = useExperiments();
+  const { runs, loading: listLoading, error: listError } = useExperiments(true);
   const activeRuns = runs.filter((run) => ["pending", "running", "recovering", "stopping", "publishing"].includes(run.status));
   const [kind, setKind] = useState<ExperimentTaskType>("volume_outlines");
   const [baseline, setBaseline] = useState("");

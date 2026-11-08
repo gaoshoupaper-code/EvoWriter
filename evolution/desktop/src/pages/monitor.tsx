@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ChevronLeft, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { toast } from "sonner";
 import {
   getTraces,
   getUserUsage,
@@ -47,7 +46,10 @@ export default function MonitorPage() {
   }, []);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
+  const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const requestSeqRef = useRef(0);
+  const correctTimerRef = useRef<number | null>(null);
   const finishedMetricsRef = useRef(new Map<string, TraceMetrics>());
 
   const since = useMemo(() => {
@@ -56,8 +58,10 @@ export default function MonitorPage() {
     return new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
   }, [timeRange]);
 
-  const refresh = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
+  const refresh = useCallback(async () => {
+    const requestSeq = ++requestSeqRef.current;
+    setLoading(true);
+    setError(null);
     try {
       const recent = await getTraces({
         observation_scope: "user",
@@ -67,6 +71,7 @@ export default function MonitorPage() {
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
       });
+      if (requestSeq !== requestSeqRef.current) return;
       setRecentRuns((prev) => recent.items.map((run) => {
         const cached = finishedMetricsRef.current.get(run.trace_id);
         const next = preserveKnownTotal(run, prev.find((item) => item.trace_id === run.trace_id),
@@ -78,23 +83,27 @@ export default function MonitorPage() {
         return next;
       }));
       setTotal(recent.total);
+      setLoaded(true);
       setError(null);
     } catch (caught) {
+      if (requestSeq !== requestSeqRef.current) return;
       const message = caught instanceof Error ? caught.message : "运行观测数据加载失败";
-      if (silent) toast.error(message);
-      else setError(message);
+      setError(message);
     } finally {
-      if (!silent) setLoading(false);
+      if (requestSeq === requestSeqRef.current) setLoading(false);
     }
   }, [integrity, page, since, workload]);
 
   useEffect(() => {
-    refresh();
+    void refresh();
+    return () => {
+      requestSeqRef.current += 1;
+      if (correctTimerRef.current != null) window.clearTimeout(correctTimerRef.current);
+    };
   }, [refresh]);
 
   // 终态即时翻转（REQ-20260920-193428 FR-002）：事件行先进近期区，
   // 摄入入库有秒级延迟，3s 后拉一次权威列表校正（review R5：句柄可清理）。
-  const correctTimerRef = useRef<number | null>(null);
   const finishedSeenRef = useRef<Set<string>>(new Set());
   const handleRunFinished = useCallback(
     (run: FinishedRunInfo | null, traceId: string, lastMetrics?: TraceMetrics) => {
@@ -128,13 +137,14 @@ export default function MonitorPage() {
         }
       }
       if (correctTimerRef.current != null) window.clearTimeout(correctTimerRef.current);
-      correctTimerRef.current = window.setTimeout(() => { void refresh(true); }, 3000);
+      correctTimerRef.current = window.setTimeout(() => { void refresh(); }, 3000);
     },
     [refresh, workload],
   );
 
   // 活跃运行实时流（FR-001/FR-005）：SSE 事件驱动，断线自动降级轮询（FR-006）。
-  const { activeRuns } = useActiveRunsStream(handleRunFinished);
+  const { activeRuns, loading: activeLoading = false, error: activeError = null,
+    refresh: refreshActive } = useActiveRunsStream(handleRunFinished);
 
   // 卸载清理校正定时器。
   useEffect(() => () => {
@@ -152,17 +162,6 @@ export default function MonitorPage() {
   function resetFilters(next: () => void) {
     next();
     setPage(0);
-  }
-
-  if (loading) return <div className="page-loading">加载运行观测…</div>;
-  if (error) {
-    return (
-      <div className="page-error">
-        <div className="page-error-title">运行观测加载失败</div>
-        <div className="page-error-detail">{error}</div>
-        <button className="page-error-retry" onClick={() => refresh()}>重试</button>
-      </div>
-    );
   }
 
   return (
@@ -208,8 +207,10 @@ export default function MonitorPage() {
       </div>
 
       <RunSection title="活跃运行" count={filteredActive.length}>
+        <SectionLoadState label="活跃运行" loading={activeLoading} hasData={activeRuns.length > 0}
+          error={activeError} onRetry={() => { void refreshActive?.(); }} />
         {filteredActive.length === 0 ? (
-          <EmptyState label="当前无匹配的活跃运行" />
+          !activeLoading && !activeError && <EmptyState label="当前无匹配的活跃运行" />
         ) : (
           <div className="run-table-wrap">
             <table className="workbench-table">
@@ -227,7 +228,9 @@ export default function MonitorPage() {
       <UsageDrilldown />
 
       <RunSection title="近期运行" count={recentRuns.length}>
-        {recentRuns.length === 0 ? (
+        <SectionLoadState label="近期运行" loading={loading} hasData={loaded || recentRuns.length > 0} error={error}
+          onRetry={() => { void refresh(); }} />
+        {(loaded || recentRuns.length > 0) && (recentRuns.length === 0 ? (
           <EmptyState label="当前筛选条件下无运行" />
         ) : (
           <div className="run-table-wrap">
@@ -243,7 +246,7 @@ export default function MonitorPage() {
               </tbody>
             </table>
           </div>
-        )}
+        ))}
       </RunSection>
 
       {total > PAGE_SIZE && (
@@ -255,6 +258,18 @@ export default function MonitorPage() {
       )}
     </div>
   );
+}
+
+function SectionLoadState({ label, loading, hasData, error, onRetry }: {
+  label: string; loading: boolean; hasData: boolean; error: string | null; onRetry: () => void;
+}) {
+  return <>
+    {loading && <div className="workbench-empty" role="status">{hasData ? "更新" : "加载"}{label}…</div>}
+    {error && <div className="workbench-empty" role="alert">
+      <div>{error}</div>
+      <button className="page-error-retry" type="button" onClick={onRetry}>重试</button>
+    </div>}
+  </>;
 }
 
 function RunSection({ title, count, children }: { title: string; count: number; children: React.ReactNode }) {
@@ -433,34 +448,50 @@ function UsageDrilldown() {
   const [traces, setTraces] = useState<TraceListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const requestSeqRef = useRef(0);
+  const drillKey = drill.level === "users" ? "users" : drill.level === "workspaces"
+    ? `workspaces:${drill.userId}` : `traces:${drill.workspaceId}`;
+  const [loadedKey, setLoadedKey] = useState<string | null>(null);
+  const hasData = loadedKey === drillKey;
 
   const refresh = useCallback(async () => {
+    const requestSeq = ++requestSeqRef.current;
     setLoading(true);
     setError(null);
     try {
       if (drill.level === "users") {
-        setUsers(await getUserUsage());
+        const rows = await getUserUsage();
+        if (requestSeq !== requestSeqRef.current) return;
+        setUsers(rows);
       } else if (drill.level === "workspaces") {
-        setWorkspaces(await getWorkspaceUsage(drill.userId));
+        const rows = await getWorkspaceUsage(drill.userId);
+        if (requestSeq !== requestSeqRef.current) return;
+        setWorkspaces(rows);
       } else {
         const resp = await getTraces({ workspace: drill.workspaceId, limit: 100 });
+        if (requestSeq !== requestSeqRef.current) return;
         setTraces(resp.items);
       }
+      setLoadedKey(drillKey);
     } catch (caught) {
+      if (requestSeq !== requestSeqRef.current) return;
       setError(caught instanceof Error ? caught.message : "用量观测数据加载失败");
     } finally {
-      setLoading(false);
+      if (requestSeq === requestSeqRef.current) setLoading(false);
     }
-  }, [drill]);
+  }, [drill, drillKey]);
 
   useEffect(() => {
     void refresh();
+    return () => { requestSeqRef.current += 1; };
   }, [refresh]);
 
   return (
     <section className="workbench-section">
       <div className="section-heading">
         <h2>用量观测</h2>
+        <button className="icon-button" type="button" title="刷新用量观测" aria-label="刷新用量观测"
+          onClick={() => { void refresh(); }}><RefreshCw size={14} /></button>
         <span className="usage-crumb">
           {drill.level === "workspaces" && (
             <button className="usage-back" type="button" onClick={() => setDrill({ level: "users" })}>
@@ -483,14 +514,9 @@ function UsageDrilldown() {
         </span>
       </div>
 
-      {loading ? (
-        <div className="workbench-empty">加载用量观测…</div>
-      ) : error ? (
-        <div className="workbench-empty">
-          <div>{error}</div>
-          <button className="page-error-retry" type="button" onClick={() => void refresh()}>重试</button>
-        </div>
-      ) : drill.level === "users" ? (
+      <SectionLoadState label="用量观测" loading={loading} hasData={hasData} error={error}
+        onRetry={() => { void refresh(); }} />
+      {hasData && (drill.level === "users" ? (
         users.length === 0 ? <EmptyState label="暂无用户" /> : (
           <div className="run-table-wrap">
             <table className="workbench-table">
@@ -567,7 +593,7 @@ function UsageDrilldown() {
             </tbody>
           </table>
         </div>
-      )}
+      ))}
     </section>
   );
 }

@@ -134,6 +134,7 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
     })) as never[] });
     render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
     await screen.findByRole("link", { name: "无候选-running" });
+    expect(api.listExperiments).toHaveBeenCalledWith(true);
     for (const status of ["failed", "exhausted", "stopped"]) {
       expect(screen.queryByRole("link", { name: "无候选-" + status })).not.toBeInTheDocument();
     }

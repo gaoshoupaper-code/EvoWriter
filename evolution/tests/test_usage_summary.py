@@ -149,6 +149,42 @@ class UserUsageTest(unittest.TestCase):
         rows = {r["user_id"]: r for r in self.client.get("/usage/users").json()}
         self.assertEqual(rows["user-a"]["total_tokens"], 800)
 
+    def test_usage_uses_trace_index_without_changing_mixed_usage(self) -> None:
+        """REQ-20261108-223920 AC-003：按 Trace 定位且保留未知和活跃去重。"""
+        self._seed_users()
+        for trace, purpose in (("known", "user_generation"), ("live", "user_generation"),
+                               ("unknown", "user_generation"), ("experiment", "optimization")):
+            _run(trace, "ws-1", "user-a", "completed", "2026-11-08T10:00:00+00:00", purpose)
+        _node("known", 100)
+        _node("known", None)
+        _node("live", 200)
+        _node("experiment", 9000)
+        db.execute("INSERT INTO nodes (node_id,trace_id,kind,label,status,usage_input,usage_output) "
+                   "VALUES ('fallback','known','llm','n','completed',7,3)")
+        db.execute("INSERT INTO nodes (node_id,trace_id,kind,label,status,usage_total) "
+                   "VALUES ('tool','known','tool','n','completed',800)")
+        self._set_active([{"trace_id": "live", "workspace_id": "ws-1", "owner_user_id": "user-a",
+                           "run_purpose": "user_generation", "usage_total": 1000}])
+        statements = []
+        conn = db.get_conn()
+        conn.set_trace_callback(statements.append)
+        try:
+            response = self.client.get("/usage/users")
+        finally:
+            conn.set_trace_callback(None)
+        self.assertEqual(response.status_code, 200)
+        users = {row["user_id"]: row for row in response.json()}
+        self.assertEqual(users["user-a"]["total_tokens"], 1110)
+        self.assertTrue(users["user-a"]["total_partial"])
+        self.assertEqual(users["user-b"]["total_tokens"], 0)
+        aggregate = next(sql for sql in statements if "SUM(COALESCE(n.usage_total" in sql)
+        plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + aggregate)]
+        self.assertTrue(any("idx_nodes_trace" in detail for detail in plan), plan)
+        self.assertFalse(any("idx_nodes_kind" in detail for detail in plan), plan)
+        legacy = aggregate.replace(" INDEXED BY idx_nodes_trace", "")
+        self.assertEqual([tuple(row) for row in conn.execute(aggregate)],
+                         [tuple(row) for row in conn.execute(legacy)])
+
 
 class WorkspaceUsageTest(unittest.TestCase):
     def setUp(self) -> None:

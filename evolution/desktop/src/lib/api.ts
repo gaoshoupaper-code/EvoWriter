@@ -1973,7 +1973,7 @@ export async function exportTraceContent(
 export type * from "./experiment-types";
 import type {
   Experiment, ExperimentOptions, ExperimentPackage, ExperimentPackageInput, ExperimentInput,
-  ExperimentRule, ExperimentRuleInput, ExperimentStart, ExperimentSummary, ExperimentTaskType,
+  ExperimentEvaluationUsagePage, ExperimentRule, ExperimentRuleInput, ExperimentStart, ExperimentSummary, ExperimentTaskType,
 } from "./experiment-types";
 
 export function listExperimentPackages(): Promise<{ items: ExperimentPackage[]; can_read_content: boolean }> {
@@ -1998,14 +1998,19 @@ export function saveExperimentRule(payload: ExperimentRuleInput): Promise<Experi
 export function getExperimentOptions(): Promise<ExperimentOptions> {
   return evoJson("/api/experiments/options", { method: "GET" });
 }
-export function listExperiments(): Promise<{ items: ExperimentSummary[] }> {
-  return evoJson("/api/experiments/runs", { method: "GET" });
+export function listExperiments(active?: boolean): Promise<{ items: ExperimentSummary[] }> {
+  const query = active === undefined ? "" : `?active=${active}`;
+  return evoJson(`/api/experiments/runs${query}`, { method: "GET" });
 }
 export function startExperiment(payload: ExperimentStart): Promise<Experiment> {
   return evoJson("/api/experiments/runs", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
 }
 export function getExperiment(id: string): Promise<Experiment> {
   return evoJson(`/api/experiments/runs/${encodeURIComponent(id)}`, { method: "GET" });
+}
+export function getExperimentEvaluationUsage(id: string, page: { offset: number; limit: number }): Promise<ExperimentEvaluationUsagePage> {
+  const query = new URLSearchParams({ offset: String(page.offset), limit: String(page.limit) });
+  return evoJson(`/api/experiments/runs/${encodeURIComponent(id)}/usage/evaluation?${query}`, { method: "GET" });
 }
 export function stopExperiment(id: string): Promise<Experiment> {
   return evoJson(`/api/experiments/runs/${encodeURIComponent(id)}/stop`, { method: "POST" });

@@ -56,7 +56,7 @@ beforeEach(() => {
   vi.mocked(getUserUsage).mockResolvedValue([]);
   vi.mocked(useActiveRunsStream).mockImplementation((callback) => {
     onFinished = callback;
-    return { activeRuns: [activeRun()], transport: "sse" };
+    return { activeRuns: [activeRun()], transport: "sse", loading: false, error: null, refresh: vi.fn() };
   });
 });
 
@@ -140,7 +140,7 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
     let runs = [activeRun()];
     vi.mocked(useActiveRunsStream).mockImplementation((callback) => {
       onFinished = callback;
-      return { activeRuns: runs, transport: "sse" };
+      return { activeRuns: runs, transport: "sse", loading: false, error: null, refresh: vi.fn() };
     });
     const old = { ...recentRun(), trace_id: "trace-active", session_name: "近期旧快照", status: "running" as const };
     vi.mocked(getTraces).mockResolvedValue({ items: [old], total: 1, limit: 50, offset: 0 });
@@ -176,7 +176,7 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
     let runs = [{ ...activeRun(), metrics: { ...metrics, total_tokens: 15000 } }];
     vi.mocked(useActiveRunsStream).mockImplementation((callback) => {
       onFinished = callback;
-      return { activeRuns: runs, transport: "sse" };
+      return { activeRuns: runs, transport: "sse", loading: false, error: null, refresh: vi.fn() };
     });
     vi.mocked(getTraces).mockResolvedValue({
       items: [{ ...recentRun(), trace_id: "trace-active", session_name: "等待完整摘要", status: "running" }],

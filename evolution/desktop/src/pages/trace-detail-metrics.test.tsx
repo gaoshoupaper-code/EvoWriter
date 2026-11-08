@@ -19,6 +19,7 @@ vi.mock("@/components/trace/TokenChartPanel", () => ({ TokenChartPanel: () => nu
 vi.mock("@/components/trace/ArtifactsPanel", () => ({ ArtifactsPanel: () => null }));
 
 import { useTracePolling } from "@/hooks/useTraceStream";
+import { getTraceIntegrity } from "@/lib/api";
 import TraceDetailPage from "@/pages/trace-detail";
 
 function detail(input = 12000, output = 3000, average = 10000): TraceDetailLite {
@@ -50,9 +51,47 @@ function valueFor(label: string) {
   return screen.getByText(label, { selector: "label" }).parentElement!;
 }
 
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => { vi.clearAllMocks(); vi.mocked(getTraceIntegrity).mockReset(); });
 
 describe("Trace 详情实时统计（REQ-20261029-104420）", () => {
+  it.each(["incomplete", "conflict", "legacy"] as const)("运行中保留 %s 标记和采集异常，不提示重跑", (integrity) => {
+    const snapshot = detail();
+    snapshot.run.integrity_status = integrity;
+    snapshot.run.error = "已记录的采集异常";
+    mockDetail(snapshot);
+    render(<TraceDetailPage />);
+    const hint = document.querySelector('.integrity-' + integrity)!;
+    expect(hint).toHaveTextContent("Trace 尚未结束");
+    expect(hint).toHaveTextContent({ incomplete: "不完整", conflict: "冲突", legacy: "旧版" }[integrity]);
+    expect(hint).not.toHaveTextContent("重新运行");
+    expect(screen.getByText("已记录的采集异常")).toBeInTheDocument();
+    expect(getTraceIntegrity).not.toHaveBeenCalled();
+  });
+
+  it.each(["awaiting_input", "pending", "cancelling"] as const)("%s 尚未结束时也不提示重跑当前任务", (status) => {
+    const snapshot = detail();
+    snapshot.run.status = status;
+    snapshot.run.integrity_status = "incomplete";
+    mockDetail(snapshot);
+    render(<TraceDetailPage />);
+    const hint = document.querySelector('.integrity-incomplete')!;
+    expect(hint).toHaveTextContent("Trace 尚未结束");
+    expect(hint).not.toHaveTextContent("重新运行");
+  });
+
+  it("运行结束后仍展示真实缺口和原有重跑恢复建议", async () => {
+    const snapshot = detail();
+    snapshot.run.integrity_status = "incomplete";
+    mockDetail(snapshot);
+    const page = render(<TraceDetailPage />);
+    vi.mocked(getTraceIntegrity).mockResolvedValue({ trace_id: "trace-metrics", integrity_status: "incomplete", evidence_status: "unknown", evidence_gaps: [], recoverable: true,
+      missing_checks: [{ check: "manifest_missing", stage: "终态封存", impact: "缺少最终清单", recovery: "重新运行该任务" }], affected_downstreams: [] });
+    mockDetail({ ...snapshot, run: { ...snapshot.run, status: "completed" } });
+    page.rerender(<TraceDetailPage />);
+    expect(await screen.findByText("恢复：重新运行该任务")).toBeInTheDocument();
+    expect(screen.getByText("缺少最终清单")).toBeInTheDocument();
+    expect(document.querySelector('.integrity-incomplete')).not.toHaveTextContent("Trace 尚未结束");
+  });
   it("Trace 未结束时展示输入输出，并按新快照更新平均耗时", async () => {
     mockDetail(detail());
     const page = render(<TraceDetailPage />);

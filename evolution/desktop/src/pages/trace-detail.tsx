@@ -333,6 +333,7 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
   }
 
   const run = activeRun;
+  const runInProgress = ["running", "awaiting_input", "pending", "cancelling"].includes(run.status);
 
   return (
     <div className={"trace-detail-page" + (embedded ? " experiment-embedded-trace" : "")}>
@@ -435,7 +436,12 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
         )}
         {run.integrity_status && run.integrity_status !== "verified" && run.integrity_status !== "pending" && (
           <div className={`integrity-hint integrity-${run.integrity_status}`}>
-            {integrityLoading ? (
+            {runInProgress ? (
+              <span>
+                Trace 尚未结束，当前完整性：{integrityLabel(run.integrity_status)}。
+                请等待运行结束后的校验。已有缺口与采集异常仍保留，使用限制不变。
+              </span>
+            ) : integrityLoading ? (
               <span>正在分析完整性缺口…</span>
             ) : integrityDiagnosis && integrityDiagnosis.missing_checks.length > 0 ? (
               <div className="integrity-diagnosis">

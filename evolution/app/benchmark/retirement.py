@@ -1,6 +1,7 @@
 """REQ-20261108-191146: retire legacy starts and clean only proven legacy ownership.
 
-Run inside the deployed evolution container, after replacing the old service.
+Run in an exclusive maintenance container after pausing evolution;
+keep executor running, then restore evolution after cleanup.
 The reviewed manifest is also the retry journal; keep it until cleanup completes.
 """
 from __future__ import annotations
@@ -266,6 +267,11 @@ def apply_manifest(document: dict, *, confirm_stopped: Callable[[list[dict]], tu
             approved.add(batch_id)
         except Exception as exc:
             result["failed"].append({"kind": "batch_stop", "id": batch_id, "reason": str(exc)})
+    if approved:
+        # Legacy stores can lack payload lookup indexes; otherwise each body
+        # scans all reference tables again during a large retirement.
+        for table in ("trace_payload_links", "artifact_revisions", "outcome_records"):
+            db.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_payload ON {table}(payload_id)")
     candidates = {row["trace_id"] for row in document["rows"] if row["trace_id"] in document["trace_ids"] and row["batch_id"] in approved}
     blocked = {row["trace_id"] for row in document["rows"] if row["trace_id"] and row["batch_id"] not in approved}
     failed_traces: set[str] = set()

@@ -24,7 +24,7 @@ from typing import Any
 from app.core.settings import settings
 
 # SQLite 连接需跨线程共享（FastAPI 线程池 + 后台扫描），用 check_same_thread=False。
-# 写操作通过一把全局锁串行化，避免 SQLite "database is locked"。
+# 所有读写共用一把锁，保护跨线程连接及其语句缓存。
 # 用 RLock（可重入）：init_db 持锁后调用迁移函数，迁移函数内部也需加锁，必须可重入。
 _lock = threading.RLock()
 
@@ -46,9 +46,10 @@ _conn: sqlite3.Connection | None = None
 def get_conn() -> sqlite3.Connection:
     """获取全局 SQLite 连接（单例）。"""
     global _conn
-    if _conn is None:
-        _conn = _connect()
-    return _conn
+    with _lock:
+        if _conn is None:
+            _conn = _connect()
+        return _conn
 
 
 def init_db() -> None:
@@ -2122,44 +2123,46 @@ class JudgeGroupsRepository:
 
         Returns: [{id, name, members: [{config_id, position}], created_at, updated_at}]
         """
-        conn = get_conn()
-        groups = [
-            dict(r) for r in conn.execute(
-                "SELECT id, name, created_at, updated_at FROM judge_groups ORDER BY id ASC"
-            ).fetchall()
-        ]
-        members: dict[int, list[dict[str, Any]]] = {}
-        for r in conn.execute(
-            "SELECT group_id, config_id, position FROM judge_group_members "
-            "ORDER BY group_id ASC, position ASC"
-        ).fetchall():
-            members.setdefault(r["group_id"], []).append(
-                {"config_id": r["config_id"], "position": r["position"]}
-            )
-        for g in groups:
-            g["members"] = members.get(g["id"], [])
-        return groups
+        with _lock:
+            conn = get_conn()
+            groups = [
+                dict(r) for r in conn.execute(
+                    "SELECT id, name, created_at, updated_at FROM judge_groups ORDER BY id ASC"
+                ).fetchall()
+            ]
+            members: dict[int, list[dict[str, Any]]] = {}
+            for r in conn.execute(
+                "SELECT group_id, config_id, position FROM judge_group_members "
+                "ORDER BY group_id ASC, position ASC"
+            ).fetchall():
+                members.setdefault(r["group_id"], []).append(
+                    {"config_id": r["config_id"], "position": r["position"]}
+                )
+            for g in groups:
+                g["members"] = members.get(g["id"], [])
+            return groups
 
     @staticmethod
     def get(group_id: int) -> dict[str, Any] | None:
         """单组（含成员）；不存在返回 None。"""
-        conn = get_conn()
-        row = conn.execute(
-            "SELECT id, name, created_at, updated_at FROM judge_groups WHERE id=?",
-            (group_id,),
-        ).fetchone()
-        if row is None:
-            return None
-        group = dict(row)
-        group["members"] = [
-            {"config_id": r["config_id"], "position": r["position"]}
-            for r in conn.execute(
-                "SELECT config_id, position FROM judge_group_members "
-                "WHERE group_id=? ORDER BY position ASC",
+        with _lock:
+            conn = get_conn()
+            row = conn.execute(
+                "SELECT id, name, created_at, updated_at FROM judge_groups WHERE id=?",
                 (group_id,),
-            ).fetchall()
-        ]
-        return group
+            ).fetchone()
+            if row is None:
+                return None
+            group = dict(row)
+            group["members"] = [
+                {"config_id": r["config_id"], "position": r["position"]}
+                for r in conn.execute(
+                    "SELECT config_id, position FROM judge_group_members "
+                    "WHERE group_id=? ORDER BY position ASC",
+                    (group_id,),
+                ).fetchall()
+            ]
+            return group
 
     @staticmethod
     def create(*, name: str, member_config_ids: list[int]) -> int:
@@ -2250,9 +2253,9 @@ def _validate_members(member_config_ids: list[int]) -> None:
     if len(set(ids)) != len(ids):
         raise ValueError("评测组成员不得重复")
     for cid in ids:
-        row = get_conn().execute(
+        row = query_one(
             "SELECT scope FROM llm_configs WHERE id=?", (cid,)
-        ).fetchone()
+        )
         if row is None:
             raise ValueError(f"成员配置 #{cid} 不存在")
         if row["scope"] not in JudgeGroupsRepository.ALLOWED_SCOPES:

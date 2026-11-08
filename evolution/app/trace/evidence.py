@@ -331,7 +331,7 @@ def _load_revisions(trace_id: str) -> list[dict[str, Any]]:
 def _persist_report(report: CreationTraceEligibility) -> None:
     if report.row is None:
         return
-    columns = {row[1] for row in db.get_conn().execute("PRAGMA table_info(runs)").fetchall()}
+    columns = {row["name"] for row in db.query_all("PRAGMA table_info(runs)")}
     if "evidence_status" not in columns:
         return
     db.execute(

@@ -251,7 +251,8 @@ def stop_batch(batch_id: str, *, reason: str) -> dict[str, Any]:
 
 def get_stop_reason(batch_id: str) -> str | None:
     """批次终止原因（user_stop / auto_fail）；无记录 = 未被终止。"""
-    return _get_stop_reason(db.get_conn(), batch_id)
+    with db._lock:
+        return _get_stop_reason(db.get_conn(), batch_id)
 
 
 def _get_stop_reason(conn: Any, batch_id: str) -> str | None:

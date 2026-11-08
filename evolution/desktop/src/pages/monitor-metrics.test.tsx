@@ -61,6 +61,20 @@ beforeEach(() => {
 });
 
 describe("全局 Trace Token（REQ-20261029-104420）", () => {
+  it("用户汇总未知用量显示未知，部分已知明确提示不完整", async () => {
+    vi.mocked(getUserUsage).mockResolvedValue([
+      { user_id: "unknown-user", username: "未知用量用户", running: false, last_created_at: null, total_tokens: null, total_partial: true },
+      { user_id: "partial-user", username: "部分用量用户", running: false, last_created_at: null, total_tokens: 12000, total_partial: true },
+    ]);
+    render(<MonitorPage />);
+    await settle();
+    const unknown = screen.getByText("未知用量用户").closest("tr")!;
+    expect(within(unknown).getAllByText("—").length).toBeGreaterThan(0);
+    expect(within(unknown).getByText("部分用量缺失")).toBeInTheDocument();
+    const partial = screen.getByText("部分用量用户").closest("tr")!;
+    expect(within(partial).getByText("1.2w")).toBeInTheDocument();
+    expect(within(partial).getByText("部分用量缺失")).toBeInTheDocument();
+  });
   it("活跃及近期条目显示总量、缺失和陈旧提示", async () => {
     render(<MonitorPage />);
     await settle();
@@ -77,7 +91,7 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
     render(<MonitorPage />);
     await settle();
     const finished: FinishedRunInfo = {
-      trace_id: "trace-finished", session_name: "刚结束任务", workload: "creation",
+      trace_id: "trace-finished", session_name: "刚结束任务", run_purpose: "user_generation", workload: "creation",
       status: "completed", started_at: null, ended_at: null, duration_ms: 10000,
       event_count: 4, error: null, metrics,
     };
@@ -176,7 +190,7 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
       page.rerender(<MonitorPage />);
     });
     const final: FinishedRunInfo = {
-      trace_id: "trace-active", session_name: "完整摘要已到", workload: "creation",
+      trace_id: "trace-active", session_name: "完整摘要已到", run_purpose: "user_generation", workload: "creation",
       status: "completed", started_at: null, ended_at: null, duration_ms: 10000,
       event_count: 5, error: null, metrics,
     };
@@ -192,7 +206,7 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
     render(<MonitorPage />);
     await settle();
     const final: FinishedRunInfo = {
-      trace_id: "trace-new-finish", session_name: "新增完成任务", workload: "creation",
+      trace_id: "trace-new-finish", session_name: "新增完成任务", run_purpose: "user_generation", workload: "creation",
       status: "completed", started_at: null, ended_at: null, duration_ms: 10000,
       event_count: 5, error: null, metrics,
     };
@@ -205,5 +219,23 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
     expect(within(row).getByText("3.0w")).toBeInTheDocument();
     expect(screen.getByText("1 条运行")).toBeInTheDocument();
     expect(screen.getAllByText("新增完成任务")).toHaveLength(1);
+  });
+  it("实验和来源不明的完成事件不能插入用户运行", async () => {
+    render(<MonitorPage />);
+    await settle();
+    expect(getTraces).toHaveBeenCalledWith(expect.objectContaining({ observation_scope: "user" }));
+    const experiment: FinishedRunInfo = { trace_id: "experiment-finish", session_name: "实验完成",
+      run_purpose: "optimization", workload: "creation", status: "completed", started_at: null,
+      ended_at: null, duration_ms: 10, event_count: 2, error: null, metrics };
+    await act(async () => {
+      onFinished?.(experiment, experiment.trace_id);
+      onFinished?.({ ...experiment, trace_id: "unknown", session_name: "来源不明", run_purpose: null }, "unknown");
+      onFinished?.({ ...experiment, trace_id: "legacy-exp", session_name: "历史用途冲突",
+        run_purpose: "user_generation", observation_scope: "experiment" }, "legacy-exp");
+    });
+    expect(screen.queryByText("实验完成")).not.toBeInTheDocument();
+    expect(screen.queryByText("来源不明")).not.toBeInTheDocument();
+    expect(screen.queryByText("历史用途冲突")).not.toBeInTheDocument();
+    expect(screen.getByText("1 条运行")).toBeInTheDocument();
   });
 });

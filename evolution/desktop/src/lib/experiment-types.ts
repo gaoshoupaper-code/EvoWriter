@@ -127,7 +127,7 @@ export type Experiment = {
   current_candidate?: null | { commit: string; digest?: string; round: number };
   best_candidate: null | { commit: string; digest: string; round: number; quality: number | null; completion_rate: number };
   rounds: { round: number; status: string; source_commit: string; base_commit: string; summary: string;
-    error: string | null; report: Partial<ExperimentComparison>; diff: string;
+    error: string | null; report: Partial<ExperimentComparison>; diff: string; trace_ids?: string[];
     regressions?: Partial<Record<ExperimentTaskType, ExperimentComparison>> }[];
   samples: ExperimentSample[];
   report: { passed?: boolean; exploration?: ExperimentComparison; validation?: ExperimentComparison;

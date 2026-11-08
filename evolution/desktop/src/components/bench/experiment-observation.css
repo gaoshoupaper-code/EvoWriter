@@ -1,0 +1,45 @@
+.experiment-record-tabs { display: flex; gap: 24px; border-bottom: 1px solid var(--evo-line); margin: 16px 0 24px; overflow-x: auto; }
+.experiment-record-tabs button { display: inline-flex; align-items: center; gap: 8px; padding: 12px 2px; background: transparent; color: var(--evo-ink-secondary); border: 0; border-bottom: 2px solid transparent; font-size: var(--text-ui-base); white-space: nowrap; cursor: pointer; }
+.experiment-record-tabs button[aria-selected="true"] { color: var(--evo-accent); border-bottom-color: var(--evo-accent); font-weight: 600; }
+.experiment-record-tabs button span { font-size: var(--text-ui-caption); color: var(--evo-ink-muted); }
+.experiment-record { display: grid; grid-template-columns: minmax(240px, 1.5fr) minmax(170px, 1fr) minmax(200px, 1fr); gap: 28px; align-items: start; padding: 22px 0; border-bottom: 1px solid var(--evo-line); }
+.experiment-record .experiment-score-summary { margin: 0; gap: 24px; }
+.experiment-record .experiment-score-summary strong { font-size: var(--text-ui-base); }
+.experiment-active-list { border-top: 1px solid var(--evo-line); }
+.experiment-active-run { display: grid; grid-template-columns: minmax(220px, 1fr) minmax(260px, 1.5fr); gap: 28px; padding: 20px 0; border-bottom: 1px solid var(--evo-line); }
+.experiment-active-run .experiment-progress { max-width: none; }
+.experiment-detail-tabs { margin-top: 28px; }
+.experiment-detail-tabs > [role="tablist"] { display: flex; width: 100%; justify-content: flex-start; gap: 20px; border-bottom: 1px solid var(--evo-line); background: transparent; border-radius: 0; padding: 0; height: auto; }
+.experiment-detail-tabs > [role="tablist"] > button { border-radius: 0; padding: 12px 4px; border: 0; border-bottom: 2px solid transparent; background: transparent; box-shadow: none; font-size: var(--text-ui-base); }
+.experiment-detail-tabs > [role="tablist"] > button[data-state="active"] { border-bottom-color: var(--evo-accent); color: var(--evo-accent); background: transparent; }
+.experiment-trace-links { display: flex; align-items: flex-start; flex-direction: column; gap: 8px; }
+.experiment-trace-links .action-link { text-align: left; overflow-wrap: anywhere; }
+.experiment-trace-inspector { border: 1px solid var(--evo-line); border-radius: var(--radius-lg); padding: 20px; margin: 24px 0; min-width: 0; }
+.experiment-embedded-trace { padding: 0; min-height: 0; height: auto; }
+.experiment-embedded-trace .trace-detail-title-row h1 { font-size: var(--text-ui-lg); }
+.experiment-embedded-trace .trace-detail-summary { flex-wrap: wrap; }
+.experiment-artifacts { padding-top: 24px; }
+.experiment-artifact-selectors { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(280px, 2fr); gap: 20px; }
+.experiment-artifact-selectors > label { display: flex; flex-direction: column; gap: 8px; font-size: var(--text-ui-base); font-weight: 500; }
+.experiment-artifact-selectors select { width: 100%; }
+.experiment-artifact-source { margin: 20px 0; font-size: var(--text-ui-base); line-height: 1.7; overflow-wrap: anywhere; }
+.experiment-file-reader { display: grid; grid-template-columns: 220px minmax(0, 1fr); border: 1px solid var(--evo-line); border-radius: var(--radius-lg); overflow: hidden; min-height: 340px; }
+.experiment-file-nav { padding: 10px; background: var(--evo-surface-2); border-right: 1px solid var(--evo-line); display: flex; flex-direction: column; gap: 4px; max-height: 680px; overflow: auto; }
+.experiment-file-nav button { text-align: left; border: 0; border-radius: var(--radius-sm); background: transparent; padding: 10px; font-size: var(--text-ui-base); color: var(--evo-ink-secondary); line-height: 1.6; overflow-wrap: anywhere; cursor: pointer; }
+.experiment-file-nav button[aria-current="true"] { color: var(--evo-accent); background: var(--evo-accent-soft); font-weight: 600; }
+.experiment-file-document { padding: 24px 28px; min-width: 0; }
+.experiment-file-document > header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--evo-line); }
+.experiment-file-document h3 { margin: 0; overflow-wrap: anywhere; font-size: var(--text-ui-lg); }
+.experiment-file-document .prose-doc { overflow-wrap: anywhere; margin-top: 24px; }
+@media (max-width: 1000px) {
+  .experiment-record { grid-template-columns: minmax(200px, 1.5fr) minmax(160px, 1fr); gap: 16px; }
+  .experiment-record .experiment-score-summary { grid-column: 1 / -1; }
+  .experiment-file-reader { grid-template-columns: 180px minmax(0, 1fr); }
+}
+@media (max-width: 700px) {
+  .experiment-record, .experiment-active-run, .experiment-artifact-selectors, .experiment-file-reader { grid-template-columns: 1fr; }
+  .experiment-record-tabs { gap: 16px; }
+  .experiment-file-nav { max-height: 200px; border-right: 0; border-bottom: 1px solid var(--evo-line); }
+  .experiment-file-document { padding: 20px; }
+  .experiment-trace-inspector { padding: 14px; }
+}

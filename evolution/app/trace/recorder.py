@@ -334,6 +334,7 @@ class EvolutionTraceRecorder:
                         "started_at": started_iso,
                         "run_purpose": run_purpose,
                         "service": "evolution",
+                        "external_refs": self._run_external_refs[trace_id],
                     },
                 },
             )
@@ -875,7 +876,7 @@ class EvolutionTraceRecorder:
             from app.view.events import get_event_bus
 
             row = db.query_one(
-                "SELECT session_name, workload, started_at, ended_at FROM runs WHERE trace_id=?",
+                "SELECT session_name, workload, run_purpose, external_refs_json, started_at, ended_at FROM runs WHERE trace_id=?",
                 (trace_id,),
             )
             if row is not None:
@@ -888,6 +889,8 @@ class EvolutionTraceRecorder:
                             "trace_id": trace_id,
                             "session_name": row["session_name"],
                             "workload": row["workload"],
+                            "run_purpose": row["run_purpose"],
+                            "external_refs": json.loads(row.get("external_refs_json") or "{}"),
                             "status": status,
                             "started_at": row["started_at"],
                             "ended_at": row.get("ended_at"),
@@ -1326,6 +1329,7 @@ class EvolutionTraceRecorder:
                 "status": "running",
                 "run_purpose": self._run_purposes.get(trace_id, ""),
                 "metrics": metrics,
+                "external_refs": dict(self._run_external_refs.get(trace_id, {})),
             })
         return result
 

@@ -60,6 +60,7 @@ export default function MonitorPage() {
     if (!silent) setLoading(true);
     try {
       const recent = await getTraces({
+        observation_scope: "user",
         workload: workload === "all" ? undefined : workload,
         integrity_status: integrity === "all" ? undefined : integrity,
         since,
@@ -112,7 +113,7 @@ export default function MonitorPage() {
         setRecentRuns((prev) => prev.map((item) => item.trace_id === traceId
           ? preserveKnownTotal(item, undefined, cached) : item));
       }
-      if (run) {
+      if (run && (run.observation_scope !== undefined ? run.observation_scope === "user" : run.run_purpose === "user_generation")) {
         // 只在匹配当前筛选时插入近期区（review R5：避免非匹配行突兀出现）。
         const workloadMatch = workload === "all" || run.workload === workload;
         if (workloadMatch) {
@@ -168,7 +169,7 @@ export default function MonitorPage() {
     <div className="trace-workbench">
       <header className="workbench-header">
         <div>
-          <h1>运行观测</h1>
+          <h1>用户运行</h1>
           <p>Trace V2 结构、完整性与运行时机制</p>
         </div>
         <button className="icon-button" type="button" title="刷新" onClick={() => refresh()}>
@@ -308,7 +309,7 @@ function finishedRunToListItem(run: FinishedRunInfo): TraceListItem {
     flag_count: 0,
     owner_user_id: "",
     owner_username: null,
-    run_purpose: "",
+    run_purpose: run.run_purpose ?? "",
     schema_version: 2,
     service: null,
     workload: run.workload as TraceWorkload | null,
@@ -504,7 +505,7 @@ function UsageDrilldown() {
                     <td><span className="run-primary">{u.username || u.user_id}</span></td>
                     <td>{u.running ? <span className="usage-status running">运行中</span> : <span className="usage-status normal">空闲</span>}</td>
                     <td>{u.last_created_at ? formatDateTime(u.last_created_at) : "—"}</td>
-                    <td className="usage-num">{formatTokensW(u.total_tokens)}</td>
+                    <td className="usage-num">{formatTokensW(u.total_tokens)}{u.total_partial && <small className="run-secondary">部分用量缺失</small>}</td>
                   </tr>
                 ))}
               </tbody>
@@ -536,7 +537,7 @@ function UsageDrilldown() {
                     </td>
                     <td><span className={`usage-status ${w.status}`}>{WORKSPACE_STATUS_LABELS[w.status]}</span></td>
                     <td>{w.last_created_at ? formatDateTime(w.last_created_at) : "—"}</td>
-                    <td className="usage-num">{formatTokensW(w.total_tokens)}</td>
+                    <td className="usage-num">{formatTokensW(w.total_tokens)}{w.total_partial && <small className="run-secondary">部分用量缺失</small>}</td>
                   </tr>
                 ))}
               </tbody>

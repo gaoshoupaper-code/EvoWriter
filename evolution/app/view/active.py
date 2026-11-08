@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from app.core.settings import settings
+from app.view.observation_scope import ObservationScope, source_scope, experiment_metadata
 
 logger = logging.getLogger("evolution.active")
 
@@ -116,7 +117,9 @@ def _emit_diff_events(prev: list[dict[str, Any]], current: list[dict[str, Any]])
         if tid in _finished_emitted:
             continue
         _mark_finished_published(tid)
-        bus.publish("run_finished", {"trace_id": tid, "source": "executor", "run": None})
+        previous = next((row for row in prev if row.get("trace_id") == tid), {})
+        bus.publish("run_finished", {"trace_id": tid, "source": "executor", "run": None,
+                                     "observation_scope": source_scope(previous)})
 
 
 def _reset_diff_state_for_test() -> None:
@@ -133,7 +136,7 @@ def _reset_diff_state_for_test() -> None:
 
 
 @router.get("/active-runs")
-def active_runs_api() -> list[dict[str, Any]]:
+def active_runs_api(observation_scope: ObservationScope = "user") -> list[dict[str, Any]]:
     """活跃 trace 富化列表（D7 + D9）。
 
     数据源合并：
@@ -168,7 +171,7 @@ def active_runs_api() -> list[dict[str, Any]]:
     if trace_ids:
         placeholders = ",".join("?" * len(trace_ids))
         rows = db.query_all(
-            f"""SELECT r.trace_id, r.session_name, r.run_purpose, r.workload,
+            f"""SELECT r.trace_id, r.session_name, r.run_purpose, r.workload, r.external_refs_json,
                        r.integrity_status, r.coverage_json,
                        (SELECT COUNT(*) FROM event_payloads e
                         WHERE e.trace_id=r.trace_id AND e.type='skill_activation')
@@ -193,13 +196,19 @@ def active_runs_api() -> list[dict[str, Any]]:
             "skill_activation_count": int(r.get("skill_activation_count") or 0),
             "middleware_intervention_count": int(r.get("middleware_intervention_count") or 0),
             "hitl_count": int(r.get("hitl_count") or 0),
+            "external_refs": json.loads(r.get("external_refs_json") or "{}"),
         }
         for r in rows
     }
 
+    experiment_refs = experiment_metadata()
     for r in runs:
         tid = r.get("trace_id", "")
         meta = ingested_map.get(tid, {})
+        purpose = r.get("run_purpose") or meta.get("run_purpose")
+        refs = {**experiment_refs.get(tid, {}), **meta.get("external_refs", {}), **r.get("external_refs", {})}
+        if source_scope({"run_purpose": purpose, "external_refs": refs}) != observation_scope:
+            continue
         enriched.append({
             "trace_id": tid,
             "workspace_id": r.get("workspace_id", ""),
@@ -219,7 +228,10 @@ def active_runs_api() -> list[dict[str, Any]]:
             "ingested": tid in ingested_map,
             # D9：run_purpose（executor trace 优先用 r 自带的，join 不到时降级）
             # evolution recorder 的活跃 trace 已自带 run_purpose（recorder.list_active_runs 返回）
-            "run_purpose": r.get("run_purpose") or meta.get("run_purpose") or "user_generation",
+            "run_purpose": purpose,
+            "observation_scope": observation_scope,
+            "external_refs": refs,
+            "experiment_id": refs.get("experiment_id"),
             "workload": r.get("workload") or meta.get("workload"),
             "integrity_status": r.get("integrity_status") or meta.get("integrity_status") or "legacy",
             "coverage": r.get("coverage") or meta.get("coverage") or {},

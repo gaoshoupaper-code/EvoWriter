@@ -140,19 +140,22 @@ class TraceLiveMetricsTest(unittest.TestCase):
         self.assertNotIn("events", detail)
 
     def test_ac002_active_metrics_cover_both_sources_before_ingestion(self) -> None:
-        active._active_cache = [{"trace_id": "creation", "metrics": _metrics(), "service": "executor"}]
+        active._active_cache = [{"trace_id": "creation", "metrics": _metrics(), "service": "executor", "run_purpose": "user_generation"}]
         with patch.object(active, "_get_evolution_active_runs", return_value=[
-            {"trace_id": kind, "metrics": _metrics(25000), "workload": kind}
+            {"trace_id": kind, "metrics": _metrics(25000), "workload": kind,
+             "run_purpose": "evolution_eval" if kind == "evaluation" else "evolution_evolve"}
             for kind in ("evaluation", "evolution")
         ]):
             rows = {r["trace_id"]: r for r in self.client.get("/api/active-runs").json()}
-        self.assertEqual(set(rows), {"creation", "evaluation", "evolution"})
+            experiments = {r["trace_id"]: r for r in self.client.get("/api/active-runs?observation_scope=experiment").json()}
+        self.assertEqual(set(rows), {"creation"})
+        self.assertEqual(set(experiments), {"evaluation", "evolution"})
         self.assertEqual(rows["creation"]["metrics"]["total_tokens"], 15000)
-        self.assertEqual(rows["evaluation"]["metrics"]["total_tokens"], 25000)
+        self.assertEqual(experiments["evaluation"]["metrics"]["total_tokens"], 25000)
         self.assertFalse(rows["creation"]["ingested"])
 
     def test_ac009_source_failure_preserves_stale_metrics_and_recovery_replaces(self) -> None:
-        first = {"trace_id": "live", "metrics": _metrics()}
+        first = {"trace_id": "live", "metrics": _metrics(), "run_purpose": "user_generation"}
         active._active_cache = [first]
         active._last_good_runs = [first]
         with patch("httpx.get", side_effect=ConnectionError("offline")):
@@ -162,7 +165,7 @@ class TraceLiveMetricsTest(unittest.TestCase):
         self.assertEqual(stale[0]["metrics"]["total_tokens"], 15000)
         self.assertTrue(stale[0]["stats_stale"])
         response = unittest.mock.Mock()
-        response.json.return_value = [{"trace_id": "live", "metrics": _metrics(25000)}]
+        response.json.return_value = [{"trace_id": "live", "metrics": _metrics(25000), "run_purpose": "user_generation"}]
         with patch("httpx.get", return_value=response):
             active._poll_once("http://executor")
         with patch.object(active, "_get_evolution_active_runs", return_value=[]):

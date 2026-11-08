@@ -2,9 +2,8 @@
 评测组 REQ-20260930-162207）。
 
 端点：
-  POST /api/benchmark/run              触发评测批次（手动，含 3 seed 展开；并发度可选，FR-001；
-                                       评测组必选，REQ-20260930-162207/FR-002）
-  POST /api/benchmark/rerun-golden     golden 升级后重跑最近 K=3（D8/D18，沿用最近批次评测组）
+  POST /api/benchmark/run              已退役，返回 410；当前实验走 /experiments/runs
+  POST /api/benchmark/rerun-golden     已退役，返回 410
   GET  /api/benchmark/rubric           评分标准全文只读（FR-002）
   GET  /api/benchmark/judges           judge 候选列表 + 同源标记（FR-003；组页成员选择器用）
   GET  /api/benchmark/judge-groups     评测组列表（成员含配置详情与同家族标记，FR-001）
@@ -28,6 +27,7 @@ from pydantic import BaseModel
 
 from app.benchmark import repo, runner, stats, report
 from app.benchmark.manifest import fetch_platform_versions
+from app.benchmark.retirement import RETIRED_MESSAGE
 
 logger = logging.getLogger("evolution.benchmark.api")
 
@@ -49,36 +49,8 @@ class RunRequest(BaseModel):
 
 @router.post("/run")
 def trigger_run(req: RunRequest) -> dict[str, Any]:
-    """手动触发评测批次。"""
-    if not req.judge_group_id:
-        raise HTTPException(
-            status_code=400,
-            detail="请先选择评测组（在「配置 → 评测组」页创建，触发时选择）",
-        )
-    versions = req.versions
-    if versions is None and req.version is not None:
-        versions = [req.version]
-    try:
-        batch_id = runner.trigger_run(
-            versions=versions, case_ids=req.case_ids, seeds=req.seeds,
-            concurrency=req.concurrency, judge_group_id=req.judge_group_id,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    except RuntimeError as exc:
-        # Platform 账本不可达（默认版本解析）——无版本号可评，快败不给半配置批次
-        raise HTTPException(status_code=502, detail=str(exc))
-
-    # 触发成功后回读批次摘要（与 rerun_golden 同构）。
-    # 此 return 曾误位移进 list_versions 成不可达死代码，导致本端点
-    # 因返回 None 与注解不符恒 500（review rev1 finding 2，65e7d8f 引入）。
-    batch = repo.get_batch(batch_id)
-    return {
-        "batch_id": batch_id,
-        "status": batch["status"],
-        "progress": batch["progress"],
-        "golden_revision": batch["golden_revision"],
-    }
+    """旧调用保留明确退役响应，不再创建批次。"""
+    raise HTTPException(status_code=410, detail=RETIRED_MESSAGE)
 
 
 @router.get("/versions")
@@ -113,19 +85,8 @@ class RerunGoldenRequest(BaseModel):
 
 @router.post("/rerun-golden")
 def rerun_golden(req: RerunGoldenRequest) -> dict[str, Any]:
-    """golden 升级后重跑最近 K 个版本（D8/D18/D20）。"""
-    try:
-        batch_id = runner.trigger_golden_upgrade_rerun(k=req.k)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    batch = repo.get_batch(batch_id)
-    return {
-        "batch_id": batch_id,
-        "status": batch["status"],
-        "progress": batch["progress"],
-        "golden_revision": batch["golden_revision"],
-    }
+    """旧重跑能力已退役。"""
+    raise HTTPException(status_code=410, detail=RETIRED_MESSAGE)
 
 
 @router.get("/leaderboard")

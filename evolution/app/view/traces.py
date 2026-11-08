@@ -18,6 +18,7 @@ import app.core.db as db
 from app.ingestion import projector
 from app.trace_payloads import delete_trace_payloads, hydrate_event, read_payload
 from app.trace.access import audit_content_access, require_full_content_access
+from app.view.observation_scope import ObservationScope, scope_sql, experiment_metadata
 from app.core.models import (
     CancelAudit,
     TraceContextSegment,
@@ -71,7 +72,8 @@ class TraceListItem(BaseModel):
     flag_count: int = 0   # 命中规则数（标红数）
     owner_user_id: str = "unknown"   # 归属用户 ID（Phase 3 D16）
     owner_username: str | None = None   # 用户名（LEFT JOIN user_cache，映射不到时 None）
-    run_purpose: str = "user_generation"   # trace 来源（D2：区分执行端/进化端）
+    run_purpose: str = "unknown"
+    observation_scope: ObservationScope = "user"
     schema_version: int = 1
     service: str | None = None
     workload: str | None = None
@@ -87,6 +89,8 @@ class TraceListItem(BaseModel):
     # 与 0（有数据但合计为 0）严格区分（AC-006 边界）。
     token_total: int | None = None
     metrics: TraceMetrics = Field(default_factory=TraceMetrics)
+    external_refs: dict[str, str] = Field(default_factory=dict)
+    experiment_id: str | None = None
 
 
 class TraceListResponse(BaseModel):
@@ -110,6 +114,7 @@ def list_traces(
     until: str | None = Query(None, description="ISO 8601 时间戳，只返回 started_at <= until 的 trace"),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    observation_scope: ObservationScope = "user",
 ) -> TraceListResponse:
     """全局 trace 列表，按 started_at 倒序。
 
@@ -117,7 +122,7 @@ def list_traces(
     owner='unknown' JOIN 不到时 owner_username=None）。时间范围过滤用 started_at
     字符串比较（ISO 格式天然有序），NULL started_at 不匹配会被排除。
     """
-    where: list[str] = []
+    where: list[str] = [scope_sql(observation_scope)]
     params: list[Any] = []
     if workspace:
         where.append("r.workspace_id = ?")
@@ -172,6 +177,7 @@ def list_traces(
         tuple(params + [limit, offset]),
     )
     metrics = _load_node_metrics([r["trace_id"] for r in rows])
+    experiment_refs = experiment_metadata() if observation_scope == "experiment" else {}
     return TraceListResponse(
         items=[
             TraceListItem(
@@ -183,7 +189,8 @@ def list_traces(
                 error=r["error"], flag_count=0,
                 owner_user_id=r.get("owner_user_id") or "unknown",
                 owner_username=r.get("owner_username"),
-                run_purpose=r.get("run_purpose") or "user_generation",
+                run_purpose=r.get("run_purpose") or "unknown",
+                observation_scope=observation_scope,
                 schema_version=int(r.get("schema_version") or 1),
                 service=r.get("service"),
                 workload=r.get("workload"),
@@ -196,6 +203,9 @@ def list_traces(
                 hitl_count=int(r.get("hitl_count") or 0),
                 token_total=metrics[r["trace_id"]].total_tokens,
                 metrics=metrics[r["trace_id"]],
+                external_refs={**experiment_refs.get(r["trace_id"], {}), **json.loads(r.get("external_refs_json") or "{}")},
+                experiment_id=(json.loads(r.get("external_refs_json") or "{}").get("experiment_id")
+                               or experiment_refs.get(r["trace_id"], {}).get("experiment_id")),
             )
             for r in rows
         ],

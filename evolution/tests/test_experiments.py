@@ -169,7 +169,7 @@ class ComparisonTest(unittest.TestCase):
 class RecoveryAndIsolationTest(DatabaseTest):
     def test_model_rate_limit_recovers_the_same_improvement_round(self):
         import httpx
-        from langchain_openai.chat_models.base import OpenAIRateLimitError
+        from openai import RateLimitError as OpenAIRateLimitError
         from unittest.mock import AsyncMock
         from app.core.settings import settings
         from app.experiments import repo, runner

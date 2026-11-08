@@ -18,6 +18,7 @@ import uuid
 
 from contracts.target_tasks import TargetSpec, TargetTaskRequest, TargetTaskResult, TaskInput
 from contracts.trace.files import open_anchored_text
+from app.platform.trace.recorder import observation_context
 from contracts.writing_artifacts import (
     is_final_status, load_writing_state, parse_relpath, parse_volume_chapter_range,
     save_writing_state, scan_writing_progress,
@@ -517,7 +518,12 @@ async def drive_task(request, workspace, service, thread, execution, store):
         store.update(task_id, status="running", phase=phase)
         store.journal(task_id, metadata={"phase": phase, "step_number": step_number, "thread": current_thread.model_dump(mode="json")})
         interrupted, final = None, False
-        with execution:
+        refs = {"task_id": request.task_id, "attempt_id": request.attempt_id}
+        reference = request.model_snapshot.api_key_ref if request.model_snapshot else None
+        match = re.fullmatch(r"experiment:([A-Za-z0-9_-]+):model", reference or "")
+        if match:
+            refs.update(experiment_id=match[1], sample_id=request.task_id)
+        with execution, observation_context(refs):
             async for frame in service.generate_stream(
                 payload, current_thread, owner_id=current_thread.user_id,
                 run_purpose="user_generation" if row["metadata"].get("owner_id") else "optimization",

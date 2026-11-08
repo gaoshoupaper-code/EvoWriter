@@ -180,7 +180,7 @@ class AutoFailFastTest(StopFailFastTestBase):
     """AC-003 / AC-004：连续失败自动止损与偶发失败不误伤。"""
 
     def test_systematic_failure_halts_after_three_attempts(self):
-        """executor 全挂：3 个不同 case 并发失败即停批，无第 4 次尝试（AC-003）。"""
+        """executor 全挂：连续 3 次失败且跨至少 2 个 case 即停批（AC-003）。"""
         from app.benchmark import runner
         from app.benchmark import repo as bench_repo
 
@@ -195,19 +195,21 @@ class AutoFailFastTest(StopFailFastTestBase):
                 attempts.append(row["id"])
             raise RuntimeError("executor 不可达")
 
-        # 退避保留真实节奏（不为 0）：第三个 worker 触发止损（set 事件 + 清行）
+        # 退避保留真实节奏（不为 0）：第三次失败触发止损（set 事件 + 清行）
         # 必须先于其余 worker 退避结束，才能严格保证无第 4 次尝试
         with patch.object(runner, "_execute_one", fake_execute), \
              patch.object(runner, "_RETRY_BACKOFF_S", 0.5):
             runner._run_batch_sync(batch_id, concurrency=3)
 
         self.assertEqual(len(attempts), 3, "跨 case 连续 3 次失败即停批，不得有第 4 次尝试")
+        attempted_rows = set(attempts)
+        self.assertGreaterEqual(len(attempted_rows), 2, "止损必须涉及至少两个 case（每 case 一行）")
 
         batch = bench_repo.get_batch(batch_id)
         self.assertEqual(batch["status"], "failed", "止损批次终态为 failed")
         self.assertEqual(batch["stop_reason"], "auto_fail")
-        self.assertEqual(batch["progress"]["failed"], 3)
-        self.assertEqual(batch["progress"]["cancelled"], 0, "全部行已失败，无残留待取消")
+        self.assertEqual(batch["progress"]["failed"], len(attempted_rows))
+        self.assertEqual(batch["progress"]["cancelled"], 3 - len(attempted_rows), "未尝试的行应取消")
 
     def test_same_case_seed_failures_do_not_halt_batch(self):
         """同 case 系统性失败：3 个 seed 全灭只计 1 个 case，不触发止损（AC-003b）。

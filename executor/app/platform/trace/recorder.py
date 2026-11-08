@@ -9,7 +9,7 @@ import re
 import time
 from collections import deque
 from collections.abc import Mapping, Sequence
-from contextlib import suppress
+from contextlib import suppress, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -35,6 +35,17 @@ from contracts.trace.payload import (
 from contracts.trace.w3c import create_trace_context
 from contracts.trace.usage import TraceMetricsAccumulator
 from contracts.trace.files import open_anchored_text
+
+_observation_refs: ContextVar[dict[str, str]] = ContextVar("writer_observation_refs", default={})
+
+
+@contextmanager
+def observation_context(refs: dict[str, str]):
+    token = _observation_refs.set(refs)
+    try:
+        yield
+    finally:
+        _observation_refs.reset(token)
 
 # ── 写盘解耦参数 ──────────────────────────────────────────────
 # 根因：append_event 原来在事件循环线程上同步 open("a")+write，单次生成会写
@@ -158,6 +169,7 @@ class TraceRecorder:
         # 完成后才来拉取，那时活跃态已清，需靠此索引反查 workspace）。
         # 进程重启后丢失——退化为 scan 端点列表扫描兜底。
         self._trace_workspace: dict[str, str] = {}
+        self._external_trace_ids: set[str] = set()
         # FR-001 磁盘发现的负缓存（trace_id → 确认不存在的到期时间）。
         # 避免前端轮询期间对同一不存在的 trace_id 反复扫盘（glob 全临时目录）。
         # 命中正例会立即回填 _trace_workspace，所以这里只缓存短期负命中。
@@ -223,7 +235,7 @@ class TraceRecorder:
         # opaque ID（如单次测试的 test_id / task_id）。w3c_*/traceparent 是 recorder
         # 管理的命名空间，调用方不得覆写（否则破坏 W3C trace 树完整性）；在边界过滤，
         # 让 CON-003 的最小化由服务端强制而非仅靠调用方自律。
-        refs = dict(w3c_context.external_refs)
+        refs = {**_observation_refs.get(), **w3c_context.external_refs}
         if external_refs_extra:
             refs.update(
                 {k: v for k, v in external_refs_extra.items()
@@ -253,7 +265,7 @@ class TraceRecorder:
             external_refs=refs,
             user_id=thread.user_id,
         )
-        self._run_metadata[trace_id] = {"run_summary": summary.model_dump(mode="json")}
+        self._run_metadata[trace_id] = {"run_summary": summary.model_dump(mode="json"), "observation_thread": thread}
         try:
             self._write_run_index(thread, summary)
         except (OSError, ValueError, json.JSONDecodeError) as exc:
@@ -336,6 +348,7 @@ class TraceRecorder:
         self._run_endpoints[trace_id] = run.endpoint
         self._trace_workspace[trace_id] = thread.workspace_path
         metrics = TraceMetricsAccumulator()
+        self._run_metadata[trace_id] = {"run_summary": run.model_dump(mode="json"), "observation_thread": thread}
         try:
             for event in self._read_events(run_path):
                 metrics.add_event(event)
@@ -463,6 +476,18 @@ class TraceRecorder:
             metrics.add_event(event)
             # 旧用户/作品统计仍读 usage_total；完整缺失信息由 metrics 快照提供。
             self._usage_totals[trace_id] = metrics.snapshot().total_tokens or 0
+            metadata = self._run_metadata.get(trace_id, {})
+            thread = metadata.get("observation_thread")
+            if thread is not None and event.type in {"llm_end", "llm_error"}:
+                refs = (metadata.get("run_summary") or {}).get("external_refs", {})
+                if refs.get("task_id"):
+                    try:
+                        runs = self._read_run_index(thread)
+                        if trace_id in runs:
+                            runs[trace_id].update(metrics=metrics.snapshot().model_dump(), event_count=sequence)
+                            self._write_index(thread, runs)
+                    except (OSError, ValueError, json.JSONDecodeError):
+                        self._mark_capture_degraded(trace_id, "active_metrics_write_failed")
 
             run_path = self._run_paths.get(trace_id)
             if run_path is None:
@@ -1274,6 +1299,7 @@ class TraceRecorder:
             return False
         # 登记即可：find_run_by_trace_id / read_trace_events 都基于此索引定位。
         self._trace_workspace[trace_id] = workspace_path
+        self._external_trace_ids.add(trace_id)
         return True
 
     def find_run_by_trace_id(
@@ -1475,7 +1501,24 @@ class TraceRecorder:
                 "owner_user_id": run.user_id if run else None,
                 "usage_total": self._usage_totals.get(trace_id, 0),
                 "metrics": metrics,
+                "external_refs": run.external_refs if run else {},
             })
+        for trace_id in list(self._external_trace_ids):
+            if trace_id in self._started_monotonic:
+                continue
+            run = self.find_run_by_trace_id(trace_id)
+            if run is None or run.status not in {"running", "awaiting_input"}:
+                self._external_trace_ids.discard(trace_id)
+                continue
+            metrics = run.metrics.model_dump() if run.metrics is not None else None
+            result.append({"trace_id": trace_id, "endpoint": run.endpoint, "status": run.status,
+                           "duration_ms": max(0, int((datetime.now(UTC) - datetime.fromisoformat(run.started_at)).total_seconds() * 1000)),
+                           "event_count": run.event_count, "session_name": run.session_name,
+                           "workspace_id": run.workspace_id, "thread_id": run.thread_id,
+                           "started_at": run.started_at, "workload": run.workload,
+                           "run_purpose": run.purpose, "service": run.service,
+                           "owner_user_id": run.user_id, "external_refs": run.external_refs,
+                           "metrics": metrics, "usage_total": (metrics or {}).get("total_tokens")})
         return result
 
     def set_prompt_version(self, trace_id: str, prompt_name: str, version: int) -> None:

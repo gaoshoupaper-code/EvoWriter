@@ -223,7 +223,8 @@ class WorkspaceUsageTest(unittest.TestCase):
         fresh = rows["ws-brand-new"]
         self.assertEqual(fresh["title"], "")
         self.assertEqual(fresh["status"], "normal")
-        self.assertEqual(fresh["total_tokens"], 0)
+        self.assertIsNone(fresh["total_tokens"])
+        self.assertTrue(fresh["total_partial"])
 
 
 class TraceTokenTest(unittest.TestCase):

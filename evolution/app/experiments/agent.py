@@ -87,7 +87,7 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     from app.common.model_factory import _ensure_gp_disabled
     from app.evolve import db as sessions
     from app.evolve.ctx import EvolveContext, set_tool_context
-    from app.evolve.agent.agent import _run_agent_streamed, _start_evolution_trace
+    from app.evolve.agent.agent import _run_agent_streamed
     from app.evolve.agent.middleware.flow_guard import FlowGuardMiddleware
     from app.evolve.agent.tools.inspect import make_inspect_tools
     from app.evolve.agent.tools.writers import make_writer_tools
@@ -141,7 +141,12 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
         ctx.design_doc_path = old_session.get("design_doc_path")
         ctx.change_log_path = old_session.get("change_log_path")
     set_tool_context(ctx)
-    _start_evolution_trace(ctx, "experiments/improve")
+    if ctx.recorder:
+        handle = ctx.recorder.create_run(session_id=ctx.session_id, run_purpose="evolution_evolve",
+                                        endpoint="experiments/improve", session_type="evolve", workload="evolution",
+                                        external_refs={"experiment_id": run["id"], "round": str(round_record["round"]),
+                                                       "phase": "improvement"})
+        ctx.trace_id_self = handle.trace_id
     if ctx.trace_id_self:
         round_record.setdefault("trace_ids", []).append(ctx.trace_id_self)
         repo.put_run(run)

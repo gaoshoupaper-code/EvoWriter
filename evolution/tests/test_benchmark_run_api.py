@@ -1,9 +1,4 @@
-"""POST /api/benchmark/run 响应契约测试（review rev1 finding 2 回归锚点）。
-
-trigger_run 曾因 return 块误位移进 list_versions 成不可达死代码，
-端点恒 500（批次实际已创建）。本测试钉住成功响应体形状：
-{batch_id, status, progress, golden_revision}。
-"""
+"""旧版启动请求退役响应，不能绕过接口创建旧批次。"""
 import os
 import sys
 import tempfile
@@ -44,31 +39,18 @@ class TriggerRunResponseTest(unittest.TestCase):
 
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
-    def test_trigger_run_returns_batch_summary(self):
-        """成功触发必须返回批次摘要 dict（None 返回会被 FastAPI 判 500）。"""
+    def test_trigger_run_is_retired_without_dispatch(self):
+        from fastapi import HTTPException
         from unittest.mock import patch
+        from app.benchmark import api as benchmark_api
 
-        from app.benchmark import api as benchmark_api, repo
-
-        batch_id = repo.create_batch(
-            case_ids=["case-001"], versions=[7],
-            golden_revision="rev-x", seeds=1,
-            rubric_version="v3", judge_fp="jfp",
-        )
-        req = benchmark_api.RunRequest(
-            versions=[7], case_ids=["case-001"], seeds=1, concurrency=1,
-            judge_group_id=1,
-        )
-        # 只 patch 触发入口（避免真实线程池），批次读取走真库
-        with patch.object(benchmark_api.runner, "trigger_run", return_value=batch_id):
-            resp = benchmark_api.trigger_run(req)
-
-        self.assertIsInstance(resp, dict)
-        self.assertEqual(resp["batch_id"], batch_id)
-        self.assertEqual(resp["golden_revision"], "rev-x")
-        self.assertIn(resp["status"], {"running", "done", "partial", "failed", "cancelled"})
-        for key in ("total", "done", "failed"):
-            self.assertIn(key, resp["progress"])
+        with patch.object(benchmark_api.runner, "trigger_run") as trigger:
+            with self.assertRaises(HTTPException) as error:
+                benchmark_api.trigger_run(benchmark_api.RunRequest(judge_group_id=1))
+        self.assertEqual(error.exception.status_code, 410)
+        self.assertIn("退役", error.exception.detail)
+        trigger.assert_not_called()
+        self.assertEqual(self.db.query_one("SELECT COUNT(*) AS n FROM benchmark_runs")["n"], 0)
 
 
 if __name__ == "__main__":

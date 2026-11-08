@@ -266,7 +266,8 @@ export type UserUsageRow = {
   username: string;
   running: boolean;
   last_created_at: string | null;
-  total_tokens: number;
+  total_tokens: number | null;
+  total_partial?: boolean;
 };
 
 /** 作品状态（DEC-005 trace 活动派生四种） */
@@ -279,7 +280,8 @@ export type WorkspaceUsageRow = {
   owner_user_id: string;
   status: WorkspaceUsageStatus;
   last_created_at: string | null;
-  total_tokens: number;
+  total_tokens: number | null;
+  total_partial?: boolean;
 };
 
 /** 活跃 trace（evolution /api/active-runs 富化返回，D7） */
@@ -297,6 +299,9 @@ export type ActiveRun = {
   ingested: boolean;
   /** trace 来源（D9 后端补齐：user_generation / evolution_eval / evolution_evolve） */
   run_purpose: string | null;
+  observation_scope?: "user" | "experiment" | null;
+  external_refs?: Record<string, string>;
+  experiment_id?: string | null;
   /** 服务标识（executor 写作运行 / evolution 会话；运行中透传，REQ-20260920-193428 FR-003） */
   service?: string | null;
   workload: TraceWorkload | null;
@@ -376,7 +381,8 @@ export type WorkloadProfile = {
     fields: Record<string, Record<TraceCoverageStatus, number>>;
   };
   duration_ms: { p50: number | null; p90: number | null; p99: number | null };
-  usage: { input_tokens: number; output_tokens: number; total_tokens: number; max_span_depth: number };
+  usage: { input_tokens: number | null; output_tokens: number | null; total_tokens: number | null; max_span_depth: number;
+    input_partial?: boolean; output_partial?: boolean; total_partial?: boolean };
   mechanisms: {
     skill_activations: number;
     middleware_interventions: number;

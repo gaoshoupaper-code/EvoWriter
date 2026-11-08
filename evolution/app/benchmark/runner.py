@@ -1,4 +1,4 @@
-"""Benchmark Runner — 后台矩阵执行（评测主链路，REQ-20260919-172934）。
+"""旧版批次停止兼容层（REQ-20261108-191146 已停用所有启动和重跑入口）。
 
 对 case × 版本 × seed 笛卡尔积逐个执行：
   1. 调 executor /internal/ab/run（传 demand_md + source_commit）
@@ -28,12 +28,10 @@ import httpx
 import app.core.db as db
 from app.core.settings import settings
 from app.common import evalset
-from app.dataset import repo as dataset_repo
-from app.dataset import revision
 from app.benchmark import repo as bench_repo
 from app.benchmark import manifest as bench_manifest
-from app.benchmark import rubric_v3
 from app.benchmark import scorer
+from app.benchmark.retirement import reject_legacy_start
 
 logger = logging.getLogger("evolution.benchmark.runner")
 
@@ -133,81 +131,8 @@ def trigger_run(
     judge_group_id: int | None = None,
     group_snapshot: dict[str, Any] | None = None,
 ) -> str:
-    """触发一个评测批次（同步建表，异步执行）。返回 batch_id。
-
-    Args:
-        versions: 要跑的版本号列表；None=当前 production 版本
-        case_ids: 要跑的 case；None=golden 全 case
-        seeds: 每 case 独立重复次数（DEC-013 默认 3）
-        concurrency: 批次内并发执行的行数上限（FR-001/DEC-004 默认 3）
-        judge_group_id: 评测组 ID（REQ-20260930-162207/FR-002；DEC-004 一律
-            走组——单 judge 用法迁移为建 1 人组）
-        group_snapshot: 已解析的组快照（内部复用入口：golden 升级重跑传最近
-            批次的组快照，组行可能已被删改，不重新解析）
-    """
-    # 默认：当前 production 版本
-    if versions is None:
-        prod = _get_production_version()
-        versions = [prod] if prod else []
-    if not versions:
-        raise ValueError("无可执行的 harness 版本（无 production 快照）")
-
-    # 默认：golden 全 case
-    if case_ids is None:
-        case_ids = dataset_repo.get_golden_case_ids()
-    if not case_ids:
-        raise ValueError("golden 集为空，无 case 可跑")
-
-    # golden revision（锁定值或实时计算）
-    golden_revision = dataset_repo.get_golden_revision() or revision.compute_golden_revision()
-
-    # 校验 golden 未被篡改
-    locked = dataset_repo.get_golden_revision()
-    if locked and not revision.verify_golden_intact(locked):
-        logger.warning("golden 内容与锁定 revision 不一致（可能被篡改），仍用锁定值跑")
-
-    # 评测组解析（FR-002/DEC-008：建批时采集组快照 + 组合指纹；成员逐个校验
-    # 完整，任一无效即拒——不产生半配置批次，沿用 FR-003 拒绝语义）
-    if group_snapshot is None:
-        if judge_group_id is None:
-            raise ValueError("未指定评测组：请先在「评测组」页创建，触发时选择")
-        resolved = bench_manifest.resolve_judge_group(judge_group_id)
-        if not resolved["valid"]:
-            raise ValueError(resolved["problem"])
-        group_snapshot = {
-            "group_id": resolved["group_id"],
-            "group_name": resolved["group_name"],
-            "members": resolved["members"],
-        }
-    judge_fp = bench_manifest.judge_group_fingerprint(group_snapshot["members"])
-    for member in group_snapshot["members"]:
-        if bench_manifest.same_family_as_executor(member["model"]):
-            logger.warning(
-                "判评分离告警：评测组成员 %s(%s) 与 executor 被测模型同家族，"
-                "评测存在自我偏好风险（arXiv:2502.01534）", member["name"], member["model"],
-            )
-
-    batch_id = bench_repo.create_batch(
-        case_ids=case_ids,
-        versions=versions,
-        golden_revision=golden_revision,
-        seeds=seeds,
-        rubric_version=rubric_v3.RUBRIC_VERSION,
-        judge_fp=judge_fp,
-        concurrency=concurrency,
-    )
-    bench_repo.set_batch_judge(batch_id, group_snapshot)
-
-    # 后台执行（不阻塞）。直接起 daemon 线程——本函数在 FastAPI sync 端点
-    # （线程池 worker）里被调，无 running event loop，asyncio.create_task 会抛
-    # RuntimeError（review P0：触发即 500、批次永久卡 running）。
-    _dispatch_batch(batch_id, concurrency, group_snapshot)
-    logger.info(
-        "评测批次 %s 已触发，后台执行（并发 %d，评测组「%s」%d 人）",
-        batch_id, concurrency, group_snapshot.get("group_name") or "-",
-        len(group_snapshot["members"]),
-    )
-    return batch_id
+    """旧版批次已退役；内部调用同样不得绕过 HTTP 退役入口。"""
+    reject_legacy_start()
 
 
 def _dispatch_batch(
@@ -224,20 +149,8 @@ def _dispatch_batch(
 
 
 def trigger_golden_upgrade_rerun(k: int = 3) -> str:
-    """golden 升级后重跑最近 K 个版本（D8/D18/D20）。
-
-    评测组沿用最近一次批次的组快照（组行可能已被删改，快照不受影响）；
-    从未跑过组批次时拒绝——golden 重跑必须与历史口径可比。
-    """
-    versions = bench_repo.get_recent_versions(k)
-    if not versions:
-        raise ValueError("无可用快照版本")
-    snapshot = bench_repo.get_latest_judge_snapshot()
-    if snapshot is None:
-        raise ValueError(
-            "尚无历史评测组可沿用：请先在评测工作台选择评测组手动触发一次"
-        )
-    return trigger_run(versions=versions, group_snapshot=snapshot)
+    """旧版重跑已退役。"""
+    reject_legacy_start()
 
 
 # ── 后台执行 ────────────────────────────────────────────────

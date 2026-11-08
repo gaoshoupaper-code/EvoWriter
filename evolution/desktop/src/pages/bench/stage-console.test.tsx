@@ -96,7 +96,7 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
     })));
   });
 
-  it("实验行直接显示冻结模型和评分环节，旧章纲保留四卷含义", async () => {
+  it("运行概况显示当前环节，旧章纲保留四卷含义", async () => {
     const base = { name: "章纲进化·11/07-01", task_type: "chapter_outlines", status: "running", phase: "regression",
       current_round: 2, max_rounds: 3, baseline: { version: 18, commit: "old" },
       best_candidate: { round: 2, commit: "new" }, report: { exploration: report },
@@ -105,13 +105,11 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
     api.listExperiments.mockResolvedValue({ items: [{ ...base, id: "new", flow_version: 2 },
       { ...base, id: "old", name: "旧四卷实验", flow_version: undefined }] as never[] });
     render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
-    const newRow = (await screen.findByRole("link", { name: "章纲进化·11/07-01" })).closest("tr")!;
+    const newRow = (await screen.findByRole("link", { name: "章纲进化·11/07-01" })).closest("article")!;
     expect(within(newRow).getByText("单章章纲")).toBeInTheDocument();
-    expect(newRow).toHaveTextContent("writer-frozen");
-    expect(newRow).toHaveTextContent("judge-frozen");
-    expect(newRow).toHaveTextContent("优化");
-    expect(newRow).toHaveTextContent("独立终验");
-    expect((screen.getByRole("link", { name: "旧四卷实验" })).closest("tr")).toHaveTextContent("4 卷章纲");
+    expect(newRow).toHaveTextContent("其他能力回归");
+    expect(newRow).toHaveTextContent("改版 2 / 3 轮");
+    expect((screen.getByRole("link", { name: "旧四卷实验" })).closest("article")).toHaveTextContent("4 卷章纲");
   });
 
   it("四组数据独立展示，回归集不混入三个阶段主集", async () => {
@@ -127,7 +125,7 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
     expect(screen.queryByText("volume_outlines样本0")).not.toBeInTheDocument();
   });
 
-  it("无候选的终态实验行显示未生成，只有活动实验显示改版中", async () => {
+  it("工作台只展示未结束实验，历史实验从实验记录查看", async () => {
     api.listExperiments.mockResolvedValue({ items: ["failed", "exhausted", "stopped", "running"].map((status) => ({
       id: status, name: "无候选-" + status, task_type: "volume_outlines", flow_version: 2, status, phase: "evolving",
       current_round: 2, max_rounds: 3, baseline: { version: 18, commit: "fixed-baseline" },
@@ -137,11 +135,9 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
     render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
     await screen.findByRole("link", { name: "无候选-running" });
     for (const status of ["failed", "exhausted", "stopped"]) {
-      const row = screen.getByRole("link", { name: "无候选-" + status }).closest("tr")!;
-      expect(row).toHaveTextContent("未生成候选");
-      expect(row).not.toHaveTextContent("改版中");
+      expect(screen.queryByRole("link", { name: "无候选-" + status })).not.toBeInTheDocument();
     }
-    expect(screen.getByRole("link", { name: "无候选-running" }).closest("tr")).toHaveTextContent(/第\s*2\s*轮改版中/);
+    expect(screen.getByRole("link", { name: "无候选-running" }).closest("article")).toHaveTextContent("正在修改 Harness");
   });
 
   it("规则默认供阅读，明确进入编辑后才出现表单", async () => {

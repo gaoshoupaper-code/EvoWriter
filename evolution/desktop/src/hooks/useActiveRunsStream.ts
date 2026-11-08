@@ -9,13 +9,13 @@
  * 传输面（DEC-008）：
  *   - SSE 断开（sse_end ok=false / 读错误 / 30s 无 chunk）→ 自动降级 5s 轮询；
  *   - 每 15s 重连；重连成功的首个 chunk 触发一次全量快照对齐（不丢行不重复行）；
- *   - seq 跳变（慢消费者丢帧）→ 主动拉快照对齐。
+ *   - 全局 seq 按来源过滤后允许空洞；定期快照和重连对齐。
  *
  * 帧解析：SSE 文本可能跨 chunk 拆分，内部按 "\n\n" 缓冲切帧。
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { evoStreamPath, getActiveRuns } from "@/lib/api";
+import { evoStreamPath, getActiveRuns, type ObservationScope } from "@/lib/api";
 import { streamRequest } from "@/lib/stream";
 import type { ActiveRun, TraceMetrics } from "@/lib/types";
 
@@ -35,6 +35,8 @@ export type TransportMode = "connecting" | "sse" | "polling";
 export interface FinishedRunInfo {
   trace_id: string;
   session_name: string | null;
+  run_purpose?: string | null;
+  observation_scope?: ObservationScope | null;
   workload: string | null;
   status: string | null;
   started_at: string | null;
@@ -53,6 +55,7 @@ interface EventEnvelope {
   data: {
     trace_id: string;
     source: "executor" | "evolution";
+    observation_scope?: ObservationScope | null;
     run: Record<string, unknown> | null;
   };
 }
@@ -85,7 +88,7 @@ function eventRunToActiveRun(run: Record<string, unknown> | null, fallbackTraceI
   };
 }
 
-export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null, traceId: string, lastMetrics?: TraceMetrics) => void) {
+export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null, traceId: string, lastMetrics?: TraceMetrics) => void, observationScope: ObservationScope = "user") {
   const [activeRuns, setActiveRuns] = useState<ActiveRun[]>([]);
   const [transport, setTransport] = useState<TransportMode>("connecting");
   const activeRunsRef = useRef<ActiveRun[]>([]);
@@ -124,7 +127,7 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
     if (snapshotInFlightRef.current) return;
     snapshotInFlightRef.current = true;
     try {
-      const runs = await getActiveRuns();
+      const runs = await getActiveRuns(observationScope);
       if (cancelledRef.current) return;
       updateRuns((prev) => {
         // 墓碑：run_finished 刚到的行，1s 轮询缓存快照里可能还在——过滤防复活。
@@ -159,7 +162,7 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
     } finally {
       snapshotInFlightRef.current = false;
     }
-  }, [updateRuns]);
+  }, [observationScope, updateRuns]);
 
   const stopPolling = useCallback(() => {
     if (pollTimerRef.current != null) {
@@ -199,16 +202,22 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
       return; // 半截/异常 JSON：丢弃，等快照对齐兜底
     }
 
-    // seq 单调对齐：重复帧（回放/在线窗口重叠）跳过；跳变说明丢帧
-    //（慢消费者/断线窗口）→ 快照兜底。
+    // 订阅按来源过滤，其他来源占用的全局序号形成正常空洞。
     if (typeof envelope.seq === "number") {
-      if (lastSeqRef.current != null) {
-        if (envelope.seq <= lastSeqRef.current) return;
-        if (envelope.seq > lastSeqRef.current + 1) {
-          void refreshSnapshot();
-        }
-      }
+      if (lastSeqRef.current != null && envelope.seq <= lastSeqRef.current) return;
       lastSeqRef.current = envelope.seq;
+    }
+    const rawPurpose = envelope.data?.run?.["run_purpose"];
+    const scopeInEnvelope = Object.prototype.hasOwnProperty.call(envelope.data ?? {}, "observation_scope");
+    const scopeProvided = scopeInEnvelope || Object.prototype.hasOwnProperty.call(envelope.data?.run ?? {}, "observation_scope");
+    const rawScope = scopeInEnvelope ? envelope.data.observation_scope : envelope.data?.run?.["observation_scope"];
+    const knownRow = activeRunsRef.current.some((run) => run.trace_id === envelope.data?.trace_id);
+    const matches = scopeProvided ? rawScope === observationScope : observationScope === "user"
+      ? rawPurpose === "user_generation"
+      : ["optimization", "evolution", "evolution_eval", "evolution_evolve"].includes(String(rawPurpose));
+    if (!matches && !(!scopeProvided && envelope.type === "run_finished" && knownRow)) {
+      if (envelope.type === "run_finished" && knownRow) updateRuns((previous) => previous.filter((run) => run.trace_id !== envelope.data.trace_id));
+      return;
     }
 
     const type = envelope.type || eventName;
@@ -242,6 +251,8 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
                 trace_id: (raw["trace_id"] as string) || traceId,
                 session_name: (raw["session_name"] as string) ?? null,
                 workload: (raw["workload"] as string) ?? null,
+                run_purpose: (raw["run_purpose"] as string) ?? previous?.run_purpose ?? null,
+                observation_scope: scopeProvided ? rawScope as ObservationScope | null : previous?.observation_scope,
                 status: (raw["status"] as string) ?? null,
                 started_at: (raw["started_at"] as string) ?? null,
                 ended_at: (raw["ended_at"] as string) ?? null,
@@ -256,7 +267,7 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
         );
       }
     }
-  }, [refreshSnapshot, updateRuns]);
+  }, [observationScope, updateRuns]);
 
   /** 断线降级：轮询兜底 + 周期重连（DEC-008）。幂等：已降级则只保持。 */
   const degradeToListing = useCallback(() => {
@@ -290,7 +301,7 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
     lastChunkAtRef.current = Date.now();
     const since = lastSeqRef.current ?? 0;
     try {
-      const reader = await streamRequest(evoStreamPath(`/api/events/stream?since=${since}`), {
+      const reader = await streamRequest(evoStreamPath(`/api/events/stream?since=${since}&observation_scope=${observationScope}`), {
         method: "GET",
       });
       if (cancelledRef.current) {
@@ -343,7 +354,7 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
     } catch {
       degradeToListing();
     }
-  }, [clearWatchdog, degradeToListing, handleFrame, refreshSnapshot, setMode, stopPolling, stopReconnect]);
+  }, [clearWatchdog, degradeToListing, handleFrame, observationScope, refreshSnapshot, setMode, stopPolling, stopReconnect]);
 
   useEffect(() => {
     connectSseRef.current = connectSse;

@@ -251,43 +251,21 @@ class JudgeGroupApiTest(JudgeGroupTestBase):
 
 
 class GoldenRerunDefaultGroupTest(JudgeGroupTestBase):
-    """golden 升级重跑的默认组 = 最近批次组快照（TD of 162207）。"""
+    """旧版重跑退役，不能靠历史组快照再次创建批次。"""
 
-    def _snapshot(self, group_id, name="评审团"):
-        return {
-            "group_id": group_id, "group_name": name,
-            "members": [{"config_id": 1, "name": "a", "model": "m", "fingerprint": "f1"}],
-        }
-
-    def test_no_history_rejected(self):
-        from app.benchmark import repo as bench_repo
+    def test_no_history_is_retired(self):
         from app.benchmark import runner
-
-        with patch.object(bench_repo, "get_recent_versions", return_value=[1]), \
-             self.assertRaises(ValueError) as ctx:
+        with self.assertRaisesRegex(RuntimeError, "退役"):
             runner.trigger_golden_upgrade_rerun(k=1)
-        self.assertIn("评测组", str(ctx.exception))
 
-    def test_uses_latest_batch_snapshot(self):
-        from app.benchmark import repo as bench_repo
-        from app.benchmark import runner
-
-        self.db.JudgeGroupsRepository  # noqa: B018 - 触发 db 模块加载
-        with patch.object(bench_repo, "get_recent_versions", return_value=[2]), \
-             patch.object(bench_repo, "get_latest_judge_snapshot",
-                          return_value=self._snapshot(3)), \
-             patch.object(runner.dataset_repo, "get_golden_case_ids",
-                          return_value=["case-a"]), \
-             patch.object(runner.dataset_repo, "get_golden_revision",
-                          return_value="rev-test"), \
+    def test_history_snapshot_does_not_reenable_runner(self):
+        from app.benchmark import repo as bench_repo, runner
+        with patch.object(bench_repo, "get_latest_judge_snapshot", return_value={"group_id": 3}) as lookup, \
              patch.object(runner, "_dispatch_batch") as dispatch, \
-             patch.object(runner.bench_repo, "create_batch",
-                          return_value="batch-x") as mock_create:
+             self.assertRaisesRegex(RuntimeError, "退役"):
             runner.trigger_golden_upgrade_rerun(k=1)
-
-        snapshot = dispatch.call_args.args[2]
-        self.assertEqual(snapshot["group_id"], 3)
-        self.assertTrue(mock_create.called)
+        lookup.assert_not_called()
+        dispatch.assert_not_called()
 
 
 class JudgeGateWiringTest(JudgeGroupTestBase):

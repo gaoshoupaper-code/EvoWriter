@@ -134,7 +134,7 @@ class EventsStreamTest(unittest.TestCase):
         测试文件残留的事件——只回放本测试 publish 的这一条。
         """
         since = self.bus.current_seq()
-        self.bus.publish("run_started", {"trace_id": "trace-replay", "source": "executor"})
+        self.bus.publish("run_started", {"trace_id": "trace-replay", "source": "executor", "run": {"run_purpose": "user_generation"}})
 
         status, headers, frames = asyncio.run(
             _drive_sse(f"/api/events/stream?since={since}", frames_to_collect=1)
@@ -158,14 +158,14 @@ class EventsStreamTest(unittest.TestCase):
         def _push_after_subscribe() -> None:
             # 头发出 = handler 已 subscribe；此时 publish 走 fanout 在线路径。
             tid = self.bus.publish(
-                "run_finished", {"trace_id": "trace-live", "source": "evolution"}
+                "run_finished", {"trace_id": "trace-live", "source": "evolution", "run": {"run_purpose": "evolution_evolve"}}
             )
             published.append(str(tid))
 
         status, _, frames = asyncio.run(
             _drive_sse(
                 # since=当前 seq：跳过缓冲里其他测试的残留事件，只收在线推送帧。
-                f"/api/events/stream?since={self.bus.current_seq()}",
+                f"/api/events/stream?since={self.bus.current_seq()}&observation_scope=experiment",
                 frames_to_collect=1,
                 on_headers_sent=_push_after_subscribe,
             )

@@ -363,13 +363,16 @@ export async function testLlmConfig(payload: {
   });
 }
 
-export async function getActiveRuns(): Promise<ActiveRun[]> {
-  return evoJson<ActiveRun[]>("/api/active-runs", { method: "GET" });
+export type ObservationScope = "user" | "experiment";
+
+export async function getActiveRuns(observationScope: ObservationScope = "user"): Promise<ActiveRun[]> {
+  return evoJson<ActiveRun[]>(`/api/active-runs?observation_scope=${observationScope}`, { method: "GET" });
 }
 
 // ── trace 列表 + 详情 ──
 
 export async function getTraces(params?: {
+  observation_scope?: ObservationScope;
   status?: string;
   run_purpose?: string;
   workspace?: string;
@@ -382,6 +385,7 @@ export async function getTraces(params?: {
   offset?: number;
 }): Promise<TraceListResponse> {
   const qs = new URLSearchParams();
+  qs.set("observation_scope", params?.observation_scope ?? "user");
   if (params?.status) qs.set("status", params.status);
   if (params?.run_purpose) qs.set("run_purpose", params.run_purpose);
   if (params?.workspace) qs.set("workspace", params.workspace);
@@ -410,8 +414,8 @@ export async function getWorkspaceUsage(ownerUserId: string): Promise<WorkspaceU
 // ── 人工确认进证据编纂（REQ-20260802-211032）──
 // 产品负责人对"用户主动停止但有价值"的 cancelled+user_stop trace 发起确认。
 
-export async function getWorkloadProfiles(hours = 720): Promise<WorkloadProfilesResponse> {
-  return evoJson<WorkloadProfilesResponse>(`/api/analysis/profiles?hours=${hours}`, { method: "GET" });
+export async function getWorkloadProfiles(hours = 720, observationScope: ObservationScope = "user"): Promise<WorkloadProfilesResponse> {
+  return evoJson<WorkloadProfilesResponse>(`/api/analysis/profiles?hours=${hours}&observation_scope=${observationScope}`, { method: "GET" });
 }
 
 export async function getTraceArtifactRevisions(

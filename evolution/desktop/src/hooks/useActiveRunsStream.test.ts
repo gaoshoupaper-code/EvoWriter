@@ -6,7 +6,7 @@
 //   - run_finished 移除活跃行并回调 onRunFinished（近期区即时翻转）。
 //   - SSE 断开（sse_end ok=false）→ 降级 5s 轮询；重连成功 → 快照对齐 + 回 SSE。
 //   - 跨 chunk 的 SSE 帧能正确拼装。
-//   - seq 跳变（慢消费者丢帧）→ 主动拉快照对齐。
+//   - 全局 seq 的其他来源空洞不重复拉快照，定期与重连仍校正。
 //
 // Tauri 层 mock：@tauri-apps/api/core（invoke）与 event（listen）；
 // stream.ts 的中继逻辑（stream_id 过滤、队列、阻塞读）走真实实现。
@@ -73,6 +73,8 @@ function runStartedFrame(seq: number, traceId: string, sessionName: string) {
         trace_id: traceId,
         session_name: sessionName,
         workload: "creation",
+        run_purpose: "user_generation",
+        observation_scope: "user",
         status: "running",
         started_at: "2026-09-20T12:00:00Z",
       },
@@ -89,6 +91,8 @@ function runFinishedFrame(seq: number, traceId: string, status = "completed") {
         trace_id: traceId,
         session_name: "某任务",
         workload: "creation",
+        run_purpose: "user_generation",
+        observation_scope: "user",
         status,
         started_at: "2026-09-20T12:00:00Z",
         ended_at: "2026-09-20T12:01:00Z",
@@ -112,7 +116,7 @@ function makeSnapshotRun(traceId: string, sessionName = "快照任务") {
     event_count: 1,
     session_name: sessionName,
     ingested: false,
-    run_purpose: null,
+    run_purpose: "user_generation",
     workload: "creation",
     integrity_status: "pending",
     coverage: {},
@@ -157,6 +161,17 @@ function streamRequestCalls(): unknown[][] {
 }
 
 describe("useActiveRunsStream", () => {
+  it("显式实验 scope 优先于历史 user_generation 用途，不触发用户结束回调", async () => {
+    const finished = vi.fn();
+    renderHook(() => useActiveRunsStream(finished));
+    await act(async () => {});
+    await act(async () => {
+      emitChunk(runFinishedFrame(1, "legacy-experiment").replace('"observation_scope":"user"', '"observation_scope":"experiment"'));
+      emitChunk(runFinishedFrame(2, "new-envelope").replace('"source":"executor"', '"source":"executor","observation_scope":"experiment"'));
+      emitChunk(runFinishedFrame(3, "unknown-envelope").replace('"source":"executor"', '"source":"executor","observation_scope":null'));
+    });
+    expect(finished).not.toHaveBeenCalled();
+  });
   const metrics = {
     input_tokens: 12000, output_tokens: 3000, total_tokens: 15000,
     input_partial: false, output_partial: false, total_partial: false,
@@ -324,8 +339,9 @@ describe("useActiveRunsStream", () => {
         event_count: 1,
         session_name: "任务C",
         ingested: false,
-        run_purpose: null,
+        run_purpose: "user_generation",
         workload: "creation",
+        observation_scope: "user",
         integrity_status: "pending",
         coverage: {},
         skill_activation_count: 0,
@@ -366,18 +382,18 @@ describe("useActiveRunsStream", () => {
     expect(arg.request.path).toContain("since=");
   });
 
-  it("seq 跳变（丢帧）→ 主动拉快照对齐", async () => {
+  it("来源过滤形成的全局 seq 空洞不触发多余快照", async () => {
     const { result } = await mount();
     await act(async () => {
       emitChunk(runStartedFrame(5, "trace-d", "任务D"));
     });
     const callsBefore = mockedGetActiveRuns.mock.calls.length;
 
-    // 下一条事件 seq=9（5→9 跳变）→ 触发快照
+    // 其他来源占用 6–8，当前来源直接收到 9，正常结束即可。
     await act(async () => {
       emitChunk(runFinishedFrame(9, "trace-d"));
     });
-    expect(mockedGetActiveRuns.mock.calls.length).toBeGreaterThan(callsBefore);
+    expect(mockedGetActiveRuns.mock.calls.length).toBe(callsBefore);
     expect(result.current.activeRuns).toHaveLength(0);
   });
 
@@ -441,8 +457,9 @@ describe("useActiveRunsStream", () => {
       { ...makeSnapshotRun("trace-tomb"), session_name: "任务T" },
     ] as never);
     await act(async () => {
-      emitChunk(": ping\n\n"); // 心跳不触发快照；用 seq 跳变触发
+      emitChunk(": ping\n\n"); // 定期快照校正仍保留墓碑。
       emitChunk(runStartedFrame(10, "trace-other", "别的任务"));
+      await vi.advanceTimersByTimeAsync(2100);
     });
     expect(result.current.activeRuns.some((r) => r.trace_id === "trace-tomb")).toBe(false);
     expect(result.current.activeRuns.some((r) => r.trace_id === "trace-other")).toBe(true);

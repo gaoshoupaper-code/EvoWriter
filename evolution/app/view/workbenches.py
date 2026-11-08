@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 import app.core.db as db
 from app.trace.access import audit_content_access, require_full_content_access
 from app.trace_payloads import read_payload
+from app.view.observation_scope import ObservationScope, scope_sql
 
 
 router = APIRouter(tags=["trace-workbenches"])
@@ -92,13 +93,15 @@ def get_artifact_revision_content(revision_id: str, request: Request) -> dict[st
 @router.get("/analysis/profiles")
 def workload_profiles(
     hours: int | None = Query(720, ge=1, le=8760),
+    observation_scope: ObservationScope = "user",
 ) -> dict[str, Any]:
     started_after = (
         (datetime.now(UTC) - timedelta(hours=hours)).isoformat()
         if hours is not None
         else None
     )
-    where = "schema_version>=2 AND workload IN ('creation','evolution')"
+    workloads = _WORKLOADS if observation_scope == "user" else ("creation", "evaluation", "evolution", "evidence_compile")
+    where = "schema_version>=2 AND " + scope_sql(observation_scope, "runs")
     params: tuple[Any, ...] = ()
     if started_after:
         where += " AND started_at>=?"
@@ -109,13 +112,14 @@ def workload_profiles(
             FROM runs WHERE {where} ORDER BY started_at DESC""",
         params,
     )
-    grouped = {workload: [] for workload in _WORKLOADS}
+    grouped = {workload: [] for workload in workloads}
     for run in runs:
-        grouped[run["workload"]].append(run)
+        if run["workload"] in grouped:
+            grouped[run["workload"]].append(run)
 
     profiles = [
-        _profile_for(workload, grouped[workload], started_after)
-        for workload in _WORKLOADS
+        _profile_for(workload, grouped[workload], started_after, observation_scope)
+        for workload in workloads
     ]
     return {
         "formula_version": _FORMULA_VERSION,
@@ -128,6 +132,7 @@ def _profile_for(
     workload: str,
     runs: list[dict[str, Any]],
     started_after: str | None,
+    observation_scope: ObservationScope = "user",
 ) -> dict[str, Any]:
     trace_ids = [run["trace_id"] for run in runs]
     statuses = {name: 0 for name in ("completed", "failed", "cancelled", "interrupted", "running")}
@@ -163,22 +168,33 @@ def _profile_for(
         "hitl_events": 0,
     }
     if trace_ids:
-        workload_where = "r.schema_version>=2 AND r.workload=?"
+        workload_where = "r.schema_version>=2 AND r.workload=? AND " + scope_sql(observation_scope)
         workload_params: list[Any] = [workload]
         if started_after:
             workload_where += " AND r.started_at>=?"
             workload_params.append(started_after)
         usage_row = db.query_one(
-            f"""SELECT COALESCE(SUM(usage_input),0) AS input_tokens,
-                       COALESCE(SUM(usage_output),0) AS output_tokens,
-                       COALESCE(SUM(usage_total),0) AS total_tokens,
-                       COALESCE(MAX(depth),0) AS max_span_depth
+            f"""SELECT SUM(usage_input) AS input_tokens,
+                       SUM(usage_output) AS output_tokens,
+                       SUM(COALESCE(usage_total,usage_input+usage_output)) AS total_tokens,
+                       COUNT(*) AS calls, COUNT(usage_input) AS input_known,
+                       COUNT(usage_output) AS output_known,
+                       COUNT(COALESCE(usage_total,usage_input+usage_output)) AS total_known
+                FROM nodes n JOIN runs r ON r.trace_id=n.trace_id
+                WHERE {workload_where} AND n.kind='llm'""",
+            tuple(workload_params),
+        )
+        if usage_row:
+            usage.update({key: usage_row[key] for key in ("input_tokens", "output_tokens", "total_tokens")})
+            for field in ("input", "output", "total"):
+                usage[field + "_partial"] = usage_row[field + "_known"] == 0 or usage_row[field + "_known"] < usage_row["calls"]
+        depth_row = db.query_one(
+            f"""SELECT COALESCE(MAX(n.depth),0) AS max_span_depth
                 FROM nodes n JOIN runs r ON r.trace_id=n.trace_id
                 WHERE {workload_where}""",
             tuple(workload_params),
         )
-        if usage_row:
-            usage = {key: int(usage_row[key] or 0) for key in usage}
+        usage["max_span_depth"] = depth_row["max_span_depth"]
         events = db.query_all(
             f"""SELECT e.type, e.payload_json FROM event_payloads e
                 JOIN runs r ON r.trace_id=e.trace_id
@@ -207,6 +223,7 @@ def _profile_for(
         sample_size=sample_size,
         coverage_complete=coverage_complete,
         started_after=started_after,
+        observation_scope=observation_scope,
     )
     return {
         "workload": workload,
@@ -245,6 +262,7 @@ def _advanced_analysis_missing(
     sample_size: int,
     coverage_complete: int,
     started_after: str | None,
+    observation_scope: ObservationScope = "user",
 ) -> list[str]:
     if workload != "creation":
         return ["workload=creation"]
@@ -253,7 +271,9 @@ def _advanced_analysis_missing(
         missing.append(f"sample_size>={_ADVANCED_MIN_SAMPLE}")
     if not sample_size or coverage_complete / sample_size < 0.95:
         missing.append("coverage>=95%")
-    time_sql = " AND r.started_at>=?" if started_after else ""
+    time_sql = " AND " + scope_sql(observation_scope)
+    if started_after:
+        time_sql += " AND r.started_at>=?"
     time_params: tuple[Any, ...] = (started_after,) if started_after else ()
     sealed = db.query_one(
         f"""SELECT COUNT(*) AS count FROM evaluation_dossiers d
@@ -273,8 +293,11 @@ def _advanced_analysis_missing(
     )
     if not versioned or not versioned["count"]:
         missing.append("versioned_rubric")
-    direct_time = " AND direct.started_at>=?" if started_after else ""
-    revision_time = " AND producer.started_at>=?" if started_after else ""
+    direct_time = " AND " + scope_sql(observation_scope, "direct")
+    revision_time = " AND " + scope_sql(observation_scope, "producer")
+    if started_after:
+        direct_time += " AND direct.started_at>=?"
+        revision_time += " AND producer.started_at>=?"
     outcome_params: tuple[Any, ...] = (
         (started_after, started_after) if started_after else ()
     )

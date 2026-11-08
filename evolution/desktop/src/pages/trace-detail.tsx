@@ -31,10 +31,14 @@ import { formatTokensW } from "@/lib/tokenFormat";
  * - 点击 LLM 节点的"跳转图表"按钮 → 切到 Token 图表 tab + 高亮 loopIndex
  * - Token 图表点击数据点 → 切到调用链 tab + 高亮 nodeId + 滚动定位
  */
-export default function TraceDetailPage() {
-  const { traceId } = useParams<{ traceId: string }>();
+export default function TraceDetailPage({ traceIdOverride, embedded = false, canReadContent }: {
+  traceIdOverride?: string; embedded?: boolean; canReadContent?: boolean;
+} = {}) {
+  const { traceId: routeTraceId } = useParams<{ traceId: string }>();
+  const traceId = traceIdOverride ?? routeTraceId;
   const navigate = useNavigate();
-  const { isSuperAdmin } = useOutletContext<{ isSuperAdmin: boolean }>();
+  const outletContext = useOutletContext<{ isSuperAdmin: boolean } | null>();
+  const isSuperAdmin = canReadContent ?? outletContext?.isSuperAdmin ?? false;
 
   const {
     detail, isLive, isStale, lastSyncedAt, refresh, refreshing,
@@ -44,7 +48,7 @@ export default function TraceDetailPage() {
   // ── 页面壳状态 ──
   // ?tab= 定位（REQ-20260921-114943 FR-002：评测报告跳转产物 tab 的深链入口）
   const [searchParams] = useSearchParams();
-  const initialTab = searchParams.get("tab");
+  const initialTab = embedded ? null : searchParams.get("tab");
   const [activeTab, setActiveTab] = useState<"trace" | "chart" | "artifacts">(
     initialTab === "chart" || initialTab === "artifacts" ? initialTab : "trace",
   );
@@ -293,9 +297,9 @@ export default function TraceDetailPage() {
   // 不呈现原始 not found。available 态走下面的正常渲染分支。
   if (!detail && (availability === "preparing" || availability === "unavailable")) {
     return (
-      <div className="trace-detail-page">
+      <div className={"trace-detail-page" + (embedded ? " experiment-embedded-trace" : "")}>
         <header className="trace-detail-header">
-          <button className="back-button" onClick={() => navigate(-1)}>← 返回</button>
+          {!embedded && <button className="back-button" onClick={() => navigate(-1)}>← 返回</button>}
         </header>
         {availability === "preparing" ? (
           <div className="trace-detail-empty">Trace 准备中…</div>
@@ -308,9 +312,9 @@ export default function TraceDetailPage() {
 
   if (error && !detail) {
     return (
-      <div className="trace-detail-page">
+      <div className={"trace-detail-page" + (embedded ? " experiment-embedded-trace" : "")}>
         <header className="trace-detail-header">
-          <button className="back-button" onClick={() => navigate(-1)}>← 返回</button>
+          {!embedded && <button className="back-button" onClick={() => navigate(-1)}>← 返回</button>}
         </header>
         <div className="trace-detail-error">{error}</div>
       </div>
@@ -319,9 +323,9 @@ export default function TraceDetailPage() {
 
   if (!detail || !activeRun) {
     return (
-      <div className="trace-detail-page">
+      <div className={"trace-detail-page" + (embedded ? " experiment-embedded-trace" : "")}>
         <header className="trace-detail-header">
-          <button className="back-button" onClick={() => navigate(-1)}>← 返回</button>
+          {!embedded && <button className="back-button" onClick={() => navigate(-1)}>← 返回</button>}
         </header>
         <div className="trace-detail-empty">trace 不存在</div>
       </div>
@@ -331,11 +335,11 @@ export default function TraceDetailPage() {
   const run = activeRun;
 
   return (
-    <div className="trace-detail-page">
+    <div className={"trace-detail-page" + (embedded ? " experiment-embedded-trace" : "")}>
       {/* 顶部 */}
       <header className="trace-detail-header">
         <div className="trace-detail-title-row">
-          <button className="back-button" onClick={() => navigate(-1)}>← 返回</button>
+          {!embedded && <button className="back-button" onClick={() => navigate(-1)}>← 返回</button>}
           <h1>Trace {traceId?.slice(0, 12)}…</h1>
           <StatusBadge status={run.status} />
           {isLive && !isStale && (
@@ -363,7 +367,7 @@ export default function TraceDetailPage() {
           )}
           {/* trace 稳定性重构：running/cancelling 时显示停止按钮；interrupted 时显示收敛按钮。
               FR-006：cancelling 时按钮显示"取消中…"（受理后立即可见），允许重复点击幂等重试。 */}
-          {(run.status === "running" || run.status === "cancelling") && activeSession?.session_id && (
+          {!embedded && (run.status === "running" || run.status === "cancelling") && activeSession?.session_id && (
             <button
               type="button"
               className="stop-button"
@@ -374,7 +378,7 @@ export default function TraceDetailPage() {
               {run.status === "cancelling" ? "取消中…" : stopping ? "停止中…" : "停止"}
             </button>
           )}
-          {run.status === "interrupted" && (
+          {!embedded && run.status === "interrupted" && (
             <div className="resolve-actions">
               <button
                 type="button"

@@ -29,7 +29,7 @@ export default function AnalysisPage() {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      setData(await getWorkloadProfiles(hours));
+      setData(await getWorkloadProfiles(hours, "user"));
       setError(null);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "分析数据加载失败");
@@ -59,7 +59,7 @@ export default function AnalysisPage() {
   return (
     <div className="trace-workbench analysis-workbench">
       <header className="workbench-header">
-        <div><h1>分析</h1><p>按 workload 隔离的 Trace Profile</p></div>
+        <div><h1>用户分析</h1><p>仅统计用户运行，实验数据在对应实验中查看</p></div>
         <button className="icon-button" type="button" title="刷新" onClick={refresh} disabled={loading}>
           <RefreshCw size={16} />
         </button>
@@ -107,7 +107,7 @@ function ProfileView({ profile, onOpenTrace }: { profile: WorkloadProfile; onOpe
         <Metric label="完整性" value={`${profile.integrity.verified}/${profile.integrity.denominator}`} detail="verified / 全部" />
         <Metric label="Coverage" value={`${profile.coverage.complete}/${profile.coverage.denominator}`} detail="完整 / 全部" />
         <Metric label="P50" value={formatMs(profile.duration_ms.p50)} detail={`P90 ${formatMs(profile.duration_ms.p90)}`} />
-        <Metric label="Token" value={formatNumber(profile.usage.total_tokens)} detail={`最大深度 ${profile.usage.max_span_depth}`} />
+        <Metric label="Token" value={formatNumber(profile.usage.total_tokens)} detail={profile.usage.total_partial ? "部分用量缺失" : `最大深度 ${profile.usage.max_span_depth}`} />
       </section>
 
       <div className="analysis-columns">
@@ -199,7 +199,7 @@ function conditionLabel(condition: string): string {
   return labels[condition] || (condition.startsWith("sample_size>=") ? `样本量至少 ${condition.split(">=")[1]}` : condition);
 }
 
-function formatNumber(value: number): string { return new Intl.NumberFormat("zh-CN").format(value); }
+function formatNumber(value: number | null): string { return value == null ? "—" : new Intl.NumberFormat("zh-CN").format(value); }
 function formatPercent(value: number | null): string { return value == null ? "—" : `${(value * 100).toFixed(1)}%`; }
 function formatMs(value: number | null): string { return value == null ? "—" : value < 1000 ? `${value}ms` : `${(value / 1000).toFixed(1)}s`; }
 function formatDateTime(iso: string): string {

@@ -126,8 +126,8 @@ class ApiVersionsTest(unittest.TestCase):
                 bench_api.list_versions()
         self.assertEqual(ctx.exception.status_code, 502)
 
-    def test_trigger_default_resolution_failfast_502(self):
-        """versions=None 且账本不可达 → 502 快败，不建半配置批次。"""
+    def test_retired_trigger_does_not_resolve_default_version(self):
+        """退役优先于版本解析；账本不可达也不能重新启动旧批次。"""
         bench_api = self._api()
         from fastapi import HTTPException
 
@@ -137,7 +137,7 @@ class ApiVersionsTest(unittest.TestCase):
         ):
             with self.assertRaises(HTTPException) as ctx:
                 bench_api.trigger_run(bench_api.RunRequest(judge_group_id=1))
-        self.assertEqual(ctx.exception.status_code, 502)
+        self.assertEqual(ctx.exception.status_code, 410)
 
 
 if __name__ == "__main__":

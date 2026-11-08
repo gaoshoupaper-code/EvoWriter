@@ -10,7 +10,6 @@ import {
   FlaskConical,
   Gauge,
   LogOut,
-  Package,
   PenTool,
   ScrollText,
   ShieldCheck,
@@ -40,8 +39,8 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: "观测",
     items: [
-      { to: "/", label: "运行观测", end: true, icon: Activity },
-      { to: "/analysis", label: "分析", end: false, icon: ChartNoAxesCombined },
+      { to: "/", label: "用户运行", end: true, icon: Activity },
+      { to: "/analysis", label: "用户分析", end: false, icon: ChartNoAxesCombined },
     ],
   },
   {
@@ -50,7 +49,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/bench", label: "评测工作台", end: true, icon: Gauge },
       { to: "/bench/rules", label: "评测规则", end: false, icon: ScrollText },
       { to: "/bench/dataset", label: "评测数据集", end: false, icon: Database },
-      { to: "/bench/artifacts", label: "评测产物", end: false, icon: Package },
+      { to: "/bench/experiments", label: "实验记录", end: false, icon: FileArchive },
     ],
   },
   {

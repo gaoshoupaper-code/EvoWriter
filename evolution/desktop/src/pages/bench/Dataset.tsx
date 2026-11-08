@@ -9,7 +9,6 @@ import {
   getCaseContent,
   getDatasetCases,
   getGoldenRevision,
-  rerunGolden,
   type DatasetCase,
   type GoldenRevision,
 } from "@/lib/api";
@@ -18,7 +17,7 @@ import {
  * 评测数据集页（REQ-20260921-135543 FR-008，DEC-019 基线适配修订）。
  *
  * golden 标准集单主体：revision 状态条 + case 列表 + 正文 Markdown 查看 +
- * 受控新增 + rerun-golden 入口（DEC-016：改数据后原地重跑验证）。
+ * 受控新增。旧版批次启动和重跑能力已退役。
  * Growing/Review/采集线不实现（promote 已于 82e257b 裁撤）。
  */
 export default function BenchDataset() {
@@ -39,7 +38,6 @@ export default function BenchDataset() {
     golden_revision: string;
     push_warning: string | null;
   } | null>(null);
-  const [rerunning, setRerunning] = useState(false);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -104,19 +102,6 @@ export default function BenchDataset() {
     }
   }
 
-  async function handleRerun() {
-    setRerunning(true);
-    try {
-      const resp = await rerunGolden(3);
-      toast.success(`重跑已触发：${resp.batch_id.slice(0, 8)}（最近 3 版本 × 新 golden 全 case）`);
-      setAddedResult(null);
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : "触发重跑失败");
-    } finally {
-      setRerunning(false);
-    }
-  }
-
   return (
     <div className="bench-page bench-dataset-page">
       <header className="page-header">
@@ -133,11 +118,8 @@ export default function BenchDataset() {
       <StagePackages />
       <details className="experiment-history">
         <summary>历史 golden 数据 · {cases.length} 条</summary>
-        <p className="experiment-note">旧数据和历史报告保持原有含义，独立于本次十二条试验套件。</p>
-        <button className="config-button" onClick={handleRerun} disabled={rerunning}
-          title="golden 变更后重跑最近 3 个版本建立新基线">
-          {rerunning ? "重跑触发中…" : "重跑最近 3 个版本"}
-        </button>
+        <p className="experiment-note">旧版输入资料保留备查；旧批次评测已下线。</p>
+
 
       {loading ? (
         <div className="page-loading">加载 golden 集…</div>
@@ -255,14 +237,11 @@ export default function BenchDataset() {
               <div className="bench-golden-added">
                 <p>
                   <strong>{addedResult.case_id}</strong> 已入库，revision → {addedResult.golden_revision}。
-                  golden 已变，历史批次对比将不可比——重跑最近 3 个版本建立新基线？
+                  输入资料已保存。旧版批次评测已退役，请使用当前三阶段实验。
                 </p>
                 {addedResult.push_warning && (
                   <div className="bench-rule-warn">{addedResult.push_warning}</div>
                 )}
-                <button className="config-button" onClick={handleRerun} disabled={rerunning}>
-                  {rerunning ? "触发中…" : "重跑最近 3 个版本"}
-                </button>
               </div>
             )}
           </section>

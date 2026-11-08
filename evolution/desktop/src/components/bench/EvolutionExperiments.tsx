@@ -1,15 +1,17 @@
+import "@/components/bench/experiment-observation.css";
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Play, RefreshCw, SlidersHorizontal } from "lucide-react";
 import {
-  getExperimentOptions, listExperimentPackages, listExperimentRules, listExperiments, startExperiment,
-  type ExperimentOptions, type ExperimentPackage, type ExperimentRule, type ExperimentStart, type ExperimentSummary,
+  getExperimentOptions, listExperimentPackages, listExperimentRules, startExperiment,
+  type ExperimentOptions, type ExperimentPackage, type ExperimentRule, type ExperimentStart,
 } from "@/lib/api";
 import {
   BUILTIN_SUITE, RULE_PROFILE, EXPERIMENT_STATUS, TASK_LABELS, TASK_TYPES,
-  candidatePlaceholder, experimentTaskLabel, type ExperimentTaskType,
+  experimentTaskLabel, type ExperimentTaskType,
 } from "@/lib/experiment-types";
-import { ExperimentProgress, ExperimentScores, ModelIdentity } from "./ExperimentEvidence";
+import { ExperimentProgress } from "./ExperimentEvidence";
+import { useExperiments } from "@/hooks/useExperiments";
 import "./experiments.css";
 
 export function EvolutionExperiments() {
@@ -17,7 +19,8 @@ export function EvolutionExperiments() {
   const [options, setOptions] = useState<ExperimentOptions | null>(null);
   const [packages, setPackages] = useState<ExperimentPackage[]>([]);
   const [rules, setRules] = useState<ExperimentRule[]>([]);
-  const [runs, setRuns] = useState<ExperimentSummary[]>([]);
+  const { runs, loading: listLoading, error: listError } = useExperiments();
+  const activeRuns = runs.filter((run) => ["pending", "running", "recovering", "stopping", "publishing"].includes(run.status));
   const [kind, setKind] = useState<ExperimentTaskType>("volume_outlines");
   const [baseline, setBaseline] = useState("");
   const [model, setModel] = useState("");
@@ -33,7 +36,6 @@ export function EvolutionExperiments() {
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
-  const [listError, setListError] = useState("");
   const [reload, setReload] = useState(0);
   const others = TASK_TYPES.filter((type) => type !== kind);
   const selectedGroup = options?.judge_groups.find((group) => String(group.id) === judges);
@@ -93,20 +95,6 @@ export function EvolutionExperiments() {
         <p className="experiment-note">没有适用样本。请到<Link to="/bench/dataset">评测数据集</Link>导入。</p>}
     </fieldset>;
   }
-
-  useEffect(() => {
-    let alive = true;
-    let timer: ReturnType<typeof setTimeout>;
-    const refresh = async () => {
-      try {
-        const result = await listExperiments();
-        if (alive) { setRuns(result.items); setListError(""); }
-      } catch (cause) { if (alive) setListError(cause instanceof Error ? cause.message : "读取实验记录失败"); }
-      if (alive) timer = setTimeout(refresh, 5000);
-    };
-    void refresh();
-    return () => { alive = false; clearTimeout(timer); };
-  }, [reload]);
 
   async function start(event: React.FormEvent) {
     event.preventDefault(); if (starting) return;
@@ -199,23 +187,17 @@ export function EvolutionExperiments() {
       <div className="experiment-launch-footer"><button className="config-button primary" type="submit" disabled={starting || missing.length > 0}>
         <Play size={15} />{starting ? "正在启动…" : "启动自进化实验"}</button><span className="experiment-note">自动命名，启动后即可查看实时进度。</span></div>
     </form>}
-    <div className="experiment-heading experiment-records-heading"><div><h2>实验记录</h2><p className="experiment-note">一行一次完整进化。优化分与独立终验分分别展示，每 5 秒更新。</p></div><Link className="action-link" to="/bench/dataset">查看数据集</Link></div>
-    {listError && <p role="alert" className="experiment-error">{listError}</p>}
-    {!runs.length ? <p className="experiment-empty">暂无实验。选择目标与模型后，启动第一次自动进化。</p> :
-      <div className="experiment-table-scroll"><table className="data-table experiment-runs-table" aria-label="实验记录"><thead><tr>
-        <th>实验 / 主攻阶段</th><th>Harness 原版 → 候选</th><th>执行模型</th><th>评测模型</th><th>状态 / 当前环节</th><th>质量分 · 1–5</th>
-      </tr></thead><tbody>{runs.map((run) => {
-        const current = run.current_candidate ?? (run.current_round === run.best_candidate?.round ? run.best_candidate : null);
-        return <tr key={run.id}><td><span className="experiment-type-label">{experimentTaskLabel(run.task_type, run.flow_version)}</span>
+    <div className="experiment-heading experiment-records-heading"><div><h2>正在运行的实验</h2>
+      <p className="experiment-note">每 5 秒更新。点击实验查看运行过程、评分和文稿。</p></div>
+      <Link className="action-link" to="/bench/experiments">全部实验记录</Link></div>
+    {listError && <p role="alert" className="experiment-error">更新失败：{listError}</p>}
+    {listLoading ? <p role="status">正在读取运行概况…</p> : activeRuns.length ? <div className="experiment-active-list">
+      {activeRuns.map((run) => <article className="experiment-active-run" key={run.id}>
+        <div><span className="experiment-type-label">{experimentTaskLabel(run.task_type, run.flow_version)}</span>
           <Link className="experiment-run-name" to={"/bench/experiments/" + encodeURIComponent(run.id)}>{run.name}</Link>
-          <small className="experiment-cell-note">{new Date(run.updated_at).toLocaleString("zh-CN", { hour12: false })}</small></td>
-          <td><strong>v{run.baseline.version}</strong><span className="experiment-cell-note">→ {current ? "候选第 " + current.round + " 轮" : candidatePlaceholder(run.phase, run.status, run.current_round)}</span>
-            {run.best_candidate && current?.round !== run.best_candidate.round && <small className="experiment-cell-note">保留最佳：第 {run.best_candidate.round} 轮</small>}</td>
-          <td><ModelIdentity model={run.models?.executor} /></td>
-          <td>{run.models?.judges?.length ? run.models.judges.map((judge, index) => <ModelIdentity key={judge.id ?? index} model={judge} />) : <span className="experiment-note">未记录模型</span>}</td>
-          <td><span className={"experiment-state " + run.status}>{EXPERIMENT_STATUS[run.status] ?? run.status}</span><ExperimentProgress experiment={run} compact /></td>
-          <td><ExperimentScores report={run.report} /></td>
-        </tr>;
-      })}</tbody></table></div>}
+          <span className={"experiment-state " + run.status}>{EXPERIMENT_STATUS[run.status] ?? run.status}</span></div>
+        <ExperimentProgress experiment={run} compact />
+      </article>)}
+    </div> : !listError && <p className="experiment-empty">当前没有正在运行的实验。历史运行保存在实验记录中。</p>}
   </section>;
 }

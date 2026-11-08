@@ -127,121 +127,29 @@ class JudgeCandidatesTest(JudgeTestBase):
 
 
 class JudgeSelectionTest(JudgeTestBase):
-    """FR-002 of REQ-20260930-162207：触发选组、组快照落批、无效组拒绝。"""
+    """退役后，任何评委配置均不得重新打开旧版批次。"""
 
-    def setUp(self):
-        super().setUp()
-        self.db.execute("DELETE FROM llm_configs")
-
-    def _make_group(self, config_ids, name="评审团"):
-        return self.db.JudgeGroupsRepository.create(
-            name=name, member_config_ids=list(config_ids),
-        )
-
-    def _trigger(self, **kwargs):
-        """调 runner.trigger_run（mock 掉后台派发与 golden 依赖）。"""
+    def test_valid_group_cannot_reopen_legacy_runner(self):
         from app.benchmark import runner
+        cfg = _seed_config(self.db, "eval", model="kimi-k2")
+        group = self.db.JudgeGroupsRepository.create(name="保留评委组", member_config_ids=[cfg])
+        with patch.object(runner, "_dispatch_batch") as dispatch:
+            with self.assertRaisesRegex(RuntimeError, "退役"):
+                runner.trigger_run(versions=[1], case_ids=["case-a"], judge_group_id=group)
+        dispatch.assert_not_called()
+        self.assertIsNotNone(self.db.JudgeGroupsRepository.get(group))
+        self.assertEqual(self.db.query_one("SELECT COUNT(*) AS n FROM benchmark_runs")["n"], 0)
 
-        with patch.object(runner, "_dispatch_batch") as mock_dispatch, \
-             patch.object(runner, "_get_production_version", return_value=None):
-            batch_id = runner.trigger_run(versions=[1], case_ids=["case-a"], **kwargs)
-        return batch_id, mock_dispatch.call_args
-
-    def test_group_snapshot_and_combined_fp_recorded(self):
-        """选组必须真实生效：批次记录组快照 + 组合指纹（AC-003）。"""
-        from app.benchmark import manifest as bench_manifest
-        from app.benchmark import repo as bench_repo
-
-        cfg_a = _seed_config(self.db, "eval", model="glm-4.7")
-        cfg_b = _seed_config(self.db, "eval", model="kimi-k2")
-        group_id = self._make_group([cfg_a, cfg_b])
-
-        batch_id, dispatch_args = self._trigger(judge_group_id=group_id)
-
-        snapshot = dispatch_args.args[2]
-        self.assertEqual(snapshot["group_id"], group_id, "组快照必须透传到批次派发")
-        self.assertEqual(
-            [m["config_id"] for m in snapshot["members"]], [cfg_a, cfg_b],
-        )
-
-        expected_fp = bench_manifest.judge_group_fingerprint(snapshot["members"])
-        rows = self.db.query_all(
-            "SELECT judge_fp FROM benchmark_runs WHERE batch_id=?", (batch_id,),
-        )
-        self.assertTrue(rows)
-        self.assertEqual(
-            {r["judge_fp"] for r in rows}, {expected_fp},
-            "行级 judge_fp 应记录组组合指纹",
-        )
-
-        stored = bench_repo.get_batch_judge(batch_id)
-        self.assertEqual(stored["group_id"], group_id)
-        self.assertEqual(stored["group_name"], "评审团")
-        batch = bench_repo.get_batch(batch_id)
-        self.assertEqual(batch["judge_group"]["group_id"], group_id)
-
-    def test_no_group_rejected(self):
-        """DEC-004：一律走组——未指定评测组直接拒绝。"""
-        _seed_config(self.db, "eval", model="glm-4.7")
-        with self.assertRaises(ValueError) as ctx:
-            self._trigger()
-        self.assertIn("评测组", str(ctx.exception))
-
-    def test_nonexistent_group_rejected(self):
-        _seed_config(self.db, "eval", model="glm-4.7")
-        with self.assertRaises(ValueError) as ctx:
-            self._trigger(judge_group_id=999)
-        self.assertIn("999", str(ctx.exception), "错误信息应指明组 ID")
-
-    def test_member_config_invalidated_after_creation_rejected(self):
-        """建组后成员配置被清空（key/base_url/model）→ 触发拒绝，不产生半配置批次。"""
-        for field in ("base_url", "model", "api_key_enc"):
-            with self.subTest(field=field):
-                cfg_id = _seed_config(self.db, "eval", model="kimi-k2")
-                group_id = self._make_group([cfg_id], name=f"评审团-{field}")
-                self.db.execute(
-                    f"UPDATE llm_configs SET {field}='' WHERE id=?", (cfg_id,)
-                )
-                with self.assertRaises(ValueError) as ctx:
-                    self._trigger(judge_group_id=group_id)
-                self.assertIn(str(cfg_id), str(ctx.exception))
-
-    def test_trigger_spawns_worker_without_event_loop(self):
-        """review P0 回归：sync 上下文（无 event loop）直接调 trigger_run 不得炸，
-        且派发线程参数完整（并发度 + 组快照）。"""
-        from unittest.mock import patch
-
+    def test_missing_or_invalid_group_cannot_bypass_retirement(self):
         from app.benchmark import runner
+        for group in (None, 999):
+            with self.subTest(group=group), self.assertRaisesRegex(RuntimeError, "退役"):
+                runner.trigger_run(versions=[1], case_ids=["case-a"], judge_group_id=group)
 
-        cfg = _seed_config(self.db, "eval", model="glm-4.7")
-        group_id = self._make_group([cfg])
-        started = threading.Event()
-        captured: dict = {}
-
-        def fake_dispatch(batch_id, concurrency, group_snapshot):
-            captured.update(batch_id=batch_id, concurrency=concurrency,
-                            group_snapshot=group_snapshot)
-            started.set()
-
-        with patch.object(runner, "_dispatch_batch", fake_dispatch),             patch.object(runner, "_get_production_version", return_value=None):
-            batch_id = runner.trigger_run(
-                versions=[1], case_ids=["case-a"], judge_group_id=group_id,
-            )
-
-        self.assertTrue(started.is_set(), "trigger_run 必须在无 event loop 的同步上下文里完成派发")
-        self.assertEqual(captured["batch_id"], batch_id)
-        self.assertEqual(captured["concurrency"], 3)
-        self.assertEqual(captured["group_snapshot"]["group_id"], group_id)
-
-    def test_config_without_key_rejected(self):
-        """组内成员缺 key：建组后 key 被清 → 触发拒绝（触发时校验成员完整）。"""
-        cfg_id = _seed_config(self.db, "eval", model="glm-4.7")
-        group_id = self._make_group([cfg_id])
-        self.db.execute("UPDATE llm_configs SET api_key_enc=NULL WHERE id=?", (cfg_id,))
-
-        with self.assertRaises(ValueError) as ctx:
-            self._trigger(judge_group_id=group_id)
-        self.assertIn(str(cfg_id), str(ctx.exception))
+    def test_snapshot_cannot_bypass_retirement(self):
+        from app.benchmark import runner
+        with self.assertRaisesRegex(RuntimeError, "退役"):
+            runner.trigger_run(versions=[1], case_ids=["case-a"], group_snapshot={"members": []})
 
 
 class ScoreChainTest(JudgeTestBase):

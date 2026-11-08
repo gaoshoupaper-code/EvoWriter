@@ -30,6 +30,7 @@ from typing import Any
 
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
+from app.view.observation_scope import ObservationScope, source_scope, experiment_metadata
 
 logger = logging.getLogger("evolution.events")
 
@@ -71,6 +72,10 @@ class EventBus:
 
     def publish(self, event_type: str, data: dict[str, Any]) -> int:
         """发布一条事件，返回分配的 seq。线程安全。"""
+        data = dict(data)
+        run = data.get("run") or {}
+        refs = experiment_metadata().get(data.get("trace_id"), {})
+        data["observation_scope"] = source_scope({**run, "external_refs": {**refs, **run.get("external_refs", {})}}) or data.get("observation_scope")
         with self._lock:
             self._seq += 1
             seq = self._seq
@@ -118,22 +123,36 @@ def get_event_bus() -> EventBus:
 
 
 @router.get("/events/stream")
-async def event_stream(since: int = Query(0, ge=0)) -> StreamingResponse:
+async def event_stream(since: int = Query(0, ge=0), observation_scope: ObservationScope = "user") -> StreamingResponse:
     """观测事件 SSE 流（大盘订阅入口）。鉴权由 SSOAuthMiddleware 全局覆盖。"""
     queue = _bus.subscribe()
 
+    def matches(frame: str) -> bool:
+        for line in frame.splitlines():
+            if line.startswith("data: "):
+                return json.loads(line[6:])["data"].get("observation_scope") == observation_scope
+        return False
+
     async def _generate():
         try:
+            next_heartbeat = asyncio.get_running_loop().time() + _HEARTBEAT_SECONDS
             for frame in _bus.replay(since):
-                yield frame
+                if matches(frame):
+                    yield frame
             while True:
                 try:
                     frame = await asyncio.wait_for(
                         queue.get(), timeout=_HEARTBEAT_SECONDS
                     )
-                    yield frame
+                    if matches(frame):
+                        yield frame
+                        next_heartbeat = asyncio.get_running_loop().time() + _HEARTBEAT_SECONDS
+                    elif asyncio.get_running_loop().time() >= next_heartbeat:
+                        yield ": ping\n\n"
+                        next_heartbeat = asyncio.get_running_loop().time() + _HEARTBEAT_SECONDS
                 except asyncio.TimeoutError:
                     yield ": ping\n\n"
+                    next_heartbeat = asyncio.get_running_loop().time() + _HEARTBEAT_SECONDS
         finally:
             _bus.unsubscribe(queue)
 

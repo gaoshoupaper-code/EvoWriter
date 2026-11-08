@@ -236,7 +236,7 @@ def _derive_run_summary(
         schema_version=schema_version,
         service="executor" if is_v2 else None,
         workload="creation" if is_v2 else None,
-        purpose=str(start_input.get("run_purpose") or "user_generation"),
+        purpose=str(start_input.get("run_purpose") or "unknown"),
         integrity_status=integrity_status,
         trace_phase=trace_phase,
         coverage={"payload": "unknown", "token": "unknown", "cost": "unknown"},

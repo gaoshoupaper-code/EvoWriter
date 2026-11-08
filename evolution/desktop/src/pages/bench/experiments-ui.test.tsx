@@ -12,7 +12,7 @@ vi.mock("@/lib/api", () => ({
   getExperimentPackageTemplates: vi.fn(), getExperimentPackage: vi.fn(),
   listExperimentRules: vi.fn(), saveExperimentRule: vi.fn(),
   getExperimentOptions: vi.fn(), listExperiments: vi.fn(), startExperiment: vi.fn(),
-  getExperiment: vi.fn(), stopExperiment: vi.fn(), publishExperiment: vi.fn(), restoreExperiment: vi.fn(),
+  getExperiment: vi.fn(), getActiveRuns: vi.fn(), stopExperiment: vi.fn(), publishExperiment: vi.fn(), restoreExperiment: vi.fn(),
 }));
 vi.mock("@/lib/download", () => ({ downloadTextFile: vi.fn() }));
 
@@ -49,6 +49,7 @@ const experiment = (overrides: Record<string, unknown> = {}) => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  api.getActiveRuns.mockResolvedValue([]);
   api.listExperimentPackages.mockResolvedValue({ items: packages as never[], can_read_content: true });
   api.getExperimentPackageTemplates.mockResolvedValue({ items: [] });
   api.listExperimentRules.mockResolvedValue({ items: rules as never[] });

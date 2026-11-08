@@ -224,6 +224,7 @@ def _emit_finished_event_from_executor(
                     "run_purpose": run.purpose,
                     "external_refs": run.external_refs,
                     "experiment_id": run.external_refs.get("experiment_id"),
+                    "display_context": run.run_snapshot.get("display_context", {}),
                     "status": run.status,
                     "started_at": run.started_at,
                     "ended_at": run.ended_at,

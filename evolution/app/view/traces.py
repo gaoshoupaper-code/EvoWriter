@@ -19,6 +19,7 @@ from app.ingestion import projector
 from app.trace_payloads import delete_trace_payloads, hydrate_event, read_payload
 from app.trace.access import audit_content_access, require_full_content_access
 from app.view.observation_scope import ObservationScope, scope_sql, experiment_metadata
+from app.view.display_context import display_contexts
 from app.core.models import (
     CancelAudit,
     TraceContextSegment,
@@ -91,6 +92,7 @@ class TraceListItem(BaseModel):
     metrics: TraceMetrics = Field(default_factory=TraceMetrics)
     external_refs: dict[str, str] = Field(default_factory=dict)
     experiment_id: str | None = None
+    display_context: dict[str, Any] = Field(default_factory=dict)
 
 
 class TraceListResponse(BaseModel):
@@ -177,6 +179,7 @@ def list_traces(
         tuple(params + [limit, offset]),
     )
     metrics = _load_node_metrics([r["trace_id"] for r in rows])
+    contexts = display_contexts(rows)
     experiment_refs = experiment_metadata() if observation_scope == "experiment" else {}
     return TraceListResponse(
         items=[
@@ -203,6 +206,7 @@ def list_traces(
                 hitl_count=int(r.get("hitl_count") or 0),
                 token_total=metrics[r["trace_id"]].total_tokens,
                 metrics=metrics[r["trace_id"]],
+                display_context=contexts[r["trace_id"]],
                 external_refs={**experiment_refs.get(r["trace_id"], {}), **json.loads(r.get("external_refs_json") or "{}")},
                 experiment_id=(json.loads(r.get("external_refs_json") or "{}").get("experiment_id")
                                or experiment_refs.get(r["trace_id"], {}).get("experiment_id")),
@@ -305,8 +309,11 @@ def refresh_executor_trace(trace_id: str, request: Request) -> TraceDetailLite:
 
 
 def _to_trace_detail_lite(detail: TraceDetail) -> TraceDetailLite:
+    run = detail.run
+    context = display_contexts([run.model_dump()])[run.trace_id]
+    run = run.model_copy(update={"run_snapshot": {**run.run_snapshot, "display_context": context}})
     return TraceDetailLite(
-        run=detail.run, nodes=detail.nodes, todos=detail.todos,
+        run=run, nodes=detail.nodes, todos=detail.todos,
         metrics=metrics_from_nodes(detail.nodes),
     )
 

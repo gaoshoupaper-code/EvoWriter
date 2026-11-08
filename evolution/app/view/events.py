@@ -31,6 +31,7 @@ from typing import Any
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 from app.view.observation_scope import ObservationScope, source_scope, experiment_metadata
+from app.view.display_context import display_contexts
 
 logger = logging.getLogger("evolution.events")
 
@@ -74,6 +75,12 @@ class EventBus:
         """发布一条事件，返回分配的 seq。线程安全。"""
         data = dict(data)
         run = data.get("run") or {}
+        if run:
+            run = dict(run)
+            run.setdefault("trace_id", data.get("trace_id"))
+            run["display_context"] = display_contexts([run])[run["trace_id"]]
+            run.pop("run_snapshot", None)
+            data["run"] = run
         refs = experiment_metadata().get(data.get("trace_id"), {})
         data["observation_scope"] = source_scope({**run, "external_refs": {**refs, **run.get("external_refs", {})}}) or data.get("observation_scope")
         with self._lock:

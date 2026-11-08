@@ -8,8 +8,10 @@ import * as apiModule from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({ listExperiments: vi.fn(), getExperiment: vi.fn(), getExperimentPackage: vi.fn(), getActiveRuns: vi.fn(),
   stopExperiment: vi.fn(), publishExperiment: vi.fn(), restoreExperiment: vi.fn() }));
-vi.mock("@/pages/trace-detail", () => ({ default: ({ traceIdOverride }: { traceIdOverride: string }) =>
-  <div data-testid="embedded-trace">Trace 详情 {traceIdOverride}</div> }));
+vi.mock("@/pages/trace-detail", () => ({ default: ({ traceIdOverride, displayContextOverride }: {
+  traceIdOverride: string; displayContextOverride?: Record<string, unknown>;
+}) => <div data-testid="embedded-trace" data-trace-id={traceIdOverride}
+  data-display-context={JSON.stringify(displayContextOverride)}>运行详情</div> }));
 const api = vi.mocked(apiModule);
 const sample = (id: string, overrides = {}) => ({ id, package_id: "story-a", package_title: "山城样本",
   task_type: "chapter_text", phase: "exploration", arm: "candidate", round: 2, repeat: 1, attempt: 1,
@@ -43,12 +45,19 @@ describe("实验观测 / REQ-20261108-191146", () => {
     await screen.findByRole("tab", { name: "运行过程" });
     expect(screen.getByRole("tab", { name: "评分对比" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "产物文件" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /生成 Trace.*generation-2/ }));
-    expect(await screen.findByTestId("embedded-trace")).toHaveTextContent("generation-2");
-    fireEvent.click(screen.getByRole("button", { name: /评分 Trace.*evaluation-2/ }));
-    expect(screen.getByTestId("embedded-trace")).toHaveTextContent("evaluation-2");
-    fireEvent.click(screen.getByRole("button", { name: /改版 Trace.*improvement-2/ }));
-    expect(screen.getByTestId("embedded-trace")).toHaveTextContent("improvement-2");
+    fireEvent.click(screen.getByRole("button", { name: /山城样本.*正文生成/ }));
+    expect(await screen.findByTestId("embedded-trace")).toHaveAttribute("data-trace-id", "generation-2");
+    expect(JSON.parse(screen.getByTestId("embedded-trace").getAttribute("data-display-context")!)).toMatchObject({
+      experiment_name: "正文实验", sample_name: "山城样本", operation: "generation", round: 2, repeat: 1,
+    });
+    fireEvent.click(screen.getByRole("button", { name: /山城样本.*正文评分/ }));
+    expect(screen.getByTestId("embedded-trace")).toHaveAttribute("data-trace-id", "evaluation-2");
+    fireEvent.click(screen.getByRole("button", { name: /正文实验.*第 ?2 ?轮改版/ }));
+    expect(screen.getByTestId("embedded-trace")).toHaveAttribute("data-trace-id", "improvement-2");
+    expect(JSON.parse(screen.getByTestId("embedded-trace").getAttribute("data-display-context")!)).toMatchObject({
+      experiment_name: "正文实验", operation: "improvement", round: 2,
+    });
+    expect(screen.queryByText(/generation-2|evaluation-2|improvement-2/)).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /Trace/ })).not.toBeInTheDocument();
   });
 
@@ -79,10 +88,62 @@ describe("实验观测 / REQ-20261108-191146", () => {
     render(<MemoryRouter initialEntries={["/bench/experiments/id"]}><Routes>
       <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
     </Routes></MemoryRouter>);
-    fireEvent.click(await screen.findByRole("button", { name: /生成 Trace.*live-before-save/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /山城样本.*正文生成/ }));
     expect(api.getActiveRuns).toHaveBeenCalledWith("experiment");
-    expect(screen.getByTestId("embedded-trace")).toHaveTextContent("live-before-save");
+    expect(screen.getByTestId("embedded-trace")).toHaveAttribute("data-trace-id", "live-before-save");
     expect(screen.queryByText(/foreign-experiment/)).not.toBeInTheDocument();
+  });
+
+  it("运行快照保留旧名称，辅助行区分真实重复和秒级时间", async () => {
+    api.getExperiment.mockResolvedValue(run("已改名实验", {
+      samples: [sample("sample-2", { package_title: "已改名样本", trace_ids: ["generation-2", "generation-step-2"] })],
+      trace_runs: {
+        "generation-2": { trace_id: "generation-2", started_at: "2026-11-08T12:34:56Z", run_snapshot: {
+          display_context: { experiment_name: "运行时实验", sample_name: "运行时样本", task_type: "chapter_text",
+            operation: "generation", phase: "validation", arm: "candidate", round: 2, repeat: 3 },
+        } },
+        "generation-step-2": { trace_id: "generation-step-2", started_at: "2026-11-08T12:35:57Z" },
+      },
+    }) as never);
+    render(<MemoryRouter initialEntries={["/bench/experiments/id"]}><Routes>
+      <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
+    </Routes></MemoryRouter>);
+    const saved = await screen.findByRole("button", { name: /运行时样本.*正文生成/ });
+    expect(saved).toHaveTextContent("运行时实验");
+    expect(saved).toHaveTextContent("独立终验");
+    expect(saved).toHaveTextContent("候选第2轮");
+    expect(saved).toHaveTextContent("第3次重复");
+    expect(saved).toHaveTextContent("34:56");
+    expect(saved).not.toHaveTextContent("已改名");
+    expect(saved).not.toHaveTextContent("generation-2");
+    fireEvent.click(saved);
+    expect(JSON.parse(screen.getByTestId("embedded-trace").getAttribute("data-display-context")!)).toMatchObject({
+      experiment_name: "运行时实验", sample_name: "运行时样本", operation: "generation", repeat: 3,
+    });
+    const nextStep = screen.getByRole("button", { name: /已改名样本.*正文生成/ });
+    expect(nextStep).toHaveTextContent("35:57");
+    expect(nextStep).not.toHaveTextContent(/重试|尝试/);
+    fireEvent.click(nextStep);
+    expect(screen.getByTestId("embedded-trace")).toHaveAttribute("data-trace-id", "generation-step-2");
+  });
+
+  it("运行中改版按真实轮次命名，不借用当前环节和样本", async () => {
+    api.getExperiment.mockResolvedValue(run("正文实验", { phase: "validation", current_round: 3 }) as never);
+    api.getActiveRuns.mockResolvedValue([{ trace_id: "live-improvement", run_purpose: "evolution_evolve",
+      experiment_id: "id", external_refs: { experiment_id: "id", round: "2", phase: "improvement" },
+      status: "running", started_at: "2026-11-08T12:34:56Z" }] as never[]);
+    render(<MemoryRouter initialEntries={["/bench/experiments/id"]}><Routes>
+      <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
+    </Routes></MemoryRouter>);
+    const pending = await screen.findByRole("heading", { name: "正在执行的 Trace" });
+    const entry = within(pending.closest("section")!).getByRole("button", { name: /正文实验.*第2轮改版/ });
+    expect(entry).toHaveTextContent("34:56");
+    expect(entry).not.toHaveTextContent(/山城样本|独立终验|重复|尝试/);
+    fireEvent.click(entry);
+    expect(screen.getByTestId("embedded-trace")).toHaveAttribute("data-trace-id", "live-improvement");
+    expect(JSON.parse(screen.getByTestId("embedded-trace").getAttribute("data-display-context")!)).toMatchObject({
+      experiment_name: "正文实验", operation: "improvement", phase: "improvement", round: 2,
+    });
   });
 
   it("实时 Trace 查询迟迟不返回时，实验详情和产物仍可读取", async () => {

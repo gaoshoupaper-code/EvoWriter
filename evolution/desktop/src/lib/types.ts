@@ -1,3 +1,5 @@
+import type { TraceDisplayContext, TraceIdentityRun } from "./trace-display";
+
 // ── Trace 类型（搬迁自 evolution/frontend/lib/types.ts，仅保留 trace 相关 + 新增监测类型）──
 
 // DEC-008 四维正交业务状态：pending→running→cancelling→终态（cancel_timeout 仅可恢复为 cancelled）。
@@ -138,6 +140,7 @@ export type TraceTodoSnapshot = {
 };
 
 export type TraceRunSummary = {
+  display_context?: TraceDisplayContext;
   trace_id: string;
   workspace_id: string;
   thread_id: string;
@@ -222,6 +225,7 @@ export type SseEnvelope = {
 
 /** trace 列表项（evolution /api/traces 返回，对应 TraceListItem） */
 export type TraceListItem = {
+  display_context?: TraceDisplayContext;
   trace_id: string;
   workspace_id: string;
   thread_id: string | null;
@@ -286,6 +290,7 @@ export type WorkspaceUsageRow = {
 
 /** 活跃 trace（evolution /api/active-runs 富化返回，D7） */
 export type ActiveRun = {
+  display_context?: TraceDisplayContext;
   trace_id: string;
   workspace_id: string;
   thread_id: string | null;
@@ -390,6 +395,7 @@ export type WorkloadProfile = {
     hitl_events: number;
   };
   drilldown_trace_ids: string[];
+  drilldown_runs?: TraceIdentityRun[];
   advanced_analysis: { eligible: boolean; missing_conditions: string[] };
 };
 

@@ -182,6 +182,7 @@ class EvolutionTraceRecorder:
         self._run_links: dict[str, list[TraceSpanLink]] = {}
         self._run_external_refs: dict[str, dict[str, str]] = {}
         self._run_workloads: dict[str, TraceWorkload] = {}
+        self._run_display_metadata: dict[str, dict[str, Any]] = {}
 
     # ── 生命周期 ──────────────────────────────────────────────
 
@@ -257,6 +258,16 @@ class EvolutionTraceRecorder:
         w3c_context = create_trace_context(traceparent)
         self._run_external_refs[trace_id] = dict(external_refs or {})
         self._run_external_refs[trace_id].update(w3c_context.external_refs)
+        from app.view.display_context import display_contexts
+
+        display_context = display_contexts([{
+            "trace_id": trace_id, "run_purpose": run_purpose, "workload": resolved_workload,
+            "external_refs": self._run_external_refs[trace_id],
+        }], legacy=False)[trace_id]
+        self._run_display_metadata[trace_id] = {
+            "display_context": display_context, "started_at": started_iso,
+            "session_name": trace_session_id, "workload": resolved_workload, "service": "evolution",
+        }
         self._increment_states[trace_id] = IncrementState()
         # 登记 session_id → trace_id 映射（供 SSE 端点查询）。
         self._session_trace[session_id] = trace_id
@@ -273,7 +284,7 @@ class EvolutionTraceRecorder:
                 integrity_status, coverage_json, run_snapshot_json,
                 external_refs_json, links_json)
                VALUES (?, ?, ?, ?, ?, 'running', ?, 0, ?, ?, ?, 2, 'evolution', ?,
-                       'incomplete', ?, '{}', ?, ?)""",
+                       'incomplete', ?, ?, ?, ?)""",
             (
                 trace_id,
                 "evolution",       # workspace_id：进化端固定标识
@@ -286,6 +297,7 @@ class EvolutionTraceRecorder:
                 started_iso,       # last_heartbeat_at：创建即首次心跳
                 resolved_workload,
                 json.dumps({"payload": "known", "token": "unknown", "cost": "unknown"}),
+                json.dumps({"display_context": display_context}, ensure_ascii=False),
                 json.dumps(self._run_external_refs[trace_id], ensure_ascii=False),
                 json.dumps(
                     [link.model_dump(mode="json") for link in self._run_links[trace_id]],
@@ -335,6 +347,7 @@ class EvolutionTraceRecorder:
                         "run_purpose": run_purpose,
                         "service": "evolution",
                         "external_refs": self._run_external_refs[trace_id],
+                        "display_context": display_context,
                     },
                 },
             )
@@ -370,7 +383,7 @@ class EvolutionTraceRecorder:
 
         # 确认 trace 在 DB 存在（防凭空 resume 一个不存在的 trace）。
         row = db.query_one(
-            "SELECT trace_id, started_at, run_purpose, workload FROM runs WHERE trace_id=?",
+            "SELECT trace_id, started_at, session_name, run_purpose, workload, run_snapshot_json, external_refs_json FROM runs WHERE trace_id=?",
             (trace_id,),
         )
         if row is None:
@@ -407,7 +420,13 @@ class EvolutionTraceRecorder:
         workload = row.get("workload")
         self._run_workloads[trace_id] = workload if workload else _workload_for_purpose(row.get("run_purpose") or "")
         self._run_links[trace_id] = []
-        self._run_external_refs[trace_id] = {}
+        self._run_external_refs[trace_id] = json.loads(row.get("external_refs_json") or "{}")
+        from app.view.display_context import display_contexts
+
+        self._run_display_metadata[trace_id] = {
+            "display_context": display_contexts([row])[trace_id], "started_at": row.get("started_at"),
+            "session_name": row.get("session_name"), "workload": self._run_workloads[trace_id], "service": "evolution",
+        }
         self._increment_states[trace_id] = IncrementState()
         from app.trace.differ import NodeSnapshotDiffer
         self._differs[trace_id] = NodeSnapshotDiffer()
@@ -876,7 +895,7 @@ class EvolutionTraceRecorder:
             from app.view.events import get_event_bus
 
             row = db.query_one(
-                "SELECT session_name, workload, run_purpose, external_refs_json, started_at, ended_at FROM runs WHERE trace_id=?",
+                "SELECT session_name, workload, run_purpose, external_refs_json, run_snapshot_json, started_at, ended_at FROM runs WHERE trace_id=?",
                 (trace_id,),
             )
             if row is not None:
@@ -891,6 +910,7 @@ class EvolutionTraceRecorder:
                             "workload": row["workload"],
                             "run_purpose": row["run_purpose"],
                             "external_refs": json.loads(row.get("external_refs_json") or "{}"),
+                            "display_context": json.loads(row.get("run_snapshot_json") or "{}").get("display_context", {}),
                             "status": status,
                             "started_at": row["started_at"],
                             "ended_at": row.get("ended_at"),
@@ -1330,6 +1350,7 @@ class EvolutionTraceRecorder:
                 "run_purpose": self._run_purposes.get(trace_id, ""),
                 "metrics": metrics,
                 "external_refs": dict(self._run_external_refs.get(trace_id, {})),
+                **self._run_display_metadata.get(trace_id, {}),
             })
         return result
 
@@ -1461,6 +1482,7 @@ class EvolutionTraceRecorder:
         self._run_links.pop(trace_id, None)
         self._run_external_refs.pop(trace_id, None)
         self._run_workloads.pop(trace_id, None)
+        self._run_display_metadata.pop(trace_id, None)
 
     def _lock_for(self, trace_id: str) -> RLock:
         lock = self._locks.get(trace_id)

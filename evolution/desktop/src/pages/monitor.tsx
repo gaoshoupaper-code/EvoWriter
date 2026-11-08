@@ -13,6 +13,8 @@ import {
 import { useActiveRunsStream, type FinishedRunInfo } from "@/hooks/useActiveRunsStream";
 import type { ActiveRun, TraceIntegrityStatus, TraceMetrics, TraceStatus, TraceWorkload } from "@/lib/types";
 import { formatTokensW } from "@/lib/tokenFormat";
+import { TraceIdentity } from "@/components/trace/TraceIdentity";
+import { mergeTraceDisplay } from "@/lib/trace-display";
 
 const PAGE_SIZE = 50;
 const WORKLOADS: Array<{ value: TraceWorkload | "all"; label: string }> = [
@@ -294,6 +296,7 @@ function RunTableHead({ active = false }: { active?: boolean }) {
 type ObservableRun = ActiveRun | TraceListItem;
 
 function preserveKnownTotal(next: TraceListItem, previous?: TraceListItem, cached?: TraceMetrics): TraceListItem {
+  next = mergeTraceDisplay(next, previous);
   const previousTotal = previous?.metrics?.total_tokens ?? previous?.token_total;
   const cachedTotal = cached?.total_tokens;
   const knownTotal = previousTotal == null ? cachedTotal
@@ -311,10 +314,11 @@ function preserveKnownTotal(next: TraceListItem, previous?: TraceListItem, cache
 function finishedRunToListItem(run: FinishedRunInfo): TraceListItem {
   return {
     trace_id: run.trace_id,
-    workspace_id: "",
-    thread_id: null,
+    workspace_id: run.workspace_id || "",
+    thread_id: run.thread_id || null,
     session_name: run.session_name,
-    endpoint: null,
+    display_context: run.display_context,
+    endpoint: run.endpoint || null,
     status: (run.status || "completed") as TraceStatus,
     started_at: run.started_at,
     ended_at: run.ended_at,
@@ -346,7 +350,7 @@ function RunRow({ run, onOpen }: { run: ObservableRun; onOpen: () => void }) {
       if (event.key === "Enter" || event.key === " ") onOpen();
     }}>
       <td>
-        <span className="run-primary" title={run.trace_id}>{run.session_name || run.trace_id.slice(0, 14)}</span>
+        <TraceIdentity run={run} />
         <span className="run-secondary">
           {"service" in run ? run.service || "unknown" : "live"} · v{"schema_version" in run ? run.schema_version : 2}
         </span>
@@ -581,7 +585,7 @@ function UsageDrilldown() {
                   onClick={() => navigate(`/traces/${t.trace_id}`)}
                   onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") navigate(`/traces/${t.trace_id}`); }}
                 >
-                  <td><span className="run-primary" title={t.trace_id}>{t.session_name || t.trace_id.slice(0, 14)}</span></td>
+                  <td><TraceIdentity run={t} context={{ workspace_title: drill.title }} /></td>
                   <td><StatusBadge status={t.status} /></td>
                   <td className="run-time-cell">
                     {t.started_at ? formatDateTime(t.started_at) : "—"}

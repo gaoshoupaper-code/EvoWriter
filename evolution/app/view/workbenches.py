@@ -12,6 +12,7 @@ import app.core.db as db
 from app.trace.access import audit_content_access, require_full_content_access
 from app.trace_payloads import read_payload
 from app.view.observation_scope import ObservationScope, scope_sql
+from app.view.display_context import trace_run_views
 
 
 router = APIRouter(tags=["trace-workbenches"])
@@ -249,6 +250,7 @@ def _profile_for(
         "usage": usage,
         "mechanisms": mechanisms,
         "drilldown_trace_ids": trace_ids[:5],
+        "drilldown_runs": list(trace_run_views(trace_ids[:5]).values()),
         "advanced_analysis": {
             "eligible": not advanced_missing,
             "missing_conditions": advanced_missing,

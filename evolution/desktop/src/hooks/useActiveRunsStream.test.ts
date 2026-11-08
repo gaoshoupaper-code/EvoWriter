@@ -127,6 +127,26 @@ function makeSnapshotRun(traceId: string, sessionName = "快照任务"): ActiveR
   };
 }
 
+it("开始事件的业务名称在暂缺快照和结束摘要中保留（AC-006）", async () => {
+  const callback = vi.fn();
+  const { result } = renderHook(() => useActiveRunsStream(callback));
+  await act(async () => {});
+  await act(async () => {
+    emitChunk(`event: run_started\ndata: ${makeEnvelope(1, "run_started", {
+      trace_id: "trace-display", source: "executor", run: {
+        ...makeSnapshotRun("trace-display"), started_at: "2026-11-08T15:30:12Z",
+        display_context: { workspace_title: "雾城", task_phase: "writing" },
+      },
+    })}\n\n`);
+  });
+  expect(result.current.activeRuns[0].display_context?.workspace_title).toBe("雾城");
+  mockedGetActiveRuns.mockResolvedValue([makeSnapshotRun("trace-display")]);
+  await act(async () => { await result.current.refresh(); });
+  expect(result.current.activeRuns[0].display_context?.workspace_title).toBe("雾城");
+  await act(async () => { emitChunk(runFinishedFrame(2, "trace-display")); });
+  expect(callback.mock.calls[0][0].display_context?.workspace_title).toBe("雾城");
+});
+
 beforeEach(() => {
   vi.useFakeTimers();
   listeners.clear();

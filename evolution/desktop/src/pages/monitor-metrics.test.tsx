@@ -78,8 +78,8 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
   it("活跃及近期条目显示总量、缺失和陈旧提示", async () => {
     render(<MonitorPage />);
     await settle();
-    const active = screen.getByText("活跃任务").closest("tr")!;
-    const recent = screen.getByText("近期任务").closest("tr")!;
+    const active = screen.getByText("活跃任务 · 创作").closest("tr")!;
+    const recent = screen.getByText("近期任务 · 创作").closest("tr")!;
     expect(within(active).getByText("2.5w")).toBeInTheDocument();
     expect(within(active).getByText("部分用量缺失")).toBeInTheDocument();
     expect(within(active).getByText("数据可能过时")).toBeInTheDocument();
@@ -96,7 +96,7 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
       event_count: 4, error: null, metrics,
     };
     await act(async () => { onFinished?.(finished, finished.trace_id); });
-    let row = screen.getByText("刚结束任务").closest("tr")!;
+    let row = screen.getByText("刚结束任务 · 创作").closest("tr")!;
     expect(within(row).getByText("2.5w")).toBeInTheDocument();
 
     vi.mocked(getTraces).mockResolvedValue({
@@ -104,8 +104,43 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
       total: 1, limit: 50, offset: 0,
     });
     await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
-    row = screen.getByText("刚结束任务").closest("tr")!;
+    row = screen.getByText("刚结束任务 · 创作").closest("tr")!;
     expect(within(row).getByText("2.5w")).toBeInTheDocument();
+  });
+
+  it("业务名作为列表标题，无名终态和迟到校正保留已知名称与用量", async () => {
+    vi.useFakeTimers();
+    const known: TraceListItem = { ...recentRun(), session_name: "会话 7", status: "running",
+      started_at: "2026-11-08T12:34:56Z", display_context: { workspace_title: "雾城", task_phase: "writing" } };
+    vi.mocked(getTraces).mockResolvedValue({ items: [known], total: 1, limit: 50, offset: 0 });
+    render(<MonitorPage />);
+    await settle();
+    const title = screen.getByTitle("雾城 · 正文创作");
+    expect(title).toHaveTextContent("雾城 · 正文创作");
+    expect(title).not.toHaveTextContent(known.trace_id);
+    expect(title).not.toHaveTextContent("会话 7");
+
+    const finished: FinishedRunInfo = {
+      trace_id: known.trace_id, session_name: null, run_purpose: "user_generation", workload: "creation",
+      status: "completed", started_at: null, ended_at: null, duration_ms: 10000,
+      event_count: 4, error: null, metrics,
+    };
+    await act(async () => { onFinished?.(finished, known.trace_id); });
+    let row = screen.getByTitle("雾城 · 正文创作").closest("tr")!;
+    expect(within(row).getByText("completed")).toBeInTheDocument();
+    expect(within(row).getByText("2.5w")).toBeInTheDocument();
+    expect(within(row).getByTitle(/34:56/)).toBeInTheDocument();
+
+    vi.mocked(getTraces).mockResolvedValue({
+      items: [{ ...recentRun(), trace_id: known.trace_id, session_name: null, token_total: null }],
+      total: 1, limit: 50, offset: 0,
+    });
+    await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
+    row = screen.getByTitle("雾城 · 正文创作").closest("tr")!;
+    expect(within(row).getByText("2.5w")).toBeInTheDocument();
+    expect(within(row).getByTitle(/34:56/)).toBeInTheDocument();
+    expect(screen.getAllByTitle("雾城 · 正文创作")).toHaveLength(1);
+    expect(screen.queryByText(known.trace_id)).not.toBeInTheDocument();
   });
 
   it("近期同一运行条目优先显示活跃快照统计", async () => {
@@ -115,7 +150,7 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
     });
     render(<MonitorPage />);
     await settle();
-    const row = screen.getByText("近期同一任务").closest("tr")!;
+    const row = screen.getByText("近期同一任务 · 创作").closest("tr")!;
     expect(within(row).getByText("2.5w")).toBeInTheDocument();
     expect(within(row).getByText("数据可能过时")).toBeInTheDocument();
   });
@@ -125,13 +160,13 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
     render(<MonitorPage />);
     await settle();
     await act(async () => { onFinished?.(null, "trace-fallback", metrics); });
-    expect(screen.queryByText("兜底任务")).not.toBeInTheDocument();
+    expect(screen.queryByText("兜底任务 · 创作")).not.toBeInTheDocument();
     vi.mocked(getTraces).mockResolvedValue({
       items: [{ ...recentRun(), trace_id: "trace-fallback", session_name: "兜底任务", token_total: null }],
       total: 1, limit: 50, offset: 0,
     });
     await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
-    const row = screen.getByText("兜底任务").closest("tr")!;
+    const row = screen.getByText("兜底任务 · 创作").closest("tr")!;
     expect(within(row).getByText("2.5w")).toBeInTheDocument();
   });
 
@@ -146,19 +181,19 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
     vi.mocked(getTraces).mockResolvedValue({ items: [old], total: 1, limit: 50, offset: 0 });
     const page = render(<MonitorPage />);
     await settle();
-    expect(within(screen.getByText("近期旧快照").closest("tr")!).getByText("2.5w")).toBeInTheDocument();
+    expect(within(screen.getByText("近期旧快照 · 创作").closest("tr")!).getByText("2.5w")).toBeInTheDocument();
 
     runs = [];
     await act(async () => {
       onFinished?.(null, "trace-active", metrics);
       page.rerender(<MonitorPage />);
     });
-    let row = screen.getByText("近期旧快照").closest("tr")!;
+    let row = screen.getByText("近期旧快照 · 创作").closest("tr")!;
     expect(within(row).getByText("2.5w")).toBeInTheDocument();
     expect(within(row).getByText("running")).toBeInTheDocument();
 
     await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
-    row = screen.getByText("近期旧快照").closest("tr")!;
+    row = screen.getByText("近期旧快照 · 创作").closest("tr")!;
     expect(within(row).getByText("2.5w")).toBeInTheDocument();
 
     vi.mocked(getTraces).mockResolvedValue({
@@ -167,7 +202,7 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
     });
     await act(async () => { screen.getByTitle("刷新").click(); });
     await settle();
-    row = screen.getByText("近期旧快照").closest("tr")!;
+    row = screen.getByText("近期旧快照 · 创作").closest("tr")!;
     expect(within(row).getByText("3.0w")).toBeInTheDocument();
     expect(within(row).getByText("completed")).toBeInTheDocument();
   });
@@ -195,7 +230,7 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
       event_count: 5, error: null, metrics,
     };
     await act(async () => { onFinished?.(final, final.trace_id); });
-    const row = screen.getByText("完整摘要已到").closest("tr")!;
+    const row = screen.getByText("完整摘要已到 · 创作").closest("tr")!;
     expect(within(row).getByText("2.5w")).toBeInTheDocument();
     expect(within(row).getByText("completed")).toBeInTheDocument();
     expect(screen.getByText("1 条运行")).toBeInTheDocument();
@@ -215,10 +250,10 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
       onFinished?.(final, final.trace_id);
       onFinished?.({ ...final, metrics: { ...metrics, total_tokens: 30000 } }, final.trace_id);
     });
-    const row = screen.getByText("新增完成任务").closest("tr")!;
+    const row = screen.getByText("新增完成任务 · 创作").closest("tr")!;
     expect(within(row).getByText("3.0w")).toBeInTheDocument();
     expect(screen.getByText("1 条运行")).toBeInTheDocument();
-    expect(screen.getAllByText("新增完成任务")).toHaveLength(1);
+    expect(screen.getAllByText("新增完成任务 · 创作")).toHaveLength(1);
   });
   it("实验和来源不明的完成事件不能插入用户运行", async () => {
     render(<MonitorPage />);
@@ -233,9 +268,9 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
       onFinished?.({ ...experiment, trace_id: "legacy-exp", session_name: "历史用途冲突",
         run_purpose: "user_generation", observation_scope: "experiment" }, "legacy-exp");
     });
-    expect(screen.queryByText("实验完成")).not.toBeInTheDocument();
-    expect(screen.queryByText("来源不明")).not.toBeInTheDocument();
-    expect(screen.queryByText("历史用途冲突")).not.toBeInTheDocument();
+    expect(screen.queryByText("实验完成 · 创作")).not.toBeInTheDocument();
+    expect(screen.queryByText("来源不明 · 创作")).not.toBeInTheDocument();
+    expect(screen.queryByText("历史用途冲突 · 创作")).not.toBeInTheDocument();
     expect(screen.getByText("1 条运行")).toBeInTheDocument();
   });
 });

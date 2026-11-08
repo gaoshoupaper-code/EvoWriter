@@ -26,6 +26,7 @@ from app.domains.writing.style_assets import WritingStyleError
 from app.domains.writing.expert_agent.services.storyline_graph import generate_storyline_graph
 from app.domains.writing.models import build_writer_model
 from app.domains.writing.target_execution import current_execution, TargetScopeMiddleware
+from app.domains.writing.trace_display import capture_display_context
 from app.platform.agent.middleware import (
     TraceCallbackHandler,
     TraceMiddleware,
@@ -1086,7 +1087,12 @@ class MetaAgentService(BaseAgentService):
 
         with get_workspace_mutation_lock(thread.workspace_path):
             self._assert_style_annotation_task_current(thread, payload.primary_text() or "")
-            trace = self.trace_recorder.create_run(thread, "screenplay.generate")
+            display_context = capture_display_context(
+                thread, execution=current_execution(), owner_id=owner_id,
+            )
+            trace = self.trace_recorder.create_run(
+                thread, "screenplay.generate", display_context=display_context,
+            )
         try:
             from app.domains.writing.pipeline import route as pipeline_route
 
@@ -1095,6 +1101,12 @@ class MetaAgentService(BaseAgentService):
                 user_text=payload.primary_text() or "",
                 fresh_session=bool(getattr(payload, "fresh_session", False)),
             )
+            try:
+                self.trace_recorder.set_run_snapshot(trace.trace_id, {
+                    "display_context": {**display_context, "task_phase": pipe.phase},
+                })
+            except Exception as exc:
+                logger.debug("Trace display metadata unavailable: %s", type(exc).__name__)
             prompt = self._build_user_prompt(payload, thread, directive=pipe.directive)
             model = self._resolve_model(owner_id)
             agent = self._agent_for_workspace(
@@ -1519,7 +1531,13 @@ class MetaAgentService(BaseAgentService):
                     return
                 with get_workspace_mutation_lock(workspace_path):
                     self._assert_style_annotation_task_current(thread, user_text, trace_id_in)
-                    trace, is_new = self.trace_recorder.resume_run(thread, trace_id_in)
+                    trace, is_new = self.trace_recorder.resume_run(
+                        thread, trace_id_in, display_context=capture_display_context(
+                            thread, task_phase=pipe_decision.phase,
+                            task_type="character.repair" if character_repair else None,
+                            execution=current_execution(), owner_id=owner_id,
+                        ),
+                    )
                 if not is_new:
                     # FR-004：续跑 Run 的模型配置用绑定快照（无绑定/查询失败降级现有链）
                     llm_override = bound_snapshot
@@ -1535,6 +1553,11 @@ class MetaAgentService(BaseAgentService):
                         "screenplay.generate.stream",
                         run_purpose=run_purpose,
                         traceparent=traceparent,
+                        display_context=capture_display_context(
+                            thread, task_phase=pipe_decision.phase,
+                            task_type="character.repair" if character_repair else None,
+                            execution=current_execution(), owner_id=owner_id,
+                        ),
                     )
                 is_new = True
             # 准备模型和绑定期间也允许停止；准备失败由外层统一回收。

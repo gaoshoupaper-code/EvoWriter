@@ -13,6 +13,7 @@ from app.core.settings import settings
 from app.experiments import clients, packages, release, repo, rubrics, runner
 from app.experiments.schemas import PackageCreate, RuleCreate, RunCreate, TASK_TYPES
 from app.trace.access import require_full_content_access
+from app.view.display_context import trace_run_views
 
 router = APIRouter(prefix="/experiments", tags=["experiments"])
 internal_router = APIRouter(prefix="/ingestion", tags=["experiment-internal"])
@@ -81,6 +82,10 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
             public["usage"] = {key: item for key, item in sample.get("usage", {}).items() if key != "judge_attempts"}
             value["samples"].append(copy.deepcopy(public))
         value["usage"] = _usage(run)
+        trace_ids = [trace_id for sample in run.get("samples", [])
+                     for key in ("trace_ids", "evaluation_trace_ids") for trace_id in sample.get(key, [])]
+        trace_ids.extend(trace_id for round_ in run.get("rounds", []) for trace_id in round_.get("trace_ids", []))
+        value["trace_runs"] = trace_run_views(trace_ids)
     if not can_read_content and not summary:
         safe_samples = []
         for sample in value.get("samples", []):

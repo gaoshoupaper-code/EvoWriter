@@ -20,6 +20,7 @@ from app.platform.agent.base_service import BaseAgentService
 from app.platform.agent.middleware import FilesystemPathGuardMiddleware, TraceCallbackHandler, TraceMiddleware
 from app.platform.agent.runtime import FilesystemBackend, create_deep_agent
 from app.domains.writing.models import build_writer_model
+from app.domains.writing.trace_display import capture_display_context
 
 # 独立于 agents/character.py 的 prompt 路径（该 agent 已被 storybuilding 替代）
 _CHARACTER_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "character_system.md"
@@ -85,7 +86,11 @@ class CharacterService(BaseAgentService):
         if self.settings.writer_agent_mode.lower() == "mock":
             return self._mock_response(payload, thread)
 
-        trace = self.trace_recorder.create_run(thread, "character.generate")
+        trace = self.trace_recorder.create_run(
+            thread, "character.generate", display_context={
+                **capture_display_context(thread, owner_id=owner_id), "task_type": "character.generate",
+            },
+        )
         try:
             prompt = self._build_user_prompt(payload, thread)
             model = self._resolve_model(owner_id)

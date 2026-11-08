@@ -3,6 +3,7 @@ import { AlertCircle, CheckCircle2, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { getWorkloadProfiles } from "@/lib/api";
 import type { TraceWorkload, WorkloadProfile, WorkloadProfilesResponse } from "@/lib/types";
+import { TraceIdentity } from "@/components/trace/TraceIdentity";
 
 // 历史 workload（evidence_compile/evaluation）的数据仍可能出现在旧 trace 里，
 // 但 profile 查询只覆盖 creation/evolution（休眠工作负载随 DEC-002 裁撤）
@@ -175,7 +176,10 @@ function ProfileView({ profile, onOpenTrace }: { profile: WorkloadProfile; onOpe
         <div className="section-heading"><h2>回钻样本</h2><span>{profile.drilldown_trace_ids.length}</span></div>
         {profile.drilldown_trace_ids.length === 0 ? <div className="workbench-empty">无回钻样本</div> : (
           <div className="drilldown-list">{profile.drilldown_trace_ids.map((traceId) => (
-            <button key={traceId} onClick={() => onOpenTrace(traceId)}><code>{traceId}</code></button>
+            <button key={traceId} onClick={() => onOpenTrace(traceId)}>
+              <TraceIdentity compact run={profile.drilldown_runs?.find((run) => run.trace_id === traceId)
+                ?? { trace_id: traceId, workload: profile.workload }} />
+            </button>
           ))}</div>
         )}
       </section>

@@ -1,4 +1,5 @@
 import type { JudgeGroupInfo } from "./api";
+import type { TraceIdentityRun } from "@/lib/trace-display";
 
 export const TASK_TYPES = ["volume_outlines", "chapter_outlines", "chapter_text"] as const;
 export type ExperimentTaskType = typeof TASK_TYPES[number];
@@ -144,6 +145,7 @@ export type Experiment = {
     error: string | null; report: Partial<ExperimentComparison>; diff: string; trace_ids?: string[];
     regressions?: Partial<Record<ExperimentTaskType, ExperimentComparison>> }[];
   samples: ExperimentSample[];
+  trace_runs?: Record<string, TraceIdentityRun>;
   report: { passed?: boolean; exploration?: ExperimentComparison; validation?: ExperimentComparison;
     regressions?: Partial<Record<ExperimentTaskType, ExperimentComparison>>; reason?: string;
     exploration_round?: number; regression_round?: number; validation_round?: number };

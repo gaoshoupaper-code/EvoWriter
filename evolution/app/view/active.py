@@ -17,6 +17,7 @@ from fastapi import APIRouter
 
 from app.core.settings import settings
 from app.view.observation_scope import ObservationScope, source_scope, experiment_metadata
+from app.view.display_context import display_contexts
 
 logger = logging.getLogger("evolution.active")
 
@@ -171,7 +172,8 @@ def active_runs_api(observation_scope: ObservationScope = "user") -> list[dict[s
     if trace_ids:
         placeholders = ",".join("?" * len(trace_ids))
         rows = db.query_all(
-            f"""SELECT r.trace_id, r.session_name, r.run_purpose, r.workload, r.external_refs_json,
+            f"""SELECT r.trace_id, r.workspace_id, r.thread_id, r.endpoint, r.started_at,
+                       r.session_name, r.run_purpose, r.workload, r.external_refs_json, r.run_snapshot_json,
                        r.integrity_status, r.coverage_json,
                        (SELECT COUNT(*) FROM event_payloads e
                         WHERE e.trace_id=r.trace_id AND e.type='skill_activation')
@@ -188,6 +190,11 @@ def active_runs_api(observation_scope: ObservationScope = "user") -> list[dict[s
         rows = []
     ingested_map = {
         r["trace_id"]: {
+            "workspace_id": r.get("workspace_id"),
+            "thread_id": r.get("thread_id"),
+            "endpoint": r.get("endpoint"),
+            "started_at": r.get("started_at"),
+            "run_snapshot_json": r.get("run_snapshot_json"),
             "session_name": r.get("session_name"),
             "run_purpose": r.get("run_purpose"),
             "workload": r.get("workload"),
@@ -202,6 +209,7 @@ def active_runs_api(observation_scope: ObservationScope = "user") -> list[dict[s
     }
 
     experiment_refs = experiment_metadata()
+    contexts = display_contexts([{**ingested_map.get(r.get("trace_id"), {}), **r} for r in runs])
     for r in runs:
         tid = r.get("trace_id", "")
         meta = ingested_map.get(tid, {})
@@ -211,11 +219,11 @@ def active_runs_api(observation_scope: ObservationScope = "user") -> list[dict[s
             continue
         enriched.append({
             "trace_id": tid,
-            "workspace_id": r.get("workspace_id", ""),
-            "thread_id": r.get("thread_id"),
-            "endpoint": r.get("endpoint"),
+            "workspace_id": r.get("workspace_id") or meta.get("workspace_id") or "",
+            "thread_id": r.get("thread_id") or meta.get("thread_id"),
+            "endpoint": r.get("endpoint") or meta.get("endpoint"),
             "status": r.get("status", "running"),
-            "started_at": r.get("started_at"),
+            "started_at": r.get("started_at") or meta.get("started_at"),
             "duration_ms": r.get("duration_ms"),
             "event_count": r.get("event_count", 0),
             "metrics": r.get("metrics"),
@@ -232,6 +240,7 @@ def active_runs_api(observation_scope: ObservationScope = "user") -> list[dict[s
             "observation_scope": observation_scope,
             "external_refs": refs,
             "experiment_id": refs.get("experiment_id"),
+            "display_context": contexts[tid],
             "workload": r.get("workload") or meta.get("workload"),
             "integrity_status": r.get("integrity_status") or meta.get("integrity_status") or "legacy",
             "coverage": r.get("coverage") or meta.get("coverage") or {},

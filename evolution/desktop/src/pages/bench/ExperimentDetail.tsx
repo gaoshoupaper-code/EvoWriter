@@ -17,6 +17,8 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import TraceDetailPage from "@/pages/trace-detail";
 import { ExperimentArtifacts } from "@/components/bench/ExperimentArtifacts";
 import { ExperimentUsage } from "@/components/bench/ExperimentUsage";
+import { TraceIdentity } from "@/components/trace/TraceIdentity";
+import { traceDisplayContext, type TraceDisplayContext, type TraceIdentityRun } from "@/lib/trace-display";
 import "@/components/bench/experiments.css";
 
 const STOPPABLE = new Set(["pending", "running", "recovering", "stopping"]);
@@ -125,6 +127,29 @@ export default function ExperimentDetail() {
     ...experiment.rounds.flatMap((round) => round.trace_ids ?? [])]);
   const pendingTraces = liveRuns.filter((run) => !recordedTraceIds.has(run.trace_id));
   const taskLabel = (kind: Experiment["task_type"]) => experimentTaskLabel(kind, experiment.flow_version);
+  const traceContexts = new Map<string, TraceDisplayContext>();
+  for (const item of experiment.samples) {
+    const context = { experiment_name: experiment.name, sample_name: item.package_title, task_type: item.task_type,
+      phase: item.phase, round: item.round, arm: item.arm, repeat: item.repeat };
+    for (const id of item.trace_ids) traceContexts.set(id, { ...context, operation: "generation" });
+    for (const id of item.evaluation_trace_ids ?? []) traceContexts.set(id, { ...context, operation: "evaluation" });
+  }
+  for (const round of experiment.rounds) {
+    for (const id of round.trace_ids ?? []) traceContexts.set(id, { experiment_name: experiment.name,
+      task_type: experiment.task_type, operation: "improvement", phase: "improvement", round: round.round });
+  }
+  for (const run of pendingTraces) {
+    const item = experiment.samples.find((entry) => entry.id === run.external_refs?.sample_id);
+    const operation = run.run_purpose === "evolution_evolve" ? "improvement" : run.run_purpose === "evolution_eval" ? "evaluation" :
+      ["optimization", "evolution"].includes(run.run_purpose ?? "") ? "generation" : undefined;
+    const recordedRound = run.external_refs?.round;
+    traceContexts.set(run.trace_id, { experiment_name: experiment.name, operation, task_type: item?.task_type ?? experiment.task_type,
+      sample_name: item?.package_title, phase: item?.phase ?? run.external_refs?.phase,
+      round: item?.round ?? (recordedRound && /^\d+$/.test(recordedRound) ? Number(recordedRound) : undefined),
+      arm: item?.arm, repeat: item?.repeat });
+  }
+  const traceRun = (id: string): TraceIdentityRun => experiment.trace_runs?.[id] ?? liveRuns.find((run) => run.trace_id === id) ?? { trace_id: id };
+  const selectedContext = traceDisplayContext(traceRun(selectedTrace), traceContexts.get(selectedTrace));
 
   return <div className="bench-page experiment-detail">
     <header className="page-header"><Link to="/bench/experiments" className="action-link">返回实验记录</Link><h1>{experiment.name}</h1>
@@ -187,16 +212,11 @@ export default function ExperimentDetail() {
         {liveError && <p role="alert" className="experiment-error">{liveError}</p>}
         {pendingTraces.length > 0 && <section className="experiment-section"><h2>正在执行的 Trace</h2>
           <p className="experiment-note">运行中即时关联，完成后归入下方样本与轮次。</p>
-          {pendingTraces.map((run) => {
-            const linkedSample = experiment.samples.find((item) => item.id === run.external_refs?.sample_id);
-            const label = run.run_purpose === "evolution_evolve" ? "改版" : run.run_purpose === "evolution_eval" ? "评分" :
-              ["optimization", "evolution"].includes(run.run_purpose ?? "") ? "生成" : "实验";
-            return <div key={run.trace_id} className="experiment-active-run"><div>
-              <strong>{linkedSample?.package_title ?? (label === "改版" ? "候选改版" : "样本信息同步中")}</strong>
-              <span className="experiment-cell-note">{PHASE_LABELS[linkedSample?.phase ?? experiment.phase] ?? experiment.phase}
-                {linkedSample ? " · 第 " + linkedSample.round + " 轮 · 重复 " + linkedSample.repeat + " / 尝试 " + linkedSample.attempt : ""}</span>
-            </div><button type="button" className="action-link mono" onClick={() => setSelectedTrace(run.trace_id)}>{label} Trace {run.trace_id.slice(0, 20)}</button></div>;
-          })}
+          {pendingTraces.map((run) => <div key={run.trace_id} className="experiment-active-run">
+            <button type="button" className="action-link" onClick={() => setSelectedTrace(run.trace_id)}>
+              <TraceIdentity run={traceRun(run.trace_id)} context={traceContexts.get(run.trace_id)} />
+            </button>
+          </div>)}
         </section>}
         <section className="experiment-section"><div className="experiment-heading"><h2>运行与 Trace</h2>
           <label className="experiment-filter">评测环节<select className="config-input" value={sampleFilter} onChange={(event) => setSampleFilter(event.target.value)}>
@@ -209,8 +229,12 @@ export default function ExperimentDetail() {
               <td><span className={"experiment-state " + item.status}>{EXPERIMENT_STATUS[item.status] ?? item.status}</span>
                 {item.execution_phase && <small className="experiment-cell-note">{executionPhaseLabel(item.execution_phase)}</small>}
                 {item.error && <p className="experiment-error">{item.error}</p>}</td>
-              <td><div className="experiment-trace-links">{item.trace_ids.map((id) => <button className="action-link mono" type="button" key={id} onClick={() => setSelectedTrace(id)}>生成 Trace {id.slice(0, 20)}</button>)}
-                {item.evaluation_trace_ids?.map((id) => <button className="action-link mono" type="button" key={id} onClick={() => setSelectedTrace(id)}>评分 Trace {id.slice(0, 20)}</button>)}
+              <td><div className="experiment-trace-links">{item.trace_ids.map((id) => <button className="action-link" type="button" key={id} onClick={() => setSelectedTrace(id)}>
+                <TraceIdentity run={traceRun(id)} context={traceContexts.get(id)} />
+              </button>)}
+                {item.evaluation_trace_ids?.map((id) => <button className="action-link" type="button" key={id} onClick={() => setSelectedTrace(id)}>
+                  <TraceIdentity run={traceRun(id)} context={traceContexts.get(id)} />
+                </button>)}
                 {!item.trace_ids.length && !item.evaluation_trace_ids?.length && <span className="experiment-cell-note">{["pending", "running", "scoring", "recovering"].includes(item.status) ? "Trace 正在同步" : "没有关联 Trace"}</span>}
                 <button className="action-link" type="button" onClick={() => void viewSample(item.id)}>查看固定输入与检查</button></div></td></tr>)}
           </tbody></table></div>
@@ -235,14 +259,17 @@ export default function ExperimentDetail() {
             <summary>第 {round.round} 轮 · {EXPERIMENT_STATUS[round.status] ?? round.status} · {round.summary || "查看候选"}</summary>
             <p className="mono">{round.base_commit} → {round.source_commit || "尚无提交"}</p>
             {round.error && <p className="experiment-error">{round.error}</p>}
-            <div className="experiment-trace-links">{round.trace_ids?.map((id) => <button className="action-link mono" key={id} type="button" onClick={() => setSelectedTrace(id)}>改版 Trace {id.slice(0, 20)}</button>)}</div>
+            <div className="experiment-trace-links">{round.trace_ids?.map((id) => <button className="action-link" key={id} type="button" onClick={() => setSelectedTrace(id)}>
+              <TraceIdentity run={traceRun(id)} context={traceContexts.get(id)} />
+            </button>)}</div>
             {round.diff ? <pre className="experiment-diff">{round.diff}</pre> : <p className="experiment-note">没有可展示的文件差异。</p>}
           </details>)}
         </section>
         {selectedTrace && <section className="experiment-trace-inspector" aria-label="实验 Trace 详情"><div className="experiment-heading"><div>
-          <h2>Trace 详情</h2><p className="experiment-note">{experiment.name} · {selectedTrace}</p></div>
+          <h2>Trace 详情</h2></div>
           <button type="button" className="action-link" onClick={() => setSelectedTrace("")}>收起 Trace</button></div>
-          <TraceDetailPage key={selectedTrace} traceIdOverride={selectedTrace} embedded canReadContent={experiment.can_read_content} />
+          <TraceDetailPage key={selectedTrace} traceIdOverride={selectedTrace} embedded canReadContent={experiment.can_read_content}
+            displayContextOverride={selectedContext} />
         </section>}
     <section className="experiment-section"><h2>恢复与操作记录</h2>{!experiment.events.length ? <p className="experiment-note">暂无操作记录。</p> :
       <ol className="experiment-events">{experiment.events.map((event) => <li key={event.id}>

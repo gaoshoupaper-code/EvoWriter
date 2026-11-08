@@ -44,7 +44,7 @@ describe("运行观测独立加载（REQ-20261108-223920 AC-004）", () => {
     await settle();
     expect(getUserUsage).toHaveBeenCalledTimes(1);
     expect(screen.getByText("作家甲")).toBeInTheDocument();
-    expect(screen.getByText("已加载活跃")).toBeInTheDocument();
+    expect(screen.getByText("已加载活跃 · 创作")).toBeInTheDocument();
     expect(screen.getByText("加载近期运行…")).toBeInTheDocument();
   });
 
@@ -54,7 +54,7 @@ describe("运行观测独立加载（REQ-20261108-223920 AC-004）", () => {
       error: null, refresh: activeRefresh } as ReturnType<typeof useActiveRunsStream>);
     render(<MonitorPage />);
     await settle();
-    expect(screen.getByText("已加载历史")).toBeInTheDocument();
+    expect(screen.getByText("已加载历史 · 创作")).toBeInTheDocument();
     expect(screen.getByText("加载用量观测…")).toBeInTheDocument();
     expect(screen.getByText("加载活跃运行…")).toBeInTheDocument();
   });
@@ -64,12 +64,12 @@ describe("运行观测独立加载（REQ-20261108-223920 AC-004）", () => {
     render(<MonitorPage />);
     await settle();
     expect(screen.getByText("作家甲")).toBeInTheDocument();
-    expect(screen.getByText("已加载活跃")).toBeInTheDocument();
+    expect(screen.getByText("已加载活跃 · 创作")).toBeInTheDocument();
     const section = screen.getByText("近期运行").closest("section")!;
     expect(within(section).getByText("历史接口失败")).toBeInTheDocument();
     fireEvent.click(within(section).getByText("重试"));
     await settle();
-    expect(screen.getByText("已加载历史")).toBeInTheDocument();
+    expect(screen.getByText("已加载历史 · 创作")).toBeInTheDocument();
   });
 
   it("刷新历史保留原数据，失败也不清空", async () => {
@@ -78,10 +78,10 @@ describe("运行观测独立加载（REQ-20261108-223920 AC-004）", () => {
     const pending = deferred<Awaited<ReturnType<typeof getTraces>>>();
     vi.mocked(getTraces).mockReturnValueOnce(pending.promise);
     fireEvent.click(screen.getByTitle("刷新"));
-    expect(screen.getByText("已加载历史")).toBeInTheDocument();
+    expect(screen.getByText("已加载历史 · 创作")).toBeInTheDocument();
     expect(screen.getByText("更新近期运行…")).toBeInTheDocument();
     await act(async () => pending.reject(new Error("刷新历史失败")));
-    expect(screen.getByText("已加载历史")).toBeInTheDocument();
+    expect(screen.getByText("已加载历史 · 创作")).toBeInTheDocument();
     expect(screen.getByText("刷新历史失败")).toBeInTheDocument();
   });
 
@@ -91,10 +91,10 @@ describe("运行观测独立加载（REQ-20261108-223920 AC-004）", () => {
     render(<MonitorPage />);
     fireEvent.change(screen.getByLabelText("工作负载"), { target: { value: "creation" } });
     await settle();
-    expect(screen.getByText("新筛选结果")).toBeInTheDocument();
+    expect(screen.getByText("新筛选结果 · 创作")).toBeInTheDocument();
     await act(async () => old.resolve(page({ ...recent, session_name: "旧筛选结果" })));
-    expect(screen.queryByText("旧筛选结果")).not.toBeInTheDocument();
-    expect(screen.getByText("新筛选结果")).toBeInTheDocument();
+    expect(screen.queryByText("旧筛选结果 · 创作")).not.toBeInTheDocument();
+    expect(screen.getByText("新筛选结果 · 创作")).toBeInTheDocument();
   });
 
   it("点击当前时间范围不会丢弃正在加载的响应", async () => {
@@ -103,7 +103,7 @@ describe("运行观测独立加载（REQ-20261108-223920 AC-004）", () => {
     render(<MonitorPage />);
     fireEvent.click(screen.getByRole("button", { name: "7 天" }));
     await act(async () => pending.resolve(page()));
-    expect(screen.getByText("已加载历史")).toBeInTheDocument();
+    expect(screen.getByText("已加载历史 · 创作")).toBeInTheDocument();
   });
 
   it("刷新用量保留已知用户，失败保留旧数据", async () => {
@@ -125,7 +125,7 @@ describe("运行观测独立加载（REQ-20261108-223920 AC-004）", () => {
       error: "快照失败", refresh: activeRefresh } as ReturnType<typeof useActiveRunsStream>);
     render(<MonitorPage />);
     await settle();
-    expect(screen.getByText("已加载历史")).toBeInTheDocument();
+    expect(screen.getByText("已加载历史 · 创作")).toBeInTheDocument();
     const usage = screen.getByText("用量观测").closest("section")!;
     fireEvent.click(within(usage).getByText("重试"));
     await settle();

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
+import { TraceIdentity, TraceIdentifier } from "@/components/trace/TraceIdentity";
+import type { TraceDisplayContext } from "@/lib/trace-display";
 import { useTracePolling } from "@/hooks/useTraceStream";
 import { TraceChainTimeline } from "@/components/trace/TraceChainTimeline";
 import { TraceChainDrawer } from "@/components/trace/TraceChainDrawer";
@@ -31,8 +33,8 @@ import { formatTokensW } from "@/lib/tokenFormat";
  * - 点击 LLM 节点的"跳转图表"按钮 → 切到 Token 图表 tab + 高亮 loopIndex
  * - Token 图表点击数据点 → 切到调用链 tab + 高亮 nodeId + 滚动定位
  */
-export default function TraceDetailPage({ traceIdOverride, embedded = false, canReadContent }: {
-  traceIdOverride?: string; embedded?: boolean; canReadContent?: boolean;
+export default function TraceDetailPage({ traceIdOverride, embedded = false, canReadContent, displayContextOverride }: {
+  traceIdOverride?: string; embedded?: boolean; canReadContent?: boolean; displayContextOverride?: TraceDisplayContext;
 } = {}) {
   const { traceId: routeTraceId } = useParams<{ traceId: string }>();
   const traceId = traceIdOverride ?? routeTraceId;
@@ -341,7 +343,7 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
       <header className="trace-detail-header">
         <div className="trace-detail-title-row">
           {!embedded && <button className="back-button" onClick={() => navigate(-1)}>← 返回</button>}
-          <h1>Trace {traceId?.slice(0, 12)}…</h1>
+          <h1><TraceIdentity run={run} context={displayContextOverride} /></h1>
           <StatusBadge status={run.status} />
           {isLive && !isStale && (
             <span className="streaming-badge"><span className="pulse" /> 实时</span>
@@ -400,6 +402,7 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
             </div>
           )}
         </div>
+        {traceId && <TraceIdentifier key={traceId} traceId={traceId} />}
         {actionError && (
           <div className="action-error">{actionError}</div>
         )}

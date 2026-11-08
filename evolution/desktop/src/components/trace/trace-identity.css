@@ -1,0 +1,28 @@
+.trace-identity {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  max-width: min(100%, 42rem);
+  text-align: left;
+  white-space: normal;
+}
+.trace-identity-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.trace-identity-subtitle {
+  color: var(--text-secondary, #7a7a7a);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.trace-detail-title-row > h1 { min-width: 0; flex: 1; }
+.trace-identity-compact { font-size: 13px; }
+.trace-identifier { margin-top: 10px; color: var(--text-secondary, #7a7a7a); font-size: 12px; }
+.trace-identifier summary { cursor: pointer; width: fit-content; }
+.trace-identifier > div { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
+.trace-identifier code { overflow-wrap: anywhere; user-select: text; }

@@ -212,6 +212,7 @@ class TraceRecorder:
         *,
         traceparent: str | None = None,
         external_refs_extra: Mapping[str, str] | None = None,
+        display_context: Mapping[str, Any] | None = None,
     ) -> TraceRunHandle:
         trace_id = f"trace-{uuid4().hex}"
         started_at = datetime.now(UTC)
@@ -264,6 +265,7 @@ class TraceRecorder:
             coverage={"payload": "known", "token": "unknown", "cost": "unknown"},
             external_refs=refs,
             user_id=thread.user_id,
+            run_snapshot={"display_context": dict(display_context)} if display_context else {},
         )
         self._run_metadata[trace_id] = {"run_summary": summary.model_dump(mode="json"), "observation_thread": thread}
         try:
@@ -295,7 +297,10 @@ class TraceRecorder:
         )
         return handle
 
-    def resume_run(self, thread: ThreadSummary, trace_id: str) -> tuple[TraceRunHandle, bool]:
+    def resume_run(
+        self, thread: ThreadSummary, trace_id: str, *,
+        display_context: Mapping[str, Any] | None = None,
+    ) -> tuple[TraceRunHandle, bool]:
         """续接活跃 trace（HITL resume 缝合点3）。
 
         三条路径（D10 双键恢复）：
@@ -323,7 +328,7 @@ class TraceRecorder:
             _notify_evolution(thread, trace_id, "running", None)
             return handle, False
         # 路径3：降级开新 trace（兜底）
-        return self.create_run(thread, "screenplay.generate.stream"), True
+        return self.create_run(thread, "screenplay.generate.stream", display_context=display_context), True
 
     def _rebuild_active_state(
         self, thread: ThreadSummary, run: TraceRunSummary
@@ -1338,6 +1343,7 @@ class TraceRecorder:
         run_data = self._load_run_index_entry(ws_path, trace_id)
         if run_data is None:
             return None
+        run_data["run_snapshot"] = self._runtime_snapshot(trace_id, run_data.get("run_snapshot"))
         return TraceRunSummary.model_validate(run_data)
 
     def read_trace_events(
@@ -1502,6 +1508,7 @@ class TraceRecorder:
                 "usage_total": self._usage_totals.get(trace_id, 0),
                 "metrics": metrics,
                 "external_refs": run.external_refs if run else {},
+                "display_context": run.run_snapshot.get("display_context", {}) if run else {},
             })
         for trace_id in list(self._external_trace_ids):
             if trace_id in self._started_monotonic:
@@ -1518,6 +1525,7 @@ class TraceRecorder:
                            "started_at": run.started_at, "workload": run.workload,
                            "run_purpose": run.purpose, "service": run.service,
                            "owner_user_id": run.user_id, "external_refs": run.external_refs,
+                           "display_context": run.run_snapshot.get("display_context", {}),
                            "metrics": metrics, "usage_total": (metrics or {}).get("total_tokens")})
         return result
 
@@ -1534,6 +1542,17 @@ class TraceRecorder:
         """Merge immutable runtime versions captured during agent assembly."""
         meta = self._run_metadata.setdefault(trace_id, {})
         meta.setdefault("run_snapshot", {}).update(values)
+
+    def _runtime_snapshot(self, trace_id: str, recorded: dict[str, Any] | None) -> dict[str, Any]:
+        recorded = recorded or {}
+        runtime = (self._run_metadata.get(trace_id) or {}).get("run_snapshot") or {}
+        snapshot = {**recorded, **runtime}
+        # Later assembly can fill missing context, but cannot rename a started run.
+        if "display_context" in recorded:
+            snapshot["display_context"] = {
+                **runtime.get("display_context", {}), **recorded["display_context"],
+            }
+        return snapshot
 
     def record_skill_catalog(
         self,
@@ -2043,10 +2062,7 @@ class TraceRecorder:
         run["duration_ms"] = duration_ms
         run["event_count"] = self._sequences[trace_id]
         run["error"] = safe_error
-        run_snapshot = dict(run.get("run_snapshot") or {})
-        run_snapshot.update(
-            (self._run_metadata.get(trace_id) or {}).get("run_snapshot") or {}
-        )
+        run_snapshot = self._runtime_snapshot(trace_id, run.get("run_snapshot"))
         if prompt_versions:
             run_snapshot["prompt_versions"] = prompt_versions
         run["run_snapshot"] = run_snapshot

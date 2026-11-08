@@ -22,6 +22,7 @@ import {
   type ActiveSession,
 } from "@/lib/api";
 import type { TraceDetailLite } from "@/lib/types";
+import { mergeTraceDisplay } from "@/lib/trace-display";
 
 /** 业务终态集合：进入这些状态后停止高频轮询（cancel_timeout 纳入，EVD-009 修复）。 */
 const TERMINAL_STATUSES = new Set([
@@ -107,6 +108,7 @@ export function useTracePolling(traceId: string | null): TracePollingState {
     // CON-006 单调：旧 revision 不得覆盖新状态（乱序响应防护）。
     if (revision < lastRevisionRef.current) return false;
     lastRevisionRef.current = revision;
+    next = { ...next, run: mergeTraceDisplay(next.run, detailRef.current?.run) };
     setDetail(next);
     detailRef.current = next;
     setError(null);

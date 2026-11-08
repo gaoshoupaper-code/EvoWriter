@@ -196,6 +196,7 @@ def run_ab_generation(
         run_purpose="evolution",
         traceparent=traceparent,
         external_refs_extra=extra_refs or None,
+        display_context={"operation": "generation"},
     )
     trace_id = trace.trace_id
     from app.platform.agent.runtime_identity import build_runtime_identity

@@ -18,6 +18,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { evoStreamPath, getActiveRuns, type ObservationScope } from "@/lib/api";
 import { streamRequest } from "@/lib/stream";
 import type { ActiveRun, TraceMetrics } from "@/lib/types";
+import { mergeTraceDisplay, type TraceDisplayContext } from "@/lib/trace-display";
 
 const POLL_INTERVAL_MS = 5000;
 const METRICS_INTERVAL_MS = 2000;
@@ -34,6 +35,10 @@ export type TransportMode = "connecting" | "sse" | "polling";
 /** run_finished 事件携带的终态摘要（近期区即时渲染用）。 */
 export interface FinishedRunInfo {
   trace_id: string;
+  display_context?: TraceDisplayContext;
+  workspace_id?: string;
+  thread_id?: string | null;
+  endpoint?: string | null;
   session_name: string | null;
   run_purpose?: string | null;
   observation_scope?: ObservationScope | null;
@@ -74,6 +79,9 @@ function eventRunToActiveRun(run: Record<string, unknown> | null, fallbackTraceI
     duration_ms: (run?.["duration_ms"] as number) ?? null,
     event_count: (run?.["event_count"] as number) ?? 0,
     session_name: (run?.["session_name"] as string) || null,
+    display_context: run?.["display_context"] as TraceDisplayContext | undefined,
+    external_refs: run?.["external_refs"] as Record<string, string> | undefined,
+    observation_scope: run?.["observation_scope"] as ActiveRun["observation_scope"],
     ingested: false,
     run_purpose: (run?.["run_purpose"] as string) || null,
     service: (run?.["service"] as string) || null,
@@ -141,7 +149,8 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
           if (expiresAt <= now) tombstones.delete(tid);
         }
         const fresh = runs.filter((r) => !tombstones.has(r.trace_id))
-          .map((r) => ({ ...r, stats_stale: r.stats_stale ?? false }));
+          .map((r) => mergeTraceDisplay({ ...r, stats_stale: r.stats_stale ?? false },
+            prev.find((old) => old.trace_id === r.trace_id)));
         // 合并语义：快照为准，但保留「事件先到、快照尚未见」的活跃行——
         // evolution 对 executor 的轮询缓存有 ~1s 滞后，直连快照会闪掉新运行。
         // 淘汰：缺席超过 EVENT_ROW_MISS_LIMIT 次的事件行视为幽灵行（run_finished
@@ -234,7 +243,7 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
           const index = prev.findIndex((r) => r.trace_id === row.trace_id);
           if (index >= 0) {
             const next = [...prev];
-            next[index] = { ...row, metrics: row.metrics ?? prev[index].metrics };
+            next[index] = mergeTraceDisplay({ ...row, metrics: row.metrics ?? prev[index].metrics }, prev[index]);
             return next;
           }
           return [row, ...prev];
@@ -255,12 +264,16 @@ export function useActiveRunsStream(onRunFinished?: (run: FinishedRunInfo | null
           raw
             ? {
                 trace_id: (raw["trace_id"] as string) || traceId,
-                session_name: (raw["session_name"] as string) ?? null,
+                session_name: (raw["session_name"] as string) || previous?.session_name || null,
+                display_context: mergeTraceDisplay({ display_context: raw["display_context"] as TraceDisplayContext | undefined }, previous).display_context,
+                workspace_id: (raw["workspace_id"] as string) || previous?.workspace_id,
+                thread_id: (raw["thread_id"] as string) || previous?.thread_id,
+                endpoint: (raw["endpoint"] as string) || previous?.endpoint,
                 workload: (raw["workload"] as string) ?? null,
                 run_purpose: (raw["run_purpose"] as string) ?? previous?.run_purpose ?? null,
                 observation_scope: scopeProvided ? rawScope as ObservationScope | null : previous?.observation_scope,
                 status: (raw["status"] as string) ?? null,
-                started_at: (raw["started_at"] as string) ?? null,
+                started_at: (raw["started_at"] as string) || previous?.started_at || null,
                 ended_at: (raw["ended_at"] as string) ?? null,
                 duration_ms: (raw["duration_ms"] as number) ?? null,
                 event_count: (raw["event_count"] as number) ?? null,

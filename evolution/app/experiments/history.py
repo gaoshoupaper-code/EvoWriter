@@ -141,12 +141,46 @@ def make_history_tools(run: dict) -> list:
         if trace_number > len(traces):
             return None
         trace_id = traces[trace_number - 1]
-        bound = db.query_one(
-            """SELECT 1 AS bound FROM runs WHERE trace_id=? AND service='executor'
-               AND json_extract(run_snapshot_json, '$.target_task.task_id')=?""",
-            (trace_id, sample["task_id"]),
+        row = db.query_one(
+            """SELECT run_snapshot_json,workspace_id,thread_id,run_purpose,integrity_status
+               FROM runs WHERE trace_id=? AND service='executor'""", (trace_id,),
         )
-        return trace_id if bound else None
+        if not row:
+            return None
+        snapshot = json.loads(row["run_snapshot_json"])
+        if not isinstance(snapshot, dict):
+            return None
+        task_id = sample["task_id"]
+        if "target_task" in snapshot:
+            recorded = snapshot["target_task"]
+            if not isinstance(recorded, dict) or recorded.get("task_id") != task_id:
+                return None
+            if any(recorded[k] != sample[k] for k in ("source_commit", "input_revision", "artifact_digest", "target")
+                   if k in recorded and k in sample):
+                return None
+            return trace_id, {}
+
+        # Completed generation is published only after the executor parent verified every trace
+        # in the task's fixed workspace and the runner checked the input and artifact versions.
+        checks = sample.get("checks") or {}
+        identity = checks.get("identity") or {}
+        workspace = f"target-{task_id}"
+        if (snapshot.keys() - {"display_context"} or row["integrity_status"] != "incomplete"
+                or run["task_type"] != "chapter_text" or sample["id"] != task_id
+                or sample.get("generation_status") != "completed" or sample.get("completed") is not True
+                or checks.get("complete") is not True or row["run_purpose"] != "optimization"
+                or row["workspace_id"] != workspace or row["thread_id"] != f"{workspace}-1"
+                or any(not sample.get(k) or identity.get(k) != sample[k] for k in ("target", "source_commit", "input_revision"))):
+            return None
+        archived = db.query_one(
+            """SELECT 1 FROM assessment_entries WHERE assessment_id=? AND category='trace' AND entry_id=?
+               AND round_number=? AND version=? AND json_extract(payload, ?)=?""",
+            (run["id"], sample["id"], round_number, sample["source_commit"], f"$.trace_ids[{trace_number - 1}]", trace_id),
+        )
+        if not archived:
+            return None
+        return trace_id, {"warning": "运行身份快照缺失。以下事件依据父进程核验的本题记录提供，仅供诊断。",
+                          "integrity_status": row["integrity_status"]}
 
     @tool(args_schema=_Strict)
     def list_assessment_history() -> list:
@@ -206,25 +240,30 @@ def make_history_tools(run: dict) -> list:
     def list_writing_events(round_number: int, sample_number: int, trace_number: int,
                             after_sequence: int = 0, limit: int = 40) -> dict:
         """按实际顺序列本次写作的技能加载、工具与助手调用、稿件快照和错误。trace_number 从 1 起。"""
-        trace_id = trace_at(round_number, sample_number, trace_number)
-        if not trace_id:
+        binding = trace_at(round_number, sample_number, trace_number)
+        if not binding:
             return {"error": _UNAVAILABLE}
+        trace_id, notice = binding
         placeholders = ",".join("?" for _ in _EVENT_TYPES)
         rows = db.query_all(
             f"""SELECT payload_json FROM event_payloads WHERE trace_id=? AND sequence>?
                 AND type IN ({placeholders}) ORDER BY sequence LIMIT ?""",
             (trace_id, after_sequence, *_EVENT_TYPES, limit + 1),
         )
-        items = [_event_label(TraceLogEvent.model_validate_json(row["payload_json"])) for row in rows[:limit]]
-        return {"items": items, "next_sequence": items[-1]["sequence"] if len(rows) > limit else None}
+        events = [TraceLogEvent.model_validate_json(row["payload_json"]) for row in rows[:limit]]
+        if any(event.trace_id != trace_id for event in events):
+            return {"error": _UNAVAILABLE}
+        return {"items": [_event_label(event) for event in events],
+                "next_sequence": events[-1].sequence if len(rows) > limit else None, **notice}
 
     @tool(args_schema=_Event)
     def read_writing_event(round_number: int, sample_number: int, trace_number: int,
                            sequence: int, offset: int = 0) -> dict:
         """读取所列事件的受控详情。按快照、审稿调用、后续快照的顺序核对稿件和意见。"""
-        trace_id = trace_at(round_number, sample_number, trace_number)
-        if not trace_id:
+        binding = trace_at(round_number, sample_number, trace_number)
+        if not binding:
             return {"error": _UNAVAILABLE}
+        trace_id, notice = binding
         row = db.query_one("SELECT payload_json FROM event_payloads WHERE trace_id=? AND sequence=?",
                            (trace_id, sequence))
         if not row:
@@ -255,7 +294,8 @@ def make_history_tools(run: dict) -> list:
             details["snapshot"] = event.output
         if event.type == "middleware_assembly":
             details["middleware"] = [item.name for item in event.middleware_stack]
-        return _page({**_event_label(event), **{k: v for k, v in details.items() if v is not None}}, offset)
+        page = _page({**_event_label(event), **{k: v for k, v in details.items() if v is not None}}, offset)
+        return {**page, **notice}
 
     return [list_assessment_history, search_assessment_history, read_assessment_round, read_improvement_sample,
             list_writing_events, read_writing_event]

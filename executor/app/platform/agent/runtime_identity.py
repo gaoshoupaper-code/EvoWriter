@@ -24,6 +24,11 @@ _KEY_DISTRIBUTIONS = (
 )
 
 
+def warm_runtime_identity() -> None:
+    """Freeze image and dependency hashes while the trusted worker can read them."""
+    _base_runtime_identity()
+
+
 def build_runtime_identity(*, harness_root: Path, harness_commit: str | None = None) -> dict[str, Any]:
     """返回 snapshot、probe 和 production activation 共用的精确身份。"""
     identity = dict(_base_runtime_identity())
@@ -101,4 +106,4 @@ def _digest(value: dict[str, Any]) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-__all__ = ["build_runtime_identity"]
+__all__ = ["build_runtime_identity", "warm_runtime_identity"]

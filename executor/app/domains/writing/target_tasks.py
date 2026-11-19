@@ -747,6 +747,7 @@ def _prepare_candidate(store, task_id, lease_fd):
     """Freeze the one allowed credential before executable candidate imports."""
     import socket
     from urllib.parse import urlparse
+    from app.platform.agent.runtime_identity import warm_runtime_identity
     from app.platform.core.settings import get_settings
     from app.platform.isolation.sandbox import restrict_process, runtime_read_paths
     row = store.record(task_id)
@@ -789,6 +790,7 @@ def _prepare_candidate(store, task_id, lease_fd):
     settings.known_production_path = str(directory / "known_production.json")
     from app.platform.memory.store import MemoryStorePool, init_memory_store_pool
     init_memory_store_pool(MemoryStorePool(directory / "memory"))
+    warm_runtime_identity()
     os.chdir(directory)
     writer_id = os.environ.get("WRITING_AGENT_ID")
     restrict_process(

@@ -118,7 +118,26 @@ def test_search_only_returns_matching_evidence_in_active_assessment(archive):
         search({"query": "公开练习", "run_id": first["id"]})
 
 
-def test_local_sample_trace_order_and_content(archive, monkeypatch, tmp_path):
+@pytest.fixture
+def history_db(monkeypatch):
+    from app.experiments import assessment
+
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    monkeypatch.setattr(db, "_conn", conn)
+    conn.executescript("""
+        CREATE TABLE runs(trace_id TEXT PRIMARY KEY, service TEXT, run_snapshot_json TEXT,
+                          workspace_id TEXT, thread_id TEXT, run_purpose TEXT, integrity_status TEXT);
+        CREATE TABLE event_payloads(trace_id TEXT, sequence INTEGER, type TEXT, payload_json TEXT);
+        CREATE TABLE trace_payload_links(trace_id TEXT, event_id TEXT, field_name TEXT, payload_id TEXT);
+        CREATE TABLE payload_objects(payload_id TEXT, expires_at TEXT, deleted_at TEXT);
+    """)
+    assessment.init_schema(conn)
+    yield conn
+    conn.close()
+
+
+def test_local_sample_trace_order_and_content(archive, monkeypatch, tmp_path, history_db):
     from app.core.settings import settings
     from contracts.trace.payload import ContentAddressedPayloadStore
 
@@ -126,19 +145,12 @@ def test_local_sample_trace_order_and_content(archive, monkeypatch, tmp_path):
     store = ContentAddressedPayloadStore(tmp_path)
     draft = store.put({"content": "审前初稿"})
     holdout = store.put({"content": "保密复测原文"})
-    conn = sqlite3.connect(":memory:")
-    conn.row_factory = sqlite3.Row
-    monkeypatch.setattr(db, "_conn", conn)
-    conn.executescript("""
-        CREATE TABLE runs(trace_id TEXT PRIMARY KEY, service TEXT, run_snapshot_json TEXT);
-        CREATE TABLE event_payloads(trace_id TEXT, sequence INTEGER, type TEXT, payload_json TEXT);
-        CREATE TABLE trace_payload_links(trace_id TEXT, event_id TEXT, field_name TEXT, payload_id TEXT);
-        CREATE TABLE payload_objects(payload_id TEXT, expires_at TEXT, deleted_at TEXT);
-    """)
+    conn = history_db
     current = archive["samples"][1]
     trace_id = current["trace_ids"][0]
     def add_trace(key, task):
-        conn.execute("INSERT INTO runs VALUES(?, 'executor', ?)", (key, json.dumps({"target_task": {"task_id": task}})))
+        conn.execute("INSERT INTO runs(trace_id,service,run_snapshot_json) VALUES(?, 'executor', ?)",
+                     (key, json.dumps({"target_task": {"task_id": task}})))
     add_trace(trace_id, current["task_id"])
     add_trace("foreign-trace", "another-task")
     current["trace_ids"].append("foreign-trace")
@@ -161,6 +173,7 @@ def test_local_sample_trace_order_and_content(archive, monkeypatch, tmp_path):
     timeline = tools["list_writing_events"]
     first = timeline({**query, "limit": 3})
     second = timeline({**query, "after_sequence": first["next_sequence"]})
+    assert "warning" not in first
     assert first["items"][0]["skill"] == "对话练习"
     assert [event["sequence"] for event in first["items"] + second["items"]] == [1, 2, 3, 4, 5]
     for seq, expected in [(2, "审前初稿"), (3, "review"), (4, "审稿意见"), (5, "修稿")]:
@@ -176,4 +189,70 @@ def test_local_sample_trace_order_and_content(archive, monkeypatch, tmp_path):
     assert "error" in timeline({**query, "trace_number": 2})
     with pytest.raises(ValidationError):
         tools["read_writing_event"]({**query, "sequence": 2, "payload_id": "foreign-payload"})
-    conn.close()
+
+
+def test_missing_identity_needs_a_matching_parent_verified_archived_trace(archive, history_db, monkeypatch, tmp_path):
+    from app.core.settings import settings
+    from contracts.trace.payload import ContentAddressedPayloadStore
+
+    current = archive["samples"][1]
+    task = current["id"]
+    trace = current["trace_ids"][0]
+    current.update(task_id=task, completed=True, generation_status="completed", input_revision="revision",
+                   source_commit="commit", checks={"complete": True, "identity": {
+                       "source_commit": "commit", "input_revision": "revision", "target": current["target"]}})
+    ws = f"target-{task}"
+    conn = history_db
+    conn.execute("INSERT INTO runs VALUES(?, 'executor', ?, ?, ?, 'optimization', 'incomplete')",
+                 (trace, json.dumps({"display_context": {}}), ws, f"{ws}-1"))
+    conn.execute("INSERT INTO assessment_entries VALUES(?, 'trace', ?, 1, ?, ?)",
+                 (archive["id"], task, current["source_commit"], json.dumps({"trace_ids": [trace]})))
+    monkeypatch.setattr(settings, "trace_payload_dir", str(tmp_path))
+    manuscript = "属于本题的初稿" * 1200
+    value = ContentAddressedPayloadStore(tmp_path).put({"content": manuscript})
+    conn.execute("INSERT INTO payload_objects VALUES(?,NULL,NULL)", (value.payload_id,))
+    conn.execute("INSERT INTO trace_payload_links VALUES(?, 'one', 'output', ?)", (trace, value.payload_id))
+    event = {"trace_id": trace, "event_id": "one", "sequence": 1, "type": "artifact_revision", "status": "completed",
+             "source": "runtime", "timestamp": "2026-11-19T00:00:00Z", "payload_refs": {"output": value.model_dump()}}
+    conn.execute("INSERT INTO event_payloads VALUES(?, 1,'artifact_revision',?)", (trace, json.dumps(event)))
+    query = {"round_number": 1, "sample_number": 1, "trace_number": 1}
+    timeline = calls(archive)["list_writing_events"]
+    read = calls(archive)["read_writing_event"]
+    listing = timeline(query)
+    assert listing["items"][0]["sequence"] == 1
+    detail = read({**query, "sequence": 1})
+    more = read({**query, "sequence": 1, "offset": detail["next_offset"]})
+    assert json.loads(detail["content"] + more["content"])["snapshot"]["content"] == manuscript
+    for result in (listing, detail, more):
+        assert "身份快照缺失" in result["warning"]
+        assert result["integrity_status"] == "incomplete"
+
+    conn.execute("UPDATE trace_payload_links SET trace_id='foreign' WHERE event_id='one'")
+    assert "unavailable_fields" in read({**query, "sequence": 1})["content"]
+    conn.execute("UPDATE trace_payload_links SET trace_id=? WHERE event_id='one'", (trace,))
+    conn.execute("UPDATE payload_objects SET deleted_at='expired'")
+    assert "unavailable_fields" in read({**query, "sequence": 1})["content"]
+    for key, bad in (("workspace_id", ws + "-foreign"), ("thread_id", ws + "-10"), ("thread_id", ws + "-1-other"),
+                     ("run_purpose", "user_generation"), ("service", "evolution"), ("integrity_status", "verified"),
+                     ("run_snapshot_json", json.dumps({"harness_commit": "other"})),
+                     ("run_snapshot_json", json.dumps({"target_task": {"task_id": "foreign"}})),
+                     ("run_snapshot_json", json.dumps({"target_task": {"task_id": task, "source_commit": "other"}})),
+                     ("run_snapshot_json", json.dumps({"target_task": {}}))):
+        before = conn.execute(f"SELECT {key} FROM runs WHERE trace_id=?", (trace,)).fetchone()[0]
+        conn.execute(f"UPDATE runs SET {key}=? WHERE trace_id=?", (bad, trace))
+        assert "error" in timeline(query) and "error" in read({**query, "sequence": 1})
+        conn.execute(f"UPDATE runs SET {key}=? WHERE trace_id=?", (before, trace))
+    for key, bad in (("generation_status", "running"), ("completed", False), ("input_revision", "different"),
+                     ("source_commit", "different"), ("checks", {"complete": False}), ("task_id", "foreign")):
+        before = current[key]
+        current[key] = bad
+        assert "error" in timeline(query)
+        current[key] = before
+    for key, bad in (("assessment_id", "other"), ("entry_id", "holdout"), ("version", "other"),
+                     ("round_number", 0), ("payload", json.dumps({"trace_ids": ["other"]}))):
+        before = conn.execute(f"SELECT {key} FROM assessment_entries").fetchone()[0]
+        conn.execute(f"UPDATE assessment_entries SET {key}=?", (bad,))
+        assert "error" in timeline(query)
+        conn.execute(f"UPDATE assessment_entries SET {key}=?", (before,))
+    current["phase"] = "regression"
+    assert "error" in timeline(query)

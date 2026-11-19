@@ -49,6 +49,7 @@ evolution/harnesses/repo/**/.git/
 **/.env.*
 !**/.env.example
 !**/.env.production.example
+evolution/secrets/
 
 # ── 文档与参考资料 ──
 *.pdf

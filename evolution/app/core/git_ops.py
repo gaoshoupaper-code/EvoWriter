@@ -309,7 +309,7 @@ def push_mirror() -> str | None:
         不阻断发版主链路（账本 + artifact 才是发版的权威产物）。
     """
     url = settings.harness_mirror_remote_url
-    if not url:
+    if not url or os.getenv("WRITING_AGENT_ID"):
         return None
     branch = settings.harness_mirror_branch
     refspec = f"main:refs/heads/{branch}"

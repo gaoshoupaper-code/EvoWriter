@@ -5,6 +5,7 @@ ssh key 注入 GIT_SSH_COMMAND。
 """
 from __future__ import annotations
 
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -18,6 +19,15 @@ MIRROR_URL = "git@github.com:example/evowriter.git"
 
 
 class PushMirrorTest(unittest.TestCase):
+    def test_private_suite_skips_the_shared_mirror(self) -> None:
+        with (
+            patch.dict(os.environ, {"WRITING_AGENT_ID": "text"}),
+            patch.object(git_ops.settings, "harness_mirror_remote_url", MIRROR_URL),
+            patch.object(git_ops, "_git") as git_run,
+        ):
+            self.assertIsNone(git_ops.push_mirror())
+        git_run.assert_not_called()
+
     def test_disabled_when_no_remote_configured(self) -> None:
         """未配置 mirror remote → 返回 None，不执行任何 git 命令。"""
         with patch.object(git_ops.settings, "harness_mirror_remote_url", ""), patch.object(

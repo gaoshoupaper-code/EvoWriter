@@ -73,9 +73,11 @@ class TargetSpec(BaseModel):
             raise ValueError("正文任务必须指定目标章号")
         if self.task_type == "volume_outlines" and self.chapter is not None:
             raise ValueError("整本卷纲不接受单章目标")
-        if configured_task_type() and self.task_type in {"chapter_outlines", "chapter_text"}:
+        if configured_task_type() and self.task_type == "chapter_outlines":
             if self.chapter is None or len(self.volume_ids) != 1:
                 raise ValueError("须指定目标章及所属卷")
+        if configured_task_type() and self.task_type == "chapter_text" and len(self.volume_ids) > 1:
+            raise ValueError("正文任务最多指定一个所属卷")
         if self.chapters_per_volume is not None and self.task_type != "volume_outlines":
             raise ValueError("仅整本卷纲可以固定每卷章数")
         return self
@@ -142,9 +144,7 @@ def validate_scoped_input(target: TargetSpec, data: TaskInput) -> None:
     elif target.task_type == "chapter_outlines":
         required.append(f"卷纲/第{target.volume_ids[0]:02d}卷.md")
     elif target.task_type == "chapter_text":
-        required.extend([f"章纲/第{target.chapter:03d}章.md", "文风.md"])
-        if target.chapter > 1:
-            required.append(f"正文/第{target.chapter - 1:03d}章.md")
+        required.append(f"章纲/第{target.chapter:03d}章.md")
     missing = [name for name in required if not data.files.get(name, "").strip()]
     if missing:
         raise ValueError("缺少必需资料：" + "、".join(missing))

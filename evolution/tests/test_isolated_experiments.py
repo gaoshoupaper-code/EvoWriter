@@ -25,6 +25,28 @@ def test_four_fresh_packages_with_only_local_dependencies(monkeypatch, agent, ki
         payload = {key: case[key] for key in ("title", "purpose", "target", "input")}
         packages.validate_package(PackageCreate.model_validate(payload))
         assert "主题.md" not in case["input"]["files"]
+        if kind == "chapter_text":
+            assert list(case["input"]["files"]) == [f"章纲/第{case['target']['chapter']:03d}章.md"]
+            assert not case["target"]["volume_ids"] and not case["input"]["demand_md"]
+
+
+def test_chapter_case_preserves_imported_skills_only_in_new_runs():
+    from app.experiments import repo
+    from contracts.target_tasks import TaskInput
+
+    skills = [{"stage": "text", "name": "对白", "content": "对白简短。"}]
+    inputs = TaskInput(demand_md="旧需求", confirmation_rules="直接写。", skills=skills,
+                       files={"章纲/第002章.md": "章纲", "卷纲/第01卷.md": "卷纲", "文风.md": "文风"})
+    package = {"target": {"chapter": 2}, "input": inputs.model_dump(), "input_revision": inputs.input_revision}
+    current = repo.chapter_case(package)
+    assert current["input"]["skills"] == skills
+    assert current["input"]["files"] == {"章纲/第002章.md": "章纲"}
+    assert not current["input"]["demand_md"]
+    assert current["input_revision"] != inputs.input_revision
+    historical = repo.chapter_case(package, 1)
+    assert historical["input"]["skills"] == []
+    assert historical["input"]["files"] == inputs.files
+    assert package["input"]["skills"] == skills
 
 
 def test_five_point_gain_requires_complete_paired_runs(monkeypatch):
@@ -151,7 +173,7 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         monkeypatch.setattr(snapshots, "ensure_baseline", lambda commit: None)
         monkeypatch.setattr(snapshots, "retain", lambda archive, commit: None)
         run = runner.create_run(settings, "author")
-        assert run["assessment_version"] == 1
+        assert run["assessment_version"] == 2
         changed = repo.get_package(opt[0])
         changed["id"] = "new-question"
         changed["input"]["demand_md"] = "实验启动后维护的内容"

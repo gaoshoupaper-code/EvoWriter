@@ -8,12 +8,18 @@ import {
   type ExperimentOptions, type ExperimentPackage, type ExperimentRule, type ExperimentStart,
 } from "@/lib/api";
 import {
-  RULE_PROFILE, EXPERIMENT_STATUS, TASK_LABELS,
+  RULE_PROFILE, ruleProfile, EXPERIMENT_STATUS, TASK_LABELS,
   experimentTaskLabel, type ExperimentTaskType,
 } from "@/lib/experiment-types";
 import { ExperimentProgress } from "./ExperimentEvidence";
 import { useExperiments } from "@/hooks/useExperiments";
 import "./experiments.css";
+
+function launchRules(rules: ExperimentRule[], kind: ExperimentTaskType) {
+  const sameKind = rules.filter((rule) => rule.task_type === kind).sort((a, b) => b.version - a.version);
+  const current = sameKind.filter((rule) => rule.profile === ruleProfile(kind));
+  return current.length ? current : sameKind.filter((rule) => rule.profile === RULE_PROFILE);
+}
 
 export function EvolutionExperiments() {
   const navigate = useNavigate();
@@ -62,7 +68,7 @@ export function EvolutionExperiments() {
       const activeModel = configuration.models.find((item) => item.is_active && item.has_key !== false);
       setModel(activeModel ? String(activeModel.id) : "");
       setJudges((current) => configuration.judge_groups.some((group) => String(group.id) === current) ? current : "");
-      const candidates = scoring.items.filter((rule) => rule.task_type === kind && rule.profile === RULE_PROFILE).sort((a, b) => b.version - a.version);
+      const candidates = launchRules(scoring.items, kind);
       const preferred = configuration.defaults?.rule_versions[kind];
       setRuleIds({[kind]: candidates.find((rule) => rule.id === preferred)?.id ?? candidates[0]?.id});
       setRounds(String(configuration.defaults?.max_rounds ?? 3));
@@ -137,7 +143,7 @@ export function EvolutionExperiments() {
         <fieldset className="experiment-form-main" disabled={starting}><legend className="sr-only">固定门槛与规则</legend>
           <div className="experiment-fields">{[kind].map((type) => <label key={type}>{TASK_LABELS[type]}规则版本
             <select className="config-input" required value={ruleIds[type] ?? ""} onChange={(event) => setRuleIds({ ...ruleIds, [type]: event.target.value })}>
-              <option value="">选择规则</option>{rules.filter((rule) => rule.task_type === type && rule.profile === RULE_PROFILE).sort((a, b) => b.version - a.version).map((rule) =>
+              <option value="">选择规则</option>{launchRules(rules, type).map((rule) =>
                 <option key={rule.id} value={rule.id}>v{rule.version} · {rule.name}</option>)}</select></label>)}</div>
           <label>最多轮数<input className="config-input" type="number" min="1" max="3" value={rounds} onChange={(event) => setRounds(event.target.value)} /></label>
         </fieldset>

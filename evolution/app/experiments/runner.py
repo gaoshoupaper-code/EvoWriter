@@ -74,6 +74,8 @@ def create_run(request: RunCreate, actor: str) -> dict:
         rule = rubrics.get_rule(identifier)
         if rule is None or rule["task_type"] != kind:
             raise ValueError(f"{kind}评分规则版本不存在或类型不匹配")
+        if chapter_assessment and rule.get("profile") != rubrics.TEXT_PROFILE:
+            raise ValueError("请使用新版正文评分规则")
         frozen_rules[kind] = rule
     frozen_packages = {}
     input_purposes = {}
@@ -113,7 +115,7 @@ def create_run(request: RunCreate, actor: str) -> dict:
         from app.experiments import snapshots
         snapshots.ensure_baseline(selected["commit"])
         snapshots.retain(run["id"], selected["commit"])
-        run["assessment_version"] = 1
+        run["assessment_version"] = 2
         run["private"]["package_revisions"] = {key: p["input_revision"] for key, p in frozen_packages.items()}
         del run["private"]["packages"]
     run["models"] = repo.public_models(run)

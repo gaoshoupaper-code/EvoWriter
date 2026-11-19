@@ -5,6 +5,8 @@ export const TASK_TYPES = ["master_outline", "volume_outlines", "chapter_outline
 export type ExperimentTaskType = typeof TASK_TYPES[number];
 export const BUILTIN_SUITE = "isolated-writing-v1";
 export const RULE_PROFILE = "isolated-writing-v1";
+const TEXT_RULE_PROFILE = "chapter-text-outline-v2";
+export const ruleProfile = (kind: ExperimentTaskType) => kind === "chapter_text" ? TEXT_RULE_PROFILE : RULE_PROFILE;
 export const TASK_LABELS: Record<ExperimentTaskType, string> = {
   master_outline: "总纲", volume_outlines: "卷纲", chapter_outlines: "章纲", chapter_text: "正文",
 };
@@ -67,7 +69,7 @@ export type ExperimentPackage = Omit<ExperimentPackageInput, "input"> & {
 };
 export type ExperimentRuleInput = {
   task_type: ExperimentTaskType; name: string;
-  profile?: typeof RULE_PROFILE | null;
+  profile?: ReturnType<typeof ruleProfile> | null;
   dimensions: { key: string; question: string; anchors: Record<string, string>; weight: number }[];
   discipline_rules: string[];
 };

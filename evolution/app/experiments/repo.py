@@ -65,11 +65,16 @@ def get_package(package_id: str) -> dict | None:
     return _get("self_evolution_packages", package_id)
 
 
-def chapter_case(package: dict) -> dict:
-    """Imported fixtures can predate versioned Skills. Only the Harness supplies Skills here."""
-    if not package["input"].get("skills"):
-        return package
-    source = TaskInput.model_validate({**package["input"], "input_revision": "", "skills": []})
+def chapter_case(package: dict, assessment_version: int = 2) -> dict:
+    inputs = package["input"]
+    if assessment_version == 1:
+        if not inputs.get("skills"):
+            return package
+        updates = {"skills": []}
+    else:
+        outline = f"章纲/第{package['target']['chapter']:03d}章.md"
+        updates = {"files": {outline: inputs["files"][outline]}, "demand_md": ""}
+    source = TaskInput.model_validate({**inputs, **updates, "input_revision": ""})
     return {**package, "input": source.model_dump(mode="json"), "input_revision": source.input_revision}
 
 
@@ -80,7 +85,7 @@ def run_package(run: dict, package_id: str) -> dict:
     package = get_package(package_id)
     if package is None or package["input_revision"] != source_revision:
         raise ValueError("找不到本次评测绑定的题库版本")
-    return chapter_case(package)
+    return chapter_case(package, run["assessment_version"])
 
 
 def list_packages() -> list[dict]:

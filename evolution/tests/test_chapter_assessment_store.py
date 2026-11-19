@@ -48,7 +48,7 @@ def test_immutable_case_reference_and_categorized_archive(dossier, tmp_path, mon
     repo.put_run(dossier)
     repo.put_run(dossier)
     stored = db.query_one("SELECT payload FROM self_evolution_runs WHERE id=?", (dossier["id"],))["payload"]
-    assert all(text not in stored for text in ("旧技能正文", "第一段", "原版审稿意见", source.files["文风.md"]))
+    assert all(text not in stored for text in ("旧技能正文", "第一段", "原版审稿意见", *source.files.values()))
     kinds = db.query_all("SELECT DISTINCT category FROM assessment_entries WHERE assessment_id=?", (dossier["id"],))
     assert {row["category"] for row in kinds} == {"version", "artifact", "evaluation", "improvement", "trace"}
     result = db.query_one("SELECT payload FROM assessment_entries WHERE assessment_id=? AND category='evaluation' AND entry_id='round-1'", (dossier["id"],))

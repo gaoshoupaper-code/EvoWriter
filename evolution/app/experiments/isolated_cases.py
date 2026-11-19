@@ -44,32 +44,28 @@ def get_cases():
         card = (f"# 第{chapter}章章纲\n> 状态：草稿\n主角{hero}要{aim}。开场呈现{detail}。"
                 f"通过近景动作呈现一次选择：是否交出{item}。障碍是{obstacle}。"
                 "结尾明确写出失去的机会，不提前解除所有障碍。")
-        style = f"# 文风卡\n第三人称贴近{hero}。用行动和具体声响承载压力；对话短促，不直述主题。"
         instructions = {
             "master_outline": "只交付含主题的总纲，写清目标、冲突、转折与各卷任务。",
             "volume_outlines": f"仅写第{volume}卷卷纲并做卷纲质检，安排本卷二十章的逐章推进。",
             "chapter_outlines": f"写第{chapter}章章纲，写清冲突、状态变化及可供执笔的安排。",
-            "chapter_text": f"按章纲与文风创作第{chapter}章正文，实际审稿，按需修订。",
+            "chapter_text": f"按章纲创作第{chapter}章正文，实际审稿，按需修订。",
         }
         targets = {"task_type": kind}
         files = {}
-        if kind != "master_outline":
+        if kind in {"volume_outlines", "chapter_outlines"}:
             targets["volume_ids"] = [volume]
             files["总纲.md"] = master
         if kind == "volume_outlines":
             targets["chapters_per_volume"] = 20
         if kind in {"chapter_outlines", "chapter_text"}:
             targets["chapter"] = chapter
+        if kind == "chapter_outlines":
             files[f"卷纲/第{volume:02d}卷.md"] = volume_plan
         if kind == "chapter_text":
-            files.update({"文风.md": style, f"章纲/第{chapter:03d}章.md": card})
-            if chapter > 1:
-                files[f"正文/第{chapter-1:03d}章.md"] = (
-                    f"# 上章正文\n{hero}握住{item}。门外有人催第二次。"
-                    f"“等一下。”{hero}把手里的东西收进内袋，走向声音传来的方向。")
+            files[f"章纲/第{chapter:03d}章.md"] = card
         package = PackageCreate.model_validate({
             "title": f"{title} · {instructions[kind].split('，')[0].rstrip('。')}", "purpose": purpose,
-            "target": targets, "input": {"demand_md": brief + "\n" + instructions[kind],
+            "target": targets, "input": {"demand_md": "" if kind == "chapter_text" else brief + "\n" + instructions[kind],
                                        "files": files, "confirmation_rules": "按给定资料自行完成指定任务。"},
         })
         records.append({**package.model_dump(mode="json"), "id": f"{SUITE}-{kind}-{index+1}",

@@ -580,6 +580,12 @@ async def drive_task(request, workspace, service, thread, execution, store):
             "正文必须调用实际 review 审稿并完成所需修订；卷纲必须取得实际 volume_qc 质检。"
             "如果上一轮只回复了内容，先将该内容继续完善并保存，再补齐本次尚缺的检查。"
         )
+        if configured_task_type() == "chapter_text" and not request.input.demand_md:
+            prompt = (
+                f"按章纲完成第{request.target.chapter}章正文。若已起草，从实际稿件继续。\n"
+                f"确认规则：{request.input.confirmation_rules}\n"
+                f"待完成：{'；'.join(checks['missing'])}。请实际保存、审稿并按需修订。"
+            )
         payload = ScreenplayGenerateRequest(thread_id=current_thread.thread_id, prompt=prompt,
                                             message_id=f"{task_id}-{step_number}-{uuid.uuid4().hex}")
         if resume_trace:

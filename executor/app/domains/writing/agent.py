@@ -517,7 +517,7 @@ class MetaAgentService(BaseAgentService):
             "",
         ]
         for sk in skills:
-            parts.append(f"### {sk['name']}——{sk['description']}")
+            parts.append(f"### {sk['name']}" + (f"——{sk['description']}" if sk.get("description") else ""))
             parts.append("")
             parts.append(sk["content"].strip())
             parts.append("")
@@ -555,7 +555,7 @@ class MetaAgentService(BaseAgentService):
             "",
         ]
         for sk in skills:
-            parts.append(f"### {sk['name']}——{sk['description']}")
+            parts.append(f"### {sk['name']}" + (f"——{sk['description']}" if sk.get("description") else ""))
             parts.append("")
             parts.append(sk["content"].strip())
             parts.append("")
@@ -839,12 +839,15 @@ class MetaAgentService(BaseAgentService):
         elif agent_name in ("outline", "volume", "chapter", "text"):
             from contracts.writing_artifacts import stage_mode
             mode = "auto" if execution else stage_mode(workspace_path, agent_name)
-            guide = pkg.guide_prompt(mode)
+            if execution and agent_name == "text" and not execution.request.input.demand_md:
+                guide = "这是单章自动评测。只写指定章节，不等待人工确认，不开启下一章。"
+            else:
+                guide = pkg.guide_prompt(mode)
             if not guide:
                 raise RuntimeError("当前创作包缺少交互规程")
             skills = execution.skills if execution else (
                 self._list_enabled_stage_skills(workspace_id, owner_id, workspace_path) or [])
-            stage_skills = [s for s in skills if s["stage"] == agent_name]
+            stage_skills = [s for s in skills if s["stage"] == agent_name and s.get("enabled", True)]
             styles = self._apply_user_writing_skills(
                 styles={"author": guide}, agent_name="author", workspace_id=workspace_id,
                 owner_id=owner_id, workspace_path=workspace_path, stage_skills=stage_skills,

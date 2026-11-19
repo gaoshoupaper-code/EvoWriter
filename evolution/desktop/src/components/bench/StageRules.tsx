@@ -2,7 +2,7 @@ import { currentTask } from "@/lib/writing-agent";
 import { useEffect, useState } from "react";
 import { Pencil, Check, X } from "lucide-react";
 import { listExperimentRules, saveExperimentRule, type ExperimentRule, type ExperimentRuleInput } from "@/lib/api";
-import { RULE_PROFILE, TASK_LABELS, type ExperimentTaskType } from "@/lib/experiment-types";
+import { ruleProfile, TASK_LABELS, type ExperimentTaskType } from "@/lib/experiment-types";
 import "./experiments.css";
 
 const HARD_CHECKS: Record<ExperimentTaskType, string[]> = {
@@ -18,7 +18,7 @@ const draftFrom = (rule: ExperimentRule): ExperimentRuleInput => ({
 });
 const latestRule = (rules: ExperimentRule[], kind: ExperimentTaskType) => {
   const sameKind = rules.filter((rule) => rule.task_type === kind).sort((a, b) => b.version - a.version);
-  return sameKind.find((rule) => rule.profile === RULE_PROFILE) ?? sameKind[0];
+  return sameKind.find((rule) => rule.profile === ruleProfile(kind)) ?? sameKind[0];
 };
 
 export function StageRules() {
@@ -43,7 +43,7 @@ export function StageRules() {
     return () => { alive = false; };
   }, []);
   const selected = rules.find((rule) => rule.id === selectedId);
-  const currentProfile = selected?.profile === RULE_PROFILE;
+  const currentProfile = selected?.profile === ruleProfile(kind);
   const totalWeight = selected?.dimensions.reduce((sum, dimension) => sum + dimension.weight, 0) || 1;
 
   function select(rule: ExperimentRule | undefined) {
@@ -74,7 +74,7 @@ export function StageRules() {
         <p className="experiment-note">{currentProfile ? "本套规则" : kind === "chapter_outlines" ? "4 卷章纲历史规则" : "历史规则，保留原始评测含义"} · v{selected.version} · {selected.dimensions.length} 个维度</p></div>
         <div className="experiment-actions"><label className="experiment-rule-version">规则版本<select className="config-input" value={selectedId} disabled={saving} onChange={(event) => select(rules.find((rule) => rule.id === event.target.value))}>
           {rules.filter((rule) => rule.task_type === kind).sort((a, b) => b.version - a.version).map((rule) => <option key={rule.id} value={rule.id}>
-            {rule.profile === RULE_PROFILE ? "" : "历史 · "}v{rule.version} · {rule.name}
+            {rule.profile === ruleProfile(kind) ? "" : "历史 · "}v{rule.version} · {rule.name}
           </option>)}</select></label>
           {currentProfile && !editing && <button type="button" className="config-button" onClick={() => setEditing(true)}><Pencil size={14} />编辑规则</button>}
         </div>

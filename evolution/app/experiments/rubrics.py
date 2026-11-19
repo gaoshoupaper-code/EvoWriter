@@ -10,6 +10,7 @@ from contracts.target_tasks import configured_task_type
 
 _lock = threading.RLock()
 PROFILE = "stage-eval-v2"
+TEXT_PROFILE = "chapter-text-outline-v2"
 _DIMENSIONS = {
     "master_outline": [
         ("主题清晰度", "总纲是否将用户意图落实为能贯穿全书的主题？",
@@ -98,11 +99,11 @@ _DIMENSIONS = {
             "多处人物瞬移、物品凭空出现或信息提前获知，或一处矛盾推翻本章关键结果。",
             "主要行动链成立，但有一处需要补充时间、位置、物品来源或认知过程才能解释。",
             "关键行动与结果均有连续依据，仅一处次要动作过渡略省，不影响事件判断。",
-            "所有关键行动的时空、条件和认知都有依据，前文到本章及章内因果连续，无可指认矛盾。",
+            "所有关键行动的时空、条件和认知都有依据，章纲到正文及章内因果连续，无可指认矛盾。",
         ]),
         ("人物与对话", "人物行动是否符合既定身份和动机，对话是否具有角色差异并推动当前冲突？", [
             "关键人物无理由地违背核心动机，对话无法服务实际场景，人物行为使剧情失真。",
-            "多处行为与人物资料冲突，或主要对话只是互相复述设定、角色说话无法区分。",
+            "多处行为与章纲或正文已建立的设定冲突，或主要对话只复述设定、角色说话无法区分。",
             "人物大体一致，但一处关键反应缺少动机，或一段较长对话明显只为说明信息。",
             "人物选择与身份动机一致，对话推动关系或冲突，仅一处次要台词略显直白或同质。",
             "行动与反应均符合人物已知处境，不同角色表达可辨，对话每段都有效改变信息、关系或行动。",
@@ -114,12 +115,12 @@ _DIMENSIONS = {
             "重要空间和情绪转折均有具体依据，仅一处次要场景或感受描写略笼统。",
             "读者可定位主要动作与空间，情绪随事件和细节逐步变化，无脱离场景的强行煽情。",
         ]),
-        ("语言文风", "最终正文是否遵守固定文风卡的适用要求，保持准确流畅，避免空泛和重复？", [
-            "正文表达大量不通或指代不明，整体叙述方式与文风卡的核心要求相反。",
-            "持续违反文风卡的明确限制，或大量套话、同义反复挤占实际叙事。",
-            "整体可读且基本符合文风，但有一段明显冗长空泛，或一项具体文风要求反复偏离。",
-            "文风要求得到落实，语言准确顺畅，仅一处局部重复、赘词或语气不协调。",
-            "全部适用文风约束有文本依据，措辞准确、句段清楚，无可指认套话、重复或语气漂移。",
+        ("语言质量", "语言是否清楚自然，且落实章纲及已启用技能中的适用表达要求？没有写明的文风不评分。", [
+            "大量句子不通或指代不明，读者无法理解主要情节。",
+            "多处表达含混，或大量套话、同义反复挤占叙事。",
+            "整体可读，但有一段明显冗长空泛，或一项适用表达要求反复偏离。",
+            "语言准确顺畅，适用要求得到落实，仅有局部重复、赘词或语气不协调。",
+            "措辞准确、句段清楚，适用要求均落实，无可指认套话、重复或语气漂移。",
         ]),
     ],
 }
@@ -138,7 +139,8 @@ def save_rule(request: RuleCreate) -> dict:
     with _lock:
         old = list_rules(request.task_type)
         value = request.model_dump(mode="json")
-        value["profile"] = request.profile or ("isolated-writing-v1" if configured_task_type() else PROFILE)
+        scope = configured_task_type()
+        value["profile"] = request.profile or (TEXT_PROFILE if scope == "chapter_text" else "isolated-writing-v1" if scope else PROFILE)
         if configured_task_type():
             value["flow_version"] = 3
         value.update(id=repo.identifier("rule"), version=max((item["version"] for item in old), default=0) + 1, created_at=repo.now())
@@ -152,7 +154,7 @@ def seed_rules() -> None:
             scope = configured_task_type()
             if (scope and kind != scope) or (not scope and kind == "master_outline"):
                 continue
-            profile = "isolated-writing-v1" if scope else PROFILE
+            profile = TEXT_PROFILE if scope == "chapter_text" else "isolated-writing-v1" if scope else PROFILE
             if any(rule.get("profile") == profile for rule in list_rules(kind)):
                 continue
             save_rule(RuleCreate.model_validate({

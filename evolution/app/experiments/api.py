@@ -201,6 +201,8 @@ def experiment_options():
     groups = list_judge_groups()
     scope = require_suite()
     current = rubrics.list_rules(scope)
+    if scope == "chapter_text":
+        current = [rule for rule in current if rule["profile"] == rubrics.TEXT_PROFILE]
     rule_versions = {scope: current[0]["id"]} if current else {}
     current_versions = [item for item in versions["items"] if item["version"] == versions["production_version"]]
     return {"task_types": [scope], "versions": current_versions, "production_version": versions["production_version"],

@@ -10,13 +10,15 @@ vi.mock("@/lib/api", () => ({
   getExperimentOptions: vi.fn(), listExperimentPackages: vi.fn(), listExperimentRules: vi.fn(),
   listExperiments: vi.fn(), startExperiment: vi.fn(), saveExperimentRule: vi.fn(),
   getExperimentPackage: vi.fn(), getExperimentPackageTemplates: vi.fn(), importExperimentPackage: vi.fn(),
+  replaceExperimentPackage: vi.fn(),
 }));
 vi.mock("@/lib/download", () => ({ downloadTextFile: vi.fn() }));
 
 const api = vi.mocked(apiModule);
 const kinds = ["volume_outlines", "chapter_outlines", "chapter_text"] as const;
 const rules = kinds.map((task_type, index) => ({
-  id: `rule-${index}`, task_type, profile: "isolated-writing-v1", name: `${task_type}新规则`, version: 2,
+  id: `rule-${index}`, task_type, profile: task_type === "chapter_text" ? "chapter-text-outline-v2" : "isolated-writing-v1",
+  name: `${task_type}新规则`, version: 2,
   dimensions: [{ key: "需求兑现", question: "当前阶段是否兑现固定要求？", weight: 1,
     anchors: { "1": "目标缺失", "2": "两处实质缺陷", "3": "一处实质缺陷", "4": "仅局部不足", "5": "全部落实" } }],
   discipline_rules: ["引用产物证据"], created_at: "2026-11-07T01:00:00Z",
@@ -106,6 +108,26 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
     fireEvent.click(regression);
     expect(await screen.findByText("volume_outlines样本3")).toBeInTheDocument();
     expect(screen.queryByText("volume_outlines样本0")).not.toBeInTheDocument();
+  });
+
+  it("正文题可导入 Markdown 技能并生成新版本", async () => {
+    window.location.hash = "#/agents/text/bench";
+    const sample = packages.find((item) => item.task_type === "chapter_text")!;
+    const input = { demand_md: "", files: { "章纲/第001章.md": "本章章纲" }, skills: [],
+      confirmation_rules: "直接写", input_revision: sample.input_revision };
+    api.getExperimentPackage.mockResolvedValue({ ...sample, input } as never);
+    api.replaceExperimentPackage.mockResolvedValue(sample as never);
+    render(<StagePackages />);
+    const row = (await screen.findByText(sample.title)).closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: "查看输入" }));
+    const upload = await screen.findByLabelText("导入技能并替换");
+    const content = "---\nname: 对白\n---\n用对白推进冲突。";
+    const file = new File([content], "SKILL.md");
+    Object.defineProperty(file, "text", { value: async () => content });
+    fireEvent.change(upload, { target: { files: [file] } });
+    await waitFor(() => expect(api.replaceExperimentPackage).toHaveBeenCalledWith(sample.id, expect.objectContaining({
+      input: { ...input, input_revision: undefined, skills: [{ stage: "text", name: "对白", content }] },
+    })));
   });
 
   it("工作台只展示未结束实验，历史实验从实验记录查看", async () => {

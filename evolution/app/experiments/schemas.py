@@ -45,7 +45,7 @@ class Dimension(StrictModel):
 class RuleCreate(StrictModel):
     task_type: TaskType
     name: str = Field(min_length=1, max_length=200)
-    profile: Literal["stage-eval-v2", "isolated-writing-v1"] | None = None
+    profile: Literal["stage-eval-v2", "isolated-writing-v1", "chapter-text-outline-v2"] | None = None
     dimensions: list[Dimension] = Field(min_length=1)
     discipline_rules: list[str] = Field(min_length=1)
 
@@ -53,6 +53,9 @@ class RuleCreate(StrictModel):
     def validate_keys(self):
         scope = configured_task_type()
         if scope and (self.task_type != scope or self.profile == "stage-eval-v2"):
+            raise ValueError("只能维护本套评分规则")
+        if (scope == "chapter_text" and self.profile == "isolated-writing-v1"
+                or self.profile == "chapter-text-outline-v2" and scope != "chapter_text"):
             raise ValueError("只能维护本套评分规则")
         if scope:
             from app.experiments.rubrics import _DIMENSIONS

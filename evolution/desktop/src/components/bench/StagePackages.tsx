@@ -13,6 +13,19 @@ import "./experiments.css";
 const DATASETS = ["optimization", "regression"] as const;
 type DatasetKey = typeof DATASETS[number];
 
+async function readSkills(files: File[]) {
+  const skills = await Promise.all(files.map(async (file) => {
+    const content = (await file.text()).trim();
+    const frontmatter = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content)?.[1];
+    const name = frontmatter?.match(/^name:[ \t]*(.+)$/m)?.[1].trim().replace(/^(['"])(.*)\1$/, "$2")
+      || file.name.replace(/\.md$/i, "");
+    if (!name.trim() || !content) throw new Error("技能名称和内容不能为空。");
+    return { stage: "text", name, content };
+  }));
+  if (new Set(skills.map((skill) => skill.name)).size !== skills.length) throw new Error("技能名称不能重复。");
+  return skills;
+}
+
 export function StagePackages() {
   const [packages, setPackages] = useState<ExperimentPackage[]>([]);
   const [canRead, setCanRead] = useState(false);
@@ -22,6 +35,7 @@ export function StagePackages() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [selected, setSelected] = useState<(ExperimentPackage & { input: ExperimentInput }) | null>(null);
+  const [showOutlineImport, setShowOutlineImport] = useState(false);
   const viewRequest = useRef(0);
 
   const refresh = useCallback(async () => {
@@ -33,18 +47,23 @@ export function StagePackages() {
     return () => { viewRequest.current += 1; };
   }, [refresh]);
 
-  async function upload(file: File, replaceId?: string) {
+  async function savePackage(build: () => Promise<ExperimentPackageInput>, replaceId?: string) {
     setBusy(true); setError(""); setNotice("");
     try {
-      let payload: ExperimentPackageInput;
-      try { payload = JSON.parse(await file.text()) as ExperimentPackageInput; }
-      catch { throw new Error("资料包不是有效 JSON，请参照示例修改。"); }
+      const payload = await build();
       const result = replaceId ? await replaceExperimentPackage(replaceId, payload) : await importExperimentPackage(payload);
       if (replaceId) { viewRequest.current += 1; setSelected(null); }
+      setShowOutlineImport(false);
       setNotice("已导入「" + result.title + "」，可在对应题组中查看。");
       await refresh();
     } catch (cause) { setError(cause instanceof Error ? cause.message : "资料包导入失败"); }
     finally { setBusy(false); }
+  }
+  function upload(file: File, replaceId?: string) {
+    return savePackage(async () => {
+      try { return JSON.parse(await file.text()) as ExperimentPackageInput; }
+      catch { throw new Error("资料包不是有效 JSON，请参照示例修改。"); }
+    }, replaceId);
   }
   async function downloadTemplates() {
     setBusy(true); setError("");
@@ -80,12 +99,35 @@ export function StagePackages() {
   return <section className="experiment-section" aria-labelledby="stage-packages-title">
     <div className="experiment-heading"><div><h2 id="stage-packages-title">试验数据集 <span className="experiment-count">{packages.length} 条</span></h2>
       <p className="experiment-note">每道题自带固定输入，每套初始包含两道改进题和两道回归题。</p></div>
-      <div className="experiment-actions"><button className="config-button" type="button" onClick={() => void downloadTemplates()} disabled={busy}><Download size={15} />下载完整示例</button>
+      <div className="experiment-actions">{currentTask() === "chapter_text" && <button className="config-button" type="button"
+        aria-expanded={showOutlineImport} onClick={() => setShowOutlineImport(!showOutlineImport)} disabled={busy}>导入章纲</button>}
+        <button className="config-button" type="button" onClick={() => void downloadTemplates()} disabled={busy}><Download size={15} />下载完整示例</button>
         <label className={"config-button experiment-upload" + (busy ? " disabled" : "")}><Upload size={15} />{busy ? "处理中…" : "导入资料包"}
           <input aria-label="选择资料包" type="file" accept="application/json,.json" disabled={busy} onChange={(event) => {
             const file = event.target.files?.[0]; event.target.value = ""; if (file) void upload(file);
           }} /></label></div>
     </div>
+    {showOutlineImport && <form className="experiment-input-preview" onSubmit={(event) => {
+      event.preventDefault();
+      const form = new FormData(event.currentTarget);
+      const chapter = Number(form.get("chapter"));
+      const outline = form.get("outline") as File;
+      const skills = (form.getAll("skills") as File[]).filter((file) => file.name);
+      void savePackage(async () => ({
+        title: outline.name.replace(/\.md$/i, ""), purpose: dataset,
+        target: { task_type: "chapter_text", chapter, volume_ids: [] },
+        input: { demand_md: "", confirmation_rules: "按本章章纲直接完成，不等待确认。",
+          files: { [`章纲/第${String(chapter).padStart(3, "0")}章.md`]: await outline.text() }, skills: await readSkills(skills) },
+      }));
+    }}>
+      <p className="experiment-note">导入到{dataset === "optimization" ? "改进题" : "回归题"}。只需本章章纲，技能可选。</p>
+      <div className="experiment-actions">
+        <label>章号 <input name="chapter" type="number" min="1" max={Number.MAX_SAFE_INTEGER} required defaultValue={1} /></label>
+        <label>章纲文件 <input name="outline" type="file" accept=".md" required /></label>
+        <label>技能文件（可多选） <input name="skills" type="file" accept=".md" multiple /></label>
+        <button className="config-button" type="submit" disabled={busy}>保存题目</button>
+      </div>
+    </form>}
     {error && <p className="experiment-error" role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
     {loading ? <p role="status">正在加载数据集…</p> : <div className="experiment-dataset-layout">
@@ -118,6 +160,13 @@ export function StagePackages() {
         const payload: ExperimentPackageInput = { title: selected.title, purpose: selected.purpose, target: selected.target, input: selected.input };
         downloadTextFile(selected.id + ".json", JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
       }}>下载资料包</button>
+        {selected.task_type === "chapter_text" && <label className="config-button experiment-upload">导入技能并替换
+          <input aria-label="导入技能并替换" type="file" accept=".md" multiple disabled={busy} onChange={(event) => {
+            const files = Array.from(event.target.files ?? []); event.target.value = "";
+            if (files.length) void savePackage(async () => ({ title: selected.title, purpose: selected.purpose, target: selected.target,
+              input: { ...selected.input, input_revision: undefined, skills: await readSkills(files) } }), selected.id);
+          }} />
+        </label>}
         <label className="config-button experiment-upload">替换资料包
           <input aria-label="替换资料包" type="file" accept=".json,application/json" disabled={busy}
             onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void upload(file, selected.id); }} />

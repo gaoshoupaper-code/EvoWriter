@@ -16,8 +16,7 @@ def task(kind, files, **scope):
     ("outline", "master_outline", {}, {}, "outline"),
     ("volume", "volume_outlines", {"总纲.md": "草稿总纲"}, {"volume_ids": [2]}, "volume"),
     ("chapter", "chapter_outlines", {"卷纲/第02卷.md": "卷纲草稿"}, {"volume_ids": [2], "chapter": 21}, "chapter"),
-    ("text", "chapter_text", {"章纲/第002章.md": "草稿", "文风.md": "短句", "正文/第001章.md": "上章"},
-     {"chapter": 2, "volume_ids": [1]}, "text"),
+    ("text", "chapter_text", {"章纲/第002章.md": "草稿"}, {"chapter": 2}, "text"),
 ])
 def test_target_starts_in_its_own_harness(tmp_path, monkeypatch, agent, kind, files, scope, stage):
     monkeypatch.setenv("WRITING_AGENT_ID", agent)

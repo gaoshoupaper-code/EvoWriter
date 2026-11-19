@@ -31,6 +31,18 @@
 .experiment-file-document > header { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid var(--evo-line); }
 .experiment-file-document h3 { margin: 0; overflow-wrap: anywhere; font-size: var(--text-ui-lg); }
 .experiment-file-document .prose-doc { overflow-wrap: anywhere; margin-top: 24px; }
+.chapter-pair-controls { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 14px; margin: 16px 0; }
+.chapter-pair-controls label, .chapter-side label { display: grid; gap: 6px; min-width: 0; }
+.chapter-pair-controls select { max-width: 100%; }
+.chapter-scores { margin: 20px 0; }
+.chapter-scores caption { text-align: start; font-weight: 600; padding-bottom: 8px; }
+.chapter-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+.chapter-side { min-width: 0; padding: 16px; border: 1px solid var(--evo-line); border-radius: var(--radius-sm); overflow-wrap: anywhere; }
+.chapter-side p { margin: 0 0 0.75em; line-height: 1.7; white-space: pre-wrap; }
+.chapter-side details, .chapter-side label, .chapter-side button { margin: 8px 6px 8px 0; }
+.chapter-side ins { background: rgba(53, 166, 101, .14); text-underline-offset: 3px; }
+.chapter-side del { background: rgba(190, 71, 65, .12); }
+@media (max-width: 700px) { .chapter-columns { grid-template-columns: 1fr; } }
 @media (max-width: 1000px) {
   .experiment-record { grid-template-columns: minmax(200px, 1.5fr) minmax(160px, 1fr); gap: 16px; }
   .experiment-record .experiment-score-summary { grid-column: 1 / -1; }

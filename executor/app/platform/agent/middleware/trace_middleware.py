@@ -383,12 +383,12 @@ class TraceMiddleware(AgentMiddleware):
                 "tool_output": _jsonable(response),
             },
         )
-        if _mapping_value(tool_call, "name") in {"read_file", "read"}:
+        if _mapping_value(tool_call, "name") in {"read_file", "read", "read_writing_skill"}:
             self.recorder.record_skill_activation_from_tool(
                 self.trace_id,
                 self.agent_name,
                 _mapping_value(tool_call, "args"),
-                success=True,
+                success=getattr(response, "status", None) != "error",
                 trigger_event_id=event.event_id,
                 trigger_span_id=event.span_id,
             )
@@ -413,7 +413,7 @@ class TraceMiddleware(AgentMiddleware):
                 "error": f"{error.__class__.__name__}: {error}",
             },
         )
-        if _mapping_value(tool_call, "name") in {"read_file", "read"}:
+        if _mapping_value(tool_call, "name") in {"read_file", "read", "read_writing_skill"}:
             self.recorder.record_skill_activation_from_tool(
                 self.trace_id,
                 self.agent_name,

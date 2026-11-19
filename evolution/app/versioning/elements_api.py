@@ -33,7 +33,7 @@ from contracts.architecture_manifest import (
     ArchitectureManifest,
 )
 
-from app.core.git_ops import show_file
+from app.core.git_ops import show_file, version_source
 from app.versioning import platform_ledger
 from app.versioning.constants import MEMORY_FILES, MEMORY_ROLE_ORDER, TOOL_SCOPE_MAP
 from app.versioning.middleware_projection import build_middleware_projection
@@ -245,8 +245,9 @@ def _list_files_at_commit(commit: str, subdir: str) -> list[str]:
         subdir: 子目录（如 "prompts"、"skills"、"middleware"）
     """
     try:
-        from app.core.git_ops import _git, read_dir
-        out = _git(["ls-tree", "-r", "--name-only", commit, subdir], read_dir())
+        from app.core.git_ops import _git
+        with version_source(commit) as directory:
+            out = _git(["-c", "core.quotepath=false", "ls-tree", "-r", "--name-only", commit, subdir], directory)
         return [f for f in out.splitlines() if f.strip()] if out.strip() else []
     except Exception:  # noqa: BLE001
         logger.debug("ls-tree 失败: %s @ %s", subdir, commit, exc_info=True)
@@ -449,6 +450,11 @@ def build_elements_view(version: int) -> dict[str, Any]:
     v14 = orchestrator→领域→审查器。tools 顶层平级——tools/ 全局平铺。
     """
     commit = _version_to_commit(version)
+    with version_source(commit):
+        return _elements_at(version, commit)
+
+
+def _elements_at(version: int, commit: str | None) -> dict[str, Any]:
     manifest = _manifest_at_commit(commit)
     if manifest is not None:
         return _build_manifest_elements_view(version, commit, manifest)
@@ -598,6 +604,11 @@ def build_memory_elements_view(version: int) -> dict[str, Any]:
     elements 按 MEMORY_ROLE_ORDER 排序（抽取→存储→检索→回填）。
     """
     commit = _version_to_commit(version)
+    with version_source(commit):
+        return _memory_at(version, commit)
+
+
+def _memory_at(version: int, commit: str | None) -> dict[str, Any]:
     elements: list[dict[str, Any]] = []
 
     if commit:

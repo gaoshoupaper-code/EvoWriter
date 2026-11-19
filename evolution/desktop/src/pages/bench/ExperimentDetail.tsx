@@ -17,7 +17,9 @@ import { downloadTextFile } from "@/lib/download";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import TraceDetailPage from "@/pages/trace-detail";
 import { ExperimentArtifacts } from "@/components/bench/ExperimentArtifacts";
+import { ChapterComparison, ImprovementSources } from "@/components/bench/ChapterComparison";
 import { ExperimentUsage } from "@/components/bench/ExperimentUsage";
+import { ExperimentVersionFiles } from "@/components/bench/ExperimentVersionFiles";
 import { TraceIdentity } from "@/components/trace/TraceIdentity";
 import { traceDisplayContext, type TraceDisplayContext, type TraceIdentityRun } from "@/lib/trace-display";
 import "@/components/bench/experiments.css";
@@ -33,6 +35,9 @@ export default function ExperimentDetail() {
   const [experiment, setExperiment] = useState<Experiment | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [tab, setTab] = useState("process");
+  const [comparisonRound, setComparisonRound] = useState<number | null>(null);
+  const [sourceRound, setSourceRound] = useState<number | null>(null);
   const [sampleFilter, setSampleFilter] = useState("");
   const [selectedTrace, setSelectedTrace] = useState("");
   const [liveRuns, setLiveRuns] = useState<ActiveRun[]>([]);
@@ -72,7 +77,7 @@ export default function ExperimentDetail() {
     let alive = true;
     let timer: ReturnType<typeof setTimeout>;
     mounted.current = true; pending.current = false; livePending.current = null; setBusy(false); setExperiment(null);
-    setSelectedTrace(""); setLiveRuns([]); setLiveError(""); setSelectedSample(""); setSampleFilter(""); setInput(null); setInputError(""); setInputLoading(false);
+    setSelectedTrace(""); setTab("process"); setComparisonRound(null); setSourceRound(null); setLiveRuns([]); setLiveError(""); setSelectedSample(""); setSampleFilter(""); setInput(null); setInputError(""); setInputLoading(false);
     const poll = async () => {
       if (!pending.current) await refresh();
       if (alive) timer = setTimeout(poll, 5000);
@@ -105,7 +110,7 @@ export default function ExperimentDetail() {
     try {
       const data = await getExperimentPackage(selected.package_id);
       if (!mounted.current || sequence !== inputRequest.current) return;
-      if (data.input_revision !== selected.input_revision) {
+      if (data.input_revision !== (selected.package_revision ?? selected.input_revision)) {
         setInputError("资料包版本与本次运行不同，不能用当前资料冒充原始输入。");
       } else setInput(data.input);
     } catch (cause) {
@@ -116,6 +121,7 @@ export default function ExperimentDetail() {
   if (!experiment) return <div className="bench-page"><h1>实验详情</h1><PageAgentSelector />{error ? <><p role="alert" className="experiment-error">{error}</p>
     <button className="config-button" onClick={() => void refresh()}>重试</button></> : <p role="status">正在加载实验…</p>}</div>;
   const sample = experiment.samples.find((item) => item.id === selectedSample);
+  const assessment = experiment.assessment_version === 1 && experiment.task_type === "chapter_text";
   const samples = experiment.samples.filter((item) => !sampleFilter || item.phase === sampleFilter);
   const canRestore = experiment.can_restore ?? (["failed", "unconfirmed", "activated"].includes(experiment.publish_status) || !!experiment.load_error);
   const currentCandidate = experiment.current_candidate ?? (experiment.current_round === experiment.best_candidate?.round ? experiment.best_candidate : null);
@@ -150,16 +156,28 @@ export default function ExperimentDetail() {
   }
   const traceRun = (id: string): TraceIdentityRun => experiment.trace_runs?.[id] ?? liveRuns.find((run) => run.trace_id === id) ?? { trace_id: id };
   const selectedContext = traceDisplayContext(traceRun(selectedTrace), traceContexts.get(selectedTrace));
+  function versionFiles(round: number, commit?: string) {
+    if (!experiment?.can_read_content || !commit) return null;
+    const expanded = sourceRound === round;
+    const name = round ? "第 " + round + " 轮" : "原版";
+    return <div><button type="button" className="action-link" aria-expanded={expanded}
+      onClick={() => setSourceRound(expanded ? null : round)}>{expanded ? "收起" : "查看"}{name}文件</button>
+      {expanded && <ExperimentVersionFiles key={experiment.id + commit} id={experiment.id} round={round} commit={commit} />}
+    </div>;
+  }
 
   return <div className="bench-page experiment-detail">
     <header className="page-header"><Link to="/bench/experiments" className="action-link">返回实验记录</Link><h1>{experiment.name}</h1>
       <p className="page-desc"><span className="experiment-type-label">{taskLabel(experiment.task_type)}</span>
-        <span className={"experiment-state " + experiment.status}>{EXPERIMENT_STATUS[experiment.status] ?? experiment.status}</span></p>
+        <span className={"experiment-state " + experiment.status}>{EXPERIMENT_STATUS[experiment.status] ?? experiment.status}</span>
+        {assessment && <span>评测档案 <code>{experiment.id}</code></span>}</p>
     </header>
     <PageAgentSelector />
     {error && <p role="alert" className="experiment-error">{error}</p>}
     <section className="experiment-section">
-      <div className="experiment-heading"><div><h2>实验进度</h2><p className="experiment-note">优化与回归通过后才做本套回归，通过后等待人工发布。</p></div>
+      <div className="experiment-heading"><div><h2>实验进度</h2><p className="experiment-note">{assessment
+        ? "改版先检查启动，再用原题写作。原题达标后复测其他章节，等待手动启用。"
+        : "优化与回归通过后才做本套回归，通过后等待人工发布。"}</p></div>
         <div className="experiment-actions"><button className="config-button" type="button" disabled={busy} onClick={() => void refresh()}>刷新</button>
           {STOPPABLE.has(experiment.status) && <button className="config-button" type="button" disabled={busy || experiment.status === "stopping"} onClick={() => void operate(stopExperiment)}>停止实验</button>}
           <button className="config-button" type="button" onClick={() => downloadTextFile(experiment.id + "-report.json", JSON.stringify(experiment, null, 2), "application/json;charset=utf-8")}>导出报告</button>
@@ -201,13 +219,15 @@ export default function ExperimentDetail() {
       {experiment.load_error && <p className="experiment-error">{experiment.load_error}</p>}
       {experiment.rollback_status && <p>恢复旧版：{({ restoring: "恢复中", restored: "恢复已确认", failed: "恢复失败" } as Record<string, string>)[experiment.rollback_status] ?? experiment.rollback_status}</p>}
       <div className="experiment-actions"><button className="config-button primary" type="button" disabled={busy || !experiment.can_publish} onClick={() => void operate(publishExperiment)}>
-        {experiment.status === "publish_failed" ? "重试发布并核对加载" : "批准并发布候选"}</button>
+        {assessment ? (experiment.status === "publish_failed" ? "重试启用" : "启用达标版本")
+          : (experiment.status === "publish_failed" ? "重试发布并核对加载" : "批准并发布候选")}</button>
         {canRestore && <button className="config-button" type="button" disabled={busy || experiment.rollback_status === "restoring"} onClick={() => void operate(restoreExperiment)}>恢复旧版</button>}
       </div>
     </section>
-    <Tabs defaultValue="process" className="experiment-detail-tabs">
-      <TabsList aria-label="实验详情内容"><TabsTrigger value="process">运行过程</TabsTrigger>
-        <TabsTrigger value="scores">评分对比</TabsTrigger><TabsTrigger value="artifacts">产物文件</TabsTrigger></TabsList>
+    <Tabs value={tab} onValueChange={(next) => { setTab(next); setSelectedTrace(""); }} className="experiment-detail-tabs">
+      <TabsList aria-label="实验详情内容"><TabsTrigger value="process">{assessment ? "运行与 Trace" : "运行过程"}</TabsTrigger>
+        {assessment && <><TabsTrigger value="versions">Harness 版本</TabsTrigger><TabsTrigger value="improvements">进化产物</TabsTrigger></>}
+        <TabsTrigger value="scores">评分对比</TabsTrigger><TabsTrigger value="artifacts">{assessment ? "正文对比" : "产物文件"}</TabsTrigger></TabsList>
       <TabsContent value="process">
         {liveError && <p role="alert" className="experiment-error">{liveError}</p>}
         {pendingTraces.length > 0 && <section className="experiment-section"><h2>正在执行的 Trace</h2>
@@ -239,6 +259,9 @@ export default function ExperimentDetail() {
                 <button className="action-link" type="button" onClick={() => void viewSample(item.id)}>查看固定输入与检查</button></div></td></tr>)}
           </tbody></table></div>
           {!samples.length && <p className="experiment-note">暂无该环节运行记录。</p>}
+          {assessment && <><h3>各轮进化 Trace</h3>{experiment.rounds.map((round) => <div key={round.round}>
+            第 {round.round} 轮 · {round.trace_ids?.length ? round.trace_ids.map((id) => <button className="action-link" key={id} onClick={() => setSelectedTrace(id)}>
+              <TraceIdentity run={traceRun(id)} context={traceContexts.get(id)} /></button>) : "尚无进化 Trace"}</div>)}</>}
           {sample && <section className="experiment-sample"><div className="experiment-heading"><h3>{sample.package_title} · 固定输入与检查</h3>
             <button className="action-link" type="button" onClick={() => { inputRequest.current += 1; setSelectedSample(""); setInput(null); }}>收起</button></div>
             <p>目标完成：{sample.completed ? "是" : "否"} · 输入版本 <code>{sample.input_revision}</code></p>
@@ -248,12 +271,12 @@ export default function ExperimentDetail() {
               {inputError && <p role="alert" className="experiment-error">{inputError}</p>}
               {input && <><h4>完整需求</h4><p className="experiment-prewrap">{input.demand_md || "使用下方固定上游文稿"}</p>
                 <h4>预设确认规则</h4><p className="experiment-prewrap">{input.confirmation_rules}</p><ArtifactFiles files={input.files} />
-                {!!input.skills.length && <details><summary>固定技能</summary><EvidenceValues value={input.skills} /></details>}</>}
+                {!assessment && !!input.skills.length && <details><summary>固定技能</summary><EvidenceValues value={input.skills} /></details>}</>}
             </details> : <p className="experiment-note">当前账号没有正文读取权限。</p>}
             <details open><summary>完成检查</summary><EvidenceValues value={sample.checks} /></details>
           </section>}
         </section>
-        <section className="experiment-section"><h2>候选改动与轮次</h2>
+        {!assessment && <section className="experiment-section"><h2>候选改动与轮次</h2>
           {!experiment.rounds.length && <p className="experiment-note">尚未产生改进轮次。</p>}
           {experiment.rounds.map((round) => <details className="experiment-round" key={round.round}>
             <summary>第 {round.round} 轮 · {EXPERIMENT_STATUS[round.status] ?? round.status} · {round.summary || "查看候选"}</summary>
@@ -264,12 +287,6 @@ export default function ExperimentDetail() {
             </button>)}</div>
             {round.diff ? <pre className="experiment-diff">{round.diff}</pre> : <p className="experiment-note">没有可展示的文件差异。</p>}
           </details>)}
-        </section>
-        {selectedTrace && <section className="experiment-trace-inspector" aria-label="实验 Trace 详情"><div className="experiment-heading"><div>
-          <h2>Trace 详情</h2></div>
-          <button type="button" className="action-link" onClick={() => setSelectedTrace("")}>收起 Trace</button></div>
-          <TraceDetailPage key={selectedTrace} traceIdOverride={selectedTrace} embedded canReadContent={experiment.can_read_content}
-            displayContextOverride={selectedContext} />
         </section>}
     <section className="experiment-section"><h2>恢复与操作记录</h2>{!experiment.events.length ? <p className="experiment-note">暂无操作记录。</p> :
       <ol className="experiment-events">{experiment.events.map((event) => <li key={event.id}>
@@ -302,7 +319,44 @@ export default function ExperimentDetail() {
           {!experiment.samples.length && <p className="experiment-note">尚无样本评分记录。</p>}
         </section>
       </TabsContent>
-      <TabsContent value="artifacts"><ExperimentArtifacts samples={experiment.samples} canReadContent={experiment.can_read_content} /></TabsContent>
+      {assessment && <TabsContent value="versions"><section className="experiment-section"><h2>Harness 版本</h2>
+        <p>原版 v{experiment.baseline.version} · <code>{experiment.baseline.commit}</code></p>
+        {versionFiles(0, experiment.baseline.commit)}
+        {!experiment.can_read_content && <p className="experiment-note">查看版本文件需要正文读取权限。</p>}
+        {experiment.rounds.map((round) => <article key={round.round} className="experiment-round">
+          <h3>第 {round.round} 轮 · {EXPERIMENT_STATUS[round.status] ?? round.status}
+            {experiment.best_candidate?.round === round.round && " · 当前最佳"}</h3>
+          <p>起始版本 <code>{round.base_commit}</code> → 本轮版本 <code>{round.source_commit || "尚无版本标识"}</code></p>
+          <p>启动检查 · {round.startup_check ? round.startup_check.status === "passed" ? "通过" : "失败" : "尚无结果"}</p>
+          {round.error && <p className="experiment-error">{experiment.can_read_content ? round.error : "本轮异常，完整原因需正文读取权限。"}</p>}
+          {experiment.can_read_content && round.startup_check?.error && round.startup_check.error !== round.error && <p className="experiment-error">{round.startup_check.error}</p>}
+          {experiment.can_read_content && round.diff && <details><summary>查看资产改动</summary><pre className="experiment-diff">{round.diff}</pre></details>}
+          {versionFiles(round.round, round.source_commit)}
+          <button type="button" className="action-link" onClick={() => {
+            setComparisonRound(round.round); setSelectedTrace(""); setTab("artifacts");
+          }}>对比原版与第 {round.round} 轮</button>
+        </article>)}</section></TabsContent>}
+      {assessment && <TabsContent value="improvements"><section className="experiment-section"><h2>进化产物</h2>
+        {!experiment.can_read_content && <p>当前账号没有正文读取权限。</p>}
+        {!experiment.rounds.length && <p>尚无改进轮次。</p>}
+        {experiment.rounds.map((round) => <article key={round.round} className="experiment-round">
+          <h3>第 {round.round} 轮 · {EXPERIMENT_STATUS[round.status] ?? round.status}</h3>
+          {experiment.can_read_content && <>
+            <h4>问题与依据</h4><div className="experiment-prewrap">{round.design || "尚无改进方案。"}</div>
+            <ImprovementSources experiment={experiment} references={round.evidence_samples ?? []} onTrace={setSelectedTrace} />
+            <h4>实际改动</h4><div className="experiment-prewrap">{round.summary || "尚无改动报告。"}</div>
+          </>}
+          {round.trace_ids?.map((id) => <button className="action-link" key={id} type="button" onClick={() => setSelectedTrace(id)}>
+            <TraceIdentity run={traceRun(id)} context={traceContexts.get(id)} /></button>)}
+        </article>)}</section></TabsContent>}
+      <TabsContent value="artifacts">{assessment
+        ? <ChapterComparison experiment={experiment} onTrace={setSelectedTrace} initialRound={comparisonRound} />
+        : <ExperimentArtifacts samples={experiment.samples} canReadContent={experiment.can_read_content} />}</TabsContent>
     </Tabs>
+    {selectedTrace && <section className="experiment-trace-inspector" aria-label="实验 Trace 详情"><div className="experiment-heading"><h2>Trace 详情</h2>
+      <button type="button" className="action-link" onClick={() => setSelectedTrace("")}>收起 Trace</button></div>
+      <TraceDetailPage key={selectedTrace} traceIdOverride={selectedTrace} embedded canReadContent={experiment.can_read_content}
+        displayContextOverride={selectedContext} />
+    </section>}
   </div>;
 }

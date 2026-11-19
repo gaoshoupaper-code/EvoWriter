@@ -103,6 +103,7 @@ export default function ReviewReport() {
   const designDoc = session.design_doc;
   const changeLog = session.change_log;
   const isPendingReview = session.status === "pending_review";
+  const automaticText = selectedAgent() === "text";
   // R8：报告残缺判断（design_doc 为空 = 方案未产出或不完整）
   const reportIncomplete = !designDoc || !designDoc.meta?.changes;
 
@@ -196,7 +197,7 @@ export default function ReviewReport() {
       {isPendingReview && (
         <div className="review-actions-bar">
           <div className="review-actions-info">
-            保存候选后进入本套评测。两组均达标后可以确认上线。
+            {automaticText ? "正文评测由系统从原版自动改进，达标后可手动启用。" : "保存候选后进入本套评测。两组均达标后可以确认上线。"}
           </div>
           <div className="review-actions-buttons">
             <button
@@ -208,10 +209,10 @@ export default function ReviewReport() {
             </button>
             <button
               className="config-button primary"
-              onClick={handlePublish}
+              onClick={automaticText ? () => navigate(withAgent("/bench")) : handlePublish}
               disabled={acting}
             >
-              {acting ? "处理中…" : "保存候选并评测"}
+              {acting ? "处理中…" : automaticText ? "打开正文自动进化" : "保存候选并评测"}
             </button>
           </div>
         </div>

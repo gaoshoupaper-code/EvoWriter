@@ -23,6 +23,7 @@ import tempfile
 from pathlib import Path
 
 from contracts.platform import ProbeResult
+from contracts.creative_harness import text_assistants
 
 from app.agent.git_checkout import checkout_commit, cleanup_checkout
 from app.core.settings import get_settings, project_root, resolve_path
@@ -72,10 +73,12 @@ def probe_candidate(
         agent = os.getenv("WRITING_AGENT_ID")
         if agent:
             spec = json.loads((checkout / "architecture.json").read_text(encoding="utf-8"))
-            assistants = {"outline": [], "volume": ["volume_qc"], "chapter": [], "text": ["review"]}
+            assistants = {"outline": [], "volume": ["volume_qc"], "chapter": []}
             actors = spec.get("agents", [])
             mains = [row for row in actors if row.get("role") == "main"]
-            if (agent not in assistants or len(mains) != 1 or mains[0].get("name") != agent
+            if agent == "text":
+                text_assistants(actors)
+            elif (agent not in assistants or len(mains) != 1 or mains[0].get("name") != agent
                     or mains[0].get("delegates", []) != assistants[agent]
                     or sorted(row["name"] for row in actors if row.get("role") != "main") != assistants[agent]):
                 raise ValueError("候选包的主 Agent 或助手归属与本套不符。")

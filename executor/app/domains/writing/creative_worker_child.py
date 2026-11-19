@@ -39,7 +39,8 @@ class _Instruction:
 
     def require_write(self, name, args):
         from contracts.creative_harness import write_denial
-        return write_denial(self.agent, name, args, self.row["volume"], self.row["chapter"])
+        return write_denial(self.agent, name, args, self.row["volume"], self.row["chapter"],
+                            package_root=self.package_root)
 
     def _submit(self, op, args, rel, **fields):
         from app.domains.writing.creative_scope import CALL_ID

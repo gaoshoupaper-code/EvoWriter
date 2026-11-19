@@ -117,7 +117,8 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
         value["samples"] = safe_samples
         value["rounds"] = [{**{key: item[key] for key in (
             "round", "status", "source_commit", "base_commit", "digest", "report", "regressions", "trace_ids", "usage",
-        ) if key in item}, "summary": "", "diff": "", "error": "本轮异常，完整原因需正文读取权限。" if item.get("error") else None}
+        ) if key in item}, **({"startup_check": {"status": item["startup_check"]["status"]}} if item.get("startup_check") else {}),
+        "summary": "", "diff": "", "error": "本轮异常，完整原因需正文读取权限。" if item.get("error") else None}
             for item in value.get("rounds", [])]
     value.update(can_read_content=can_read_content,
         can_publish=run["status"] in {"awaiting_review", "publish_failed"} and not run.get("stale_reason")
@@ -255,6 +256,34 @@ def evaluation_usage(run_id: str, offset: int = Query(0, ge=0), limit: int = Que
         for key in ("judge_id", "dimension", "status", "usage")}}
         for sample_id, attempt in islice(attempts, offset, offset + limit)],
         "total": total, "offset": offset, "limit": limit}
+
+
+@router.get("/runs/{run_id}/versions/{round_number}/source")
+def round_source(run_id: str, round_number: int, request: Request, path: str | None = None):
+    from app.experiments.snapshots import archived_source
+
+    require_full_content_access(request)
+    if set(request.query_params) - {"path"}:
+        raise HTTPException(400, "只支持按本轮资产路径查询")
+    if configured_task_type() != "chapter_text" or round_number < 0:
+        raise HTTPException(404, "没有该评测版本")
+    version = db.query_one(
+        """SELECT e.version FROM assessment_entries e JOIN self_evolution_runs r ON r.id=e.assessment_id
+           WHERE e.assessment_id=? AND e.category='version' AND e.round_number=? AND e.entry_id=?
+             AND json_extract(r.payload,'$.task_type')='chapter_text'
+             AND json_extract(r.payload,'$.flow_version')=3 AND json_extract(r.payload,'$.assessment_version')>=1""",
+        (run_id, round_number, "baseline" if round_number == 0 else f"round-{round_number}"),
+    )
+    if not version or not version["version"]:
+        raise HTTPException(404, "本轮暂无保存的 Harness 版本")
+    try:
+        return archived_source(run_id, version["version"], path)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "本档案没有所选版本或资产") from exc
+    except UnicodeDecodeError as exc:
+        raise HTTPException(415, "该资产无法按 UTF-8 文本显示") from exc
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(409, "本轮保存的快照无法读取") from exc
 
 
 @router.post("/runs/{run_id}/stop")

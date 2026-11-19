@@ -95,8 +95,9 @@ def _git_rev_list(commit: str) -> list[str]:
     memo = _ancestry_memo.get(commit)
     if memo is not None:
         return memo
-    from app.core.git_ops import _git, read_dir
-    out = _git(["rev-list", "--first-parent", commit], read_dir())
+    from app.core.git_ops import _git, version_source
+    with version_source(commit) as directory:
+        out = _git(["rev-list", "--first-parent", commit], directory)
     ancestry = out.split()
     _ancestry_memo[commit] = ancestry
     return ancestry

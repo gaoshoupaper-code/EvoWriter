@@ -9,7 +9,8 @@ from typing import Any
 from uuid import uuid4
 
 from app.core import db
-from contracts.target_tasks import configured_task_type
+from app.experiments import assessment
+from contracts.target_tasks import TaskInput, configured_task_type
 
 _locks: dict[str, threading.RLock] = {}
 _locks_guard = threading.Lock()
@@ -32,6 +33,7 @@ def init_schema() -> None:
     with db.transaction() as connection:
         for table in ("self_evolution_packages", "self_evolution_rules", "self_evolution_runs"):
             connection.execute(f"CREATE TABLE IF NOT EXISTS {table} (id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at TEXT NOT NULL)")
+        assessment.init_schema(connection)
     from app.experiments.rubrics import seed_rules
     seed_rules()
     from app.experiments.seed_data import seed_packages
@@ -61,6 +63,24 @@ def _list(table: str) -> list[dict]:
 
 def get_package(package_id: str) -> dict | None:
     return _get("self_evolution_packages", package_id)
+
+
+def chapter_case(package: dict) -> dict:
+    """Imported fixtures can predate versioned Skills. Only the Harness supplies Skills here."""
+    if not package["input"].get("skills"):
+        return package
+    source = TaskInput.model_validate({**package["input"], "input_revision": "", "skills": []})
+    return {**package, "input": source.model_dump(mode="json"), "input_revision": source.input_revision}
+
+
+def run_package(run: dict, package_id: str) -> dict:
+    if not run.get("assessment_version"):
+        return run["private"]["packages"][package_id]
+    source_revision = run["private"]["package_revisions"][package_id]
+    package = get_package(package_id)
+    if package is None or package["input_revision"] != source_revision:
+        raise ValueError("找不到本次评测绑定的题库版本")
+    return chapter_case(package)
 
 
 def list_packages() -> list[dict]:
@@ -98,26 +118,33 @@ def list_rules() -> list[dict]:
 
 
 def get_run(run_id: str) -> dict | None:
-    return _get("self_evolution_runs", run_id)
+    with run_lock(run_id):
+        value = _get("self_evolution_runs", run_id)
+        return assessment.hydrate(value) if value and value.get("assessment_version") else value
 
 
 def list_runs() -> list[dict]:
+    """Summaries retain scheduler state; callers that mutate must fetch the full run."""
     return _list("self_evolution_runs")
 
 
 def put_run(run: dict) -> None:
     # Worker and stop/release operations share this lock; the JSON write is atomic.
     with run_lock(run["id"]):
-        current = get_run(run["id"])
+        current = _get("self_evolution_runs", run["id"])
         if current and current["status"] in {"stopping", "stopped"} and run["status"] not in {"stopping", "stopped"}:
             for key in ("status", "phase", "end_reason"):
                 run[key] = current.get(key)
             existing_ids = {item["id"] for item in run.setdefault("events", [])}
             run["events"].extend(item for item in current.get("events", []) if item["id"] not in existing_ids)
         run["updated_at"] = now()
-        db.execute("INSERT INTO self_evolution_runs(id,payload,created_at) VALUES (?,?,?) "
-                   "ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
-                   (run["id"], json.dumps(run, ensure_ascii=False), run["created_at"]))
+        header, entries = assessment.split(run) if run.get("assessment_version") else (run, [])
+        with db.transaction() as connection:
+            connection.execute("INSERT INTO self_evolution_runs(id,payload,created_at) VALUES (?,?,?) "
+                               "ON CONFLICT(id) DO UPDATE SET payload=excluded.payload",
+                               (run["id"], json.dumps(header, ensure_ascii=False), run["created_at"]))
+            if entries:
+                assessment.save_entries(connection, entries)
 
 
 def event(run: dict, kind: str, message: str) -> None:

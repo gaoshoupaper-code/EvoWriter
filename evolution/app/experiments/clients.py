@@ -22,6 +22,12 @@ def _request(service: str, method: str, path: str, payload: dict | None = None, 
         raise ServiceUnavailable(f"{service}连接暂时不可用：{type(exc).__name__}") from exc
     if response.status_code == 404:
         raise TaskNotFound(path)
+    if path == "/api/artifacts/prepare" and response.status_code in (400, 409):
+        try:
+            detail = response.json().get("detail")
+        except (ValueError, AttributeError):
+            detail = None
+        raise ValueError("候选装配未通过：" + (detail[:1600] if isinstance(detail, str) else f"HTTP {response.status_code}"))
     if response.status_code == 409:
         raise ValueError("生产版本或任务状态已变化，请重新核对")
     if response.status_code >= 500:

@@ -44,12 +44,15 @@ def create_run(request: RunCreate, actor: str) -> dict:
     if selected is None:
         raise ValueError("所选基线版本不存在")
     scope = configured_task_type()
+    chapter_assessment = scope == "chapter_text"
     if scope and scope != request.task_type:
         raise ValueError("实验目标不属于本套")
     production = clients.production()
     if scope and (selected["version"] != production["version"] or selected["commit"] != production["commit"]):
         raise ValueError("线上版本已变化，请基于本套当前生产版本评测")
     if request.candidate_commit:
+        if chapter_assessment:
+            raise ValueError("正文评测由进化 Agent 自动生成候选版本")
         from app.versioning.asset_candidates import validate_candidate
         validate_candidate(request.candidate_commit, selected["commit"])
     model = repo.freeze_credentials(request.model_config_id)
@@ -87,7 +90,8 @@ def create_run(request: RunCreate, actor: str) -> dict:
         if package is None or package["task_type"] != kind or package["purpose"] != purpose:
             raise ValueError(f"样本 {identifier} 不存在或类型、用途不匹配")
         packages.validate_package(PackageCreate.model_validate({key: package[key] for key in ("title", "purpose", "target", "input")}))
-        fingerprint = (kind, package["input_revision"], json.dumps(package["target"], sort_keys=True))
+        fixed = repo.chapter_case(package) if chapter_assessment else package
+        fingerprint = (kind, fixed["input_revision"], json.dumps(fixed["target"], sort_keys=True))
         previous_purpose = input_purposes.get(fingerprint)
         if previous_purpose is not None and previous_purpose != purpose:
             raise ValueError("不同用途必须使用独立输入，不能重复导入相同资料包")
@@ -105,6 +109,13 @@ def create_run(request: RunCreate, actor: str) -> dict:
            "rollback_status": None, "created_at": now, "updated_at": now,
            "private": {"model": model, "judges": judges, "evolver": evolver, "rules": frozen_rules,
                        "packages": frozen_packages, "actor": actor}}
+    if chapter_assessment:
+        from app.experiments import snapshots
+        snapshots.ensure_baseline(selected["commit"])
+        snapshots.retain(run["id"], selected["commit"])
+        run["assessment_version"] = 1
+        run["private"]["package_revisions"] = {key: p["input_revision"] for key, p in frozen_packages.items()}
+        del run["private"]["packages"]
     run["models"] = repo.public_models(run)
     repo.event(run, "created", "实验条件已固定；准备运行原始对照。")
     _add_samples(run, request.optimization_ids, arm="baseline", phase="baseline", round_=0, repeats=1,
@@ -118,7 +129,7 @@ def create_run(request: RunCreate, actor: str) -> dict:
 
 def _add_samples(run: dict, package_ids: list[str], *, arm: str, phase: str, round_: int, repeats: int, commit: str, digest: str) -> None:
     for package_id in package_ids:
-        package = run["private"]["packages"][package_id]
+        package = repo.run_package(run, package_id)
         for repeat in range(1, repeats + 1):
             if any(sample["package_id"] == package_id and sample["arm"] == arm and sample["phase"] == phase
                    and sample["round"] == round_ and sample["repeat"] == repeat for sample in run["samples"]):
@@ -131,6 +142,8 @@ def _add_samples(run: dict, package_ids: list[str], *, arm: str, phase: str, rou
                 "artifacts": {}, "usage": {}, "input_revision": package["input_revision"],
                 "source_commit": commit, "artifact_digest": digest, "target": copy.deepcopy(package["target"]),
                 "execution_phase": None})
+            if run.get("assessment_version"):
+                run["samples"][-1]["package_revision"] = run["private"]["package_revisions"][package_id]
 
 
 def _stop_scoring_retries(run: dict, sample: dict, cause: Exception | None = None) -> None:
@@ -146,7 +159,7 @@ def _stop_scoring_retries(run: dict, sample: dict, cause: Exception | None = Non
 
 def process_sample(run: dict, sample: dict) -> None:
     if sample.get("generation_status") != "completed":
-        package = run["private"]["packages"][sample["package_id"]]
+        package = repo.run_package(run, sample["package_id"])
         task = None
         if sample.get("request_saved"):
             try:
@@ -355,7 +368,9 @@ def advance_one(run_id: str) -> None:
                     return
                 run["current_round"] += 1
                 base = run["best_candidate"]["commit"] if run["best_candidate"] else run["baseline"]["commit"]
-                if run.get("flow_version") == 3 and run["rounds"]:
+                if run.get("assessment_version"):
+                    base = run["baseline"]["commit"]
+                elif run.get("flow_version") == 3 and run["rounds"]:
                     previous = run["rounds"][-1]
                     base = previous.get("source_commit") or previous["base_commit"]
                 round_record = {"round": run["current_round"], "status": "evolving", "base_commit": base,
@@ -367,7 +382,8 @@ def advance_one(run_id: str) -> None:
                 if supplied and round_record["round"] == 1:
                     result = agent.asset_candidate(run, supplied)
                 else:
-                    result = agent.improve_candidate(run, round_record, optimization_evidence(run))
+                    evidence = [] if run.get("assessment_version") else optimization_evidence(run)
+                    result = agent.improve_candidate(run, round_record, evidence)
                 if is_stopped(run_id):
                     return
                 round_record.update(status="exploration", source_commit=result["commit"], digest=result["digest"],
@@ -537,7 +553,10 @@ def start_worker(run_id: str) -> None:
 
 def recover_runs() -> None:
     from app.experiments import release
-    for run in repo.list_runs():
+    for item in repo.list_runs():
+        if not release.needs_recovery(item) and item["status"] not in ACTIVE:
+            continue
+        run = repo.get_run(item["id"])
         if release.needs_recovery(run):
             repo.event(run, "recovering", "服务已恢复，先核对本次发布或恢复是否已实际生效。")
             repo.put_run(run)

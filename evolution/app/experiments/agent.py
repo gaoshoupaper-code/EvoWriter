@@ -29,20 +29,66 @@ def asset_candidate(run: dict, commit: str) -> dict:
     return {"commit": commit, "digest": prepared["digest"], "diff": diff, "summary": "评测资产页创建的候选版本"}
 
 
+def _save_assessment_version(run, record, root):
+    from app.experiments import snapshots
+    from app.versioning.asset_candidates import is_candidate_asset
+
+    _git(root, "add", "--all", "--", ".")
+    names = _git(root, "diff", "--cached", "--name-only", "-z").split("\0")
+    if any(not is_candidate_asset(name) or (root / name).is_symlink() for name in names if name):
+        raise ValueError("调整包含不属于正文 Harness 的资产")
+    if any(names):
+        _git(root, "-c", "user.name=Writer Evolution", "-c", "user.email=evolution@writer.local",
+             "commit", "-m", f"Assessment {run['id']} round {record['round']}")
+    commit = _git(root, "rev-parse", "HEAD")
+    snapshots.save(root, commit)
+    snapshots.retain(run["id"], commit)
+    record.update(source_commit=commit, diff=_git(root, "diff", record["base_commit"], commit))
+    repo.put_run(run)
+    return commit
+
+
+def _prepare_version(run, record, frozen):
+    try:
+        prepared = clients.prepare_artifact(frozen["commit"])
+    except ValueError as exc:
+        if run.get("assessment_version"):
+            record["startup_check"] = {"status": "failed", "error": str(exc)}
+            repo.put_run(run)
+        raise
+    if run.get("assessment_version"):
+        record["startup_check"] = {"status": "passed"}
+    return {**frozen, "digest": prepared["digest"]}
+
+
+def _record_design(run, record, path):
+    from app.evolve.docs import read_design_doc
+
+    doc = read_design_doc(path)
+    record["design"] = doc["body"]
+    refs = {ref for change in doc["meta"].get("changes", []) for ref in change.get("evidence_ref", [])}
+    record["evidence_samples"] = [s["id"] for s in run["samples"]
+                                  if s["phase"] in {"baseline", "exploration"}
+                                  and s["package_id"] in run["settings"]["optimization_ids"] and s["id"] in refs]
+
+
 def improve_candidate(run: dict, round_record: dict, evidence: list[dict]) -> dict:
     """Freeze and prepare a candidate; this function never promotes production."""
     if round_record.get("frozen_candidate"):
-        frozen = round_record["frozen_candidate"]
-        prepared = clients.prepare_artifact(frozen["commit"])
-        return {**frozen, "digest": prepared["digest"]}
+        return _prepare_version(run, round_record, round_record["frozen_candidate"])
     root = settings.db_path.parent / "experiments" / run["id"] / f"round-{round_record['round']}"
     root.parent.mkdir(parents=True, exist_ok=True)
+    private_version = run.get("flow_version") == 3 and run.get("task_type") == "chapter_text"
     if not (root / ".git").exists():
         # A separate clone has a separate index and HEAD; human sessions keep their checkout.
-        result = subprocess.run(["git", "clone", "--no-hardlinks", str(settings.harness_bare_repo_path), str(root)], capture_output=True, text=True, encoding="utf-8", timeout=60)
-        if result.returncode:
-            raise RuntimeError("无法创建候选工作副本")
-        _git(root, "checkout", "-b", f"codex/{run['id']}-r{round_record['round']}", round_record["base_commit"])
+        if private_version:
+            from app.experiments import snapshots
+            snapshots.checkout_base(round_record["base_commit"], root)
+        else:
+            result = subprocess.run(["git", "clone", "--no-hardlinks", str(settings.harness_bare_repo_path), str(root)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+            if result.returncode:
+                raise RuntimeError("无法创建候选工作副本")
+            _git(root, "checkout", "-b", f"codex/{run['id']}-r{round_record['round']}", round_record["base_commit"])
     if any(path.is_symlink() for path in root.rglob("*") if ".git" not in path.parts):
         raise ValueError("候选包不接受符号链接")
     round_record["session_id"] = f"{run['id']}-r{round_record['round']}"
@@ -53,7 +99,28 @@ def improve_candidate(run: dict, round_record: dict, evidence: list[dict]) -> di
     except (APIConnectionError, APIStatusError) as exc:
         if isinstance(exc, APIConnectionError) or exc.status_code in {408, 409, 429} or exc.status_code >= 500:
             raise clients.ServiceUnavailable("进化模型暂时不可用：" + type(exc).__name__) from exc
+        if private_version:
+            _save_assessment_version(run, round_record, root)
         raise
+    except Exception:
+        if private_version:
+            _save_assessment_version(run, round_record, root)
+        raise
+    if private_version:
+        round_record["summary"] = result.get("summary", "")
+        commit = _save_assessment_version(run, round_record, root)
+        if not result["validated"]:
+            errors = _compile_candidate(root)
+            reason = "候选源码校验未通过：" + ("、".join(errors) if errors else "最终改动尚未通过校验")
+            round_record["startup_check"] = {"status": "failed", "error": reason}
+            repo.put_run(run)
+            raise ValueError(reason)
+        if commit == round_record["base_commit"]:
+            raise ValueError("候选未产生 Harness 改动，不能作为改版进入复测")
+        frozen = {"commit": commit, "diff": round_record["diff"], **result}
+        round_record["frozen_candidate"] = frozen
+        repo.put_run(run)
+        return _prepare_version(run, round_record, frozen)
     if not result["validated"]:
         raise ValueError("候选源码校验未通过")
     changed = _git(root, "status", "--porcelain")
@@ -87,7 +154,7 @@ def _compile_candidate(root: Path) -> list[str]:
         try:
             compile(path.read_text(encoding="utf-8"), str(path.relative_to(root)), "exec")
         except (SyntaxError, UnicodeError) as exc:
-            errors.append(f"{path.relative_to(root)}：{type(exc).__name__}")
+            errors.append(f"{path.relative_to(root)}：{type(exc).__name__}：{exc}")
     return errors
 
 
@@ -158,6 +225,8 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     if old_session and old_session.get("case_id") != "experiment:" + run["id"]:
         db.execute("UPDATE evolve_sessions SET case_id=? WHERE session_id=?", ("experiment:" + run["id"], session_id))
     if old_session and old_session["status"] == "done" and old_session.get("change_log_path"):
+        if run.get("assessment_version") and old_session.get("design_doc_path"):
+            _record_design(run, round_record, old_session["design_doc_path"])
         return {"validated": not _compile_candidate(root),
                 "summary": Path(old_session["change_log_path"]).read_text(encoding="utf-8"), "usage": {"known": False}}
     if old_session is None:
@@ -191,6 +260,9 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     backend = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     tools = make_inspect_tools() + make_writer_tools(backend)
     tools += [item for item in make_flow_tools() if item.name != "validate_changes"] + [validate_changes]
+    if run.get("assessment_version"):
+        from app.experiments.history import make_history_tools
+        tools.extend(make_history_tools(run))
     allowed_tools = {item.name for item in tools}
     _ensure_gp_disabled()
     credentials = repo.decrypt_credentials(run["private"]["evolver"])
@@ -202,10 +274,21 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
         "你是Writer Harness进化工程师。本实验已授权自动修改，无需逐点人工采纳。"
         "只允许在当前Harness包内修改提示词、技能、工具、中间件和装配代码。"
         "不得修改registry.json、.git、数据集、评测、权限、服务框架；不得寻找终验或其他作品数据。"
-        "工具只包含Harness源码读写与校验；不得调用发布。先探查并write_design_doc，再修改、validate_changes、write_change_log。"
+        "先探查并write_design_doc，再修改、validate_changes、write_change_log。运行时不允许调用发布。"
         "每次只处理有证据的问题，保留现有质量检查和取证行为。"
-        "依据已提供的改进题证据调整候选，不得访问题库、规则或任何其他套数据。"
     )
+    if run.get("assessment_version"):
+        task = "使用本次档案的历史工具定位正文问题，再改进正文 Agent 并完成校验。"
+        prompt += (
+            "你负责正文 Agent 从题目到单章交稿的整体效果。先调用 list_assessment_history，按需读取改进题的"
+            "终稿、评分和真实 Trace；可以核对初稿、review 意见和实际修订。根据证据决定改哪里。"
+            "读取 architecture.json 核对实际装配的提示词、技能、工具、中间件与子 Agent。"
+            "可以调整这些资产及其装配关系。设计文档须注明问题、证据编号、拟改资产和预期效果。"
+            "涉及改进题时，将样本列表返回的 evidence_ref 原样写入设计条目的 evidence_ref。"
+            "只能查看本次档案；独立复测题只提供掉分项和幅度。"
+        )
+    else:
+        task = "请依据给定的改进题证据修改候选并完成校验：\n" + json.dumps(evidence, ensure_ascii=False)
     config = {"configurable": {"thread_id": session_id}, "recursion_limit": 200}
     if ctx.recorder and ctx.trace_id_self:
         config["callbacks"] = [TraceCallbackHandler(ctx.recorder, ctx.trace_id_self)]
@@ -219,8 +302,7 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
                                request_timeout=300, max_retries=1, http_async_client=http_client)
             agent = create_deep_agent(model=model, tools=tools, system_prompt=prompt, middleware=middleware,
                                       subagents=None, backend=backend, checkpointer=checkpointer)
-            await _run_agent_streamed(agent, "请依据给定的改进题证据修改候选并完成校验：\n" + json.dumps(evidence, ensure_ascii=False), config, ctx,
-                                      input_message_id=session_id + "-optimization")
+            await _run_agent_streamed(agent, task, config, ctx, input_message_id=session_id + "-optimization")
         if ctx.validation_result is None:
             # A recovered checkpoint can already contain the final change log.
             validate_changes.invoke({})
@@ -235,3 +317,10 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
         if ctx.recorder and ctx.trace_id_self:
             ctx.recorder.fail_run(ctx.trace_id_self, "自动改进中断或失败")
         raise
+    finally:
+        if run.get("assessment_version") and (ctx.design_doc_path or ctx.change_log_path):
+            if ctx.design_doc_path:
+                _record_design(run, round_record, ctx.design_doc_path)
+            if ctx.change_log_path:
+                round_record["summary"] = Path(ctx.change_log_path).read_text(encoding="utf-8")
+            repo.put_run(run)

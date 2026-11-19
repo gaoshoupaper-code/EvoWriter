@@ -2040,6 +2040,12 @@ export function startExperiment(payload: ExperimentStart): Promise<Experiment> {
 export function getExperiment(id: string): Promise<Experiment> {
   return evoJson(`/api/experiments/runs/${encodeURIComponent(id)}`, { method: "GET" });
 }
+export function getExperimentVersionSource(id: string, round: number, path?: string): Promise<
+  { commit: string; paths: string[] } | { commit: string; path: string; content: string }
+> {
+  const query = path ? "?" + new URLSearchParams({ path }) : "";
+  return evoJson(`/api/experiments/runs/${encodeURIComponent(id)}/versions/${round}/source${query}`, { method: "GET" });
+}
 export function getExperimentEvaluationUsage(id: string, page: { offset: number; limit: number }): Promise<ExperimentEvaluationUsagePage> {
   const query = new URLSearchParams({ offset: String(page.offset), limit: String(page.limit) });
   return evoJson(`/api/experiments/runs/${encodeURIComponent(id)}/usage/evaluation?${query}`, { method: "GET" });

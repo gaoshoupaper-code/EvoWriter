@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { withAgent } from "@/lib/writing-agent";
+import { currentTask, withAgent } from "@/lib/writing-agent";
 import {
   getSharedVersion, getSharedVersions, listCandidateAssets, readCandidateAsset,
   saveAssetCandidate, shareMiddleware,
@@ -62,6 +62,9 @@ export function CandidateEditor() {
     catch (cause) { setError(String(cause)); }
     finally { setBusy(false); }
   }
+  if (currentTask() === "chapter_text") return <section className="experiment-card">
+    <Link to={withAgent("/bench")}>从原版启动正文自动进化</Link>
+  </section>;
   return <section className="experiment-card">
     {!base ? <button type="button" className="config-button" disabled={busy} onClick={open}>从当前版创建候选</button> : <>
       <h3>候选版 · 基于 {base.slice(0, 10)}</h3>

@@ -5,7 +5,7 @@ import json
 import shutil
 from pathlib import Path
 
-from contracts.architecture_manifest import BASE_CHAIN_MODULES
+from contracts.architecture_manifest import BASE_CHAIN_MODULES, MAX_SUBAGENTS
 from contracts.writing_artifacts import artifact_relpath, stage_allowed_kinds, volume_draft_relpath
 
 AGENTS = ("outline", "volume", "chapter", "text")
@@ -44,11 +44,45 @@ def entry_missing(workspace: Path, agent: str, volume: int = 1, chapter: int = 1
             or not (workspace / p).read_text(encoding="utf-8").strip()]
 
 
-def write_denial(agent: str, tool: str, args: dict, volume: int, chapter: int) -> str | None:
+def text_assistants(actors: list[dict]) -> frozenset[str]:
+    """Resolve the mounted text delegation tree and reject other writing roles."""
+    reserved = {*AGENTS, "volume_qc", "author", "general-purpose"}
+    by_name = {row["name"]: row for row in actors}
+    main = by_name.get("text", {})
+    if (len(by_name) != len(actors) or len(actors) > MAX_SUBAGENTS + 1
+            or main.get("role") != "main" or main.get("delegated_by")):
+        raise ValueError("候选包的主 Agent 或助手归属与本套不符。")
+    reached = {"text"}
+    helpers = set()
+    pending = [main]
+    while pending:
+        parent = pending.pop()
+        for name in parent.get("delegates", []):
+            child = by_name.get(name, {})
+            # The runtime registers a compiled (delegating) assistant by its
+            # architecture name; only a leaf can have a separate tool alias.
+            runtime_name = name if child.get("delegates") else child.get("runtime_name") or name
+            if (name in reached or child.get("role") != "sub" or child.get("delegated_by") != parent["name"]
+                    or name in reserved or runtime_name in reserved or runtime_name in helpers
+                    or (name == "review") != (runtime_name == "review")):
+                raise ValueError("候选包的主 Agent 或助手归属与本套不符。")
+            reached.add(name)
+            helpers.add(runtime_name)
+            pending.append(child)
+    if reached != by_name.keys():
+        raise ValueError("正文候选含未挂载的助手。")
+    return frozenset(helpers)
+
+
+def write_denial(agent: str, tool: str, args: dict, volume: int, chapter: int,
+                 *, package_root: Path | None = None) -> str | None:
     if agent not in AGENTS:
         return "未知创作身份"
     kind = args.get("kind")
     if tool == "task":
+        if agent == "text" and package_root is not None:
+            manifest = json.loads((package_root / "architecture.json").read_text(encoding="utf-8"))
+            return None if args.get("subagent_type") in text_assistants(manifest["agents"]) else "当前入口不能委托这个助手"
         helper = {"volume": "volume_qc", "text": "review"}.get(agent)
         return None if helper and args.get("subagent_type") == helper else "当前入口不能委托这个助手"
     if tool in {"read_file", "write_file", "edit_file", "ls", "glob", "grep", "execute"}:

@@ -24,7 +24,7 @@ export function EvolutionExperiments() {
   const activeRuns = runs.filter((run) => run.flow_version === 3 && run.task_type === currentTask() && ["pending", "running", "recovering", "stopping", "publishing"].includes(run.status));
   const kind = currentTask();
   const [params] = useSearchParams();
-  const candidate = params.get("candidate");
+  const candidate = kind === "chapter_text" ? null : params.get("candidate");
   const [baseline, setBaseline] = useState("");
   const [model, setModel] = useState("");
   const [judges, setJudges] = useState("");
@@ -93,7 +93,9 @@ export function EvolutionExperiments() {
 
   return <section className="experiment-section experiment-console" aria-labelledby="evolution-experiments-title">
     <div className="experiment-heading"><div><h2 id="evolution-experiments-title">启动自动进化</h2>
-      <p className="experiment-note">选好目标与模型，自动完成评测、改版和复测。改进题与回归题均达标后，由你确认发布。</p></div>
+      <p className="experiment-note">{kind === "chapter_text"
+        ? "系统根据正文评测自动修改 Harness。原题和其他章节均达标后，可手动启用通过评测的版本。"
+        : "选好目标与模型，自动完成评测、改版和复测。改进题与回归题均达标后，由你确认发布。"}</p></div>
       <button className="config-button" type="button" disabled={loading || starting} onClick={() => setReload((value) => value + 1)}><RefreshCw size={14} />刷新配置</button>
     </div>
     {error && <p role="alert" className="experiment-error">{error}</p>}

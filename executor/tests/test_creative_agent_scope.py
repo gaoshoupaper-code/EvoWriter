@@ -34,6 +34,42 @@ def test_each_package_contains_only_its_agent_and_helpers(tmp_path, monkeypatch,
     assert package.assemble(ctx, agent_name=agent)
 
 
+def test_private_skill_reader_is_scoped_to_the_mounted_files(tmp_path, monkeypatch):
+    from app.platform.agent.architecture import AgentBuildCtx, _build_tools
+    from contracts.architecture_manifest import AgentSpec
+    from contracts.creative_harness import write_denial
+    from types import SimpleNamespace
+
+    skill = tmp_path / "skills" / "quiet" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("quiet style; see references/examples.md", encoding="utf-8")
+    reference = skill.parent / "references" / "examples.md"
+    reference.parent.mkdir()
+    reference.write_text("A clock ticks.", encoding="utf-8")
+    (reference.parent / "binary.dat").write_bytes(b"data\0more")
+    other = skill.parent / "separate" / "SKILL.md"
+    other.parent.mkdir()
+    other.write_text("another role's skill", encoding="utf-8")
+    agent = AgentSpec(name="review", role="sub", prompt="review.md", skills=["quiet"])
+    ctx = SimpleNamespace(workspace_path=tmp_path / "book")
+    monkeypatch.setenv("WRITING_AGENT_ID", "text")
+    [reader] = _build_tools(AgentBuildCtx(ctx, None, agent, "text", tmp_path))
+    assert reader.invoke({"file_path": "/_skills_0/SKILL.md"}) == skill.read_text(encoding="utf-8")
+    assert reader.invoke({"file_path": "/_skills_0/references/examples.md"}) == "A clock ticks."
+    assert "examples.md" not in reader.description
+    with pytest.raises(ValueError, match="文本"):
+        reader.invoke({"file_path": "/_skills_0/references/binary.dat"})
+    for unmounted in ("/_skills_1/SKILL.md", "/book.md", "/_skills_0/separate/SKILL.md",
+                      "/_skills_0/../separate/SKILL.md"):
+        with pytest.raises(ValueError, match="未挂载"):
+            reader.invoke({"file_path": unmounted})
+    for suite in ("text", "chapter", "volume", "outline"):
+        assert write_denial(suite, "read_file", {"file_path": "/book.md"}, 1, 1)
+        if suite != "text":
+            monkeypatch.setenv("WRITING_AGENT_ID", suite)
+            assert _build_tools(AgentBuildCtx(ctx, None, agent, "package", tmp_path)) == []
+
+
 def test_gates_accept_drafts_and_first_chapter_needs_no_prior_text(tmp_path):
     assert entry_missing(tmp_path, "outline", 1, 1) == []
     assert entry_missing(tmp_path, "volume", 1, 1) == ["总纲.md"]
@@ -69,6 +105,7 @@ def test_every_required_draft_opens_its_target_after_restoring(tmp_path, agent, 
 @pytest.mark.parametrize("agent,assistant,kind,rel,coordinate", [
     ("volume", "volume_qc", "volume_outline", "卷纲/第01卷.md", {"volume": 1}),
     ("text", "review", "chapter_text", "正文/第001章.md", {"chapter": 1}),
+    ("text", "continuity", "chapter_text", "正文/第001章.md", {"chapter": 1}),
 ])
 def test_private_assistant_runs_and_reads_its_draft_within_parent_trace(
     tmp_path, monkeypatch, agent, assistant, kind, rel, coordinate
@@ -80,6 +117,7 @@ def test_private_assistant_runs_and_reads_its_draft_within_parent_trace(
     from langgraph.checkpoint.memory import InMemorySaver
     from app.domains.writing.creative_scope import ACTIVE
     from app.domains.writing.creative_tools import InstructionScopeMiddleware
+    from app.domains.writing.target_execution import TargetScopeMiddleware
     from app.platform.agent.loader import load_package
     from app.platform.agent.middleware import TraceMiddleware
     from app.platform.agent.runtime import artifact_capture_scope
@@ -102,11 +140,27 @@ def test_private_assistant_runs_and_reads_its_draft_within_parent_trace(
     task.begin()
     src = Path(__file__).resolve().parents[2] / "evolution/harnesses/repo"
     build_agent_package(src, tmp_path / "pkg", agent)
-    package = load_package(tmp_path / "pkg", "test_private_delegate_" + agent)
+    task.package_root = tmp_path / "pkg"
+    if assistant == "continuity":
+        import json
+        path = task.package_root / "architecture.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        main, review = manifest["agents"]
+        main["delegates"].append(assistant)
+        main["skills"] = ["quiet"]
+        skill = task.package_root / "skills/quiet/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("---\nname: quiet\ndescription: voice\n---\nShow the silence with a clock.", encoding="utf-8")
+        manifest["agents"].append({**review, "name": assistant})
+        path.write_text(json.dumps(manifest), encoding="utf-8")
+    package = load_package(task.package_root, "test_private_delegate_" + assistant)
     class Model(FakeMessagesListChatModel):
         def bind_tools(self, tools, **kwargs):
             return self
-    model = Model(responses=[
+    skill_calls = [AIMessage(content="", tool_calls=[{
+        "name": "read_writing_skill", "id": "read-skill", "args": {"file_path": "/_skills_0/SKILL.md"},
+    }])] if assistant == "continuity" else []
+    model = Model(responses=[*skill_calls,
         AIMessage(content="", tool_calls=[{"name": "task", "id": "delegation", "args": {
             "description": "审第1章与卷稿的相应部分", "subagent_type": assistant}}]),
         AIMessage(content="", tool_calls=[{"name": "read_artifact", "id": "read-approved",
@@ -124,11 +178,18 @@ def test_private_assistant_runs_and_reads_its_draft_within_parent_trace(
             ctx = RuntimeContext(model=model, backend=FilesystemBackend(root_dir=task.view, virtual_mode=True),
                                  checkpointer=InMemorySaver(), workspace_path=task.view,
                                  trace_id=trace_id, trace_recorder=recorder, trace_middleware_cls=TraceMiddleware)
+            guards = [InstructionScopeMiddleware(task, recorder, trace_id)]
+            if skill_calls:
+                from types import SimpleNamespace
+                from contracts.target_tasks import TargetSpec
+                target = TargetSpec(task_type="chapter_text", volume_ids=[1], chapter=1)
+                guards.append(TargetScopeMiddleware(SimpleNamespace(
+                    package_root=task.package_root, request=SimpleNamespace(target=target))))
             with artifact_capture_scope(recorder=recorder, trace_id=trace_id, workspace_root=task.view, strict=False,
-                                        extra_middleware=(InstructionScopeMiddleware(task, recorder, trace_id),)):
+                                        extra_middleware=tuple(guards)):
                 graph = package.assemble(ctx, agent_name=agent)
             result = await graph.ainvoke({"messages": [HumanMessage(content="审现有草稿")]},
-                                         {"configurable": {"thread_id": "thread"}, "recursion_limit": 18})
+                                         {"configurable": {"thread_id": "thread"}, "recursion_limit": 32})
             replies = [m.content for m in result["messages"] if isinstance(m, ToolMessage) and m.tool_call_id == "delegation"]
             assert replies and "已审" in str(replies), replies
             recorder.complete_run(row, trace_id)
@@ -138,6 +199,11 @@ def test_private_assistant_runs_and_reads_its_draft_within_parent_trace(
             model_agents = {e.agent_name for e in events if e.type == "llm_start"}
             assert model_agents == {agent + "-subagent", helper}
             assert any(e.type == "tool_start" and e.agent_name == helper and e.tool_name == "read_artifact" for e in events)
+            if skill_calls:
+                loaded = [e for e in events if e.type == "skill_activation" and e.status == "completed"]
+                assert [(e.agent_name, e.skill_name) for e in loaded] == [("text-subagent", "quiet")]
+                assert any(isinstance(m, ToolMessage) and m.tool_call_id == "read-skill"
+                           and "Show the silence with a clock." in str(m.content) for m in result["messages"])
         finally:
             ACTIVE.reset(token)
             await recorder.aclose()

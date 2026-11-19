@@ -63,6 +63,18 @@ beforeEach(() => {
 });
 
 describe("进化端实验交互 / AC-001、AC-012、AC-020、AC-022", () => {
+  it("从旧的手工候选链接启动正文实验时只提交自动进化配置", async () => {
+    window.location.hash = "#/agents/text/bench";
+    api.listExperimentPackages.mockResolvedValue({ items: [pkg("text-opt", "改进题", kinds[2], "optimization"),
+      pkg("text-reg", "回归题", kinds[2], "regression")] as never[], can_read_content: true });
+    api.startExperiment.mockResolvedValue(experiment() as never);
+    render(<MemoryRouter initialEntries={["/bench?candidate=old-candidate&base=old-base"]}><EvolutionExperiments /></MemoryRouter>);
+    fireEvent.change(await screen.findByLabelText("评测模型"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: "启动自进化实验" }));
+    await waitFor(() => expect(api.startExperiment).toHaveBeenCalledOnce());
+    expect(api.startExperiment.mock.calls[0][0]).not.toHaveProperty("candidate_commit");
+    expect(screen.queryByText(/指定候选/)).not.toBeInTheDocument();
+  });
   it("导入JSON资料包并展示固定输入版本", async () => {
     const payload = {
       title: "新卷纲题", purpose: "optimization", target: { task_type: kinds[0], volume_ids: [1, 2] },

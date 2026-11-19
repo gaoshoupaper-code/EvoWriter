@@ -76,7 +76,7 @@ def _judgement(raw: str, dimension: str) -> dict:
 
 
 def score_sample(run: dict, sample: dict) -> dict:
-    package = run["private"]["packages"][sample["package_id"]]
+    package = repo.run_package(run, sample["package_id"])
     rule = run["private"]["rules"][sample["task_type"]]
     judges = run["private"]["judges"]
     progress = sample.setdefault("judge_results", {})

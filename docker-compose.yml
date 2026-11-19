@@ -383,11 +383,13 @@ services:
     environment:
       <<: *evolution-environment
       WRITING_AGENT_ID: text
+      ASSESSMENT_SNAPSHOT_DIR: /app/assessment-snapshots
       SHARED_MIDDLEWARE_DIR: /app/evolution/shared_middleware
       EXECUTOR_URL: http://executor-text:7788
       PLATFORM_URL: http://platform-text:7790
     volumes:
       - evolution_text:/app/evolution/data
+      - assessment_snapshots_text:/app/assessment-snapshots
       - shared_middleware:/app/evolution/shared_middleware
       - git_text:/app/evolution/harness.git
       - type: volume
@@ -406,9 +408,11 @@ services:
     environment:
       <<: *platform-environment
       WRITING_AGENT_ID: text
+      ASSESSMENT_SNAPSHOT_DIR: /app/assessment-snapshots
       PLATFORM_EXECUTOR_URL: http://executor-text:7788
     volumes:
       - platform_text:/app/platform/data
+      - assessment_snapshots_text:/app/assessment-snapshots:ro
       - git_text:/app/evolution/harness.git:ro
 
   # ── 官网 + 下载页（Astro 静态站，nginx 托管）──
@@ -561,6 +565,7 @@ volumes:
   harness_chapter:
   runtime_text:
   evolution_text:
+  assessment_snapshots_text:
   platform_text:
   git_text:
   harness_text:

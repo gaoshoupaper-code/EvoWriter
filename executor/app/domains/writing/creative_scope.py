@@ -337,7 +337,8 @@ class Task:
                        (self.id, source, request, _json(payload)))
 
     def require_write(self, tool, args):
-        return write_denial(self.agent, tool, args, self.row["volume"], self.row["chapter"])
+        return write_denial(self.agent, tool, args, self.row["volume"], self.row["chapter"],
+                            package_root=getattr(self, "package_root", None))
 
     def apply_worker_save(self, call_id, args, content):
         if not isinstance(call_id, str) or not call_id or not isinstance(args, dict) or not isinstance(content, str):

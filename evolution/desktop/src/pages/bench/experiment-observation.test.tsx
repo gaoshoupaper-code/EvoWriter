@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import ExperimentRecords from "./ExperimentRecords";
 import ExperimentDetail from "./ExperimentDetail";
 import { ExperimentArtifacts } from "@/components/bench/ExperimentArtifacts";
 import * as apiModule from "@/lib/api";
 
-vi.mock("@/lib/api", () => ({ listExperiments: vi.fn(), getExperiment: vi.fn(), getExperimentPackage: vi.fn(), getActiveRuns: vi.fn(),
+vi.mock("@/lib/api", () => ({ listExperiments: vi.fn(), getExperiment: vi.fn(), getExperimentPackage: vi.fn(), getActiveRuns: vi.fn(), getExperimentVersionSource: vi.fn(),
   stopExperiment: vi.fn(), publishExperiment: vi.fn(), restoreExperiment: vi.fn() }));
 vi.mock("@/pages/trace-detail", () => ({ default: ({ traceIdOverride, displayContextOverride }: {
   traceIdOverride: string; displayContextOverride?: Record<string, unknown>;
@@ -27,6 +27,147 @@ const run = (id: string, overrides = {}) => ({ id, name: id, task_type: "chapter
 beforeEach(() => { window.location.hash = "#/agents/text/bench"; vi.clearAllMocks(); api.getActiveRuns.mockResolvedValue([]); });
 
 describe("实验观测 / REQ-20261108-191146", () => {
+  it("正文档案按题目版本及重复配对，可比较两轮的改动、终稿、分差与 Trace", async () => {
+    const version = (round: number) => ({ round, status: "completed", source_commit: "v" + round,
+      base_commit: "base", summary: "优化点" + round, design: "判断依据" + round, report: {}, diff: "", trace_ids: ["evo-" + round] });
+    const draft = (round: number, content: string, score: number, overrides = {}) => sample("s" + round + content, {
+      arm: round ? "candidate" : "baseline", round, phase: round ? "exploration" : "baseline",
+      target: { task_type: "chapter_text", chapter: 2, volume_ids: [1] }, status: "completed", completed: true,
+      source_commit: round ? "v" + round : "base", artifacts: { "正文/第002章.md": "共同段落\n\n" + content, "人物卡/甲.md": "非正文" },
+      scores: { overall: score, dimensions: { "章纲兑现": score }, reasons: {} }, trace_ids: ["gen-" + round], error: null, ...overrides });
+    api.getExperiment.mockResolvedValue(run("新正文档案", { assessment_version: 1,
+      rounds: [version(1), version(2)], samples: [draft(0, "原版段落", 3), draft(1, "首轮新段", 4),
+        draft(2, "本轮新段", 4.5), draft(2, "异版题文", 1, { input_revision: "other" }),
+        draft(2, "其他重复", 2, { repeat: 2 })] }) as never);
+    render(<MemoryRouter initialEntries={["/bench/experiments/id"]}><Routes>
+      <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} /></Routes></MemoryRouter>);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "正文对比" }), { button: 0 });
+    const comparison = await screen.findByRole("region", { name: "跨版本终稿对比" });
+    const view = within(comparison);
+    expect(view.getByLabelText("源版本")).toHaveValue("0");
+    expect(view.getByLabelText("对照版本")).toHaveValue("2");
+    expect(view.getByText("原版段落").tagName).toBe("DEL");
+    expect(view.getByText("本轮新段").tagName).toBe("INS");
+    expect(view.getByRole("row", { name: /章纲兑现/ })).toHaveTextContent("+1.500");
+    expect(view.queryByText("异版题文")).not.toBeInTheDocument();
+    expect(view.queryByText("其他重复")).not.toBeInTheDocument();
+    expect(view.queryByText("非正文")).not.toBeInTheDocument();
+    fireEvent.change(view.getByLabelText("源版本"), { target: { value: "1" } });
+    expect(view.getByText("优化点1")).toBeInTheDocument();
+    expect(view.getByText("判断依据2")).toBeInTheDocument();
+    expect(view.getByText("首轮新段").tagName).toBe("DEL");
+    expect(view.getByRole("row", { name: /章纲兑现/ })).toHaveTextContent("+0.500");
+    fireEvent.click(view.getAllByRole("button", { name: "生成 Trace 1" })[1]);
+    expect(await screen.findByTestId("embedded-trace")).toHaveAttribute("data-trace-id", "gen-2");
+  });
+
+  it("新档案原题没有配对产物时显示失败阶段和原因", async () => {
+    api.getExperiment.mockResolvedValue(run("失败档案", { assessment_version: 1, rounds: [
+      { round: 2, status: "failed", summary: "增加助手", error: "助手装配失败", diff: "", report: {} }],
+      samples: [sample("source", { arm: "baseline", round: 0, phase: "baseline", error: null })] }) as never);
+    render(<MemoryRouter initialEntries={["/bench/experiments/id"]}><Routes>
+      <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} /></Routes></MemoryRouter>);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "正文对比" }), { button: 0 });
+    const view = within(await screen.findByRole("region", { name: "跨版本终稿对比" }));
+    expect(view.getByText("助手装配失败")).toBeInTheDocument();
+    expect(view.getByText("此版本尚无同题同次的生成记录。")).toBeInTheDocument();
+    expect(view.queryByText(/分差.*0\.000/)).not.toBeInTheDocument();
+  });
+
+  it("终稿保留文件前言、章名以及正文内部标题和引语", async () => {
+    const content = "# 第002章 山门\n> 状态：初稿\n> 进度：已完成\n\n她看向黑板。\n# 未寄出的信\n> 场景和人物都由你决定。\n> 状态糟透了，她说。";
+    api.getExperiment.mockResolvedValue(run("原文完整性", { assessment_version: 1,
+      samples: [sample("source", { arm: "baseline", round: 0, phase: "baseline", completed: true,
+        target: { chapter: 2 }, artifacts: { "正文/第002章.md": content } })] }) as never);
+    render(<MemoryRouter initialEntries={["/bench/experiments/id"]}><Routes>
+      <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} /></Routes></MemoryRouter>);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "正文对比" }), { button: 0 });
+    const view = within(await screen.findByRole("region", { name: "跨版本终稿对比" }));
+    for (const line of content.split("\n").filter(Boolean)) expect(view.getByText(line)).toBeVisible();
+  });
+
+  it("按需读取版本文件，切换轮次后迟到的原版正文不能覆盖候选内容", async () => {
+    const path = "prompts/text.md";
+    let finishBase!: () => void;
+    api.getExperiment.mockResolvedValue(run("归档源码", { assessment_version: 1,
+      rounds: [{ round: 1, status: "passed", source_commit: "v1", base_commit: "base", report: {} }] }) as never);
+    api.getExperimentVersionSource.mockImplementation(async (_id, round, name) => {
+      const commit = round ? "v1" : "base";
+      if (!name) return { commit, paths: [path] };
+      if (!round) await new Promise<void>((resolve) => { finishBase = resolve; });
+      return { commit, path, content: round ? "候选文件内容" : "迟到的原版内容" };
+    });
+    render(<MemoryRouter initialEntries={["/bench/experiments/id"]}><Routes>
+      <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} /></Routes></MemoryRouter>);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "Harness 版本" }), { button: 0 });
+    expect(api.getExperimentVersionSource).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "查看原版文件" }));
+    fireEvent.change(await screen.findByLabelText("选择版本文件"), { target: { value: path } });
+    await waitFor(() => expect(api.getExperimentVersionSource).toHaveBeenCalledWith("归档源码", 0, path));
+    fireEvent.click(screen.getByRole("button", { name: "查看第 1 轮文件" }));
+    fireEvent.change(await screen.findByLabelText("选择版本文件"), { target: { value: path } });
+    expect(await screen.findByText("候选文件内容")).toBeVisible();
+    await act(async () => finishBase());
+    expect(screen.queryByText("迟到的原版内容")).not.toBeInTheDocument();
+  });
+
+  it("从进化依据直接打开本档案改进样本的终稿、评分和写作 Trace", async () => {
+    api.getExperiment.mockResolvedValue(run("可核对的优化", { assessment_version: 1, settings: { optimization_ids: ["story-a"] },
+      rounds: [{ round: 2, status: "completed", evidence_samples: ["basis", "holdout", "foreign"], trace_ids: ["improvement-2"] }],
+      samples: [sample("basis", { target: { chapter: 2 }, status: "completed", completed: true,
+        artifacts: { "正文/第002章.md": "依据原稿全文" }, scores: { overall: 3, dimensions: { "章纲兑现": 3 }, reasons: { "章纲兑现": "缺少争吵场景" } } }),
+        sample("holdout", { package_title: "独立复测正文", package_id: "holdout", phase: "regression" })] }) as never);
+    render(<MemoryRouter initialEntries={["/bench/experiments/id"]}><Routes>
+      <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} /></Routes></MemoryRouter>);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "进化产物" }), { button: 0 });
+    fireEvent.click(screen.getByText(/依据样本 · 山城样本/));
+    expect(screen.getByText("依据原稿全文")).toBeVisible();
+    expect(screen.getByText("缺少争吵场景")).toBeVisible();
+    expect(screen.queryByText(/依据样本 · 独立复测/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看依据生成 Trace 1" }));
+    expect(await screen.findByTestId("embedded-trace")).toHaveAttribute("data-trace-id", "generation-2");
+  });
+
+  it("独立复测按所选轮次取原版生成，不借其他轮次的分数或题文", async () => {
+    const record = (id: string, arm: string, round: number, score: number, attempt = 1) => sample(id, {
+      arm, round, status: "completed", phase: "regression", attempt, completed: true, target: { chapter: 1 },
+      artifacts: { "正文/第001章审讯.md": id }, source_commit: arm === "baseline" ? "b" : "v" + round,
+      scores: { overall: score, dimensions: { "逻辑连续": score }, reasons: {} }, error: null,
+    });
+    api.getExperiment.mockResolvedValue(run("复测配对", { assessment_version: 1,
+      rounds: [1, 2].map((round) => ({ round, status: "completed", report: {}, trace_ids: [] })),
+      samples: [record("较早原稿", "baseline", 1, 5), record("当轮原稿", "baseline", 2, 3),
+        record("首轮终稿", "candidate", 1, 4), record("本轮首次", "candidate", 2, 2), record("本轮重试", "candidate", 2, 4.5, 2)]
+    }) as never);
+    render(<MemoryRouter initialEntries={["/bench/experiments/id"]}><Routes>
+      <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} /></Routes></MemoryRouter>);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "正文对比" }), { button: 0 });
+    const view = within(await screen.findByRole("region", { name: "跨版本终稿对比" }));
+    expect(view.getByText("当轮原稿", { selector: "del" })).toBeInTheDocument();
+    expect(view.getByText("本轮重试", { selector: "ins" })).toBeInTheDocument();
+    expect(view.queryByText("较早原稿")).not.toBeInTheDocument();
+    expect(view.getByRole("row", { name: /逻辑连续/ })).toHaveTextContent("+1.500");
+    fireEvent.change(view.getAllByLabelText("生成尝试")[1], { target: { value: "本轮首次" } });
+    expect(view.getByText("本轮首次", { selector: "ins" })).toBeInTheDocument();
+    expect(view.getByRole("row", { name: /逻辑连续/ })).toHaveTextContent("-1.000");
+  });
+
+  it("受限档案保留分数但隐藏正文、结论全文和失败详情", async () => {
+    api.getExperiment.mockResolvedValue(run("受限档案", { assessment_version: 1, can_read_content: false,
+      rounds: [{ round: 2, status: "failed", summary: "私有改法", design: "私有依据", error: "私有错误", report: {}, diff: "" }],
+      samples: [sample("private", { scores: { overall: 2.5, dimensions: {}, reasons: {} } })] }) as never);
+    render(<MemoryRouter initialEntries={["/bench/experiments/id"]}><Routes>
+      <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} /></Routes></MemoryRouter>);
+    fireEvent.mouseDown(await screen.findByRole("tab", { name: "正文对比" }), { button: 0 });
+    const view = within(await screen.findByRole("region", { name: "跨版本终稿对比" }));
+    expect(view.getByText("2.500")).toBeInTheDocument();
+    expect(view.getByText(/没有正文读取权限/)).toBeInTheDocument();
+    expect(view.queryByText(/私有|第二章内容|尚无目标章正文/)).not.toBeInTheDocument();
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Harness 版本" }), { button: 0 });
+    expect(screen.queryByRole("button", { name: "查看原版文件" })).not.toBeInTheDocument();
+    expect(api.getExperimentVersionSource).not.toHaveBeenCalled();
+  });
+
   it("阶段分类内按新建时间倒序，旧记录活动更新不置顶", async () => {
     api.listExperiments.mockResolvedValue({ items: [run("旧正文", { created_at: "2026-11-01", updated_at: "2026-11-09" }),
       run("新正文", { created_at: "2026-11-08" }), run("卷纲实验", { task_type: "volume_outlines" })] } as never);

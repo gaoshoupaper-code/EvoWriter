@@ -128,11 +128,12 @@ export type ExperimentSample = {
   task_id: string; trace_ids: string[]; evaluation_trace_ids?: string[]; completed: boolean; checks: Record<string, unknown>;
   scores: null | { overall: number | null; dimensions: Record<string, number | null>; reasons: Record<string, unknown> };
   error: string | null; artifacts: Record<string, string>; usage: Record<string, unknown>;
-  input_revision: string; source_commit: string; artifact_digest?: string;
+  input_revision: string; package_revision?: string; source_commit: string; artifact_digest?: string;
   execution_phase?: string | null; target?: ExperimentTarget; score_retry_at?: number;
 };
 export type Experiment = {
   id: string; name: string; task_type: ExperimentTaskType; status: string; phase: string; flow_version?: number;
+  assessment_version?: number;
   current_round: number; max_rounds: number; end_reason: string | null; settings: ExperimentStart;
   models?: ExperimentModels;
   progress?: {
@@ -143,7 +144,9 @@ export type Experiment = {
   current_candidate?: null | { commit: string; digest?: string; round: number };
   best_candidate: null | { commit: string; digest: string; round: number; quality: number | null; completion_rate: number };
   rounds: { round: number; status: string; source_commit: string; base_commit: string; summary: string;
-    error: string | null; report: Partial<ExperimentComparison>; diff: string; trace_ids?: string[];
+    error: string | null; report: Partial<ExperimentComparison>; diff: string; design?: string; trace_ids?: string[];
+    startup_check?: { status: "passed" | "failed"; error?: string };
+    evidence_samples?: string[];
     regressions?: Partial<Record<ExperimentTaskType, ExperimentComparison>> }[];
   samples: ExperimentSample[];
   trace_runs?: Record<string, TraceIdentityRun>;

@@ -27,6 +27,7 @@ import logging
 import time
 from typing import Any
 
+from app.core.git_ops import version_source
 from app.versioning import platform_ledger
 from app.versioning.config_diff import _diff_prompt, _diff_skills
 from app.versioning.elements_api import (
@@ -66,8 +67,9 @@ def resolve_base(entry: dict[str, Any]) -> tuple[str, int | None, int | None]:
 
 def _require_readable_commit(commit: str) -> None:
     """校验 commit 本地可读（cat-file -e，bare 仓库）。失败 raise——diff 路径严格失败。"""
-    from app.core.git_ops import _git, read_dir
-    _git(["cat-file", "-e", f"{commit}^{{commit}}"], read_dir())
+    from app.core.git_ops import _git
+    with version_source(commit) as directory:
+        _git(["cat-file", "-e", f"{commit}^{{commit}}"], directory)
 
 
 def _diff_processors(
@@ -206,9 +208,10 @@ def build_upgrade_diff(version: int) -> dict[str, Any]:
                 # FR-003 失败语义：compute 严格失败（commit 不可读/读取异常）→
                 # 降级 error 占位，且不把失败结果写进缓存
                 try:
-                    _require_readable_commit(base_commit)
-                    _require_readable_commit(entry["commit"])
-                    agents_by_name = compute_agent_diffs(base_commit, entry["commit"])
+                    with version_source(base_commit), version_source(entry["commit"]):
+                        _require_readable_commit(base_commit)
+                        _require_readable_commit(entry["commit"])
+                        agents_by_name = compute_agent_diffs(base_commit, entry["commit"])
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "升级 diff 计算失败（降级 error 占位）: v%s base=%s: %s",

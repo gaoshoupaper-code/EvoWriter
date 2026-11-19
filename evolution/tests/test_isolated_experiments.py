@@ -107,7 +107,7 @@ def test_http_suite_boundaries_and_frozen_rubric(monkeypatch):
 
 
 @pytest.mark.parametrize("pass_round", [2, None])
-def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, pass_round):
+def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tmp_path, pass_round):
     import sqlite3
     from app.core import db
     from app.core.security import encrypt_secret
@@ -115,6 +115,7 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, pa
     from app.experiments.schemas import RunCreate
 
     monkeypatch.setenv("WRITING_AGENT_ID", "text")
+    monkeypatch.setattr(db.settings, "evolution_db", str(tmp_path / "evolution.db"))
     connection = sqlite3.connect(":memory:", check_same_thread=False)
     connection.row_factory = sqlite3.Row
     monkeypatch.setattr(db, "_conn", connection)
@@ -144,18 +145,20 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, pa
             runner.create_run(settings.model_copy(update={"baseline_version": previous["version"]}), "author")
         with pytest.raises(ValueError, match="全部在用"):
             runner.create_run(settings.model_copy(update={"optimization_ids": opt[:1]}), "author")
-        if pass_round:
-            from app.versioning import asset_candidates
-            settings = settings.model_copy(update={"candidate_commit": "b" * 40})
-            monkeypatch.setattr(asset_candidates, "validate_candidate", lambda commit, baseline: (
-                commit == "b" * 40 and baseline == release["commit"]) or pytest.fail("错误的候选基线"))
-            monkeypatch.setattr(agent, "_git", lambda *_args: "手动修订提示词")
+        with pytest.raises(ValueError, match="自动"):
+            runner.create_run(settings.model_copy(update={"candidate_commit": "b" * 40}), "author")
+        from app.experiments import snapshots
+        monkeypatch.setattr(snapshots, "ensure_baseline", lambda commit: None)
+        monkeypatch.setattr(snapshots, "retain", lambda archive, commit: None)
         run = runner.create_run(settings, "author")
+        assert run["assessment_version"] == 1
         changed = repo.get_package(opt[0])
         changed["id"] = "new-question"
         changed["input"]["demand_md"] = "实验启动后维护的内容"
         repo.replace_package(opt[0], changed)
-        frozen_input = repo.get_run(run["id"])["private"]["packages"][opt[0]]["input"]
+        saved = repo.get_run(run["id"])
+        assert "packages" not in saved["private"]
+        frozen_input = repo.run_package(saved, opt[0])["input"]
         assert frozen_input["demand_md"] != changed["input"]["demand_md"]
         archived = {**run, "id": "old", "flow_version": 2}
         foreign = {**run, "id": "foreign", "task_type": "chapter_outlines"}
@@ -169,8 +172,8 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, pa
                     "input_revision": payload["input"]["input_revision"], "source_commit": payload["source_commit"],
                     "artifact_digest": payload["artifact_digest"]}
         def improve(_run, record, evidence):
-            assert all(sample["package_id"] in opt for sample in evidence)
-            assert not pass_round or record["round"] > 1
+            assert evidence == []
+            assert record["base_commit"] == release["commit"]
             return {"commit": "bcd"[record["round"] - 1] * 40, "digest": "2" * 64,
                     "summary": "调整候选", "diff": "变更"}
         def score(_run, sample):

@@ -25,8 +25,10 @@ from __future__ import annotations
 import functools
 import importlib
 import logging
+from os import getenv
 from pathlib import Path
 from typing import Any
+from langchain_core.tools import tool
 
 from contracts.architecture_manifest import (
     BASE_CHAIN_MODULES,
@@ -82,6 +84,19 @@ class AgentBuildCtx:
         self.pkg_dir = pkg_dir
         self.trace_name = f"{agent.name.replace('_', '-')}-subagent"
         self.workspace_path = Path(ctx.workspace_path)
+
+    @functools.cached_property
+    def scoped_skill_files(self) -> dict[str, Path]:
+        if getenv("WRITING_AGENT_ID") != "text":
+            return {}
+        base = self.pkg_dir / "skills"
+        files = {}
+        for index, name in enumerate(self.agent.skills):
+            path = base / name / "SKILL.md"
+            if path.resolve() != path or not path.is_relative_to(base) or not path.is_file():
+                raise ManifestError(f"[{self.agent.name}] 技能不在本包的固定目录: {name}")
+            files[f"/_skills_{index}/SKILL.md"] = path
+        return files
 
     @functools.cached_property
     def intervention_callback(self):
@@ -157,7 +172,11 @@ def _record_catalog_or_stack(abc: AgentBuildCtx, mw: list) -> None:
     if abc.agent.skills:
         base = abc.pkg_dir / "skills"
         paths = [str(base / s) for s in abc.agent.skills]
-        _, runtime_sources = compose_skills_backend(ctx.backend, paths)
+        if abc.scoped_skill_files:
+            paths = [str(path) for path in abc.scoped_skill_files.values()]
+            runtime_sources = [key.rsplit("/", 1)[0] for key in abc.scoped_skill_files]
+        else:
+            _, runtime_sources = compose_skills_backend(ctx.backend, paths)
         record_catalog = getattr(ctx.trace_recorder, "record_skill_catalog", None)
         if callable(record_catalog):
             record_catalog(ctx.trace_id, abc.trace_name, paths, runtime_sources)
@@ -190,7 +209,37 @@ def _build_domain_middleware(abc: AgentBuildCtx) -> list:
 
 def _build_tools(abc: AgentBuildCtx) -> list:
     """清单声明的 agent 专属工具：tools/{name}.py 的 build(abc) 钩子。"""
-    return [_import_mount(abc, name, subdir="tools").build(abc) for name in abc.agent.tools]
+    tools = [_import_mount(abc, name, subdir="tools").build(abc) for name in abc.agent.tools]
+    files = abc.scoped_skill_files
+    if files:
+        if any(item.name == "read_writing_skill" for item in tools):
+            raise ManifestError("read_writing_skill 是本套注册技能的只读工具")
+        catalog = "\n".join(f"{path.parent.name}: {key}" for key, path in files.items())
+
+        @tool(description="读取下列技能入口，或在入口所在目录下按文档引用读取配套文本：\n" + catalog)
+        def read_writing_skill(file_path: str) -> str:
+            mount, _, relative = file_path.removeprefix("/").partition("/")
+            entry = files.get(f"/{mount}/SKILL.md")
+            parts = relative.split("/")
+            if (entry is None or not file_path.startswith("/")
+                    or any(not part or part.startswith(".") or "\\" in part or ":" in part for part in parts)):
+                raise ValueError("该技能未挂载到当前角色")
+            path = entry.parent.joinpath(*parts)
+            if path.resolve() != path or not path.is_file():
+                raise ValueError("未挂载的技能资料")
+            # A nested SKILL.md starts a different skill, with its own role assignment.
+            if any((entry.parent / parent / "SKILL.md").is_file() for parent in Path(relative).parents[:-1]):
+                raise ValueError("该技能未挂载到当前角色")
+            try:
+                content = path.read_text(encoding="utf-8")
+            except UnicodeDecodeError as exc:
+                raise ValueError("技能资料须为 UTF-8 文本") from exc
+            if "\x00" in content:
+                raise ValueError("技能资料须为 UTF-8 文本")
+            return content
+
+        tools.append(read_writing_skill)
+    return tools
 
 
 def _system_prompt(abc: AgentBuildCtx) -> str:
@@ -257,12 +306,11 @@ def _build_compiled(abc: AgentBuildCtx) -> CompiledSubAgent:
     # Skills 后端组合（SKILL.md 目录路由）
     effective_backend = abc.ctx.backend
     skill_sources: list[str] = []
-    if agent.skills:
+    if agent.skills and not abc.scoped_skill_files:
         base = abc.pkg_dir / "skills"
         skill_paths = [str(base / s) for s in agent.skills]
         effective_backend, skill_sources = compose_skills_backend(abc.ctx.backend, skill_paths)
 
-    from os import getenv
     if getenv("WRITING_AGENT_ID") == agent.name:
         # DeepAgents otherwise injects a general-purpose assistant which is absent
         # from the published manifest. Each creative process has one fixed scope.

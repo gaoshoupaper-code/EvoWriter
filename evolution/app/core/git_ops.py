@@ -12,8 +12,12 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from app.core.settings import settings
 
@@ -72,6 +76,34 @@ def read_dir() -> Path:
     要素/谱系/diff 的只读 commit 查询必须走这里才能覆盖全部账本版本。
     """
     return settings.harness_bare_repo_path
+
+
+_active_readers: ContextVar[dict[str, Path]] = ContextVar("harness_readers", default={})
+
+
+@contextmanager
+def version_source(commit: str | None):
+    """Read a released version and reuse its isolated checkout throughout one view."""
+    from contracts.target_tasks import configured_task_type
+
+    readers = _active_readers.get()
+    if commit in readers:
+        yield readers[commit]
+        return
+    if configured_task_type() == "chapter_text" and commit and re.fullmatch(r"[0-9a-f]{40}", commit):
+        from app.experiments import snapshots
+
+        if snapshots.snapshot_file(commit).is_file():
+            with TemporaryDirectory(prefix="writer-version-read-") as directory:
+                root = Path(directory) / "repo"
+                snapshots.checkout_base(commit, root)
+                binding = _active_readers.set({**readers, commit: root})
+                try:
+                    yield root
+                finally:
+                    _active_readers.reset(binding)
+            return
+    yield read_dir()
 
 
 def has_changes() -> bool:
@@ -230,8 +262,9 @@ def show_file(commit: str, file_path: str) -> str:
     Returns:
         文件全文。文件不存在该 commit 时 raise RuntimeError。
     """
-    result = subprocess.run(["git", "show", f"{commit}:{file_path}"], cwd=read_dir(),
-                            capture_output=True, timeout=30)
+    with version_source(commit) as directory:
+        result = subprocess.run(["git", "show", f"{commit}:{file_path}"], cwd=directory,
+                                capture_output=True, timeout=30)
     if result.returncode:
         raise RuntimeError(f"无法读取版本文件 {file_path}")
     return result.stdout.decode("utf-8")

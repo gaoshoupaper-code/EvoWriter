@@ -73,7 +73,8 @@ class TargetScopeMiddleware(AgentMiddleware):
         reason = None
         if agent := os.environ.get("WRITING_AGENT_ID"):
             from contracts.creative_harness import write_denial
-            reason = write_denial(agent, name, args, next(iter(target.volume_ids), 1), target.chapter or 1)
+            reason = write_denial(agent, name, args, next(iter(target.volume_ids), 1), target.chapter or 1,
+                                  package_root=self.execution.package_root)
             if name in {"write_file", "edit_file"}:
                 reason = "请使用本套获准的产物工具"
         elif target.task_type != "chapter_outlines" or target.chapter is None:

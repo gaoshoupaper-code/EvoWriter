@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib.metadata
+from functools import cache
 import inspect
 import json
 import re
@@ -1698,7 +1699,7 @@ class TraceRecorder:
     def record_intervention(
         self, trace_id: str, agent_name: str, *, action: str, hook: str,
         affected_fields: list[str], reason: str | None = None,
-        before: Any | None = None, after: Any | None = None,
+        before: Any | None = None, after: Any | None = None, middleware_name: str | None = None,
     ) -> None:
         """只由真实改变控制流的 middleware 分支调用，no-op hook 不得调用。"""
         event: dict[str, Any] = {
@@ -1706,6 +1707,8 @@ class TraceRecorder:
             "agent_name": agent_name,
             "intervention": {"action": action, "hook": hook, "affected_fields": affected_fields, "reason": reason},
         }
+        if middleware_name:
+            event["intervention"]["middleware_name"] = middleware_name
         if before is not None:
             event["input"] = before
         if after is not None:
@@ -2301,10 +2304,15 @@ def _middleware_config_hash(middleware: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+# Installed Python distributions belong to the worker image. Harness source
+# hashes below are still read from the checkout pinned to this instruction.
+_installed_distributions = cache(importlib.metadata.packages_distributions)
+
+
 def _middleware_version(middleware: Any) -> str | None:
     module_name = middleware.__class__.__module__
     root_package = module_name.split(".", 1)[0]
-    distributions = importlib.metadata.packages_distributions().get(root_package, [])
+    distributions = _installed_distributions().get(root_package, [])
     for distribution in distributions:
         try:
             return importlib.metadata.version(distribution)

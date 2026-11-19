@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { selectedAgent } from "./writing-agent";
 import type {
   TraceDetailLite,
   TraceListItem,
@@ -91,27 +92,14 @@ class RelayResponse {
   }
 }
 
-// evolution API 前缀：
-// - 生产：/evolution-api（nginx 子路径反代，同域 cookie 共享 SSO）
-// - 本地 dev：空前缀（直连 evolution:7789，无 nginx）
-const EVO_PREFIX = import.meta.env.DEV ? "" : "/evolution-api";
-
-/**
- * 统一请求封装（走 Rust 中继）：
- * - executor 接口（登录/鉴权）：path 不加前缀（如 /api/auth/login）
- * - evolution 接口：path 加 /evolution-api 前缀（如 /evolution-api/api/config/llm）
- *
- * 用 evoFetch 调 evolution，apiFetch 调 executor。
- */
+/** 登录使用共享认证入口，进化业务请求按当前 Agent 分流。 */
 async function apiFetch(input: string, init: RequestInit = {}): Promise<RelayResponse> {
   return _fetch(input, init);
 }
 
 /** evolution 接口专用（自动加 /evolution-api 前缀）。 */
 async function evoFetch(path: string, init: RequestInit = {}): Promise<RelayResponse> {
-  // path 形如 "/api/config/llm"，加前缀后 "/evolution-api/api/config/llm"
-  const full = path.startsWith("/") ? `${EVO_PREFIX}${path}` : `${EVO_PREFIX}/${path}`;
-  return _fetch(full, init);
+  return _fetch(evoStreamPath(path), init);
 }
 
 /**
@@ -119,7 +107,35 @@ async function evoFetch(path: string, init: RequestInit = {}): Promise<RelayResp
  * 观测大盘实时化（REQ-20260920-193428 FR-005）。
  */
 export function evoStreamPath(path: string): string {
-  return path.startsWith("/") ? `${EVO_PREFIX}${path}` : `${EVO_PREFIX}/${path}`;
+  const prefix = `/evolution-api/${selectedAgent() ?? "outline"}`;
+  return prefix + (path.startsWith("/") ? path : "/" + path);
+}
+
+export function listCandidateAssets() {
+  return evoJson<{base_commit: string; paths: string[]}>("/api/harness/candidates/source", {});
+}
+export function readCandidateAsset(path: string) {
+  return evoJson<{base_commit: string; content: string}>("/api/harness/candidates/source?path=" + encodeURIComponent(path), {});
+}
+export function saveAssetCandidate(base_commit: string, changes: Record<string, string>) {
+  return evoJson<{base_commit: string; commit: string; diff: string}>("/api/harness/candidates",
+    {method: "POST", body: JSON.stringify({base_commit, changes})});
+}
+
+export function shareMiddleware(module: string, base_commit: string) {
+  return evoJson<{version: string}>(`/api/harness/candidates/shared/${encodeURIComponent(module)}`,
+    {method: "POST", body: JSON.stringify({base_commit})});
+}
+export function getSharedVersions(module: string) {
+  return evoJson<{versions: string[]}>(`/api/harness/candidates/shared/${encodeURIComponent(module)}`, {});
+}
+export function getSharedVersion(module: string, version: string) {
+  return evoJson<{content: string}>(`/api/harness/candidates/shared/${encodeURIComponent(module)}?version=${encodeURIComponent(version)}`, {});
+}
+
+export type MiddlewareAction = {rule?: string; hook: string; action: string; timestamp?: string};
+export function getMiddlewareActions(trace: string) {
+  return evoJson<{items: MiddlewareAction[]}>(`/api/traces/${encodeURIComponent(trace)}/middleware-actions`, {});
 }
 
 /**
@@ -872,7 +888,8 @@ export async function getEvolveSession(sessionId: string): Promise<EvolveSession
 }
 
 export interface PublishEvolveResponse {
-  status: "activated";
+  status: "activated" | "candidate";
+  base_commit?: string;
   snapshot_version: number;
   source_commit: string;
   release_id: string;
@@ -1981,6 +1998,10 @@ export function listExperimentPackages(): Promise<{ items: ExperimentPackage[]; 
 }
 export function importExperimentPackage(payload: ExperimentPackageInput): Promise<ExperimentPackage> {
   return evoJson("/api/experiments/packages", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+}
+
+export function replaceExperimentPackage(id: string, payload: ExperimentPackageInput): Promise<ExperimentPackage> {
+  return evoJson(`/api/experiments/packages/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(payload) });
 }
 export function getExperimentPackageTemplates(): Promise<{ items: ExperimentPackageInput[] }> {
   return evoJson("/api/experiments/packages/templates", { method: "GET" });

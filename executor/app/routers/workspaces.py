@@ -70,6 +70,8 @@ async def _guard_target_writes(request: Request, user: CurrentUser = Depends(cur
         workspace = get_thread_store().get_workspace(user.user_id, workspace_id)
         if workspace is None:
             raise HTTPException(404, "Workspace not found")
+        if (Path(workspace.workspace_path) / ".writing/four-agents").is_file() and "/writing/stage" in request.url.path:
+            raise HTTPException(409, "请在作品的四个创作入口中切换")
         if active_target_task(workspace.workspace_path):
             raise HTTPException(409, "作品正在执行全自动任务，请先停止任务再修改产物或阶段。")
 

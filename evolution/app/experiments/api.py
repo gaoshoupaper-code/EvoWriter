@@ -6,17 +6,27 @@ import hmac
 from itertools import islice
 
 from contracts.trace.usage import normalize_usage
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from contracts.target_tasks import configured_task_type
 
 from app.core import db
 from app.core.settings import settings
 from app.experiments import clients, packages, release, repo, rubrics, runner
-from app.experiments.schemas import PackageCreate, RuleCreate, RunCreate, TASK_TYPES
+from app.experiments.schemas import PackageCreate, RuleCreate, RunCreate
 from app.trace.access import require_full_content_access
 from app.view.display_context import trace_run_views
 
-router = APIRouter(prefix="/experiments", tags=["experiments"])
+def require_suite() -> str:
+    scope = configured_task_type()
+    if not scope:
+        raise HTTPException(status_code=404, detail="请进入所属创作 Agent")
+    return scope
+
+
+router = APIRouter(prefix="/experiments", tags=["experiments"], dependencies=[Depends(require_suite)])
 internal_router = APIRouter(prefix="/ingestion", tags=["experiment-internal"])
+# The archive uses these bounded read views. Production mounts them through the scoped router only.
+history_router = APIRouter()
 
 
 def _failure(exc: Exception):
@@ -159,11 +169,20 @@ def package_detail(package_id: str, request: Request):
     return package
 
 
+@router.put("/packages/{package_id}")
+def replace_package(package_id: str, body: PackageCreate):
+    try:
+        return packages.import_package(body, previous_id=package_id)
+    except (KeyError, ValueError) as exc:
+        _failure(exc)
+
+
 @router.get("/rules")
 def list_rules(task_type: str | None = Query(None)):
-    if task_type is not None and task_type not in TASK_TYPES:
-        raise HTTPException(status_code=400, detail="未知任务类型")
-    return {"items": rubrics.list_rules(task_type)}
+    scope = require_suite()
+    if task_type and task_type != scope:
+        raise HTTPException(status_code=404, detail="找不到该套规则")
+    return {"items": rubrics.list_rules(scope)}
 
 
 @router.post("/rules", status_code=201)
@@ -179,17 +198,16 @@ def experiment_options():
     except (clients.ServiceUnavailable, clients.TaskNotFound) as exc:
         _failure(exc)
     groups = list_judge_groups()
-    rule_versions = {}
-    for kind in TASK_TYPES:
-        current = [rule for rule in rubrics.list_rules(kind) if rule.get("profile") == "stage-eval-v2"]
-        if current:
-            rule_versions[kind] = max(current, key=lambda rule: rule["version"])["id"]
-    return {"task_types": list(TASK_TYPES), "versions": versions["items"], "production_version": versions["production_version"],
+    scope = require_suite()
+    current = rubrics.list_rules(scope)
+    rule_versions = {scope: current[0]["id"]} if current else {}
+    current_versions = [item for item in versions["items"] if item["version"] == versions["production_version"]]
+    return {"task_types": [scope], "versions": current_versions, "production_version": versions["production_version"],
             "models": [{key: item.get(key) for key in ("id", "name", "model", "is_active", "has_key")} for item in db.LlmConfigsRepository.list_all("executor")],
             "judge_groups": groups["groups"] if "groups" in groups else groups.get("items", []),
             "defaults": {"rule_versions": rule_versions, "thresholds": {"completion_rate": 1, "quality_gain": .1,
-                "regression_tolerance": {kind: 0 for kind in TASK_TYPES}}, "max_rounds": 3},
-            "builtin_suite": {"id": "stage-smoke-v1", "total": 12}}
+                "regression_tolerance": {scope: 0}}, "max_rounds": 3},
+            "builtin_suite": {"id": "isolated-writing-v1", "total": 4}}
 
 
 @router.post("/runs", status_code=201)
@@ -202,14 +220,14 @@ def start_run(body: RunCreate, request: Request):
     return public_run(run, can_read_content=_can_read(request))
 
 
-@router.get("/runs")
+@history_router.get("/runs")
 def list_runs(request: Request, active: bool = False):
     active_statuses = {"pending", "running", "recovering", "stopping", "publishing"}
     return {"items": [public_run(run, can_read_content=_can_read(request), summary=True)
                       for run in repo.list_runs() if not active or run["status"] in active_statuses]}
 
 
-@router.get("/runs/{run_id}")
+@history_router.get("/runs/{run_id}")
 def run_detail(run_id: str, request: Request):
     run = repo.get_run(run_id)
     if run is None:
@@ -224,7 +242,7 @@ def run_detail(run_id: str, request: Request):
     return public_run(run, can_read_content=_can_read(request))
 
 
-@router.get("/runs/{run_id}/usage/evaluation")
+@history_router.get("/runs/{run_id}/usage/evaluation")
 def evaluation_usage(run_id: str, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=100)):
     run = repo.get_run(run_id)
     if run is None:
@@ -277,3 +295,6 @@ def frozen_key(run_id: str, request: Request):
         return repo.frozen_model_credentials(run_id)
     except KeyError as exc:
         _failure(exc)
+
+
+router.include_router(history_router)

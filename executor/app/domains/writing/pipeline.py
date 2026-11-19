@@ -221,6 +221,19 @@ def route(
     """
     workspace = Path(workspace)
     state = load_writing_state(workspace)
+    from app.domains.writing.creative_scope import ACTIVE
+    from app.domains.writing.target_execution import current_execution
+    from contracts.creative_harness import AGENTS, LABELS
+    import os
+    task = ACTIVE.get()
+    target = current_execution()
+    scoped = task.agent if task else os.getenv("WRITING_AGENT_ID") if target else None
+    if scoped in AGENTS:
+        volume = task.row["volume"] if task else target.volume
+        chapter = task.row["chapter"] if task else target.chapter
+        identity = _sticky_thread_id(base_thread_id, scoped, 1)
+        return RouteDecision(scoped, identity, f"创作入口：{LABELS[scoped]}。目标卷：{volume}，目标章：{chapter}。",
+                             scoped, conversation_id=base_thread_id)
 
     # ── legacy：旧五件套 / 旧七步 / 三步制 → 只读模式（DEC-010）──
     if classify_workspace(workspace) == "legacy":

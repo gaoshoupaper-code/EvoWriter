@@ -7,6 +7,7 @@ import re
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
+import os
 from typing import Any
 
 from contracts.target_tasks import TargetTaskRequest
@@ -67,12 +68,17 @@ class TargetScopeMiddleware(AgentMiddleware):
 
     def _block(self, request):
         target = self.execution.request.target
-        if target.task_type != "chapter_outlines" or target.chapter is None:
-            return None
         call = request.tool_call
         name, args = call.get("name"), call.get("args") or {}
         reason = None
-        if name == "save_artifact":
+        if agent := os.environ.get("WRITING_AGENT_ID"):
+            from contracts.creative_harness import write_denial
+            reason = write_denial(agent, name, args, next(iter(target.volume_ids), 1), target.chapter or 1)
+            if name in {"write_file", "edit_file"}:
+                reason = "请使用本套获准的产物工具"
+        elif target.task_type != "chapter_outlines" or target.chapter is None:
+            return None
+        elif name == "save_artifact":
             kind = args.get("kind")
             if kind in {"chapter_outline", "chapter_text"} and (kind != "chapter_outline" or args.get("chapter") != target.chapter):
                 reason = f"本次只能保存第{target.chapter}章章纲，不生成其他章纲或正文。"

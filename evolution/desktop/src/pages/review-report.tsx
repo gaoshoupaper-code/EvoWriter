@@ -65,6 +65,10 @@ export default function ReviewReport() {
     setActing(true);
     try {
       const resp = await publishEvolve(sessionId);
+      if (resp.status === "candidate") {
+        navigate("/bench?candidate=" + resp.source_commit + "&base=" + resp.base_commit);
+        return;
+      }
       toast.success(`已发布为 v${resp.snapshot_version}`);
       navigate("/evolve");
     } catch (err) {
@@ -187,7 +191,7 @@ export default function ReviewReport() {
       {isPendingReview && (
         <div className="review-actions-bar">
           <div className="review-actions-info">
-            发布后该版本的 Harness 改动将立即在生产生效（晋升 production + executor 热加载）。
+            保存候选后进入本套评测。两组均达标后可以确认上线。
           </div>
           <div className="review-actions-buttons">
             <button
@@ -202,7 +206,7 @@ export default function ReviewReport() {
               onClick={handlePublish}
               disabled={acting}
             >
-              {acting ? "处理中…" : "✓ 发布"}
+              {acting ? "处理中…" : "保存候选并评测"}
             </button>
           </div>
         </div>

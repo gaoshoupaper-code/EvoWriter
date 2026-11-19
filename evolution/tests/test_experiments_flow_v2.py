@@ -269,19 +269,22 @@ class ReleaseRecoveryV2Test(fixtures.DatabaseTest):
 
 
 class DefaultsAndRetryTest(fixtures.DatabaseTest):
+    @patch.dict("os.environ", {"WRITING_AGENT_ID": "text"})
     def test_options_only_default_to_current_rules_and_safe_models(self):
         from app.experiments import api, repo
+        repo.init_schema()
         with patch("app.experiments.clients.versions", return_value={"items": [], "production_version": None}), \
              patch("app.benchmark.api.list_judge_groups", return_value={"groups": []}), \
              patch("app.core.db.LlmConfigsRepository.list_all", return_value=[
                  {"id": 1, "name": "写作", "model": "gpt-test", "is_active": True, "has_key": True,
                   "base_url": "https://private.invalid", "key_hint": "secret"}]):
             options = api.experiment_options()
-        self.assertEqual(options["builtin_suite"], {"id": "stage-smoke-v1", "total": 12})
+        self.assertEqual(options["builtin_suite"], {"id": "isolated-writing-v1", "total": 4})
+        self.assertEqual(set(options["defaults"]["rule_versions"]), {"chapter_text"})
         self.assertEqual(options["defaults"]["thresholds"]["quality_gain"], .1)
         self.assertEqual(options["defaults"]["max_rounds"], 3)
         for identifier in options["defaults"]["rule_versions"].values():
-            self.assertEqual(repo.get_rule(identifier)["profile"], "stage-eval-v2")
+            self.assertEqual(repo.get_rule(identifier)["profile"], "isolated-writing-v1")
         self.assertNotIn("base_url", str(options["models"]))
         self.assertNotIn("secret", str(options["models"]))
 

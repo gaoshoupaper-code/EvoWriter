@@ -240,6 +240,7 @@ class ReadSentinelMiddleware(AgentMiddleware):
         self._signaled += 1
         try:
             self.intervention_callback(
+                middleware_name=type(self).__name__,
                 action="repeated_read",
                 hook="wrap_tool_call",
                 affected_fields=["tool_output"],

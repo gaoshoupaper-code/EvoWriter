@@ -11,9 +11,10 @@ def _original_production(run: dict) -> dict:
 def check_stale(run: dict) -> bool:
     expected = _original_production(run)
     current = clients.production()
-    if current["commit"] == expected["commit"] and current["version"] == expected["version"]:
+    tested_current = run.get("flow_version") != 3 or _same_release(run["baseline"], expected)
+    if tested_current and _same_release(current, expected):
         return False
-    run.update(status="stale", stale_reason="生产版本已变化；候选过期，请重新发起验证。")
+    run.update(status="stale", stale_reason="当前生产版本与评测基线不一致；候选过期，请重新发起验证。")
     repo.event(run, "stale", run["stale_reason"])
     repo.put_run(run)
     return True
@@ -111,7 +112,7 @@ def publish_run(run_id: str, actor: str) -> dict:
         if run["status"] == "activated":
             return run
         if run["status"] not in {"awaiting_review", "publish_failed", "publishing"} or not run.get("report", {}).get("passed") or not run.get("best_candidate"):
-            raise ValueError("仅通过完整终验且未过期的固定候选可发布")
+            raise ValueError("仅评测达标且未过期的固定候选可发布")
         candidate = run["best_candidate"]
         approved = run.get("approved_commit") == candidate["commit"] and bool(run.get("approved_by"))
         checked_original = False
@@ -136,7 +137,7 @@ def publish_run(run_id: str, actor: str) -> dict:
         repo.event(run, "approved", f"人工批准固定候选 {candidate['commit']}。")
         repo.put_run(run)
         try:
-            response = clients.promote({"source_commit": candidate["commit"], "version_note": f"实验 {run_id} 已通过独立终验",
+            response = clients.promote({"source_commit": candidate["commit"], "version_note": f"实验 {run_id} 已通过发布评测",
                 "expected_production_commit": expected["commit"], "expected_production_version": expected["version"]})
             if response["commit"] != candidate["commit"] or response.get("artifact_digest") != candidate["digest"]:
                 raise ValueError("实际发布候选与通过验证的候选不一致")

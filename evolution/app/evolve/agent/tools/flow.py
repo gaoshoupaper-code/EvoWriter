@@ -10,10 +10,13 @@
 """
 from __future__ import annotations
 
+import ast
 import importlib
 import json
 import logging
+import os
 import sys
+from threading import Lock
 from pathlib import Path
 from typing import Any
 
@@ -27,6 +30,7 @@ from app.evolve.ctx import get_tool_context
 # _import_check_all exec 被检代码之后，被检代码可先 monkeypatch 校验函数拆门）。
 from app.evolve.hook_protocol import (
     check_hook_signatures,
+    enumerate_base_hooks,
     collect_middleware_classes_from_dir,
 )
 
@@ -189,7 +193,14 @@ def make_flow_tools() -> list:
         ctx.emit_step("validate_changes", "running")
         errors: list[str] = []
         env_diffs: list[str] = []
-        pkg_root = settings.harness_work_dir_path
+        scoped = bool(os.getenv("WRITING_AGENT_ID"))
+        candidate_root = getattr(ctx, "harness_root", None)
+        if scoped and candidate_root is None:
+            detail = "当前会话尚未绑定本套候选工作区"
+            ctx.validation_result = {"passed": False, "errors": [detail]}
+            ctx.emit_step("validate_changes", "failed", error=detail)
+            return "校验失败：" + detail
+        pkg_root = Path(candidate_root or settings.harness_work_dir_path)
 
         # 1. py_compile 全包源码
         import py_compile
@@ -197,8 +208,11 @@ def make_flow_tools() -> list:
             if "__pycache__" in py.parts:
                 continue
             try:
-                py_compile.compile(str(py), doraise=True)
-            except py_compile.PyCompileError as e:
+                if scoped:
+                    compile(py.read_bytes(), str(py), "exec")
+                else:
+                    py_compile.compile(str(py), doraise=True)
+            except (SyntaxError, py_compile.PyCompileError) as e:
                 rel = py.relative_to(pkg_root)
                 errors.append(f"语法错误 {rel}: {e}")
 
@@ -220,22 +234,11 @@ def make_flow_tools() -> list:
             except OSError:
                 continue  # 读失败（权限/竞态删除）由后续装配/probe 兜底
 
-        # 2. import 检查：环境差异（app.platform.* 等 evolution 不具备的框架包）单独归类，
-        #    不算校验失败——它们在 executor 运行时能正常 import。
-        _import_check_all(pkg_root, errors, env_diffs)
-
-        # 3. FR-002 / EDGE-002 落地原子性校验：__init__.py 里构造的中间件，其实际
-        #    __init__ 签名必须接受构造调用传的 kwargs。拦截签名漂移。
-        _middleware_signature_check(pkg_root, errors)
-
-        # 4. hook 签名硬校验（REQ-20261001-225509 FR-001）：覆写 hook 的参数名
-        #    必须与基类一致（框架按参数名注入，错名 → 运行时 TypeError）。
-        #    逐文件直载 middleware/ 目录（绕开包 __init__ 的重 import）。
-        #    校验函数是模块顶部绑定的引用，不在此处延迟 import。
-        hook_errors = check_hook_signatures(
-            collect_middleware_classes_from_dir(pkg_root / "middleware")
-        )
-        errors.extend(hook_errors)
+        # Scoped candidates may execute Python only in the platform probe sandbox.
+        if scoped:
+            errors.extend(_source_hook_errors(pkg_root / "middleware"))
+        else:
+            _check_legacy_imports(pkg_root, errors, env_diffs)
 
         # 5. 架构清单强校验（REQ-20261006-130414 FR-002）：引用存在性、
         #    委托双向一致/无环、子代理数量上限、build 钩子存在。
@@ -273,6 +276,8 @@ def make_flow_tools() -> list:
             "validate_changes", "done" if passed else "failed",
             passed=passed, errors=len(errors), env_diffs=len(env_diffs),
         )
+        if passed and scoped:
+            return "校验通过：候选源码、清单和可静态核对的 hook 签名正常。动态装配由隔离探测核对。" + unmounted_note
         if passed and not env_diffs:
             return "校验通过：harness 包所有源码无语法错误 + import 正常。" + unmounted_note
         if passed:
@@ -380,6 +385,55 @@ def _is_env_diff(exc: BaseException) -> bool:
     return False
 
 
+def _source_hook_errors(directory: Path) -> list[str]:
+    """Check direct overrides without importing code from the candidate."""
+    hooks = enumerate_base_hooks()
+    errors = []
+    for path in directory.glob("*.py"):
+        try:
+            tree = ast.parse(path.read_bytes())
+        except (SyntaxError, UnicodeDecodeError):
+            continue  # The syntax and encoding checks already report these.
+        for cls in tree.body:
+            if not isinstance(cls, ast.ClassDef):
+                continue
+            bases = [base.value if isinstance(base, ast.Subscript) else base for base in cls.bases]
+            if not any(getattr(base, "id", getattr(base, "attr", None)) == "AgentMiddleware" for base in bases):
+                continue
+            for fn in cls.body:
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)) or fn.name not in hooks:
+                    continue
+                if fn.args.vararg or fn.args.kwarg:
+                    continue
+                actual = [p.arg for p in (*fn.args.posonlyargs, *fn.args.args, *fn.args.kwonlyargs) if p.arg != "self"]
+                expected = [name for name in hooks[fn.name].parameters if name != "self"]
+                if actual != expected:
+                    errors.append(f"{cls.name}.{fn.name}: hook 参数应为 {expected}，当前写的是 {actual}。")
+    return errors
+
+
+_legacy_import_lock = Lock()
+
+
+def _check_legacy_imports(pkg_root: Path, errors: list[str], env_diffs: list[str]) -> None:
+    # Old bundles use absolute imports under harness_current. Keep the whole
+    # validation in one namespace, then give any existing package its modules back.
+    def current_modules():
+        return {name: module for name, module in sys.modules.copy().items()
+                if name == "harness_current" or name.startswith("harness_current.")}
+
+    with _legacy_import_lock:
+        saved = current_modules()
+        try:
+            _import_check_all(pkg_root, errors, env_diffs)
+            _middleware_signature_check(pkg_root, errors)
+            errors.extend(check_hook_signatures(collect_middleware_classes_from_dir(pkg_root / "middleware")))
+        finally:
+            for name in current_modules():
+                sys.modules.pop(name, None)
+            sys.modules.update(saved)
+
+
 def _import_check_all(pkg_root: Path, errors: list[str], env_diffs: list[str]) -> None:
     """尝试 import harness 包内所有 .py 模块，分类捕获异常。
 
@@ -443,7 +497,6 @@ def _middleware_signature_check(pkg_root: Path, errors: list[str]) -> None:
     类的 __init__ 是否接受调用传的 keyword 参数。拦截"改了 __init__.py 调用处
     但漏改 middleware 定义"的签名漂移（probe_candidate 装配时才 TypeError）。
     """
-    import ast
     import inspect
 
     init_path = pkg_root / "__init__.py"

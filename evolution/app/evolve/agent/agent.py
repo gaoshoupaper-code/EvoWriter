@@ -344,6 +344,10 @@ async def build_evolve_agent(ctx: EvolveContext):
     from deepagents import create_deep_agent
     from deepagents.backends.filesystem import FilesystemBackend
 
+    import os
+    if os.getenv("WRITING_AGENT_ID"):
+        from app.versioning.asset_candidates import session_checkout
+        ctx.harness_root = session_checkout(ctx.session_id)
     set_tool_context(ctx)
 
     model = build_agent_model(temperature=0.2)
@@ -351,7 +355,7 @@ async def build_evolve_agent(ctx: EvolveContext):
     # FilesystemBackend：专用写工具内部调用它落盘到 harnesses/repo/
     # virtual_mode=True：root_dir 作为虚拟根，阻止绝对路径 / .. 越界（S5/S13）
     backend = FilesystemBackend(
-        root_dir=str(settings.harness_work_dir_path),
+        root_dir=str(getattr(ctx, "harness_root", None) or settings.harness_work_dir_path),
         virtual_mode=True,
     )
 

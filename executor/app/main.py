@@ -3,7 +3,9 @@
 main.py 只保留：app 实例化 + lifespan + CORS + 日志中间件 + 系统级端点（/health、/api/init）。
 领域端点已迁到 routers/（screenplay/character/workspaces/threads）+ 各 domain router。
 """
+import asyncio
 import json
+import os
 import time
 from pathlib import Path
 
@@ -88,7 +90,7 @@ init_style_module(style_store, style_optimizer)
 # 普通用户走 CheckpointPool 分库（services 内部按 owner_id 解析）。
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-_global_checkpoint_db_path = workspace_root.parent / "checkpoints.db"
+_global_checkpoint_db_path = (_checkpoints_root if os.getenv("WRITING_AGENT_ID") else workspace_root.parent) / "checkpoints.db"
 _checkpointer_cm = AsyncSqliteSaver.from_conn_string(str(_global_checkpoint_db_path))
 
 agent_service: MetaAgentService | None = None
@@ -108,7 +110,7 @@ async def _lifespan(application: FastAPI):
         character_service = CharacterService(settings, workspace_root, trace_recorder, checkpointer)
     # 文生图域下线：一次性清掉存量 image 工作区（DB 行 + 线程 + 工作区目录 +
     # checkpoint）。幂等——清完后 domain='image' 恒为空集，此后启动为 no-op。
-    for ws in thread_store.workspaces.list_by_domain("image"):
+    for ws in ([] if os.getenv("WRITING_AGENT_ID") else thread_store.workspaces.list_by_domain("image")):
         owner_id, workspace_id = ws["owner_id"], ws["workspace_id"]
         deleted_thread_ids = thread_store.delete_workspace(owner_id, workspace_id) or []
         # checkpoint 清理 best-effort：行与目录已删，失败不影响启动
@@ -128,8 +130,30 @@ async def _lifespan(application: FastAPI):
     from app.domains.writing.target_tasks import get_manager as get_target_task_manager
     get_target_task_manager().recorder = trace_recorder
     get_target_task_manager().recover()
+    agent_id = os.getenv("WRITING_AGENT_ID")
+    cleanup_task = None
+    if agent_id:
+        from contracts.creative_harness import AGENTS
+        from app.domains.writing.creative_scope import private_root, remove_deleted_books
+        if agent_id not in AGENTS:
+            raise ValueError("Invalid WRITING_AGENT_ID")
+        async def cleanup_private_books():
+            while True:
+                await remove_deleted_books(agent_id, thread_store, trace_recorder)
+                await asyncio.sleep(60)
+        cleanup_task = asyncio.create_task(cleanup_private_books())
+        for index in (private_root() / agent_id).glob("*/sessions/*/traces/index.json"):
+            if index.resolve() != index.absolute():
+                continue
+            try:
+                run_ids = json.loads(index.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            for trace_id in run_ids:
+                trace_recorder.register_external_run(trace_id, str(index.parent.parent))
     # 多用户：引导管理员账号（幂等）
-    bootstrap_admin()
+    if not os.getenv("WRITING_AGENT_ID"):
+        bootstrap_admin()
     _billing_runs.start_recovery()
     # 基建指标埋点（REQ-20260918-144856 FR-001）：OTel → Collector → Prometheus。
     # OTEL_EXPORTER_OTLP_ENDPOINT 未配置（本地开发）时静默关闭，零开销直通。
@@ -152,6 +176,9 @@ async def _lifespan(application: FastAPI):
     start_production_reconcile_loop()
     pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
     yield
+    if cleanup_task:
+        cleanup_task.cancel()
+        await asyncio.gather(cleanup_task, return_exceptions=True)
     await get_target_task_manager().close()
     await _billing_runs.aclose()
     # 关闭绑定补账协程
@@ -200,6 +227,8 @@ async def billing_error_handler(request: Request, exc: BillingError):
 from app.routers.screenplay import router as screenplay_router
 from app.routers.character import router as character_router
 app.include_router(screenplay_router, prefix="/api")
+from app.routers.creative_agents import router as creative_agents_router
+app.include_router(creative_agents_router, prefix="/api")
 app.include_router(character_router, prefix="/api")
 # PR-14：workspaces/threads 端点（从 main.py 抽出）
 from app.routers.workspaces import router as workspaces_router
@@ -230,6 +259,18 @@ async def _log_http(request: Request, call_next):
     status_code = 0
     response = None
     try:
+        scoped_agent = os.getenv("WRITING_AGENT_ID")
+        if scoped_agent:
+            import re
+            path = request.url.path
+            private_api = re.fullmatch(r"/api/workspaces/[^/]+/agents/([^/]+)(?:/.*)?", path)
+            internal = re.fullmatch(
+                r"/internal/(?:active-runs|users|traces(?:/[^/]+(?:/payloads/[^/]+)?)?|"
+                r"workspaces(?:/[^/]+(?:/writing-artifacts(?:/content)?)?)?|target-tasks(?:/.*)?|"
+                r"platform/reload|reload|snapshot/refreshed|prompts/refreshed)", path)
+            if not (private_api and private_api[1] == scoped_agent or internal
+                    or path in {"/health", "/metrics", "/api/auth/me"}):
+                return JSONResponse({"detail": "此接口不属于当前创作 Agent"}, status_code=404)
         response = await call_next(request)
         status_code = response.status_code
         return response

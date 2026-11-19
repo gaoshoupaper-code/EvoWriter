@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import os
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -83,6 +84,16 @@ def load_package(pkg_path: Path, mod_name: str = "harness_current") -> ModuleTyp
     return mod
 
 
+def _production_package(checkout: Path) -> ModuleType:
+    if os.getenv("WRITING_AGENT_ID"):
+        # The serving process indexes a release without importing its Python code.
+        # Only the isolated graph worker loads and executes the published module.
+        reference = ModuleType("creative_release")
+        reference.__file__ = str(checkout / "__init__.py")
+        return reference
+    return load_package(checkout, "harness_current")
+
+
 def load_current_package() -> ModuleType:
     """加载生产 Agent 包，返回包模块。
 
@@ -108,7 +119,7 @@ def load_current_package() -> ModuleType:
         _load_from_known_production(client, exc)
         return _loaded_package
     checkout = client.ensure_artifact(status.commit)
-    _loaded_package = load_package(checkout, "harness_current")
+    _loaded_package = _production_package(checkout)
     _current_commit = status.commit
     _current_checkout = checkout
     logger.info("生产包已就绪: commit=%s version=%s", status.commit, status.version)
@@ -140,7 +151,7 @@ def _load_from_known_production(client, exc: Exception) -> None:
         "冷启动降级：Platform 不可达，用本地缓存装配已知生产 commit=%s（err=%s）",
         fallback_commit, exc,
     )
-    _loaded_package = load_package(checkout, "harness_current")
+    _loaded_package = _production_package(checkout)
     _current_commit = fallback_commit
     _current_checkout = checkout
 
@@ -155,14 +166,15 @@ def reload_current(commit: str | None = None, digest: str | None = None) -> Modu
     """
     global _loaded_package, _current_commit, _current_checkout
     # 清缓存：pop sys.modules 里包及其子模块（middleware.* 等）
-    _purge_package_modules("harness_current")
+    if not os.getenv("WRITING_AGENT_ID"):
+        _purge_package_modules("harness_current")
     _loaded_package = None
 
     client = _artifact_client()
     if commit is None:
         commit = client.current_production().commit
     checkout = client.ensure_artifact(commit, expected_digest=digest)
-    _loaded_package = load_package(checkout, "harness_current")
+    _loaded_package = _production_package(checkout)
     _current_commit = commit
     _current_checkout = checkout
     logger.info("生产包热加载完成: commit=%s", commit)

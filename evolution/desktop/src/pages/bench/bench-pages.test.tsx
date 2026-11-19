@@ -309,73 +309,28 @@ describe("产物正文 Markdown 渲染（FR-001）", () => {
 
 // ── FR-002（REQ-20260923-131103）：批次列表数据集列/均分列/加载更多 ──
 
-describe("规则页（AC-013）", () => {
-  it("渲染版本、校准状态、纪律条款、五维卡片五档锚点与评分制说明", async () => {
-    api.getBenchmarkRubric.mockResolvedValue({
-      rubric_version: "v4-outline-5dim-anchored",
-      calibration_status: "uncalibrated",
-      anchor_status: "draft",
-      discipline_rules: [
-        "证据先行：只依据可指认的原文判定。",
-        "先列缺陷再定档：缺陷清点未完成不得打分。",
-        "高分举证：给 4 分及以上必须逐条论证。",
-        "5 分稀缺：存在任何可指认缺陷即不得给 5 分。",
-        "禁止整体印象迁移：不得因整体感觉好而抬分。",
-        "两可取低：两档之间犹豫时取低档。",
-      ],
-      dimensions: [
-        {
-          key: "需求兑现", question: "大纲是否兑现需求？",
-          anchors: { "5": "全兑现", "4": "轻微弱化一处", "3": "个别落空", "2": "一条整条落空", "1": "偏离" },
-        },
-        {
-          key: "设定自洽", question: "设定是否自洽？",
-          anchors: { "5": "自洽", "4": "一处边界模糊", "3": "小出入", "2": "多处矛盾", "1": "矛盾" },
-        },
-      ],
-      rule_delivery: { key: "delivery_complete", description: "三件套齐全且无占位符" },
-    });
-    render(
-      <MemoryRouter>
-        <Rules />
-      </MemoryRouter>,
-    );
-    expect(await screen.findByText("v4-outline-5dim-anchored")).toBeInTheDocument();
-    expect(screen.getByText("需求兑现")).toBeInTheDocument();
-    expect(screen.getByText("大纲是否兑现需求？")).toBeInTheDocument();
-    // 五档锚点逐档渲染（DEC-001）
-    for (const text of ["全兑现", "轻微弱化一处", "个别落空", "一条整条落空", "偏离"]) {
-      expect(screen.getByText(text)).toBeInTheDocument();
-    }
-    // 纪律条款区（DEC-016）
-    expect(screen.getByText("评分纪律（judge 每次评分必须遵守）")).toBeInTheDocument();
-    expect(screen.getByText(/两可取低/)).toBeInTheDocument();
-    expect(screen.getByText(/评分制说明/)).toBeInTheDocument();
-    // 两段理由说明（DEC-002）
-    expect(screen.getByText(/两段式理由/)).toBeInTheDocument();
+describe("隔离题库与规则", () => {
+  it("只加载本套评分规则，保留各维度和锚点", async () => {
+    window.location.hash = "#/agents/outline/bench/rules";
+    api.listExperimentRules.mockResolvedValue({items: [{
+      id: "outline-only", task_type: "master_outline", name: "总纲质量", profile: "isolated-writing-v1", version: 1,
+      dimensions: [{key: "主题清楚", question: "主题是否明晰？", weight: 1,
+        anchors: {"1": "欠缺", "2": "模糊", "3": "基本说明", "4": "清晰", "5": "表达充分"}}],
+      discipline_rules: ["引用证据"], created_at: "2026-11-18"
+    }]});
+    render(<MemoryRouter><Rules /></MemoryRouter>);
+    expect(await screen.findByText("主题是否明晰？")).toBeInTheDocument();
+    expect(screen.getByText("表达充分")).toBeInTheDocument();
+    expect(api.getBenchmarkRubric).not.toHaveBeenCalled();
   });
-});
 
-// ── AC-014：数据集页 ──
-
-describe("数据集页（AC-014）", () => {
-  it("golden 输入与 revision 保留，旧版重跑入口移除", async () => {
-    api.getDatasetCases.mockResolvedValue({
-      cases: [{ case_id: "case-001", title: "热血升级", layer: "golden", source_trace_id: null, demand_revision: "r", has_reference: false, promoted_at: null, created_by: "manual" }],
-      total: 1,
-    });
-    api.getGoldenRevision.mockResolvedValue({
-      revision: "rev1234567890", locked: true, intact: true, case_count: 1, cases: ["case-001"],
-    });
-    render(
-      <MemoryRouter>
-        <Dataset />
-      </MemoryRouter>,
-    );
-    expect(await screen.findByText("case-001")).toBeInTheDocument();
-    expect(screen.getByText("已锁定")).toBeInTheDocument();
-    expect(screen.getByPlaceholderText(/粘贴新 case 的 demand.md 全文/)).toBeInTheDocument();
-    expect(screen.queryByText("重跑最近 3 个版本")).not.toBeInTheDocument();
+  it("仅显示两类在用题，历史 golden 留档", async () => {
+    window.location.hash = "#/agents/text/bench/dataset";
+    render(<MemoryRouter><Dataset /></MemoryRouter>);
+    expect(await screen.findByRole("tab", {name: /改进题/})).toBeInTheDocument();
+    expect(screen.getByRole("tab", {name: /回归题/})).toBeInTheDocument();
+    expect(screen.queryByText("golden")).not.toBeInTheDocument();
+    expect(api.getDatasetCases).not.toHaveBeenCalled();
   });
 });
 

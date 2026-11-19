@@ -18,20 +18,20 @@ const sample = (id: string, overrides = {}) => ({ id, package_id: "story-a", pac
   status: "failed", completed: false, trace_ids: ["generation-2"], evaluation_trace_ids: ["evaluation-2"],
   checks: {}, scores: null, error: "未完整生成", artifacts: { "第10章.md": "第十章内容", "第2章.md": "第二章内容" },
   usage: {}, input_revision: "input-a", source_commit: "candidate-a", ...overrides });
-const run = (id: string, overrides = {}) => ({ id, name: id, task_type: "chapter_text", flow_version: 2,
+const run = (id: string, overrides = {}) => ({ id, name: id, task_type: "chapter_text", flow_version: 3,
   status: "running", phase: "exploration", current_round: 2, max_rounds: 3,
   baseline: { version: 1, commit: "base" }, best_candidate: null, settings: {}, report: {}, usage: {},
   rounds: [{ round: 2, status: "running", trace_ids: ["improvement-2"], report: {}, diff: "", regressions: {} }],
   samples: [sample("sample-2")], events: [], can_read_content: true, can_publish: false,
   publish_status: "not_started", created_at: "2026-11-08T01:00:00Z", updated_at: "2026-11-08T02:00:00Z", ...overrides });
-beforeEach(() => { vi.clearAllMocks(); api.getActiveRuns.mockResolvedValue([]); });
+beforeEach(() => { window.location.hash = "#/agents/text/bench"; vi.clearAllMocks(); api.getActiveRuns.mockResolvedValue([]); });
 
 describe("实验观测 / REQ-20261108-191146", () => {
   it("阶段分类内按新建时间倒序，旧记录活动更新不置顶", async () => {
     api.listExperiments.mockResolvedValue({ items: [run("旧正文", { created_at: "2026-11-01", updated_at: "2026-11-09" }),
       run("新正文", { created_at: "2026-11-08" }), run("卷纲实验", { task_type: "volume_outlines" })] } as never);
     render(<MemoryRouter><ExperimentRecords /></MemoryRouter>);
-    fireEvent.click(await screen.findByRole("tab", { name: /正文/ }));
+    await screen.findByRole("link", { name: "新正文" });
     const links = screen.getAllByRole("link").filter((link) => ["旧正文", "新正文"].includes(link.textContent ?? ""));
     expect(links.map((link) => link.textContent)).toEqual(["新正文", "旧正文"]);
     expect(screen.queryByRole("link", { name: "卷纲实验" })).not.toBeInTheDocument();

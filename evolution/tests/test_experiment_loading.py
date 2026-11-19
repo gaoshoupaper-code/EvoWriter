@@ -32,7 +32,7 @@ def client_for(*, can_read=False):
         request.state.is_super_admin = can_read
         return await call_next(request)
 
-    app.include_router(api.router, prefix="/api")
+    app.include_router(api.history_router, prefix="/api/experiments")
     return TestClient(app)
 
 
@@ -162,7 +162,7 @@ class ExperimentLoadingTest(DatabaseTest):
         run["samples"] = [sample_record(attempts=[{"judge_id": 2, "dimension": "quality", "status": "failed", "usage": None}])]
         repo.put_run(run)
         app = FastAPI()
-        app.include_router(api.router, prefix="/api")
+        app.include_router(api.history_router, prefix="/api/experiments")
         app.add_middleware(SSOAuthMiddleware)
         endpoint = f"/api/experiments/runs/{run['id']}/usage/evaluation"
         with patch("app.core.sso_auth.settings.allowed_user_ids", "allowed-user"), \

@@ -17,6 +17,7 @@ import {
   Wrench,
   type LucideIcon } from "lucide-react";
 import { fetchMeOrNull, logout, type AuthMe } from "@/lib/api";
+import { selectedAgent, WRITING_AGENTS } from "@/lib/writing-agent";
 import UpdateBanner from "@/components/UpdateBanner";
 import ChangePasswordDialog from "@/components/ChangePasswordDialog";
 import { UiFontSizeControl, applyUiFontSize, loadUiFontSize } from "./ui/UiFontSizeControl";
@@ -55,7 +56,6 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: "质量闭环",
     items: [
-      { to: "/tests", label: "单次测试", end: false, icon: FlaskConical },
       { to: "/evolve", label: "进化", end: false, icon: Dna },
     ],
   },
@@ -131,7 +131,9 @@ export default function Shell() {
       <aside className="shell-sidebar">
         <div className="shell-brand">
           <Dna className="shell-brand-icon" size={19} />
-          <span className="shell-brand-text">思衍进化</span>
+          <a className="shell-brand-text" href="#/" title="返回四个创作入口">
+            {WRITING_AGENTS[selectedAgent() ?? "outline"].name} · 切换 Agent
+          </a>
         </div>
         <nav className="shell-nav">
           {groups.map((group) => (

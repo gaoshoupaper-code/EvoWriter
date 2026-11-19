@@ -4,7 +4,7 @@ import { useNavigate, useOutletContext, useSearchParams } from "react-router-dom
 import BlueprintTab from "@/components/evolve/BlueprintTab";
 import HistoryTab from "@/components/evolve/HistoryTab";
 import WorkArtifactsTab from "@/components/evolve/WorkArtifactsTab";
-import WorkbenchTab, { AGENT_STORAGE_KEY } from "@/components/evolve/WorkbenchTab";
+import WorkbenchTab, { agentStorageKey } from "@/components/evolve/WorkbenchTab";
 import type { EvolveSession } from "@/lib/api";
 
 /**
@@ -34,12 +34,12 @@ export default function EvolvePage() {
   const navigate = useNavigate();
   const { isSuperAdmin } = useOutletContext<{ isSuperAdmin: boolean }>();
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() =>
-    localStorage.getItem(AGENT_STORAGE_KEY),
+    localStorage.getItem(agentStorageKey()),
   );
   const selectAgent = useCallback((agentId: string | null) => {
     setSelectedAgentId(agentId);
-    if (agentId) localStorage.setItem(AGENT_STORAGE_KEY, agentId);
-    else localStorage.removeItem(AGENT_STORAGE_KEY);
+    if (agentId) localStorage.setItem(agentStorageKey(), agentId);
+    else localStorage.removeItem(agentStorageKey());
   }, []);
 
   // tab：非法值兜底 workbench

@@ -4,34 +4,28 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import {
   getSnapshots,
   getHarnessElements,
-  getMemoryElements,
   getUpgradeDiff,
   type Snapshot,
   type HarnessElementsView,
-  type MemoryElementView,
   type UpgradeDiffView,
   type AgentDiff,
 } from "@/lib/api";
 import { UpgradeOverview } from "@/components/harness/UpgradeOverview";
-import { MemorySubsystemCard } from "@/components/harness/MemorySubsystemCard";
 import { PromptTab } from "@/components/harness/PromptTab";
 import { SkillsTab } from "@/components/harness/SkillsTab";
 import { ToolsTab } from "@/components/harness/ToolsTab";
+import { CandidateEditor } from "@/components/harness/CandidateEditor";
 import { MiddlewareTab } from "@/components/harness/MiddlewareTab";
 
 /**
  * Harness 要素透视页（数据源：Platform 账本 / 架构清单，REQ-20261006-130414）。
  *
- * 选一个版本快照 → 主/SubAgent 高层切换 → 各自视角下看五要素：
- *   主Agent 视角：Prompt / Skills / Tools / Middleware / Memory（五 Tab）
- *   SubAgent 视角：Prompt / Skills / Tools / Middleware（四 Tab，无 Memory——
- *   记忆是版本级要素，不属于单个子代理；Tools 显示全局工具 + 挂载列表）
+ * 当前版本的主 Agent 和助手均显示 Prompt、Skills、Tools、Middleware。
  *
  * 主/Sub 结构来自架构清单（DEC-003/004：两层切换 + 视图内子代理选择器）；
  * 清单外孤儿文件按 DEC-005 显示「未挂载」，不隐藏。
  * 旧版本（无清单）由后端回退静态布局探测，前端结构不变（FR-009）。
- * 数据流：并行调 getHarnessElements（主要素）+ getMemoryElements（记忆要素）
- *       + getUpgradeDiff（升级总览实时 git diff，基线 = 代码基于的版本）。
+ * 版本要素读取 getHarnessElements，升级差异读取 getUpgradeDiff。
  *
  * 账本不可达（DEC-005）：整页报错态 + 重试，不渲染版本下拉——
  * 宁缺勿错，不回退冻结 registry 旧数据。
@@ -40,7 +34,6 @@ export default function HarnessPage() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [elements, setElements] = useState<HarnessElementsView | null>(null);
-  const [memoryElements, setMemoryElements] = useState<MemoryElementView[] | null>(null);
   const [upgradeDiff, setUpgradeDiff] = useState<UpgradeDiffView | null>(null);
   const [diffFailed, setDiffFailed] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -79,7 +72,6 @@ export default function HarnessPage() {
   useEffect(() => {
     if (selectedVersion == null) return;
     setElements(null);
-    setMemoryElements(null);
     setUpgradeDiff(null);
     setDiffFailed(false);
 
@@ -88,20 +80,14 @@ export default function HarnessPage() {
         toast.error(err instanceof Error ? err.message : "读取 Harness 要素失败");
         return null;
       }),
-      getMemoryElements(selectedVersion).catch((err) => {
-        // 记忆要素失败不阻断主要素展示（老版本无此接口/无 NWM），但提示用户
-        toast.error(err instanceof Error ? err.message : "读取记忆要素失败");
-        return null;
-      }),
       getUpgradeDiff(selectedVersion).catch((err) => {
         // diff 失败不阻断要素展示（提示不阻断，REQ-20260923-145931 FR-003）；
         // 置失败态让总览条显示「变更计算失败」占位，而非停留假加载
         toast.error(err instanceof Error ? err.message : "读取升级 diff 失败");
         return { failed: true as const };
       }),
-    ]).then(([els, memEls, diff]) => {
+    ]).then(([els, diff]) => {
       setElements(els);
-      setMemoryElements(memEls?.elements ?? []);
       if (diff && "failed" in diff) {
         setDiffFailed(true);
       } else {
@@ -144,7 +130,7 @@ export default function HarnessPage() {
         <header className="page-header">
           <h1>Harness 要素</h1>
           <p className="page-desc">
-            透视各版本 harness 的可进化要素，按 Prompt / Skills / Tools / Middleware / Memory 分层展示
+            按版本查看本套的提示词、技能、工具、中间件和助手。
           </p>
         </header>
         <div className="evo-state-error">
@@ -161,7 +147,7 @@ export default function HarnessPage() {
       <header className="page-header">
         <h1>Harness 要素</h1>
         <p className="page-desc">
-          透视各版本 harness 的可进化要素，按 Prompt / Skills / Tools / Middleware / Memory 分层展示
+          按版本查看本套的提示词、技能、工具、中间件和助手。
         </p>
       </header>
 
@@ -182,6 +168,8 @@ export default function HarnessPage() {
           ))}
         </select>
       </div>
+
+      {snapshots.find((s) => s.version === selectedVersion)?.status === "production" && <CandidateEditor />}
 
       {/* 升级总览条（diff 拉取失败显示占位，FR-003 提示不阻断） */}
       <UpgradeOverview diff={upgradeDiff} failed={diffFailed} />
@@ -229,7 +217,6 @@ export default function HarnessPage() {
             </div>
           )}
 
-          {/* 五要素 Tab：主视角五 Tab（含 Memory）；Sub 视角四 Tab（Memory 为版本级要素不切片） */}
           <Tabs
             key={`${scope}-${activeSub?.name ?? "main"}`}
             defaultValue="prompt"
@@ -240,7 +227,6 @@ export default function HarnessPage() {
               <TabsTrigger value="skills">Skills</TabsTrigger>
               <TabsTrigger value="tools">Tools</TabsTrigger>
               <TabsTrigger value="middleware">Middleware</TabsTrigger>
-              {scope === "main" && <TabsTrigger value="memory">Memory</TabsTrigger>}
             </TabsList>
             <TabsContent value="prompt">
               <PromptTab
@@ -269,17 +255,6 @@ export default function HarnessPage() {
                 hasSource={elements.has_source}
               />
             </TabsContent>
-            {scope === "main" && (
-              <TabsContent value="memory">
-                {/* memoryElements 未到位时显示加载态，到位后由组件内部处理空态/流水线 */}
-                {/* version 用于卡片内"查看源码"懒加载 /snapshots/{v}/source */}
-                {memoryElements && selectedVersion != null ? (
-                  <MemorySubsystemCard elements={memoryElements} version={selectedVersion} />
-                ) : (
-                  <div className="page-loading">加载记忆要素…</div>
-                )}
-              </TabsContent>
-            )}
           </Tabs>
         </>
       ) : (

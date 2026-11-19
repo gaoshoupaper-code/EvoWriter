@@ -268,7 +268,14 @@ def resolve_run_package(binding=None):
     execution = current_execution()
     if execution is not None:
         return execution.package, execution.package_root, execution.request.source_commit
-    commit = getattr(binding, "harness_commit", None)
+    from app.domains.writing.creative_scope import ACTIVE
+    task = ACTIVE.get()
+    if task is not None and hasattr(task, "package"):
+        return task.package, task.package_root, task.row["rev"]
+    import os
+    if os.getenv("WRITING_AGENT_ID"):
+        raise RuntimeError("创作包必须在独立工作进程中执行")
+    commit = task.row["rev"] if task else getattr(binding, "harness_commit", None)
     if isinstance(commit, str) and commit:
         import sys
         from app.platform.agent.artifact_client import get_artifact_client
@@ -646,6 +653,10 @@ class MetaAgentService(BaseAgentService):
         from contracts.writing_artifacts import STAGE_LABELS, character_generation_block_reason
 
         from app.domains.writing.run_gate import active_target_task
+        from app.domains.writing.creative_scope import ACTIVE
+        if ACTIVE.get():
+            # The scoped route verifies its immutable artifact prerequisites before the first turn.
+            return None
         active_target = active_target_task(workspace_path)
         execution = current_execution()
         if active_target and (execution is None or execution.request.task_id != active_target):
@@ -825,6 +836,23 @@ class MetaAgentService(BaseAgentService):
                 raise RuntimeError("harness 尚未支持人物卡重做，请先发版对应提示词和写入保护。")
             prompt_overrides = {"author": prompt}
             styles = None
+        elif agent_name in ("outline", "volume", "chapter", "text"):
+            from contracts.writing_artifacts import stage_mode
+            mode = "auto" if execution else stage_mode(workspace_path, agent_name)
+            guide = pkg.guide_prompt(mode)
+            if not guide:
+                raise RuntimeError("当前创作包缺少交互规程")
+            skills = execution.skills if execution else (
+                self._list_enabled_stage_skills(workspace_id, owner_id, workspace_path) or [])
+            stage_skills = [s for s in skills if s["stage"] == agent_name]
+            styles = self._apply_user_writing_skills(
+                styles={"author": guide}, agent_name="author", workspace_id=workspace_id,
+                owner_id=owner_id, workspace_path=workspace_path, stage_skills=stage_skills,
+            ) or {"author": guide}
+            if agent_name == "text":
+                styles = self._apply_workspace_style_card(
+                    styles=styles, agent_name="author", workspace_path=workspace_path, package=pkg)
+            styles[agent_name] = styles["author"]
         elif agent_name == "author":
             from app.domains.writing.pipeline import classify_workspace, current_stage
 
@@ -892,7 +920,7 @@ class MetaAgentService(BaseAgentService):
             writer_retry_runner_factory=_make_retry_runner_factory(),
             # NWM 记忆系统：per-workspace backend（workspace_id 定位 memory.db）。
             # pool 未初始化或配置缺失时返回 None → writing 走 ContextAssembler 全量注入。
-            memory_backend=get_memory_backend(f"{owner_id}_{workspace_path.name}"),
+            memory_backend=None if agent_name in ("outline", "volume", "chapter", "text") else get_memory_backend(f"{owner_id}_{workspace_path.name}"),
             memory_recall_middleware_cls=_get_memory_recall_cls(pkg),  # 与本轮固定包一致
             # 第二期证据采集（2026-07）：产物快照 callback。
             # 包内 _make_artifact_snapshot_callback 优先用执行端传入的 callback。
@@ -900,10 +928,11 @@ class MetaAgentService(BaseAgentService):
             artifact_snapshot_callback=_make_artifact_snapshot_cb(self.trace_recorder, trace_id),
         )
 
-        scope_middleware = (TargetScopeMiddleware(execution),) if (
-            execution is not None and execution.request.target.task_type == "chapter_outlines"
-            and execution.request.target.chapter is not None
-        ) else ()
+        scope_middleware = (TargetScopeMiddleware(execution),) if execution is not None else ()
+        from app.domains.writing.creative_scope import ACTIVE
+        if task := ACTIVE.get():
+            from app.domains.writing.creative_tools import InstructionScopeMiddleware
+            scope_middleware = (InstructionScopeMiddleware(task, self.trace_recorder, trace_id),)
         with artifact_capture_scope(
             recorder=self.trace_recorder,
             trace_id=trace_id or "",
@@ -924,6 +953,10 @@ class MetaAgentService(BaseAgentService):
 
         loader 未配置/降级返回 None（快照缺省，绑定照签——llm_config 非必填）。
         """
+        from app.domains.writing.creative_scope import ACTIVE
+        task = ACTIVE.get()
+        if task is not None and hasattr(task, "binding_snapshot"):
+            return task.binding_snapshot
         execution = current_execution()
         return execution.request.model_snapshot if execution is not None else build_llm_snapshot()
 
@@ -935,6 +968,9 @@ class MetaAgentService(BaseAgentService):
         同一 Run 内后续 _assemble_via_package 的 load_current_package 直接命中
         缓存，不再多一次 HTTP。都拿不到返回空串（跳过签发）。
         """
+        from app.domains.writing.creative_scope import ACTIVE
+        if task := ACTIVE.get():
+            return task.row["rev"]
         execution = current_execution()
         if execution is not None:
             return execution.request.source_commit
@@ -1025,7 +1061,8 @@ class MetaAgentService(BaseAgentService):
         Returns: ResumeCheck | None。None（无绑定记录，如迁移前 legacy Run）或
         decision=compatible → 照旧恢复。
         """
-        if current_execution() is not None:
+        from app.domains.writing.creative_scope import ACTIVE
+        if current_execution() is not None or ACTIVE.get() is not None:
             # The driver resumes only its own saved thread under the same immutable package.
             return None
         from app.platform.agent.binding_client import get_binding_client
@@ -1302,6 +1339,8 @@ class MetaAgentService(BaseAgentService):
         # ── FR-005 消息台账：用户意图先落档（ledger），失败即拒绝本轮 ────────
         conversation_id = thread.thread_id
         workspace_path = Path(thread.workspace_path)
+        from app.domains.writing.creative_scope import ACTIVE
+        creative = ACTIVE.get()
         conv_log = ConversationLog(workspace_path)
         user_text = payload.primary_text() or ""
         try:
@@ -1450,6 +1489,8 @@ class MetaAgentService(BaseAgentService):
             # 否则 create_run 新开。内存丢失（服务重启）时 resume_run 会降级 create_run（D2=A）。
             # resume trace 失配（resume_degraded）按普通消息续跑粘性线程（FR-002 边界）。
             resume_value = getattr(payload, "resume", None)
+            if creative and creative.recovering:
+                resume_value = None
             trace_id_in = getattr(payload, "trace_id", None)
             llm_override = None
             binding = None
@@ -1597,7 +1638,7 @@ class MetaAgentService(BaseAgentService):
             if reason:
                 raise ValueError(reason)
             agent = self._agent_for_workspace(
-                Path(thread.workspace_path), trace.trace_id, thread.workspace_id,
+                creative.view if creative else Path(thread.workspace_path), trace.trace_id, thread.workspace_id,
                 model=model, checkpointer=checkpointer, owner_id=owner_id,
                 strict_evidence=run_purpose != "user_generation",
                 llm_override=llm_override, binding=binding,
@@ -1643,7 +1684,7 @@ class MetaAgentService(BaseAgentService):
             # ── 粘性线程前置整理（REQ-20261019-222403）────────────────────
             # FR-003：非 resume 轮先清掉上一轮取消/崩溃残留的悬空尾段——重试
             # 原话重发不得重复，未闭合 tool_calls 链不得带进下一次模型调用。
-            if resume_value is None or pipe_decision.resume_degraded:
+            if (resume_value is None or pipe_decision.resume_degraded) and not (creative and creative.recovering):
                 await self._normalize_thread_tail(agent, config)
             # FR-007：会话历史估算超预算 → 从最老完整轮次裁剪 LLM 输入
             # （消息日志与界面不动，仅裁模型上下文），触发即广播一次提示。
@@ -1664,6 +1705,17 @@ class MetaAgentService(BaseAgentService):
             else:
                 prompt = self._build_user_prompt(payload, thread, directive=pipe_decision.directive)
                 agent_input = {"messages": [{"role": "user", "content": prompt}]}
+
+            if creative:
+                config["metadata"] = {"creative_task_id": creative.id}
+                if creative.recovering:
+                    checkpoint = await agent.aget_state(config)
+                    if (getattr(checkpoint, "metadata", None) or {}).get("creative_task_id") == creative.id:
+                        # Resume pending graph nodes. Replayed writes use their original tool call IDs.
+                        agent_input = None
+                        answer = getattr(payload, "resume", None)
+                        if answer is not None and any(node.interrupts for node in checkpoint.tasks):
+                            agent_input = Command(resume=answer)
 
             # trace_pump 作为额外并发任务（与 agent 事件/心跳公平竞争 asyncio.wait）
             def _on_trace_done(finished: asyncio.Task) -> tuple[asyncio.Task | None, list[str]]:

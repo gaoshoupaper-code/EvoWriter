@@ -31,6 +31,32 @@ def operation(env, key="request", budget="50"):
                           budget=budget, model="model", fingerprint=key)
 
 
+def test_restart_only_recovers_billing_for_its_own_agent(env, monkeypatch):
+    from app.platform.credits.ledger import BillingError
+
+    common, owner = env
+    keys = {}
+    services = {}
+    for agent in ("outline", "text"):
+        monkeypatch.setenv("WRITING_AGENT_ID", agent)
+        services[agent] = BillingLedger(common.db)
+        keys[agent] = services[agent].reserve(user_id=owner, thread_id=f"creative:{agent}:chat",
+            request_id=agent, budget="1", model="model", fingerprint=agent)["operation_id"]
+    with common.db.transaction() as conn:
+        common._finalization(conn, keys["outline"], "completed")
+    services["text"].recover(set())
+    assert common.operation(keys["text"])["status"] == "failed"
+    assert common.operation(keys["outline"])["status"] == "processing"
+    assert services["text"].receipts != services["outline"].receipts
+    common.recover(set())
+    assert common.operation(keys["outline"])["status"] == "processing"
+    services["outline"].recover(set())
+    assert common.operation(keys["outline"])["status"] == "completed"
+    with pytest.raises(BillingError):
+        services["text"].reserve(user_id=owner, thread_id="creative:text:chat",
+            request_id="outline", budget="1", model="model", fingerprint="outline")
+
+
 def test_usage_handles_zero_missing_cache_and_reasoning_without_double_charge():
     response = SimpleNamespace(result=[SimpleNamespace(
         usage_metadata={"input_tokens": 100, "output_tokens": 0,

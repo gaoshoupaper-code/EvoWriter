@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 from uuid import uuid4
@@ -98,7 +99,10 @@ CREATE TABLE IF NOT EXISTS billing_finalizations (
 class BillingLedger:
     def __init__(self, db: Database):
         self.db = db
+        self.creative_agent = os.getenv("WRITING_AGENT_ID")
         self.receipts = db.db_path.parent / "billing_receipts"
+        if self.creative_agent:
+            self.receipts = self.receipts / self.creative_agent
         self.receipts.mkdir(parents=True, exist_ok=True)
         with db._lock:
             db.conn.executescript(_SCHEMA)
@@ -200,7 +204,8 @@ class BillingLedger:
             existing = conn.execute("SELECT * FROM billing_operations WHERE user_id=? AND request_id=?",
                                     (user_id, request_id)).fetchone()
             if existing:
-                if existing["fingerprint"] != fingerprint or existing["budget"] != amount:
+                if (existing["fingerprint"] != fingerprint or existing["budget"] != amount
+                        or existing["thread_id"] != thread_id):
                     raise BillingError("同一操作标识不能提交不同内容或预算", "request_conflict", 409)
                 return self._public(existing)
             prices = {row["model"]: dict(row) for row in conn.execute("SELECT * FROM billing_prices")}
@@ -351,7 +356,6 @@ class BillingLedger:
         receipt = self.receipts / f"{operation_id}.json"
         temp = receipt.with_suffix(".tmp")
         try:
-            import os
             with temp.open("w", encoding="utf-8") as stream:
                 json.dump({"operation_id": operation_id, "outcome": outcome}, stream)
                 stream.flush()
@@ -371,6 +375,9 @@ class BillingLedger:
 
     def recover(self, active: set[str]):
         import re
+        # Every worker shares the author's wallet, but only owns its own runs.
+        pattern = f"creative:{self.creative_agent}:%" if self.creative_agent else "creative:%"
+        predicate = "LIKE" if self.creative_agent else "NOT LIKE"
         receipts_pending = set()
         for receipt in self.receipts.glob("*.json"):
             try:
@@ -388,7 +395,9 @@ class BillingLedger:
             except OSError:
                 logger.exception("结算凭据恢复暂失败 file=%s", receipt.name)
         with self.db._lock:
-            intents = [dict(row) for row in self.db.conn.execute("SELECT * FROM billing_finalizations")]
+            intents = [dict(row) for row in self.db.conn.execute(
+                "SELECT f.* FROM billing_finalizations f JOIN billing_operations o USING(operation_id) "
+                f"WHERE o.thread_id {predicate} ?", (pattern,))]
         intents_pending = {row["operation_id"] for row in intents}
         for intent in intents:
             try:
@@ -398,11 +407,13 @@ class BillingLedger:
                 logger.exception("持久化结算恢复暂失败 operation=%s", intent["operation_id"])
         with self.db._lock:
             pending = [row[0] for row in self.db.conn.execute(
-                "SELECT operation_id FROM billing_operations WHERE status NOT IN ('completed','stopped','budget_exhausted','failed')")]
+                f"SELECT operation_id FROM billing_operations WHERE thread_id {predicate} ? "
+                "AND status NOT IN ('completed','stopped','budget_exhausted','failed')", (pattern,))]
         for operation_id in pending:
             if operation_id not in active and operation_id not in receipts_pending and operation_id not in intents_pending:
                 self.finish(operation_id, "failed")
-        self.recover_invites()
+        if not self.creative_agent:
+            self.recover_invites()
 
     def adjust(self, user_id, amount, note, *, admin_id, request_id):
         change = cents(amount)

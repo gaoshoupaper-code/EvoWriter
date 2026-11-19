@@ -230,7 +230,11 @@ def show_file(commit: str, file_path: str) -> str:
     Returns:
         文件全文。文件不存在该 commit 时 raise RuntimeError。
     """
-    return _git(["show", f"{commit}:{file_path}"], read_dir())
+    result = subprocess.run(["git", "show", f"{commit}:{file_path}"], cwd=read_dir(),
+                            capture_output=True, timeout=30)
+    if result.returncode:
+        raise RuntimeError(f"无法读取版本文件 {file_path}")
+    return result.stdout.decode("utf-8")
 
 
 def commit_file(file_path: str, content: str, message: str) -> str:

@@ -203,6 +203,10 @@ def _previous_text(s, chapter):
 
 
 def get_builtin_packages():
+    from contracts.target_tasks import configured_task_type
+    if configured_task_type():
+        from app.experiments.isolated_cases import get_cases
+        return get_cases()
     records = []
     for index, values in enumerate(_STORIES):
         s = dict(zip(_FIELDS, values))

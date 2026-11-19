@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 from typing import Any
 
 HOOK_ORDER = (
@@ -14,6 +15,14 @@ HOOK_ORDER = (
 )
 
 _RUNTIME_MIDDLEWARE: dict[str, dict[str, Any]] = {
+    "PlatformArtifactCaptureMiddleware": {
+        "hooks": ["wrap_tool_call"],
+        "description": "记录当前写作工具实际保存的产物及其修订。",
+    },
+    "InstructionScopeMiddleware": {
+        "hooks": ["wrap_tool_call"],
+        "description": "按本套任务的目标、写入职责与已登记指令校验工具调用。",
+    },
     "TraceMiddleware": {
         "hooks": ["wrap_model_call", "wrap_tool_call"],
         "description": "记录模型与工具调用的 Trace 事件。",
@@ -415,24 +424,54 @@ def project_manifest_stacks(
     for agent in manifest.agents:
         mounts: list[dict[str, Any]] = []
         for module in BASE_CHAIN_MODULES:
-            m = _mount(module, "base")
+            m = _mount(module, "base", optional=module == "artifact_snapshot")
             if m:
                 mounts.append(m)
-        mounts.append({"class_name": "TraceMiddleware", "params": {}, "group": "runtime", "optional": True})
+        mounts.insert(1, {"class_name": "TraceMiddleware", "params": {}, "group": "runtime", "optional": True})
         for module in agent.middleware:
             m = _mount(module, "agent")
             if m:
                 mounts.append(m)
-        if agent.context_files:
+        compiled = agent.role == "main" or bool(agent.delegates)
+        if compiled and agent.context_files:
             mounts.append({"class_name": "ContextAssemblerMiddleware", "params": {}, "group": "runtime", "optional": False})
-        if agent.delegates:
+        if compiled:
             m = _mount("revision_limit", "agent")
             if m:
                 mounts.append(m)
-        if agent.artifact_paths:
+        if compiled and agent.artifact_paths:
             mounts.append({"class_name": "ArtifactValidationMiddleware", "params": {}, "group": "runtime", "optional": False})
-        stacks[agent.name] = [_enrich_mount(mount, catalog) for mount in mounts]
+        if any(row.role == "main" and row.name in {"outline", "volume", "chapter", "text"} for row in manifest.agents):
+            mounts[:0] = [
+                {"class_name": name, "params": {}, "group": "runtime", "optional": False}
+                for name in ("PlatformArtifactCaptureMiddleware", "InstructionScopeMiddleware")
+            ]
+        stack = [_enrich_mount(mount, catalog) for mount in mounts]
+        for position, row in enumerate(stack, start=1):
+            source = package_sources.get(row["source_path"])
+            row["position"] = position
+            row["rule_version"] = hashlib.sha256(source.encode()).hexdigest() if source is not None else None
+            row["condition"] = _CONDITIONS.get(row["class_name"], row["description"])
+        stacks[agent.name] = stack
     return stacks
 
 
 __all__ = ["HOOK_ORDER", "build_middleware_projection", "project_manifest_stacks"]
+
+_CONDITIONS = {
+    "FilesystemPathGuardMiddleware": "写入路径需要规范时修正路径，超出允许范围时拒绝写入。",
+    "ErrorRecoveryMiddleware": "工具调用抛出可恢复异常时重试；仍失败时返回错误和修正建议。",
+    "FileWriteSerializeMiddleware": "写工具并发操作同一文件时依次执行，避免写入互相覆盖。",
+    "ReadSentinelMiddleware": "按相同参数重复读到相同内容时，给返回结果加上重复读取提示。",
+    "EncodingGuardMiddleware": "文件写入后检查编码与完整性，发现损坏时给出错误。",
+    "FileStateTrackerMiddleware": "编辑前检查原文能否匹配；匹配失败时返回文件状态提示。",
+    "WriteResultInspectorMiddleware": "写工具以错误状态返回时，转为异常，由外层恢复规则处理。",
+    "ArtifactSnapshotMiddleware": "已接入快照回调且写工具成功落盘时，记录该次产物修订。",
+    "TraceMiddleware": "已提供运行编号和记录器时，记录模型与工具调用过程。",
+    "StageGateMiddleware": "请求写入所属职责以外的产物时，拒绝该次写入。",
+    "TextCompletionMiddleware": "正文拟交付时检查保存和审稿记录，条件不足时要求补齐。",
+    "ToolCallRecoveryMiddleware": "正文模型把工具调用写成普通文字时，最多提示两次改用真实工具。",
+    "RevisionLimitMiddleware": "审查委托超过本套修订上限时，停止继续委托。",
+    "ContextAssemblerMiddleware": "清单声明输入文件时，读取相应资料并组装到当前任务。",
+    "ArtifactValidationMiddleware": "清单声明目标产物时，核对所需交付并反馈缺项。",
+}

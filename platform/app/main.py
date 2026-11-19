@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -29,6 +31,15 @@ def bootstrap_ledger() -> None:
     ledger = ledger_from_settings()
     ledger.ensure_schema()
     raw = read_bare_registry()
+    if os.getenv("WRITING_AGENT_ID") and raw is None and not ledger.versions_count():
+        # On the first deployment the private bare repo is created by evolution.
+        for _ in range(60):
+            time.sleep(1)
+            raw = read_bare_registry()
+            if raw is not None:
+                break
+        if raw is None:
+            raise RuntimeError("本套 Harness 尚未初始化")
     if raw is None:
         logger.info("bare repo 无可读 registry.json，跳过初始导入")
         return

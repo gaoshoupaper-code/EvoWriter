@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.auth import CurrentUser, current_user
 from app.routers.context import (
@@ -27,17 +27,28 @@ from app.platform.trace import TraceDetail, TraceRunSummary
 from app.domains.writing.conversation_log import ConversationLog, ConversationMessage
 from pathlib import Path
 
-router = APIRouter()
+def _legacy_thread_route(request: Request, user: CurrentUser = Depends(current_user)):
+    if thread_id := request.path_params.get("thread_id"):
+        thread = get_thread_store().get_thread(user.user_id, thread_id)
+        if thread and (Path(thread.workspace_path) / ".writing/four-agents").is_file():
+            raise HTTPException(404, "会话不存在")
+
+
+router = APIRouter(dependencies=[Depends(_legacy_thread_route)])
 
 
 @router.get("/threads", response_model=list[ThreadSummary])
 def list_threads(workspace_id: str | None = None, user: CurrentUser = Depends(current_user)) -> list[ThreadSummary]:
-    return get_thread_store().list_threads(user.user_id, workspace_id)
+    return [t for t in get_thread_store().list_threads(user.user_id, workspace_id)
+            if not (Path(t.workspace_path) / ".writing/four-agents").is_file()]
 
 
 @router.post("/threads", response_model=ThreadSummary)
 def create_thread(payload: ThreadCreateRequest, user: CurrentUser = Depends(current_user)) -> ThreadSummary:
     thread_store = get_thread_store()
+    workspace = thread_store.get_workspace(user.user_id, payload.workspace_id)
+    if workspace and (Path(workspace.workspace_path) / ".writing/four-agents").is_file():
+        raise HTTPException(409, "请从作品的创作 Agent 入口开启会话")
     try:
         return thread_store.create_thread(user.user_id, payload.workspace_id, payload.session_name)
     except KeyError as exc:

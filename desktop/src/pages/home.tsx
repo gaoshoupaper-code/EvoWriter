@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { AppShell } from "@/components/workspace/AppShell";
 import { ArtifactPanel } from "@/components/workspace/ArtifactPanel";
 import { ChatPanel } from "@/components/workspace/ChatPanel";
+import { CreativeWorkspace } from "@/components/workspace/CreativeWorkspace";
 import { ConfirmDialog } from "@/components/workspace/ConfirmDialog";
 import { Sidebar } from "@/components/workspace/Sidebar";
 import { SidebarFooter } from "@/components/workspace/SidebarFooter";
@@ -64,6 +65,7 @@ export default function Home() {
     [workspaces, activeWorkspaceId],
   );
   const bootstrapping = useWorkspaceStore((s) => s.bootstrapping);
+  const creative = Boolean(activeWorkspace?.creative_agents);
   const creatingWorkspace = useWorkspaceStore((s) => s.creatingWorkspace);
   const deletingWorkspace = useWorkspaceStore((s) => s.deletingWorkspace);
   const workspaceCreateOpen = useWorkspaceStore((s) => s.workspaceCreateOpen);
@@ -215,41 +217,47 @@ export default function Home() {
   // 由 deps 注入处的指针订阅在指针变化的同步瞬间完成
   const prevThreadIdRef = useRef(activeThreadId);
   useEffect(() => {
-    if (prevThreadIdRef.current === activeThreadId) return;
+    if (creative || prevThreadIdRef.current === activeThreadId) return;
     useExecutionStore.getState().loadThreadMessages(activeThreadId);
     prevThreadIdRef.current = activeThreadId;
-  }, [activeThreadId]);
+  }, [activeThreadId, creative]);
 
   // ── trace 加载（切换 thread 时）──
   useEffect(() => {
-    if (!activeThreadId) {
+    if (creative || !activeThreadId) {
       useTraceStore.getState().clearTrace();
       return;
     }
     useTraceStore.getState().loadTraceRuns(activeThreadId);
-  }, [activeThreadId]);
+  }, [activeThreadId, creative]);
 
   // ── trace detail 加载（切换 activeTraceId 时）──
   useEffect(() => {
-    if (!activeThreadId || !activeTraceId) {
+    if (creative || !activeThreadId || !activeTraceId) {
       useTraceStore.getState().setTraceDetail(() => null);
       return;
     }
     useTraceStore.getState().loadTraceDetail(activeThreadId, activeTraceId);
-  }, [activeThreadId, activeTraceId, liveTraceId]);
+  }, [activeThreadId, activeTraceId, liveTraceId, creative]);
 
   // ── 历史回放：加载本会话所有 trace 的 detail ──
   const historyTraceKey = traceRuns.map((r) => r.trace_id).join(",");
   useEffect(() => {
-    if (!activeThreadId || !historyTraceKey) {
+    if (creative || !activeThreadId || !historyTraceKey) {
       useTraceStore.setState({ historyDetails: new Map() });
       return;
     }
     const ids = historyTraceKey.split(",").filter(Boolean);
     useTraceStore.getState().loadHistoryDetails(activeThreadId, ids);
-  }, [activeThreadId, historyTraceKey]);
+  }, [activeThreadId, historyTraceKey, creative]);
 
   // ── 面板轮询 ──
+  useEffect(() => {
+    if (creative && safePanel === "artifacts" && activeWorkspaceId) {
+      void refreshWorkspaceContent(activeWorkspaceId, true);
+    }
+  }, [creative, safePanel, activeWorkspaceId]);
+
   usePanelPolling({
     activeWorkspaceId,
     loading,
@@ -296,14 +304,14 @@ export default function Home() {
   // outlinePipeline，这里统一对比当前会话绑定阶段 → 挂起完成卡片（FR-004）。
   // 重启/切书后由同不变量自动重建卡片（FR-012，无需独立持久化）。
   useEffect(() => {
-    useStageSessionStore.getState().syncWithPipeline(outlinePipeline);
-  }, [outlinePipeline, loading, activeThreadId]);
+    if (!creative) useStageSessionStore.getState().syncWithPipeline(outlinePipeline);
+  }, [outlinePipeline, loading, activeThreadId, creative]);
 
   // 阶段归属恢复：bootstrap/切书后读入该工作区全部会话的阶段绑定（FR-012）
   useEffect(() => {
-    if (!activeWorkspaceId) return;
+    if (!activeWorkspaceId || creative) return;
     void useStageSessionStore.getState().hydrateForWorkspace(activeWorkspaceId);
-  }, [activeWorkspaceId]);
+  }, [activeWorkspaceId, creative]);
 
   // ── 事件处理（委托 store action）──
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -382,6 +390,7 @@ export default function Home() {
         topBar={<TopBar />}
         sidebar={
           <Sidebar
+            creative={creative}
             activePanel={safePanel}
             onPanelChange={setActivePanel}
             workspaces={workspaces}
@@ -423,9 +432,11 @@ export default function Home() {
             }
           />
         }
-        rail={activeWorkspaceId ? <WorkRail /> : null}
+        rail={activeWorkspaceId && !creative ? <WorkRail /> : null}
       >
-        {safePanel === "chat" ? (
+        {safePanel === "chat" && creative ? (
+          <CreativeWorkspace key={activeWorkspaceId} workspaceId={activeWorkspaceId} />
+        ) : safePanel === "chat" ? (
           <ChatPanel
             messages={messages}
             prompt={prompt}
@@ -446,6 +457,7 @@ export default function Home() {
 
         {safePanel === "artifacts" && activeWorkspaceId ? (
           <ArtifactPanel
+            creative={creative}
             kind={outlineKind}
             pipeline={outlinePipeline}
             files={visibleOutlineFiles}

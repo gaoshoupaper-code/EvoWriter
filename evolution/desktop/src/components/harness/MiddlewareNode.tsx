@@ -12,6 +12,9 @@ interface MWInfo {
   source_path: string | null;
   description: string | null;
   optional: boolean;
+  condition?: string;
+  position?: number;
+  rule_version?: string;
 }
 
 /**
@@ -44,7 +47,7 @@ export function MiddlewareNode({
   return (
     <>
       <div className={`mw-node ${diffClass}`} onClick={() => setOpen(true)}>
-        <div className="mw-node-class">{mw.class_name}</div>
+        <div className="mw-node-class">{mw.position && `${mw.position}. `}{mw.class_name}</div>
         <div className="mw-node-group">
           {mw.group ? MIDDLEWARE_GROUP_LABELS[mw.group] ?? mw.group : "—"}
           {mw.optional ? " · 条件" : ""}
@@ -58,6 +61,8 @@ export function MiddlewareNode({
           </SheetHeader>
 
           <div className="mw-sheet-body">
+            <p>{mw.condition}</p>
+            {mw.rule_version && <p>本套采用的版本 <code title={mw.rule_version}>{mw.rule_version.slice(0, 12)}</code></p>}
             {/* 元信息：当前泳道位置 / 完整 hooks / 分组 */}
             <div className="mw-sheet-meta">
               <div className="mw-detail-row">

@@ -20,6 +20,9 @@ async def generate_character(payload: CharacterGenerateRequest, user: CurrentUse
     thread = get_thread_store().get_thread(user.user_id, payload.thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
+    from pathlib import Path
+    if (Path(thread.workspace_path) / ".writing/four-agents").is_file():
+        raise HTTPException(409, "请从人物卡所属的创作入口处理")
     from app.platform.credits.api import prepare_operation, run_json_operation
     operation = await prepare_operation(payload, user.user_id, thread.thread_id)
     def generate_and_save():

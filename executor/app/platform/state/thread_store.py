@@ -59,7 +59,15 @@ class ThreadStore:
             raise ValueError("title cannot be empty")
         ws = self.workspaces.create(owner_id=owner_id, title=normalized, domain=domain)
         ws_path = self._ws_path(owner_id, ws["workspace_id"])
-        ws_path.mkdir(parents=True, exist_ok=False)
+        try:
+            ws_path.mkdir(parents=True, exist_ok=False)
+            if domain == "writing":
+                metadata = ws_path / ".writing"
+                metadata.mkdir()
+                (metadata / "four-agents").touch(exist_ok=False)
+        except OSError:
+            self.workspaces.delete(ws["workspace_id"], owner_id)
+            raise
         return self._to_workspace_summary({**ws, "workspace_path": str(ws_path)})
 
     def get_workspace(self, owner_id: str, workspace_id: str) -> WorkspaceSummary | None:
@@ -134,20 +142,22 @@ class ThreadStore:
         if not ws_path.exists():
             raise FileNotFoundError(f"Workspace directory missing: {ws_path}")
 
-        thread_rows = self.threads.list_by_workspace(workspace_id, owner_id)
+        summary = self._to_workspace_summary({**ws, "workspace_path": str(ws_path)})
+        thread_rows = [] if summary.creative_agents else self.threads.list_by_workspace(workspace_id, owner_id)
         thread_summaries = [self._to_thread_summary(t, owner_id) for t in thread_rows]
 
         artifact_data = self.artifacts.bootstrap_workspace(
             owner_id, workspace_id,
             ws_exists=True, threads_rows=thread_rows, thread_summaries=thread_summaries,
         )
-        return {"workspace": ws, **artifact_data}
+        return {**artifact_data, "workspace": summary.model_dump()}
 
     def clear_workspace_style_reference(self, style_id: str) -> None:
         self.workspaces.clear_style_reference(style_id)
 
     # ── 辅助 ────────────────────────────────────────────────
     def _to_workspace_summary(self, ws: dict) -> WorkspaceSummary:
+        path = self._ws_path(ws["owner_id"], ws["workspace_id"])
         return WorkspaceSummary(
             workspace_id=ws["workspace_id"],
             title=ws.get("title", ws.get("outline_name", "")),
@@ -157,6 +167,7 @@ class ThreadStore:
             updated_at=ws["updated_at"],
             session_count=ws.get("session_count", 0),
             active_style_id=ws.get("active_style_id"),
+            creative_agents=(path / ".writing" / "four-agents").is_file(),
         )
 
     def _to_thread_summary(

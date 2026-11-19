@@ -16,7 +16,10 @@ import shutil
 import threading
 import uuid
 
-from contracts.target_tasks import TargetSpec, TargetTaskRequest, TargetTaskResult, TaskInput
+from contracts.target_tasks import (
+    TargetSpec, TargetTaskRequest, TargetTaskResult, TaskInput, configured_task_type,
+    validate_scoped_input,
+)
 from contracts.trace.files import open_anchored_text
 from app.platform.trace.recorder import observation_context
 from contracts.writing_artifacts import (
@@ -70,6 +73,13 @@ def collect_artifacts(workspace: Path):
 
 
 def validate_input(target: TargetSpec, data: TaskInput):
+    if configured_task_type():
+        validate_scoped_input(target, data)
+        if not data.confirmation_rules.strip():
+            raise ValueError("预设确认规则不能为空")
+        return
+    if target.task_type == "master_outline":
+        raise ValueError("请从总纲 Agent 启动总纲任务")
     missing = []
     if not data.confirmation_rules.strip():
         missing.append("预设确认规则")
@@ -150,7 +160,11 @@ def _volume_ready(target, volume, text):
 
 def completion_checks(target: TargetSpec, workspace: Path, *, text_evidence=None):
     missing, ranges = [], {}
-    if target.task_type == "volume_outlines":
+    if target.task_type == "master_outline":
+        text = _read(workspace, "总纲.md")
+        if not is_final_status(text) or not _has_theme(text):
+            missing.append("含主题的定稿总纲.md")
+    elif target.task_type == "volume_outlines":
         for volume in target.volume_ids:
             name = f"卷纲/第{volume:02d}卷.md"
             text = _read(workspace, name)
@@ -158,6 +172,10 @@ def completion_checks(target: TargetSpec, workspace: Path, *, text_evidence=None
                 missing.append(name)
             else:
                 ranges[str(volume)] = list(parse_volume_chapter_range(text))
+    elif target.task_type == "chapter_outlines" and configured_task_type():
+        name = f"章纲/第{target.chapter:03d}章.md"
+        if not _chapter_ready(_read(workspace, name)):
+            missing.append(name)
     elif target.task_type == "chapter_outlines":
         occupied = set()
         for volume in target.volume_ids:
@@ -191,6 +209,54 @@ def completion_checks(target: TargetSpec, workspace: Path, *, text_evidence=None
         if evidence.get("needs_revision") is not False and not evidence.get("revised"):
             missing.append("缺少所需审后修订证据")
     return {"complete": not missing, "missing": missing, "volume_ranges": ranges}
+
+
+def _has_theme(text: str) -> bool:
+    for section in re.split(r"(?m)^#{1,6}[ \t]+", text)[1:]:
+        heading, _, body = section.partition("\n")
+        if "主题" in heading and body.strip():
+            return True
+    return False
+
+
+def _scoped_outputs(request: TargetTaskRequest, artifacts: dict[str, str], evidence: dict | None = None,
+                    *, require_target: bool = True) -> dict[str, str]:
+    from contracts.creative_harness import write_denial
+    from app.domains.writing.creative_scope import _DYNAMIC
+
+    target = request.target
+    agent = os.environ["WRITING_AGENT_ID"]
+    frozen = dict(request.input.files)
+    if request.input.demand_md:
+        frozen["demand.md"] = request.input.demand_md
+    changes = {}
+    for name in artifacts.keys() | frozen.keys():
+        previous, current = frozen.get(name), artifacts.get(name)
+        if previous == current:
+            continue
+        ref = parse_relpath(name)
+        if not ref or current is None:
+            raise ValueError("越界删除或修改输入：" + name)
+        if ref.kind == "character":
+            if name not in (evidence or {}).get("card_writes", {}):
+                raise ValueError("缺少本套授权的人物卡保存记录：" + name)
+            if previous and agent != "text":
+                raise ValueError("不能改写题目中已冻结的人物设定：" + name)
+            if agent == "text" and (not previous or current.partition(_DYNAMIC)[0].rstrip() != previous.partition(_DYNAMIC)[0].rstrip()):
+                raise ValueError("正文不能修改人物原始设定：" + name)
+            if agent == "chapter" or (agent == "volume" and ref.title == "主角"):
+                raise ValueError("越界修改人物卡：" + name)
+        else:
+            reason = write_denial(agent, "save_artifact", {"kind": ref.kind, "volume": ref.volume, "chapter": ref.chapter},
+                                  next(iter(target.volume_ids), 1), target.chapter or 1)
+            if reason:
+                raise ValueError(reason + "：" + name)
+        changes[name] = current
+    main_kind = {"master_outline": "outline", "volume_outlines": "volume_outline",
+                 "chapter_outlines": "chapter_outline", "chapter_text": "chapter_text"}[target.task_type]
+    if require_target and not any(parse_relpath(name).kind == main_kind for name in changes):
+        raise ValueError("缺少本套实际生成的目标产物")
+    return changes
 
 
 @contextmanager
@@ -381,14 +447,17 @@ def build_frozen_model(request, settings):
 
 
 def _next_step(target, workspace):
+    if target.task_type == "master_outline":
+        return None if completion_checks(target, workspace)["complete"] else ("outline", None, None)
     if target.task_type == "volume_outlines":
-        progress = scan_writing_progress(workspace)
-        if not progress.theme_done:
-            return "theme", None, None
-        if not progress.outline_done:
-            return "outline", None, None
-        if progress.outline_volumes != len(target.volume_ids):
-            raise ValueError("总纲全书卷数与声明目标范围不一致")
+        if not configured_task_type():
+            progress = scan_writing_progress(workspace)
+            if not progress.theme_done:
+                return "theme", None, None
+            if not progress.outline_done:
+                return "outline", None, None
+            if progress.outline_volumes != len(target.volume_ids):
+                raise ValueError("总纲全书卷数与声明目标范围不一致")
         for volume in target.volume_ids:
             text = _read(workspace, f"卷纲/第{volume:02d}卷.md")
             if not _volume_ready(target, volume, text):
@@ -559,7 +628,7 @@ async def drive_task(request, workspace, service, thread, execution, store):
                     service.trace_recorder.append_event(latest, {"type": "run_meta", "status": "completed", "source": "system", "input": {
                         "target_confirmation": {"rules": request.input.confirmation_rules, "review": interrupted}}})
                     service.trace_recorder.complete_run(current_thread, latest)
-                on_run_complete(workspace, "author")
+                on_run_complete(workspace, os.environ.get("WRITING_AGENT_ID") or "author")
                 store.journal(task_id, metadata={"resume_trace": None})
             else:
                 store.journal(task_id, metadata={"resume_trace": latest})
@@ -721,10 +790,15 @@ def _prepare_candidate(store, task_id, lease_fd):
     from app.platform.memory.store import MemoryStorePool, init_memory_store_pool
     init_memory_store_pool(MemoryStorePool(directory / "memory"))
     os.chdir(directory)
+    writer_id = os.environ.get("WRITING_AGENT_ID")
     restrict_process(
         read_paths=[*runtime_read_paths(), store.package_directory(task_id)],
         write_paths=[directory, workspace, Path("/dev/null")], connect_ports=[port], keep_fds=[lease_fd],
     )
+    # The sandbox scrubs every environment variable, including the nonsecret
+    # scope that selects the four-agent target contract inside the worker.
+    if writer_id:
+        os.environ["WRITING_AGENT_ID"] = writer_id
     os.environ["TMPDIR"] = str(directory / "tmp")
     (directory / "tmp").mkdir(exist_ok=True)
     return model
@@ -780,6 +854,9 @@ class TargetTaskManager:
             result = result.model_copy(update={"status": "recovering", "error": "执行记录异常，等待父进程核验"})
         if result.status in TERMINAL:
             result = result.model_copy(update={"status": "recovering", "completed": False})
+        if configured_task_type():
+            # Candidate journals contain frozen inputs and unverified partial writes.
+            result = result.model_copy(update={"artifacts": {}, "checks": trusted["result"]["checks"]})
         expected = trusted["request"]
         return result.model_copy(update={"task_id": task_id, "input_revision": expected["input"]["input_revision"],
                                          "source_commit": expected["source_commit"], "artifact_digest": expected["artifact_digest"]})
@@ -794,6 +871,7 @@ class TargetTaskManager:
         latest_text = request.input.files.get(text_name, "") if text_name else ""
         reviews = {}
         tasks = {}
+        card_calls = {}
         for trace_id in trace_ids:
             _safe_file(workspace, "traces/index.json")
             for path in (workspace / "traces").rglob("*"):
@@ -808,6 +886,20 @@ class TargetTaskManager:
             for event in self.recorder.read_trace_events(trace_id, hydrate_payloads=True) or []:
                 args = event.tool_args if isinstance(event.tool_args, dict) else {}
                 target = args.get("subagent_type") or args.get("name")
+                if configured_task_type() and event.tool_name in {"save_artifact", "update_character_state"}:
+                    from contracts.creative_harness import write_denial
+                    from contracts.writing_artifacts import artifact_relpath
+                    if event.type == "tool_start":
+                        card_calls[event.tool_call_id] = args
+                    elif event.type == "tool_end":
+                        card = card_calls.pop(event.tool_call_id, args)
+                        if ((event.tool_name == "update_character_state" or card.get("kind") == "character")
+                                and card.get("name") and not _failed(event.tool_output)
+                                and not _content(event.tool_output).startswith("[拒绝]")
+                                and not write_denial(os.environ["WRITING_AGENT_ID"], event.tool_name, card,
+                                                     next(iter(request.target.volume_ids), 1), request.target.chapter or 1)):
+                            rel = artifact_relpath("character", name=card["name"])
+                            evidence.setdefault("card_writes", {})[rel] = True
                 if event.type == "artifact_revision" and isinstance(event.artifact, dict):
                     key = str(event.artifact.get("logical_key", "")).lstrip("/")
                     if text_name and key == text_name:
@@ -855,7 +947,7 @@ class TargetTaskManager:
             if raw.status == "completed" or raw.completed:
                 evidence = self._trace_evidence(request, workspace, raw.trace_ids)
                 checks = completion_checks(request.target, workspace, text_evidence=evidence)
-                if request.target.task_type == "chapter_outlines" and request.target.chapter is not None:
+                if not configured_task_type() and request.target.task_type == "chapter_outlines" and request.target.chapter is not None:
                     expected = f"章纲/第{request.target.chapter:03d}章.md"
                     outside = [name for name in artifacts.keys() | request.input.files.keys()
                                if name.startswith(("章纲/", "正文/")) and name != expected
@@ -879,18 +971,29 @@ class TargetTaskManager:
                         if (artifacts.get(name) != original or not is_final_status(original)) and not evidence.get("volume_qc", {}).get(str(volume), {}).get("success"):
                             checks["missing"].append(f"第{volume}卷缺少实际质检证据")
                     checks["complete"] = not checks["missing"]
-                    if not scan_writing_progress(workspace).theme_done or not scan_writing_progress(workspace).outline_done:
+                    if not configured_task_type() and (
+                            not scan_writing_progress(workspace).theme_done or not scan_writing_progress(workspace).outline_done):
                         checks["complete"] = False
                         checks["missing"].append("主题或总纲未通过现有定稿检查")
                 if not checks["complete"]:
                     raise ValueError("父进程核验未通过：" + "、".join(checks["missing"]))
+                if configured_task_type():
+                    artifacts = _scoped_outputs(request, artifacts, evidence)
                 raw = raw.model_copy(update={"status": "completed", "completed": True,
                                              "checks": {**checks, "text_evidence": evidence,
                                                         "identity": trusted["result"]["checks"].get("identity", {})}})
+            elif configured_task_type():
+                # Failed or stopped tasks may expose only their verified, in-scope drafts.
+                try:
+                    evidence = self._trace_evidence(request, workspace, raw.trace_ids)
+                    artifacts = _scoped_outputs(request, artifacts, evidence, require_target=False)
+                except (ValueError, OSError, KeyError, TypeError):
+                    artifacts = {}
+                raw = raw.model_copy(update={"checks": trusted["result"]["checks"]})
             raw = raw.model_copy(update={"artifacts": artifacts})
         except (ValueError, OSError, KeyError, TypeError) as exc:
             try:
-                artifacts = collect_artifacts(workspace)
+                artifacts = {} if configured_task_type() else collect_artifacts(workspace)
             except (ValueError, OSError):
                 artifacts = {}
             raw = TargetTaskResult.model_validate(trusted["result"]).model_copy(update={
@@ -915,6 +1018,8 @@ class TargetTaskManager:
 
     def submit(self, request: TargetTaskRequest, *, workspace=None, thread=None, owner_id=None,
                billing_operation=None, public_fingerprint=None):
+        if configured_task_type() and request.target.task_type != configured_task_type():
+            raise ValueError("目标任务不属于本实例")
         existing = self.result(request.task_id)
         if existing is not None:
             result, _ = self.store.create(request)
@@ -1221,6 +1326,7 @@ def get_manager():
     global _manager
     if _manager is None:
         from app.platform.core.settings import get_settings
-        root = Path(get_settings().workspace_root).resolve().parent / "target_tasks"
+        override = os.environ.get("TARGET_TASK_ROOT")
+        root = Path(override).resolve() if override else Path(get_settings().workspace_root).resolve().parent / "target_tasks"
         _manager = TargetTaskManager(root)
     return _manager

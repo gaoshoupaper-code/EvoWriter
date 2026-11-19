@@ -5,7 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from contracts.target_tasks import TargetSpec, TaskInput, TaskType
+from contracts.target_tasks import TargetSpec, TaskInput, TaskType, configured_task_type
 
 TASK_TYPES = ("volume_outlines", "chapter_outlines", "chapter_text")
 
@@ -19,6 +19,13 @@ class PackageCreate(StrictModel):
     purpose: Literal["optimization", "validation", "regression"]
     target: TargetSpec
     input: TaskInput
+
+    @model_validator(mode="after")
+    def validate_scope(self):
+        scope = configured_task_type()
+        if scope and (self.target.task_type != scope or self.purpose == "validation"):
+            raise ValueError("本套只接受所属 Agent 的改进题或回归题")
+        return self
 
 
 class Dimension(StrictModel):
@@ -38,12 +45,21 @@ class Dimension(StrictModel):
 class RuleCreate(StrictModel):
     task_type: TaskType
     name: str = Field(min_length=1, max_length=200)
-    profile: Literal["stage-eval-v2"] | None = None
+    profile: Literal["stage-eval-v2", "isolated-writing-v1"] | None = None
     dimensions: list[Dimension] = Field(min_length=1)
     discipline_rules: list[str] = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_keys(self):
+        scope = configured_task_type()
+        if scope and (self.task_type != scope or self.profile == "stage-eval-v2"):
+            raise ValueError("只能维护本套评分规则")
+        if scope:
+            from app.experiments.rubrics import _DIMENSIONS
+            if {dimension.key for dimension in self.dimensions} != {row[0] for row in _DIMENSIONS[scope]}:
+                raise ValueError("评分规则必须使用本套规定的维度")
+            if scope == "master_outline" and len({dimension.weight for dimension in self.dimensions}) != 1:
+                raise ValueError("总纲四个规定维度须等权")
         keys = [dimension.key for dimension in self.dimensions]
         if len(set(keys)) != len(keys):
             raise ValueError("评分维度不能重复")
@@ -74,13 +90,30 @@ class RunCreate(StrictModel):
     judge_group_id: int = Field(ge=1)
     rule_versions: dict[TaskType, str]
     optimization_ids: list[str] = Field(min_length=1)
-    validation_ids: list[str] = Field(min_length=1)
+    validation_ids: list[str] = Field(default_factory=list)
     regression_ids: dict[TaskType, list[str]]
     thresholds: Thresholds = Field(default_factory=Thresholds)
     max_rounds: int = Field(default=3, ge=1)
+    candidate_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40,64}$")
 
     @model_validator(mode="after")
     def validate_sets(self):
+        scope = configured_task_type()
+        if scope:
+            if self.task_type != scope or set(self.rule_versions) != {scope}:
+                raise ValueError("必须使用当前 Agent 及本套评分规则")
+            if self.validation_ids or set(self.regression_ids) != {scope} or not self.regression_ids[scope]:
+                raise ValueError("必须选择本套回归题，不接受终验题或跨套样本")
+            if self.max_rounds > 3:
+                raise ValueError("含首轮最多三轮")
+            if self.thresholds.completion_rate != 1 or self.thresholds.quality_gain != .1 or (
+                    self.thresholds.regression_tolerance not in ({}, {scope: 0})):
+                raise ValueError("门槛固定为全部完成、改进均分提升0.1分、回归均分不降")
+            self.thresholds.regression_tolerance = {scope: 0}
+            all_ids = self.optimization_ids + self.regression_ids[scope]
+            if len(set(all_ids)) != len(all_ids):
+                raise ValueError("改进与回归样本不能重复或交叉")
+            return self
         other_types = set(TASK_TYPES) - {self.task_type}
         if not self.thresholds.regression_tolerance:
             self.thresholds.regression_tolerance = {kind: 0 for kind in other_types}

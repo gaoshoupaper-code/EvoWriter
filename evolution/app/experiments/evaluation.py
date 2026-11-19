@@ -9,6 +9,7 @@ from uuid import uuid4
 
 import httpx
 from contracts.trace.usage import normalize_usage
+from contracts.target_tasks import configured_task_type
 
 from app.common.model_factory import _model_family
 from app.experiments import repo
@@ -52,7 +53,8 @@ def compare_results(baseline: list[dict], candidate: list[dict], *, completion_r
         changes.append({"package_id": key[0], "repeat": key[1], "baseline": a, "candidate": b, "delta": delta})
     delta = sum(paired) / len(paired) if paired else None
     problems = []
-    if not candidate or right["completion_rate"] < completion_rate:
+    if (not candidate or right["completion_rate"] < completion_rate
+            or (configured_task_type() and left["completion_rate"] < completion_rate)):
         problems.append("完成率未达到门槛")
     if right["evaluation_errors"] or left["evaluation_errors"]:
         problems.append("存在缺少有效评分的已完成样本")
@@ -117,7 +119,9 @@ def score_sample(run: dict, sample: dict) -> dict:
                         recorder.append_event(trace_id, {"type": "llm_start", "status": "running", "source": "runtime",
                             "run_id": call_id, "agent_name": "experiment-judge", "node_name": dimension["key"], "model_name": judge["model"], "input": messages})
                     try:
-                        with httpx.Client(timeout=60) as client:
+                        # Non-streaming judges read the frozen brief and full manuscripts.
+                        # Use the same generation window as the benchmark scorer.
+                        with httpx.Client(timeout=httpx.Timeout(300, connect=15)) as client:
                             response = client.post(credentials["base_url"].rstrip("/") + "/chat/completions",
                                 headers={"Authorization": "Bearer " + credentials["api_key"]},
                                 json={"model": credentials["model"].split(":", 1)[-1], "temperature": 0, "messages": messages})

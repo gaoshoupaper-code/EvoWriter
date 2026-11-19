@@ -19,6 +19,7 @@ class WorkspaceSummary(BaseModel):
     updated_at: str
     session_count: int = 0
     active_style_id: str | None = None
+    creative_agents: bool = False
 
 
 class ThreadCreateRequest(BaseModel):

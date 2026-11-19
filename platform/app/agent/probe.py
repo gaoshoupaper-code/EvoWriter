@@ -44,7 +44,7 @@ def _worker_env() -> dict[str, str]:
         )
     # Candidate imports receive runtime settings, never service credentials.
     env = {key: value for key, value in os.environ.items()
-           if key in {"PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT"}}
+           if key in {"PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT", "WRITING_AGENT_ID"}}
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["GIT_OPTIONAL_LOCKS"] = "0"
     env["GIT_CONFIG_NOSYSTEM"] = "1"
@@ -69,6 +69,16 @@ def probe_candidate(
     checkout = None
     try:
         checkout = checkout_commit(source_commit)
+        agent = os.getenv("WRITING_AGENT_ID")
+        if agent:
+            spec = json.loads((checkout / "architecture.json").read_text(encoding="utf-8"))
+            assistants = {"outline": [], "volume": ["volume_qc"], "chapter": [], "text": ["review"]}
+            actors = spec.get("agents", [])
+            mains = [row for row in actors if row.get("role") == "main"]
+            if (agent not in assistants or len(mains) != 1 or mains[0].get("name") != agent
+                    or mains[0].get("delegates", []) != assistants[agent]
+                    or sorted(row["name"] for row in actors if row.get("role") != "main") != assistants[agent]):
+                raise ValueError("候选包的主 Agent 或助手归属与本套不符。")
         worker = Path(__file__).resolve().parent / "probe_worker.py"
         # Cleanup belongs to the trusted parent: the sandbox cannot remove its
         # workspace directory from an otherwise protected parent directory.

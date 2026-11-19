@@ -123,7 +123,7 @@ async function parseJsonResponse<T>(response: RelayResponse): Promise<T> {
   return (await response.json()) as T;
 }
 
-async function apiJson<T>(input: string, init: RequestInit = {}): Promise<T> {
+export async function apiJson<T>(input: string, init: RequestInit = {}): Promise<T> {
   const response = await apiFetch(input, init);
   return parseJsonResponse<T>(response);
 }

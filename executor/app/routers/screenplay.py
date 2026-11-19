@@ -77,6 +77,9 @@ async def stream_screenplay(
     thread = get_thread_store().get_thread(user.user_id, payload.thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
+    from pathlib import Path
+    if (Path(thread.workspace_path) / ".writing/four-agents").is_file():
+        raise HTTPException(409, "请从作品所属创作 Agent 入口发起指令")
     from app.platform.credits.api import prepare_operation
     from app.platform.credits.runtime import get_billing_runs
     operation = await prepare_operation(payload, user.user_id, thread.thread_id)

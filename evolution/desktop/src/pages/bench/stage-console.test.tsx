@@ -16,13 +16,13 @@ vi.mock("@/lib/download", () => ({ downloadTextFile: vi.fn() }));
 const api = vi.mocked(apiModule);
 const kinds = ["volume_outlines", "chapter_outlines", "chapter_text"] as const;
 const rules = kinds.map((task_type, index) => ({
-  id: `rule-${index}`, task_type, profile: "stage-eval-v2", name: `${task_type}新规则`, version: 2,
+  id: `rule-${index}`, task_type, profile: "isolated-writing-v1", name: `${task_type}新规则`, version: 2,
   dimensions: [{ key: "需求兑现", question: "当前阶段是否兑现固定要求？", weight: 1,
     anchors: { "1": "目标缺失", "2": "两处实质缺陷", "3": "一处实质缺陷", "4": "仅局部不足", "5": "全部落实" } }],
   discipline_rules: ["引用产物证据"], created_at: "2026-11-07T01:00:00Z",
 }));
-const packages = kinds.flatMap((task_type, index) => ["optimization", "optimization", "validation", "regression"].map((purpose, n) => ({
-  id: `${task_type}-${n}`, title: `${task_type}样本${n}`, task_type, purpose, suite: "stage-smoke-v1",
+const packages = kinds.flatMap((task_type, index) => ["optimization", "optimization", "regression", "regression"].map((purpose, n) => ({
+  id: `${task_type}-${n}`, title: `${task_type}样本${n}`, task_type, purpose, suite: "isolated-writing-v1",
   target: { task_type, volume_ids: task_type === "volume_outlines" ? [1, 2, 3] : [1],
     ...(task_type !== "volume_outlines" ? { chapter: n + 1 } : { chapters_per_volume: 20 }) },
   input_revision: `revision-${index}-${n}`, created_at: "2026-11-07T01:00:00Z",
@@ -32,6 +32,7 @@ const report = { passed: true, baseline: metrics(3.6), candidate: metrics(4), qu
   paired_count: 2, changes: [], new_failures: [], problems: [] };
 
 beforeEach(() => {
+  window.location.hash = "#/agents/volume/bench";
   vi.clearAllMocks();
   api.listExperimentPackages.mockResolvedValue({ items: packages as never[], can_read_content: true });
   api.listExperimentRules.mockResolvedValue({ items: [{ ...rules[1], id: "old-rule", profile: undefined, version: 99 }, ...rules] as never[] });
@@ -43,7 +44,7 @@ beforeEach(() => {
     judge_groups: [{ id: 5, name: "异源评委", members: [{ config_id: 12, name: "评测配置", model: "judge-frozen" }] }],
     defaults: { max_rounds: 3, rule_versions: Object.fromEntries(kinds.map((kind, n) => [kind, `rule-${n}`])),
       thresholds: { completion_rate: 1, quality_gain: 0.1, regression_tolerance: Object.fromEntries(kinds.map((kind) => [kind, 0])) } },
-    builtin_suite: { id: "stage-smoke-v1", total: 12 },
+    builtin_suite: { id: "isolated-writing-v1", total: 12 },
   } as never);
   api.startExperiment.mockResolvedValue({ id: "new-experiment" } as never);
 });
@@ -51,75 +52,57 @@ beforeEach(() => {
 describe("三阶段实验台 / REQ-20261107-172211", () => {
   it("仅四项常用选择，自动带入套件、规则与默认门槛", async () => {
     render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
-    await screen.findByLabelText("主攻阶段");
-    expect(screen.getAllByRole("combobox")).toHaveLength(4);
+    await screen.findByLabelText("Harness 版本");
+    expect(screen.getAllByRole("combobox")).toHaveLength(3);
     expect(screen.queryByRole("textbox", { name: "实验名称" })).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("评测模型"), { target: { value: "5" } });
     fireEvent.click(screen.getByRole("button", { name: "启动自进化实验" }));
     await waitFor(() => expect(api.startExperiment).toHaveBeenCalledWith(expect.objectContaining({
       task_type: "volume_outlines", baseline_version: 18, model_config_id: 11, judge_group_id: 5,
-      optimization_ids: ["volume_outlines-0", "volume_outlines-1"], validation_ids: ["volume_outlines-2"],
-      regression_ids: { chapter_outlines: ["chapter_outlines-3"], chapter_text: ["chapter_text-3"] },
-      rule_versions: { volume_outlines: "rule-0", chapter_outlines: "rule-1", chapter_text: "rule-2" },
-      thresholds: { completion_rate: 1, quality_gain: 0.1, regression_tolerance: { chapter_outlines: 0, chapter_text: 0 } }, max_rounds: 3,
+      optimization_ids: ["volume_outlines-0", "volume_outlines-1"],
+      regression_ids: { volume_outlines: ["volume_outlines-2", "volume_outlines-3"] },
+      rule_versions: { volume_outlines: "rule-0" },
+      thresholds: { completion_rate: 1, quality_gain: 0.1, regression_tolerance: { volume_outlines: 0 } }, max_rounds: 3,
     })));
   });
 
-  it("切换单章章纲后重新匹配主攻和另外两类回归", async () => {
+  it("章纲入口只提交章纲题，包含自备题目", async () => {
+    window.location.hash = "#/agents/chapter/bench";
+    api.listExperimentPackages.mockResolvedValue({can_read_content: true, items: [...packages,
+      {...packages[4], id: "custom-opt", title: "自备题", suite: undefined}] as never[]});
     render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
-    fireEvent.change(await screen.findByLabelText("主攻阶段"), { target: { value: "chapter_outlines" } });
-    fireEvent.change(screen.getByLabelText("评测模型"), { target: { value: "5" } });
-    fireEvent.click(screen.getByRole("button", { name: "启动自进化实验" }));
+    fireEvent.change(await screen.findByLabelText("评测模型"), {target: {value: "5"}});
+    fireEvent.click(screen.getByRole("button", {name: "启动自进化实验"}));
     await waitFor(() => expect(api.startExperiment).toHaveBeenCalledWith(expect.objectContaining({
-      task_type: "chapter_outlines", optimization_ids: ["chapter_outlines-0", "chapter_outlines-1"],
-      validation_ids: ["chapter_outlines-2"], regression_ids: { volume_outlines: ["volume_outlines-3"], chapter_text: ["chapter_text-3"] },
+      task_type: "chapter_outlines", optimization_ids: ["chapter_outlines-0", "chapter_outlines-1", "custom-opt"],
+      regression_ids: {chapter_outlines: ["chapter_outlines-2", "chapter_outlines-3"]},
     })));
   });
 
-  it("高级设置可选择导入的单章样本，仍自动保留另外两类回归", async () => {
-    api.listExperimentPackages.mockResolvedValue({ can_read_content: true, items: [...packages,
-      { ...packages[4], id: "custom-opt", title: "自备章纲优化题", suite: undefined },
-      { ...packages[6], id: "custom-val", title: "自备章纲终验题", suite: undefined },
-    ] as never[] });
-    render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
-    fireEvent.change(await screen.findByLabelText("主攻阶段"), { target: { value: "chapter_outlines" } });
-    fireEvent.change(screen.getByLabelText("评测模型"), { target: { value: "5" } });
-    fireEvent.click(screen.getByText("高级设置"));
-    fireEvent.click(screen.getByLabelText("自选样本"));
-    for (const title of ["chapter_outlines样本0", "chapter_outlines样本1", "chapter_outlines样本2"]) fireEvent.click(screen.getByLabelText(title));
-    fireEvent.click(screen.getByLabelText("自备章纲优化题"));
-    fireEvent.click(screen.getByLabelText("自备章纲终验题"));
-    fireEvent.click(screen.getByRole("button", { name: "启动自进化实验" }));
-    await waitFor(() => expect(api.startExperiment).toHaveBeenCalledWith(expect.objectContaining({
-      optimization_ids: ["custom-opt"], validation_ids: ["custom-val"],
-      regression_ids: { volume_outlines: ["volume_outlines-3"], chapter_text: ["chapter_text-3"] },
-    })));
-  });
-
-  it("运行概况显示当前环节，旧章纲保留四卷含义", async () => {
+  it("运行概况显示当前环节并排除旧实验", async () => {
+    window.location.hash = "#/agents/chapter/bench";
     const base = { name: "章纲进化·11/07-01", task_type: "chapter_outlines", status: "running", phase: "regression",
       current_round: 2, max_rounds: 3, baseline: { version: 18, commit: "old" },
       best_candidate: { round: 2, commit: "new" }, report: { exploration: report },
       progress: { total: 4, done: 2, completed: 2 }, updated_at: "2026-11-07T01:00:00Z",
       models: { executor: { name: "冻结执行", model: "writer-frozen" }, judges: [{ name: "冻结评测", model: "judge-frozen" }] } };
-    api.listExperiments.mockResolvedValue({ items: [{ ...base, id: "new", flow_version: 2 },
+    api.listExperiments.mockResolvedValue({ items: [{ ...base, id: "new", flow_version: 3 },
       { ...base, id: "old", name: "旧四卷实验", flow_version: undefined }] as never[] });
     render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
     const newRow = (await screen.findByRole("link", { name: "章纲进化·11/07-01" })).closest("article")!;
-    expect(within(newRow).getByText("单章章纲")).toBeInTheDocument();
-    expect(newRow).toHaveTextContent("其他能力回归");
+    expect(within(newRow).getByText("章纲")).toBeInTheDocument();
+    expect(newRow).toHaveTextContent("本套回归");
     expect(newRow).toHaveTextContent("改版 2 / 3 轮");
-    expect((screen.getByRole("link", { name: "旧四卷实验" })).closest("article")).toHaveTextContent("4 卷章纲");
+    expect(screen.queryByRole("link", { name: "旧四卷实验" })).not.toBeInTheDocument();
   });
 
-  it("四组数据独立展示，回归集不混入三个阶段主集", async () => {
+  it("仅展示当前套改进题与回归题", async () => {
     render(<StagePackages />);
-    const volumeTab = await screen.findByRole("tab", { name: /整本卷纲/ });
-    expect(volumeTab).toHaveTextContent("3");
-    expect(screen.getByRole("tab", { name: /单章章纲/ })).toHaveTextContent("3");
-    expect(screen.getByRole("tab", { name: /单章正文/ })).toHaveTextContent("3");
-    const regression = screen.getByRole("tab", { name: /回归集/ });
-    expect(regression).toHaveTextContent("3");
+    const improvement = await screen.findByRole("tab", {name: /改进题/});
+    expect(improvement).toHaveTextContent("2");
+    const regression = screen.getByRole("tab", {name: /回归题/});
+    expect(regression).toHaveTextContent("2");
+    expect(screen.getAllByRole("tab")).toHaveLength(2);
     fireEvent.click(regression);
     expect(await screen.findByText("volume_outlines样本3")).toBeInTheDocument();
     expect(screen.queryByText("volume_outlines样本0")).not.toBeInTheDocument();
@@ -127,7 +110,7 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
 
   it("工作台只展示未结束实验，历史实验从实验记录查看", async () => {
     api.listExperiments.mockResolvedValue({ items: ["failed", "exhausted", "stopped", "running"].map((status) => ({
-      id: status, name: "无候选-" + status, task_type: "volume_outlines", flow_version: 2, status, phase: "evolving",
+      id: status, name: "无候选-" + status, task_type: "volume_outlines", flow_version: 3, status, phase: "evolving",
       current_round: 2, max_rounds: 3, baseline: { version: 18, commit: "fixed-baseline" },
       current_candidate: null, best_candidate: null, report: {}, progress: { done: 0, total: 0, completed: 0 },
       updated_at: "2026-11-07T01:00:00Z",

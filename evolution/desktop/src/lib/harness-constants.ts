@@ -19,6 +19,8 @@ export const HOOK_ORDER = [
 
 /** agent 机器名 → 中文角色名（对齐后端 _SUBAGENT_ROLE_MAP，meta_pipeline 前端补充为"主控"） */
 export const AGENT_LABELS: Record<string, string> = {
+  outline: "总纲", volume: "卷纲", chapter: "章纲", text: "正文",
+  volume_qc: "卷纲质检", review: "正文审稿",
   meta: "主控",
   meta_pipeline: "主控",
   interview: "需求访谈",

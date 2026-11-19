@@ -336,6 +336,19 @@ class ValidateChangesIntegrationTests(unittest.TestCase):
         self.assertFalse(self.ctx.validation_result["passed"])
         self.assertTrue(self.ctx.validation_result["errors"])
 
+    def test_scoped_validation_checks_private_source_without_importing_it(self):
+        from unittest.mock import patch
+        from app.evolve.agent.tools import flow
+
+        self.ctx.harness_root = self._pkg
+        with patch.dict(os.environ, WRITING_AGENT_ID="text"), \
+             patch.object(flow, "_import_check_all", side_effect=AssertionError("candidate imported")), \
+             patch.object(flow, "collect_middleware_classes_from_dir", side_effect=AssertionError("candidate imported")):
+            result = self._run("validate_changes")
+        self.assertIn("ReviewGateMiddleware.aafter_model", result)
+        self.assertIn("runtime", result)
+        self.assertFalse(self.ctx.validation_result["passed"])
+
     def _run(self, name, **kwargs):
         return self.flow_tools[name].invoke(kwargs)
 

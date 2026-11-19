@@ -57,6 +57,19 @@ def two_users(db):
 # ── 工作区隔离 ─────────────────────────────────────────────
 
 class TestWorkspaceIsolation:
+    def test_new_writing_workspace_preserves_agent_mode_across_listing(self, thread_store, two_users):
+        owner, _ = two_users
+        book = thread_store.create_workspace(owner, "四个创作入口")
+        assert book.creative_agents
+        assert thread_store.list_workspaces(owner)[0].creative_agents
+        thread_store.create_thread(owner, book.workspace_id, "卷纲私有会话")
+        bootstrap = thread_store.bootstrap_workspace(owner, book.workspace_id)
+        assert bootstrap["workspace"]["creative_agents"]
+        assert bootstrap["threads"] == []
+
+        (Path(book.workspace_path) / ".writing" / "four-agents").unlink()
+        assert not thread_store.get_workspace(owner, book.workspace_id).creative_agents
+
     def test_user_cannot_see_others_workspace(self, thread_store, two_users):
         u1, u2 = two_users
         thread_store.create_workspace(u1, "科幻小说")

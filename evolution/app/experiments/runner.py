@@ -10,6 +10,7 @@ import time
 from app.core import db
 from app.experiments import clients, evaluation, repo
 from app.experiments.schemas import PackageCreate, RunCreate, TASK_TYPES
+from contracts.target_tasks import configured_task_type
 
 ACTIVE = {"pending", "running", "recovering", "stopping"}
 _SCORING_FAILURE_LIMIT = 3
@@ -42,7 +43,15 @@ def create_run(request: RunCreate, actor: str) -> dict:
     selected = next((item for item in all_versions["items"] if item["version"] == request.baseline_version), None)
     if selected is None:
         raise ValueError("所选基线版本不存在")
+    scope = configured_task_type()
+    if scope and scope != request.task_type:
+        raise ValueError("实验目标不属于本套")
     production = clients.production()
+    if scope and (selected["version"] != production["version"] or selected["commit"] != production["commit"]):
+        raise ValueError("线上版本已变化，请基于本套当前生产版本评测")
+    if request.candidate_commit:
+        from app.versioning.asset_candidates import validate_candidate
+        validate_candidate(request.candidate_commit, selected["commit"])
     model = repo.freeze_credentials(request.model_config_id)
     if model["scope"] != "executor":
         raise ValueError("运行模型必须选择执行端模型配置")
@@ -65,23 +74,28 @@ def create_run(request: RunCreate, actor: str) -> dict:
         frozen_rules[kind] = rule
     frozen_packages = {}
     input_purposes = {}
+    inventory = None
+    if scope:
+        inventory = {pkg["id"]: pkg for pkg in repo.list_packages()}
+        if set(request.optimization_ids + request.regression_ids[scope]) != set(inventory):
+            raise ValueError("必须使用本套全部在用的改进题和回归题，请刷新题库")
     selections = [(identifier, request.task_type, "optimization") for identifier in request.optimization_ids]
     selections += [(identifier, request.task_type, "validation") for identifier in request.validation_ids]
     selections += [(identifier, kind, "regression") for kind, identifiers in request.regression_ids.items() for identifier in identifiers]
     for identifier, kind, purpose in selections:
-        package = repo.get_package(identifier)
+        package = inventory.get(identifier) if inventory is not None else repo.get_package(identifier)
         if package is None or package["task_type"] != kind or package["purpose"] != purpose:
             raise ValueError(f"样本 {identifier} 不存在或类型、用途不匹配")
         packages.validate_package(PackageCreate.model_validate({key: package[key] for key in ("title", "purpose", "target", "input")}))
         fingerprint = (kind, package["input_revision"], json.dumps(package["target"], sort_keys=True))
         previous_purpose = input_purposes.get(fingerprint)
         if previous_purpose is not None and previous_purpose != purpose:
-            raise ValueError("优化与终验必须使用独立输入；不能通过重复导入同一资料包规避隔离")
+            raise ValueError("不同用途必须使用独立输入，不能重复导入相同资料包")
         input_purposes[fingerprint] = purpose
         frozen_packages[identifier] = package
     prepared = clients.prepare_artifact(selected["commit"])
     now = repo.now()
-    run = {"id": repo.identifier("experiment"), "name": request.name, "task_type": request.task_type, "flow_version": 2,
+    run = {"id": repo.identifier("experiment"), "name": request.name, "task_type": request.task_type, "flow_version": 3 if scope else 2,
            "status": "pending", "phase": "baseline", "current_round": 0, "max_rounds": request.max_rounds,
            "settings": request.model_dump(mode="json"),
            "baseline": {"version": selected["version"], "commit": selected["commit"], "artifact_digest": prepared["digest"]},
@@ -258,7 +272,10 @@ def _start_checks(run: dict, phase: str, candidate: dict) -> None:
             _add_samples(run, identifiers, arm=arm, phase=phase, round_=run["current_round"], repeats=3,
                          commit=version["commit"], digest=version.get("digest") or version["artifact_digest"])
     run["phase"] = phase
-    repo.event(run, phase, "优化达标，进入另外两类回归。" if phase == "regression" else "优化与回归已通过，固定候选进入独立终验。")
+    if run.get("flow_version") == 3:
+        repo.event(run, phase, "改进题已达标，使用本套回归题复测同一候选。")
+    else:
+        repo.event(run, phase, "优化达标，进入另外两类回归。" if phase == "regression" else "优化与回归已通过，固定候选进入独立终验。")
 
 
 def _current_candidate(run: dict) -> dict:
@@ -272,7 +289,8 @@ def _compare_final(run: dict, samples: list[dict], kind: str, gain: float) -> di
     left = [sample for sample in samples if sample["task_type"] == kind and sample["arm"] == "baseline"]
     right = [sample for sample in samples if sample["task_type"] == kind and sample["arm"] == "candidate"]
     report = evaluation.compare_results(left, right, completion_rate=run["settings"]["thresholds"]["completion_rate"], quality_gain=gain)
-    identifiers = run["settings"]["validation_ids"] if kind == run["task_type"] else run["settings"]["regression_ids"][kind]
+    identifiers = (run["settings"]["validation_ids"] if kind == run["task_type"] and run.get("flow_version") != 3
+                   else run["settings"]["regression_ids"][kind])
     expected = {(identifier, repeat) for identifier in identifiers for repeat in (1, 2, 3)}
     if any({(sample["package_id"], sample["repeat"]) for sample in arm} != expected or len(arm) != len(expected) for arm in (left, right)):
         report["passed"] = False
@@ -333,16 +351,23 @@ def advance_one(run_id: str) -> None:
             round_record = next((item for item in run["rounds"] if item["round"] == run["current_round"] and item["status"] == "evolving"), None)
             if round_record is None:
                 if run["current_round"] >= run["max_rounds"]:
-                    _finish(run, "exhausted", "最大改进轮数已用尽；未通过终验的候选不能发布。")
+                    _finish(run, "exhausted", "已用尽改进轮数，候选未达发布门槛。")
                     return
                 run["current_round"] += 1
                 base = run["best_candidate"]["commit"] if run["best_candidate"] else run["baseline"]["commit"]
+                if run.get("flow_version") == 3 and run["rounds"]:
+                    previous = run["rounds"][-1]
+                    base = previous.get("source_commit") or previous["base_commit"]
                 round_record = {"round": run["current_round"], "status": "evolving", "base_commit": base,
                                 "source_commit": None, "summary": "", "error": None, "report": {}, "diff": ""}
                 run["rounds"].append(round_record)
                 repo.put_run(run)
             try:
-                result = agent.improve_candidate(run, round_record, optimization_evidence(run))
+                supplied = run["settings"].get("candidate_commit")
+                if supplied and round_record["round"] == 1:
+                    result = agent.asset_candidate(run, supplied)
+                else:
+                    result = agent.improve_candidate(run, round_record, optimization_evidence(run))
                 if is_stopped(run_id):
                     return
                 round_record.update(status="exploration", source_commit=result["commit"], digest=result["digest"],
@@ -368,7 +393,7 @@ def advance_one(run_id: str) -> None:
             run["report"]["exploration"] = report
             run["report"]["exploration_round"] = run["current_round"]
             if report["passed"]:
-                if run.get("flow_version") == 2:
+                if run.get("flow_version") in {2, 3}:
                     _start_checks(run, "regression", _current_candidate(run))
                     round_record["status"] = "regression"
                     repo.put_run(run)
@@ -386,6 +411,23 @@ def advance_one(run_id: str) -> None:
             else:
                 run["phase"] = "evolving"
                 repo.event(run, "not_improved", "优化复测未达门槛，按剩余轮数继续改版。")
+        elif run["phase"] == "regression" and run.get("flow_version") == 3:
+            selected = _final_samples(run, "regression")
+            if _run_pending(run, selected):
+                return
+            kind = run["task_type"]
+            report = _compare_final(run, selected, kind, 0)
+            current = run["rounds"][-1]
+            passed = report["passed"] and current["report"]["passed"]
+            current.update(status="passed" if passed else "regression_failed", regressions={kind: report})
+            run["report"].update(passed=passed, regressions={kind: report}, regression_round=run["current_round"])
+            if passed:
+                run["best_candidate"] = _current_candidate(run)
+                run["phase"] = "review"
+                _finish(run, "awaiting_review", "本套改进与回归成绩均达标，等待人工批准发布。")
+                return
+            run["phase"] = "evolving"
+            repo.event(run, "regression_failed", "本套回归未达标，返回改进题调整候选。")
         elif run["phase"] == "regression" and run.get("flow_version") == 2:
             selected = _final_samples(run, "regression")
             if _run_pending(run, selected):

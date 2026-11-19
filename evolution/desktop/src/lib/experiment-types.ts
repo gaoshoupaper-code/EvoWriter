@@ -1,17 +1,17 @@
 import type { JudgeGroupInfo } from "./api";
 import type { TraceIdentityRun } from "@/lib/trace-display";
 
-export const TASK_TYPES = ["volume_outlines", "chapter_outlines", "chapter_text"] as const;
+export const TASK_TYPES = ["master_outline", "volume_outlines", "chapter_outlines", "chapter_text"] as const;
 export type ExperimentTaskType = typeof TASK_TYPES[number];
-export const BUILTIN_SUITE = "stage-smoke-v1";
-export const RULE_PROFILE = "stage-eval-v2";
+export const BUILTIN_SUITE = "isolated-writing-v1";
+export const RULE_PROFILE = "isolated-writing-v1";
 export const TASK_LABELS: Record<ExperimentTaskType, string> = {
-  volume_outlines: "整本卷纲", chapter_outlines: "单章章纲", chapter_text: "单章正文",
+  master_outline: "总纲", volume_outlines: "卷纲", chapter_outlines: "章纲", chapter_text: "正文",
 };
-export function experimentTaskLabel(kind: ExperimentTaskType, flowVersion?: number) {
-  return kind === "chapter_outlines" && flowVersion !== 2 ? "4 卷章纲" : TASK_LABELS[kind];
+export function experimentTaskLabel(kind: ExperimentTaskType, _flowVersion?: number) {
+  return TASK_LABELS[kind];
 }
-export const PURPOSE_LABELS = { optimization: "优化", validation: "独立终验", regression: "回归" };
+export const PURPOSE_LABELS = { optimization: "改进", validation: "独立终验", regression: "回归" };
 export const EXPERIMENT_STATUS: Record<string, string> = {
   pending: "待运行", running: "运行中", recovering: "恢复中", awaiting_review: "待人审",
   exhausted: "轮数耗尽", validation_failed: "终验未通过", failed: "失败", stopping: "停止中",
@@ -22,7 +22,7 @@ export const EXPERIMENT_STATUS: Record<string, string> = {
 };
 export const PHASE_LABELS: Record<string, string> = {
   baseline: "原版评测", evolving: "改进 Harness", exploration: "优化复测", validation: "独立终验",
-  regression: "其他能力回归", review: "人工审阅", publish: "发布与加载",
+  regression: "本套回归", review: "人工审阅", publish: "发布与加载",
 };
 export const EXECUTION_PHASE_LABELS: Record<string, string> = {
   pending: "等待执行", theme: "生成主题", outline: "生成总纲", volume: "生成卷纲",
@@ -48,6 +48,7 @@ export type ExperimentTarget = {
   chapters_per_volume?: number | null;
 };
 export function experimentTargetLabel(target: ExperimentTarget) {
+  if (target.task_type === "master_outline") return "含主题的总纲";
   if (target.chapter != null) return "第 " + target.chapter + " 章";
   if (target.task_type === "chapter_outlines") return target.volume_ids.length + " 卷全部章纲";
   const scope = "整本 " + target.volume_ids.length + " 卷";
@@ -88,8 +89,8 @@ export type ExperimentOptions = {
 };
 export type ExperimentStart = {
   name?: string; task_type: ExperimentTaskType; baseline_version: number; model_config_id: number;
-  judge_group_id: number; rule_versions: Record<ExperimentTaskType, string>;
-  optimization_ids: string[]; validation_ids: string[];
+  judge_group_id: number; rule_versions: Partial<Record<ExperimentTaskType, string>>;
+  optimization_ids: string[]; candidate_commit?: string;
   regression_ids: Partial<Record<ExperimentTaskType, string[]>>;
   thresholds: ExperimentThresholds;
   max_rounds: number;

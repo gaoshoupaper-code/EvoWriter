@@ -96,11 +96,12 @@ class StageGateMiddleware(AgentMiddleware):
 
     def __init__(self, stage: str, *, max_blocks: int = 5,
                  annotation_kinds: set[str] | None = None,
-                 character_repair: bool = False):
+                 character_repair: bool = False, on_intervention=None):
         self.stage = stage
         self.max_blocks = max_blocks
         self.annotation_kinds = annotation_kinds or set()
         self.character_repair = character_repair
+        self.on_intervention = on_intervention
         self._blocks = 0
         self._exhausted_logged = False
 
@@ -117,6 +118,9 @@ class StageGateMiddleware(AgentMiddleware):
     def _block(self, request: Any, reason: str) -> ToolMessage:
         m = self._mapping(request)
         self._blocks += 1
+        if self.on_intervention:
+            self.on_intervention(middleware_name=type(self).__name__, hook="wrap_tool_call",
+                                 action="deny_stage_write", affected_fields=["tool_call"], reason=reason)
         return ToolMessage(
             content=f"[阶段闸] {reason}",
             name=str(m.get("name") or ""),
@@ -216,11 +220,12 @@ def build(abc):
     )
 
     if classify_writing_workspace(abc.workspace_path) == "legacy":
-        return StageGateMiddleware(_LEGACY_STAGE)
+        return StageGateMiddleware(_LEGACY_STAGE, on_intervention=getattr(abc, "intervention_callback", None))
     return StageGateMiddleware(
         resolve_confirmed_stage(abc.workspace_path),
         annotation_kinds=annotation_task_kinds(abc.workspace_path),
         character_repair=bool(getattr(getattr(abc, "ctx", None), "character_repair", False)),
+        on_intervention=getattr(abc, "intervention_callback", None),
     )
 
 

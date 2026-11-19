@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from langchain_core.tools import tool
@@ -81,6 +82,10 @@ def make_inspect_tools() -> list:
         """
         pkg_dir = harness_work_root()
         # 安全：resolve 后检查不越界
+        if os.getenv("WRITING_AGENT_ID"):
+            from app.versioning.asset_candidates import is_candidate_asset
+            if not is_candidate_asset(file_path):
+                return "错误：仅允许读取本套候选资产。"
         full = (pkg_dir / file_path).resolve()
         try:
             full.relative_to(pkg_dir.resolve())

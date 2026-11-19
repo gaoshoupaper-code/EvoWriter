@@ -137,7 +137,10 @@ def restrict_process(*, read_paths, write_paths, connect_ports=(), keep_fds=(),
     ruleset_fd = _check(libc.syscall(444, ctypes.byref(ruleset), ctypes.sizeof(ruleset), 0), "create_ruleset")
     try:
         read_access = (1 << 0) | (1 << 2) | (1 << 3)
-        write_access = filesystem_mask & ~((1 << 6) | (1 << 11))
+        # The parent later reads ordinary documents and trace files. Workers
+        # need regular files and directories, with no special or indirect nodes.
+        special_nodes = (1 << 6) | (1 << 9) | (1 << 10) | (1 << 11) | (1 << 12)
+        write_access = filesystem_mask & ~special_nodes
         for paths, access in ((read_paths, read_access), (write_paths, write_access)):
             for value in paths:
                 path = Path(value).resolve(strict=True)

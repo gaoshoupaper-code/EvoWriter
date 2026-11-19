@@ -212,6 +212,10 @@ def internal_list_workspace_writing_artifacts(
         artifact = parse_relpath(rel)
         if artifact is None or (category is not None and artifact.kind != category):
             continue
+        import os
+        from contracts.creative_harness import readable_kind
+        if (agent := os.getenv("WRITING_AGENT_ID")) and not readable_kind(agent, artifact.kind):
+            continue
         try:
             resolved = candidate.resolve(strict=True)
             resolved.relative_to(root)
@@ -245,6 +249,11 @@ def internal_read_workspace_writing_artifact(
     if classify_writing_workspace(root) != "five":
         raise HTTPException(status_code=409, detail="Workspace is not a five-segment writing workspace")
     resolved = _writing_artifact_path(root, path)
+    import os
+    from contracts.creative_harness import readable_kind
+    from contracts.writing_artifacts import parse_relpath
+    if (agent := os.getenv("WRITING_AGENT_ID")) and not readable_kind(agent, parse_relpath(path).kind):
+        raise HTTPException(status_code=404, detail="Artifact not found")
     try:
         content = resolved.read_text(encoding="utf-8")
     except UnicodeDecodeError:

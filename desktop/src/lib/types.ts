@@ -85,6 +85,7 @@ export type ThreadSummary = {
 };
 
 export type WorkspaceSummary = {
+  creative_agents?: boolean;
   workspace_id: string;
   title: string;
   domain: string;

@@ -20,6 +20,15 @@ def _git(root: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
+def asset_candidate(run: dict, commit: str) -> dict:
+    from app.versioning.asset_candidates import validate_candidate
+    base = run["baseline"]["commit"]
+    validate_candidate(commit, base)
+    prepared = clients.prepare_artifact(commit)
+    diff = _git(settings.harness_bare_repo_path, "diff", base, commit)
+    return {"commit": commit, "digest": prepared["digest"], "diff": diff, "summary": "评测资产页创建的候选版本"}
+
+
 def improve_candidate(run: dict, round_record: dict, evidence: list[dict]) -> dict:
     """Freeze and prepare a candidate; this function never promotes production."""
     if round_record.get("frozen_candidate"):
@@ -49,10 +58,17 @@ def improve_candidate(run: dict, round_record: dict, evidence: list[dict]) -> di
         raise ValueError("候选源码校验未通过")
     changed = _git(root, "status", "--porcelain")
     if changed:
-        _git(root, "add", "--all", "--", ".", ":(exclude)registry.json")
+        if run.get("flow_version") == 3:
+            from app.versioning.asset_candidates import is_candidate_asset
+            _git(root, "add", "--all", "--", ".")
+            names = _git(root, "diff", "--cached", "--name-only", "-z").split("\0")
+            if any(not is_candidate_asset(name) for name in names if name):
+                raise ValueError("候选包含非本套 Harness 资产的改动")
+        else:
+            _git(root, "add", "--all", "--", ".", ":(exclude)registry.json")
         _git(root, "-c", "user.name=Writer Evolution", "-c", "user.email=evolution@writer.local", "commit", "-m", f"Experiment {run['id']} round {round_record['round']}")
     commit = _git(root, "rev-parse", "HEAD")
-    if run.get("flow_version") == 2 and commit == round_record["base_commit"]:
+    if run.get("flow_version") in {2, 3} and commit == round_record["base_commit"]:
         raise ValueError("候选未产生 Harness 改动，不能作为改版进入复测")
     _git(root, "push", "origin", f"HEAD:refs/heads/codex/{run['id']}-r{round_record['round']}")
     diff = _git(root, "diff", round_record["base_commit"], commit, "--", ".", ":(exclude)registry.json")
@@ -96,15 +112,21 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     from app.trace import TraceMiddleware, TraceCallbackHandler
 
     class ExperimentSourceGuard(AgentMiddleware):
+        def scoped_request(self, request):
+            if run.get("flow_version") != 3:
+                return request
+            allowed = [item for item in request.tools if getattr(item, "name", None) in allowed_tools]
+            return request.override(tools=allowed)
+
         def wrap_model_call(self, request, handler):
             if runner.is_stopped(run["id"]):
                 raise asyncio.CancelledError()
-            return handler(request)
+            return handler(self.scoped_request(request))
 
         async def awrap_model_call(self, request, handler):
             if runner.is_stopped(run["id"]):
                 raise asyncio.CancelledError()
-            return await handler(request)
+            return await handler(self.scoped_request(request))
 
         def _check(self, request):
             if runner.is_stopped(run["id"]):
@@ -112,6 +134,13 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
             arguments = request.tool_call.get("args", {})
             path = arguments.get("file_path", arguments.get("path", ""))
             parts = Path(str(path).replace("\\", "/").lstrip("/")).parts
+            tool_name = request.tool_call.get("name")
+            if run.get("flow_version") == 3:
+                from app.versioning.asset_candidates import is_candidate_asset
+                if tool_name not in allowed_tools or (
+                        tool_name in {"edit_source", "delete_file"} and not is_candidate_asset(str(path).lstrip("/"))):
+                    return ToolMessage(content="当前工具或写入目标不属于本套候选资产。",
+                                       status="error", tool_call_id=request.tool_call["id"])
             if any(part.startswith(".") for part in parts) or (parts and parts[0] in {"registry.json", "contracts", "dataset", "experiments"}):
                 return ToolMessage(content="拒绝访问受保护的元数据或实验区域。", tool_call_id=request.tool_call["id"])
             return None
@@ -162,6 +191,7 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     backend = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     tools = make_inspect_tools() + make_writer_tools(backend)
     tools += [item for item in make_flow_tools() if item.name != "validate_changes"] + [validate_changes]
+    allowed_tools = {item.name for item in tools}
     _ensure_gp_disabled()
     credentials = repo.decrypt_credentials(run["private"]["evolver"])
     middleware = [NoFilesystemToolsMiddleware(), ExperimentSourceGuard(), FlowGuardMiddleware()]
@@ -174,7 +204,7 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
         "不得修改registry.json、.git、数据集、评测、权限、服务框架；不得寻找终验或其他作品数据。"
         "工具只包含Harness源码读写与校验；不得调用发布。先探查并write_design_doc，再修改、validate_changes、write_change_log。"
         "每次只处理有证据的问题，保留现有质量检查和取证行为。"
-        "你收到的证据来自优化集及允许复用的回归题；不要推测或索取独立终验内容。"
+        "依据已提供的改进题证据调整候选，不得访问题库、规则或任何其他套数据。"
     )
     config = {"configurable": {"thread_id": session_id}, "recursion_limit": 200}
     if ctx.recorder and ctx.trace_id_self:
@@ -189,7 +219,7 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
                                request_timeout=300, max_retries=1, http_async_client=http_client)
             agent = create_deep_agent(model=model, tools=tools, system_prompt=prompt, middleware=middleware,
                                       subagents=None, backend=backend, checkpointer=checkpointer)
-            await _run_agent_streamed(agent, "请改进以下优化与回归问题并完整校验收尾：\n" + json.dumps(evidence, ensure_ascii=False), config, ctx,
+            await _run_agent_streamed(agent, "请依据给定的改进题证据修改候选并完成校验：\n" + json.dumps(evidence, ensure_ascii=False), config, ctx,
                                       input_message_id=session_id + "-optimization")
         if ctx.validation_result is None:
             # A recovered checkpoint can already contain the final change log.

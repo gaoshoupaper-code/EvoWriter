@@ -111,6 +111,11 @@ class SaveArtifactInput(BaseModel):
     skill_name: str | None = Field(default=None, description="skill_scene时填写已启用技能的原名；普通单元留空。")
 
 
+class CharacterOwnerSaveInput(SaveArtifactInput):
+    character_role: Literal["protagonist", "antagonist", "supporting"] | None = Field(
+        default=None, description="保存人物设定时填写人物归属：主角、反派或配角")
+
+
 def _quote_norm(s: str) -> str:
     return (s.replace("\u201c", '"').replace("\u201d", '"')
              .replace("\u2018", "'").replace("\u2019", "'"))
@@ -525,14 +530,18 @@ def build_save_artifact_tool(
         return _saved_receipt(receipt, kind, chapter, path)
 
     def _native_save(*args, **kwargs):
-        result = _save(*args, **kwargs)
-        return result if isinstance(result, tuple) else (result, None)
+        from app.domains.writing.creative_scope import ACTIVE
+        values = dict(kwargs)
+        kwargs.pop("character_role", None)
+        task = ACTIVE.get()
+        result = task.save(values, lambda: _save(*args, **kwargs)) if task else _save(*args, **kwargs)
+        return tuple(result) if isinstance(result, (tuple, list)) else (result, None)
 
     return StructuredTool.from_function(
         name="save_artifact",
         description=SAVE_ARTIFACT_TOOL_DESCRIPTION + ("\n" + skill_names_hint if skill_names_hint else ""),
         func=_native_save,
-        args_schema=SaveArtifactInput,
+        args_schema=CharacterOwnerSaveInput if agent_name in ("outline-subagent", "volume-subagent") else SaveArtifactInput,
         infer_schema=False,
         response_format="content_and_artifact",
     )

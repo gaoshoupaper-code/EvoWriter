@@ -1,11 +1,13 @@
+import { currentTask } from "@/lib/writing-agent";
 import { useEffect, useState } from "react";
 import { Pencil, Check, X } from "lucide-react";
 import { listExperimentRules, saveExperimentRule, type ExperimentRule, type ExperimentRuleInput } from "@/lib/api";
-import { RULE_PROFILE, TASK_LABELS, TASK_TYPES, type ExperimentTaskType } from "@/lib/experiment-types";
+import { RULE_PROFILE, TASK_LABELS, type ExperimentTaskType } from "@/lib/experiment-types";
 import "./experiments.css";
 
 const HARD_CHECKS: Record<ExperimentTaskType, string[]> = {
-  volume_outlines: ["整本 3 卷齐全", "每卷规划 20 章，共覆盖第 1–60 章", "产物定稿，符合现有卷纲规程"],
+  master_outline: ["总纲内含主题，能据此拆出各卷"],
+  volume_outlines: ["只交付指定卷", "逐章覆盖题目要求的范围", "有本卷质检记录"],
   chapter_outlines: ["仅生成指定一章", "指令卡适用字段齐全", "目标章号、范围及状态合法"],
   chapter_text: ["指定单章正文完整", "真实审稿成功", "必要修订有执行证据"],
 };
@@ -21,7 +23,7 @@ const latestRule = (rules: ExperimentRule[], kind: ExperimentTaskType) => {
 
 export function StageRules() {
   const [rules, setRules] = useState<ExperimentRule[]>([]);
-  const [kind, setKind] = useState<ExperimentTaskType>("volume_outlines");
+  const kind = currentTask();
   const [selectedId, setSelectedId] = useState("");
   const [draft, setDraft] = useState<ExperimentRuleInput | null>(null);
   const [editing, setEditing] = useState(false);
@@ -34,7 +36,7 @@ export function StageRules() {
     listExperimentRules().then(({ items }) => {
       if (!alive) return;
       setRules(items);
-      const first = latestRule(items, "volume_outlines");
+      const first = latestRule(items, currentTask());
       if (first) { setSelectedId(first.id); setDraft(draftFrom(first)); }
     }).catch((cause) => { if (alive) setError(cause instanceof Error ? cause.message : "读取规则失败"); })
       .finally(() => { if (alive) setLoading(false); });
@@ -48,9 +50,7 @@ export function StageRules() {
     setSelectedId(rule?.id ?? ""); setDraft(rule ? draftFrom(rule) : null);
     setEditing(false); setNotice(""); setError("");
   }
-  function chooseKind(next: ExperimentTaskType) {
-    setKind(next); select(latestRule(rules, next));
-  }
+
   function editDimension(index: number, update: Partial<ExperimentRuleInput["dimensions"][number]>) {
     setDraft((value) => value && ({ ...value, dimensions: value.dimensions.map((dimension, i) => i === index ? { ...dimension, ...update } : dimension) }));
   }
@@ -65,24 +65,13 @@ export function StageRules() {
     finally { setSaving(false); }
   }
   return <section className="experiment-section" aria-labelledby="stage-rules-title">
-    <div className="experiment-heading"><div><h2 id="stage-rules-title">三阶段评分规则</h2>
+    <div className="experiment-heading"><div><h2 id="stage-rules-title">本套评分规则</h2>
       <p className="experiment-note">程序先检查是否完成，模型再按维度评分。各项 1–5 分，实验启动后固定规则版本。</p></div>
-      <span className="experiment-count">三套独立规则</span></div>
+      </div>
     {error && <p role="alert" className="experiment-error">{error}</p>}{notice && <p role="status" className="experiment-positive">{notice}</p>}
-    <div className="experiment-rule-stage-nav" role="tablist" aria-label="规则阶段">
-      {TASK_TYPES.map((type, index) => <button key={type} type="button" role="tab" id={"rule-tab-" + type}
-        aria-selected={kind === type} aria-controls="stage-rule-content" tabIndex={kind === type ? 0 : -1}
-        disabled={saving || loading} onClick={() => chooseKind(type)} onKeyDown={(event) => {
-          let next = index;
-          if (event.key === "ArrowRight") next = (index + 1) % TASK_TYPES.length;
-          else if (event.key === "ArrowLeft") next = (index + TASK_TYPES.length - 1) % TASK_TYPES.length;
-          else return;
-          event.preventDefault(); chooseKind(TASK_TYPES[next]); document.getElementById("rule-tab-" + TASK_TYPES[next])?.focus();
-        }}><span>{TASK_LABELS[type]}</span><small>{latestRule(rules, type)?.dimensions.length ?? 0} 个评分维度</small></button>)}
-    </div>
     {loading ? <p role="status">正在加载规则…</p> : selected && draft ? <div id="stage-rule-content" role="tabpanel" aria-labelledby={"rule-tab-" + kind}>
       <div className="experiment-rule-heading"><div><h3>{selected.name}</h3>
-        <p className="experiment-note">{currentProfile ? "当前三阶段规则" : kind === "chapter_outlines" ? "4 卷章纲历史规则" : "历史规则，保留原始评测含义"} · v{selected.version} · {selected.dimensions.length} 个维度</p></div>
+        <p className="experiment-note">{currentProfile ? "本套规则" : kind === "chapter_outlines" ? "4 卷章纲历史规则" : "历史规则，保留原始评测含义"} · v{selected.version} · {selected.dimensions.length} 个维度</p></div>
         <div className="experiment-actions"><label className="experiment-rule-version">规则版本<select className="config-input" value={selectedId} disabled={saving} onChange={(event) => select(rules.find((rule) => rule.id === event.target.value))}>
           {rules.filter((rule) => rule.task_type === kind).sort((a, b) => b.version - a.version).map((rule) => <option key={rule.id} value={rule.id}>
             {rule.profile === RULE_PROFILE ? "" : "历史 · "}v{rule.version} · {rule.name}

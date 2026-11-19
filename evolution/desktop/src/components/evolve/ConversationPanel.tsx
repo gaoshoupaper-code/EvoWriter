@@ -111,7 +111,7 @@ export default function ConversationPanel({
   const isConversing = status === "conversing";
   const isPendingReview = status === "pending_review";
   const isTerminal =
-    status === "published" ||
+    status === "published" || status === "candidate_ready" ||
     status === "discarded" ||
     status === "failed" ||
     status === "cancelled" ||
@@ -202,9 +202,9 @@ export default function ConversationPanel({
           这里给 pending_review 一个常驻入口 */}
       {isPendingReview && onOpenReview ? (
         <footer className="ev-composer review-cta">
-          <span className="review-cta-note">落地已完成，等待人工审查后发布</span>
+          <span className="review-cta-note">改动已生成，可审查候选并发起评测</span>
           <button type="button" className="ev-send-button" onClick={onOpenReview}>
-            查看审查报告并发布 →
+            审查候选并评测 →
           </button>
         </footer>
       ) : (
@@ -268,6 +268,7 @@ const STATUS_LABEL: Record<string, string> = {
   finalizing: "落地中",
   pending_review: "待审查",
   published: "已发版",
+  candidate_ready: "候选已保存",
   discarded: "已丢弃",
   failed: "失败",
   cancelled: "已取消",

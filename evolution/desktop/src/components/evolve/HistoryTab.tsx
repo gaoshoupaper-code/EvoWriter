@@ -20,6 +20,7 @@ const STATUS_DOT: Record<string, string> = {
   finalizing: "●",
   pending_review: "◆",
   published: "✓",
+  candidate_ready: "候选",
   discarded: "✗",
   failed: "!",
   cancelled: "○",
@@ -127,7 +128,7 @@ export default function HistoryTab({
                             onReview(s);
                           }}
                         >
-                          去审查发布
+                          审查候选
                         </button>
                       )}
                     </div>

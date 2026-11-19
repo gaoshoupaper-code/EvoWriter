@@ -253,12 +253,12 @@ describe("HarnessPage（要素透视）", () => {
     api.getUpgradeDiff.mockResolvedValue(makeUpgradeDiff());
   }
 
-  it("默认主Agent 视角：五 Tab 含 Memory，无子代理选择器（AC-009）", async () => {
+  it("默认主Agent 视角：四 Tab 隐藏 Memory，无子代理选择器（AC-009）", async () => {
     mockManifest();
     render(<HarnessPage />);
     await screen.findByText("主Agent（故事专家）");
     expect(screen.getByText("SubAgent（1）")).toBeTruthy();
-    expect(screen.getByText("Memory")).toBeTruthy();
+    expect(screen.queryByText("Memory")).toBeNull();
     expect(screen.queryByText("故事审查（review）")).toBeNull();
   });
 

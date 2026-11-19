@@ -28,11 +28,11 @@ import logging
 import re
 import threading
 from pathlib import Path
+import os
 from typing import Any
 
 from langchain_core.tools import tool
 
-from app.core.settings import settings
 from app.evolve.ctx import get_tool_context
 
 logger = logging.getLogger("evolution.evolve.agent.tools.writers")
@@ -156,6 +156,10 @@ def make_writer_tools(backend) -> list:
         # path 允许子目录但不允许 .. 穿越
         if ".." in path or path.startswith("/"):
             return f"错误：非法路径 '{path}'（不允许 .. 或绝对路径）"
+        if os.getenv("WRITING_AGENT_ID"):
+            from app.versioning.asset_candidates import is_candidate_asset
+            if not is_candidate_asset(f"skills/{path}"):
+                return "错误：只能写入本套技能。"
         virt_path = f"/skills/{path}"
         with _HARNESS_WRITE_LOCK:
             result = backend.write(virt_path, content)
@@ -204,6 +208,10 @@ def make_writer_tools(backend) -> list:
         ctx = get_tool_context()
         if ctx is None:
             return "错误：session 未初始化"
+        if os.getenv("WRITING_AGENT_ID"):
+            from app.versioning.asset_candidates import is_candidate_asset
+            if not is_candidate_asset(file_path.lstrip("/")):
+                return "错误：仅允许修改本套候选资产。"
         virt_path = "/" + file_path.lstrip("/")
         if ".." in virt_path:
             return f"错误：非法路径 '{file_path}'（不允许 ..）"
@@ -251,6 +259,10 @@ def make_writer_tools(backend) -> list:
         ctx = get_tool_context()
         if ctx is None:
             return "错误：session 未初始化"
+        if os.getenv("WRITING_AGENT_ID"):
+            from app.versioning.asset_candidates import is_candidate_asset
+            if not is_candidate_asset(file_path.lstrip("/")):
+                return "错误：仅允许修改本套候选资产。"
         virt_path = "/" + file_path.lstrip("/")
         if ".." in virt_path:
             return f"错误：非法路径 '{file_path}'（不允许 ..）"
@@ -265,7 +277,10 @@ def make_writer_tools(backend) -> list:
         if virt_path == "/architecture.json":
             return "错误：架构清单本体不可删除——调整架构请用 edit_source 修改清单。"
 
-        root = Path(getattr(backend, "root_dir", None) or settings.harness_work_dir_path)
+        location = getattr(backend, "cwd", None) or getattr(backend, "root_dir", None)
+        if location is None:
+            return "错误：本次工具未绑定 Harness 工作区。"
+        root = Path(location)
         target = (root / virt_path.lstrip("/")).resolve()
         root_resolved = root.resolve()
         if root_resolved not in target.parents:

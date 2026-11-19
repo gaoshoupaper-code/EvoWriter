@@ -186,7 +186,7 @@ def enabled_for(abc) -> bool:
     from contracts.writing_artifacts import STAGE_TEXT, classify_writing_workspace, resolve_confirmed_stage
 
     return (
-        getattr(abc.agent, "name", None) == "author"
+        getattr(abc.agent, "name", None) in ("author", "text")
         and not getattr(getattr(abc, "ctx", None), "character_repair", False)
         and classify_writing_workspace(abc.workspace_path) == "five"
         and resolve_confirmed_stage(abc.workspace_path) == STAGE_TEXT

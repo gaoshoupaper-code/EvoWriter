@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -124,6 +125,8 @@ def save_workdir_prompt(payload: PromptSaveRequest) -> dict[str, Any]:
     只允许覆盖 prompts/ 下既有的 .md——新建文件走正常 harness 开发流程
     （新文件要同步清单/包声明，不适合从这页创建）。
     """
+    if os.getenv("WRITING_AGENT_ID"):
+        raise _conflict("请在本套资产页编辑候选版。")
     _reject_if_evolve_round_running("保存提示草稿")
     if not _PROMPT_PATH_RE.match(payload.path):
         raise _conflict(f"非法提示词路径: {payload.path}（仅限 prompts/<文件名>.md）")
@@ -141,6 +144,8 @@ def release_prompt_draft(payload: PromptReleaseRequest) -> dict[str, Any]:
 
     无改动时 409（避免空 commit 版本）；probe/晋升失败抛 502/409，账本不动。
     """
+    if os.getenv("WRITING_AGENT_ID"):
+        raise _conflict("请在资产页保存候选，通过本套评测后确认发布。")
     _reject_if_evolve_round_running("发版")
     if not has_changes():
         raise _conflict("工作区无未提交改动，无需发版")

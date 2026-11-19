@@ -160,7 +160,7 @@ class TestInternalWorkspaceWritingArtifacts:
             (directory / f"第{chapter:03d}章.md").write_text(
                 f"正文 {chapter}", encoding="utf-8"
             )
-        (root / ".writing").mkdir()
+        (root / ".writing").mkdir(exist_ok=True)
         (root / ".writing" / "state.json").write_text("{}", encoding="utf-8")
 
         path = f"/internal/workspaces/{workspace['workspace_id']}/writing-artifacts"

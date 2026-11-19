@@ -31,6 +31,7 @@ import { useWorkspaceStore } from "@/stores/workspace";
 import { useStageSessionStore } from "@/stores/stage-session";
 
 type ArtifactPanelProps = {
+  creative?: boolean;
   kind: string;
   pipeline: PipelineStatus | null;
   files: OutlineFileEntry[];
@@ -62,6 +63,7 @@ function chapterOfTextRel(rel: string): number | null {
 }
 
 export function ArtifactPanel({
+  creative,
   kind,
   pipeline,
   files,
@@ -72,7 +74,7 @@ export function ArtifactPanel({
   const active = files.find((f) => f.rel === activeRel) ?? files[0] ?? null;
   const chapter = active ? chapterOfTextRel(active.rel) : null;
   const isManuscript = chapter !== null;
-  const fiveKind = kind === "five";
+  const fiveKind = kind === "five" && !creative;
 
   const annotations = useAnnotationsStore((s) => s.annotations);
   const pendingCount = annotations.filter((a) => a.status === "pending").length;
@@ -324,11 +326,11 @@ export function ArtifactPanel({
       </div>
 
       <div className="content-panel-body">
-        <PipelineStageBar
+        {!creative && <PipelineStageBar
           pipeline={pipeline}
           fileRels={files.map((f) => f.rel)}
           onStageJump={(stage) => void useStageSessionStore.getState().jumpToStage(stage)}
-        />
+        />}
 
         {kind === "legacy" && files.length === 0 ? (
           <p className="outline-state">旧版工作区：内容走旧面板数据，此处只读。</p>
@@ -381,7 +383,7 @@ export function ArtifactPanel({
                 ——删除重做留下的空档，生成时会按缺号补写
               </p>
             ) : null}
-            {active && isManuscript && kind === "five" ? (
+            {active && isManuscript && fiveKind ? (
               <ManuscriptEditor
                 workspaceId={workspaceId}
                 chapter={chapter}

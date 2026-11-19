@@ -92,13 +92,13 @@ class AgentBuildCtx:
 
         def _callback(
             *, action: str, hook: str, affected_fields: list[str],
-            reason: str | None = None, before=None, after=None,
+            reason: str | None = None, before=None, after=None, middleware_name=None,
         ) -> None:
             try:
                 recorder.record_intervention(
                     trace_id, self.trace_name,
                     action=action, hook=hook, affected_fields=affected_fields,
-                    reason=reason, before=before, after=after,
+                    reason=reason, before=before, after=after, middleware_name=middleware_name,
                 )
             except Exception:  # noqa: BLE001 — trace 回调永不阻断装配
                 pass
@@ -261,6 +261,21 @@ def _build_compiled(abc: AgentBuildCtx) -> CompiledSubAgent:
         base = abc.pkg_dir / "skills"
         skill_paths = [str(base / s) for s in agent.skills]
         effective_backend, skill_sources = compose_skills_backend(abc.ctx.backend, skill_paths)
+
+    from os import getenv
+    if getenv("WRITING_AGENT_ID") == agent.name:
+        # DeepAgents otherwise injects a general-purpose assistant which is absent
+        # from the published manifest. Each creative process has one fixed scope.
+        from deepagents import GeneralPurposeSubagentProfile, HarnessProfile, register_harness_profile
+        from deepagents._models import get_model_identifier, get_model_provider
+        provider = get_model_provider(abc.ctx.model)
+        identifier = get_model_identifier(abc.ctx.model)
+        key = identifier if identifier and ":" in identifier else (
+            f"{provider}:{identifier}" if provider and identifier else provider
+        )
+        if not key:
+            raise ValueError("无法为当前模型固定创作助手范围")
+        register_harness_profile(key, HarnessProfile(general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)))
 
     graph = create_deep_agent(
         model=abc.ctx.model,

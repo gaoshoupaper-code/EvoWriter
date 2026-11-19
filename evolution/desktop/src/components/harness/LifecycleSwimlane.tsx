@@ -122,7 +122,7 @@ function SwimlaneRow({
       {/* 没有可识别 hook 的外部/动态 middleware 单独提示 */}
       {byHook.has("__unhooked__") && (
         <div className="swimlane-row-collapsed" style={{ gridColumn: "1 / -1" }}>
-          <span>⚠ {byHook.get("__unhooked__")!.length} 个 middleware 未挂载生命周期</span>
+          {byHook.get("__unhooked__")!.map((mw) => <MiddlewareNode key={mw.class_name} mw={mw} activeHook="运行时" />)}
         </div>
       )}
     </>

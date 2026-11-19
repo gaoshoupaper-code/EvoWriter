@@ -1,3 +1,4 @@
+import { currentTask } from "@/lib/writing-agent";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -69,7 +70,7 @@ export function ExperimentProgress({ experiment, compact = false }: {
 export function ExperimentScores({ report }: { report: Experiment["report"] }) {
   return <div className="experiment-score-summary">{([
     ["优化", report.exploration, report.exploration_round],
-    ["独立终验", report.validation, report.validation_round],
+    ["回归", report.regressions?.[currentTask()], report.exploration_round],
   ] as const).map(([label, comparison, round]) => <div key={label}>
     <span>{label}{round ? ` · 第${round}轮` : ""}</span>
     {comparison ? <><strong>{number(comparison.baseline?.quality)} → {number(comparison.candidate?.quality)}</strong>

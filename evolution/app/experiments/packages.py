@@ -7,9 +7,15 @@ from contracts.writing_artifacts import (
 )
 from app.experiments import repo
 from app.experiments.schemas import PackageCreate
+from contracts.target_tasks import configured_task_type, validate_scoped_input
 
 
 def validate_package(package: PackageCreate) -> None:
+    if configured_task_type():
+        validate_scoped_input(package.target, package.input)
+        if not package.input.confirmation_rules.strip():
+            raise ValueError("预设确认规则不能为空")
+        return
     files = package.input.files
     missing = []
     unsupported = [name for name in files if name != "demand.md" and parse_relpath(name) is None]
@@ -50,12 +56,17 @@ def validate_package(package: PackageCreate) -> None:
             raise ValueError("目标章节不在提供的卷纲章号范围内")
 
 
-def import_package(package: PackageCreate) -> dict:
+def import_package(package: PackageCreate, *, previous_id: str | None = None) -> dict:
     validate_package(package)
     record = package.model_dump(mode="json")
     record.update(id=repo.identifier("package"), task_type=package.target.task_type,
                   input_revision=package.input.input_revision, created_at=repo.now())
-    repo.insert("self_evolution_packages", record)
+    if configured_task_type():
+        record["flow_version"] = 3
+    if previous_id is None:
+        repo.insert("self_evolution_packages", record)
+    else:
+        repo.replace_package(previous_id, record)
     return {key: value for key, value in record.items() if key != "input"}
 
 
@@ -63,7 +74,8 @@ def templates() -> list[dict]:
     from app.experiments.seed_data import get_builtin_packages
     records = get_builtin_packages()
     examples = []
-    for kind in ("volume_outlines", "chapter_outlines", "chapter_text"):
+    scope = configured_task_type()
+    for kind in ((scope,) if scope else ("volume_outlines", "chapter_outlines", "chapter_text")):
         record = next(item for item in records if item["task_type"] == kind and item["purpose"] == "optimization")
         payload = {key: record[key] for key in ("title", "purpose", "target", "input")}
         payload["input"].pop("input_revision", None)

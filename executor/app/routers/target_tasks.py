@@ -110,6 +110,8 @@ async def list_public(workspace_id: str, user: CurrentUser = Depends(current_use
 async def start_public(workspace_id: str, payload: PublicTargetRequest, user: CurrentUser = Depends(current_user)):
     workspace = _workspace(workspace_id, user)
     root = Path(workspace.workspace_path)
+    if payload.target.task_type == "master_outline" or (root / ".writing" / "four-agents").exists():
+        raise HTTPException(status_code=409, detail="请从本作品对应的创作 Agent 入口启动任务")
     from app.platform.credits.api import prepare_operation
     from app.platform.credits.ledger import BillingError, get_billing
     ledger = get_billing()

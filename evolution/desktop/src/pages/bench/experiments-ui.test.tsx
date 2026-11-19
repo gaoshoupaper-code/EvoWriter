@@ -20,21 +20,21 @@ const api = vi.mocked(apiModule);
 const kinds = ["volume_outlines", "chapter_outlines", "chapter_text"] as const;
 const labels = ["整本卷纲", "单章章纲", "单章正文"];
 const rules = kinds.map((task_type, i) => ({
-  id: `rule-${i}`, task_type, profile: "stage-eval-v2", version: 1, name: `${labels[i]}规则`,
+  id: `rule-${i}`, task_type, profile: "isolated-writing-v1", version: 1, name: `${labels[i]}规则`,
   dimensions: [{ key: "需求兑现", question: "是否兑现需求？", weight: 1,
     anchors: { "1": "严重缺失", "2": "多处缺失", "3": "基本完成", "4": "完整落实", "5": "充分落实" } }],
   discipline_rules: ["引用产物证据"], created_at: "2026-11-06T01:00:00Z",
 }));
 const pkg = (id: string, title: string, task_type: string, purpose: string) => ({
-  id, title, task_type, purpose, suite: "stage-smoke-v1", target: { task_type, volume_ids: [1], ...(task_type !== "volume_outlines" ? { chapter: 1 } : {}) },
+  id, title, task_type, purpose, suite: "isolated-writing-v1", target: { task_type, volume_ids: [1], ...(task_type !== "volume_outlines" ? { chapter: 1 } : {}) },
   input_revision: "fixed-input", created_at: "2026-11-06T01:00:00Z",
 });
 const packages = [
   pkg("opt-1", "优化题一", kinds[0], "optimization"),
   pkg("opt-2", "优化题二", kinds[0], "optimization"),
   pkg("val-1", "终验题一", kinds[0], "validation"),
-  pkg("reg-1", "章纲回归", kinds[1], "regression"),
-  pkg("reg-2", "正文回归", kinds[2], "regression"),
+  pkg("reg-1", "卷纲回归1", kinds[0], "regression"),
+  pkg("reg-2", "卷纲回归2", kinds[0], "regression"),
 ];
 const experiment = (overrides: Record<string, unknown> = {}) => ({
   id: "experiment-1", name: "卷纲优化", task_type: kinds[0], status: "awaiting_review", phase: "review",
@@ -48,6 +48,7 @@ const experiment = (overrides: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => {
+  window.location.hash = "#/agents/volume/bench";
   vi.clearAllMocks();
   api.getActiveRuns.mockResolvedValue([]);
   api.listExperimentPackages.mockResolvedValue({ items: packages as never[], can_read_content: true });
@@ -96,25 +97,21 @@ describe("进化端实验交互 / AC-001、AC-012、AC-020、AC-022", () => {
     })));
   });
 
-  it("高级设置可改门槛，自动匹配各用途样本并冻结三类规则", async () => {
+  it("本套两个题组全部运行，并冻结本套规则和门槛", async () => {
     api.startExperiment.mockResolvedValue(experiment({ status: "pending" }) as never);
     render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
     fireEvent.change(await screen.findByLabelText("Harness 版本"), { target: { value: "6" } });
     fireEvent.change(screen.getByLabelText("执行模型"), { target: { value: "11" } });
     fireEvent.change(screen.getByLabelText("评测模型"), { target: { value: "5" } });
     fireEvent.click(screen.getByText("高级设置"));
-    fireEvent.change(screen.getByLabelText("完成率下限（%）"), { target: { value: "90" } });
-    fireEvent.change(screen.getByLabelText("主攻最低涨幅"), { target: { value: "0.2" } });
-    fireEvent.change(screen.getByLabelText("单章章纲退化容忍"), { target: { value: "0.1" } });
-    fireEvent.change(screen.getByLabelText("单章正文退化容忍"), { target: { value: "0.1" } });
-    fireEvent.change(screen.getByLabelText("最大迭代轮数"), { target: { value: "3" } });
+    expect(screen.queryByLabelText("完成率下限（%）")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "启动自进化实验" }));
     await waitFor(() => expect(api.startExperiment).toHaveBeenCalledWith(expect.objectContaining({
       task_type: kinds[0], baseline_version: 6, model_config_id: 11, judge_group_id: 5,
-      rule_versions: { volume_outlines: "rule-0", chapter_outlines: "rule-1", chapter_text: "rule-2" },
-      optimization_ids: ["opt-1", "opt-2"], validation_ids: ["val-1"],
-      regression_ids: { chapter_outlines: ["reg-1"], chapter_text: ["reg-2"] },
-      thresholds: { completion_rate: 0.9, quality_gain: 0.2, regression_tolerance: { chapter_outlines: 0.1, chapter_text: 0.1 } },
+      rule_versions: { volume_outlines: "rule-0" },
+      optimization_ids: ["opt-1", "opt-2"],
+      regression_ids: { volume_outlines: ["reg-1", "reg-2"] },
+      thresholds: { completion_rate: 1, quality_gain: 0.1, regression_tolerance: { volume_outlines: 0 } },
       max_rounds: 3,
     })));
   });

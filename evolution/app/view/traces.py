@@ -521,6 +521,23 @@ def get_trace_integrity(trace_id: str) -> IntegrityDiagnosis:
     return _compute_integrity_diagnosis(trace_id)
 
 
+@router.get("/traces/{trace_id}/middleware-actions")
+def middleware_actions(trace_id: str):
+    if not db.query_one("SELECT 1 FROM runs WHERE trace_id=?", (trace_id,)):
+        raise HTTPException(404, "本套没有该运行。")
+    rows = db.query_all(
+        "SELECT payload_json FROM event_payloads WHERE trace_id=? AND type='middleware_intervention' ORDER BY sequence,id",
+        (trace_id,),
+    )
+    items = []
+    for row in rows:
+        event = json.loads(row["payload_json"])
+        details = event.get("intervention") or {}
+        items.append({"rule": details.get("middleware_name"), "hook": details.get("hook"),
+                      "action": details.get("action"), "timestamp": event.get("timestamp")})
+    return {"items": items}
+
+
 @router.get("/traces/{trace_id}/events", response_model=list[TraceLogEvent])
 def get_trace_events(
     request: Request,

@@ -26,7 +26,8 @@ class ToolCallRecoveryState(AgentState):
 class ToolCallRecoveryMiddleware(AgentMiddleware[ToolCallRecoveryState]):
     state_schema = ToolCallRecoveryState
 
-    def __init__(self, tool_names: Sequence[str] = ()) -> None:
+    def __init__(self, tool_names: Sequence[str] = (), on_intervention=None) -> None:
+        self.on_intervention = on_intervention
         names = "|".join(re.escape(name) for name in sorted(set(tool_names)))
         self._literal_call = re.compile(
             rf"(?<![\w:])call:default_api:({names})\s*\{{"
@@ -67,6 +68,10 @@ class ToolCallRecoveryMiddleware(AgentMiddleware[ToolCallRecoveryState]):
         ) else 0
         updates: dict[str, Any] = {"tool_call_recovery_turn": turn}
         output = [RemoveMessage(id=message.id)] if message.id else []
+        if self.on_intervention:
+            self.on_intervention(middleware_name=type(self).__name__, hook="after_model",
+                                 action="stop_recovery" if count >= _MAX_RECOVERIES else "retry_tool_call",
+                                 affected_fields=["messages"], reason=f"{matched.group(1)} 只写成了文字")
         if count >= _MAX_RECOVERIES:
             updates.update({
                 "tool_call_recovery_count": count,
@@ -90,12 +95,12 @@ class ToolCallRecoveryMiddleware(AgentMiddleware[ToolCallRecoveryState]):
 
 def build(abc):
     enabled = (
-        abc.agent.name == "author"
-        and abc.trace_name == "author-subagent"
+        abc.agent.name in ("author", "text")
+        and abc.trace_name == f"{abc.agent.name}-subagent"
         and not getattr(getattr(abc, "ctx", None), "character_repair", False)
         and resolve_confirmed_stage(abc.workspace_path) == STAGE_TEXT
     )
     tool_names = list(abc.agent.tools) if enabled else []
     if enabled and getattr(abc.agent, "delegates", None):
         tool_names.append("task")
-    return ToolCallRecoveryMiddleware(tool_names)
+    return ToolCallRecoveryMiddleware(tool_names, getattr(abc, "intervention_callback", None))

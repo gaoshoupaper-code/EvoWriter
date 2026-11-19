@@ -1,3 +1,4 @@
+import { selectedAgent } from "@/lib/writing-agent";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
@@ -57,7 +58,9 @@ import PointsDrawer from "./PointsDrawer";
  *   - 浮窗点击进化点 → highlightedPointId（滚动对话到该点讨论位置）
  *   - 对话区 hover/点击卡片 → 同一 state 反向高亮浮窗
  */
-export const AGENT_STORAGE_KEY = "evolve.selectedAgentId";
+export function agentStorageKey() {
+  return "evolve.selectedAgentId." + (selectedAgent() ?? "outline");
+}
 
 // SSE 空闲看门狗：3 个心跳周期（服务端 15s/跳）无 chunk 视为死流
 const READ_IDLE_TIMEOUT_MS = 45_000;
@@ -81,7 +84,7 @@ export default function WorkbenchTab({
   // 进化 Agent（REQ-20261001-131018）
   const [agents, setAgents] = useState<EvolveAgent[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(() =>
-    localStorage.getItem(AGENT_STORAGE_KEY),
+    localStorage.getItem(agentStorageKey()),
   );
   const [landingOccupied, setLandingOccupied] = useState(false);
   // 「新开会话」对话框（独立组件，交互修正 2026-10-01：不依赖工作台空闲）
@@ -152,8 +155,8 @@ export default function WorkbenchTab({
 
   const handleSelectAgent = useCallback((agentId: string | null) => {
     setSelectedAgentId(agentId);
-    if (agentId) localStorage.setItem(AGENT_STORAGE_KEY, agentId);
-    else localStorage.removeItem(AGENT_STORAGE_KEY);
+    if (agentId) localStorage.setItem(agentStorageKey(), agentId);
+    else localStorage.removeItem(agentStorageKey());
   }, []);
 
   useEffect(() => {
@@ -568,7 +571,7 @@ export default function WorkbenchTab({
         {/* 落地通道占用横幅（FR-003/DEC-004：聊天并行、落地排队） */}
         {landingOccupied && (
           <div className="landing-channel-banner">
-            落地通道占用中——另一会话正在落地/待审。对话不受影响；拍板需先等通道释放（发布或丢弃占用会话）。
+            落地通道占用中——另一会话正在落地/待审。对话不受影响；拍板需先等通道释放（评测或丢弃候选）。
           </div>
         )}
       </div>

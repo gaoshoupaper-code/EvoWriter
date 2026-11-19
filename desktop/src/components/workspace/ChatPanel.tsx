@@ -22,6 +22,8 @@ import { AutomaticTaskPanel } from "./AutomaticTaskPanel";
 import { useWorkspaceStore } from "@/stores/workspace";
 
 type ChatPanelProps = {
+  creativeAgent?: { id: string; label: string };
+  inputLocked?: boolean;
   messages: ChatMessage[];
   prompt: string;
   loading: boolean;
@@ -33,7 +35,7 @@ type ChatPanelProps = {
   onStop: () => void;
   stageFlows?: (StageFlow | null)[];
   onRetry?: () => void;
-  onDeleteThread: (threadId: string) => void | Promise<void>;
+  onDeleteThread?: (threadId: string) => void | Promise<void>;
   characterRepair?: boolean;
   onExitCharacterRepair?: () => void;
 };
@@ -52,6 +54,8 @@ export function ChatPanel({
   onRetry,
   onDeleteThread,
   characterRepair = false,
+  creativeAgent,
+  inputLocked = false,
   onExitCharacterRepair,
 }: ChatPanelProps) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -113,12 +117,12 @@ export function ChatPanel({
     if (!awaitingWithOptions && !automaticBusy) event.currentTarget.form?.requestSubmit();
   }
 
-  const automaticPanel = !characterRepair && hasActiveWorkspace && workspaceId && pipeline?.kind === "five" ? <AutomaticTaskPanel
+  const automaticPanel = !creativeAgent && !characterRepair && hasActiveWorkspace && workspaceId && pipeline?.kind === "five" ? <AutomaticTaskPanel
     workspaceId={workspaceId} threadId={activeThreadId} disabled={loading} onBusyChange={setAutomaticBusy}
   /> : null;
 
   // ── 历史浏览态：整个对话区（消息+输入）换成只读历史面板（FR-008）──
-  if (historyView && !characterRepair) {
+  if (historyView && onDeleteThread && !characterRepair && !creativeAgent) {
     return (
       <section className="conversation-panel panel-surface" aria-label="创作对话">
         <div className="conversation-top">
@@ -137,7 +141,7 @@ export function ChatPanel({
   }
 
   // 引导语显示条件（FR-003）：还没有任何 user 消息（新会话空页面），非生成中
-  const showGuide = !characterRepair && !loading && !messages.some((m) => m.role === "user");
+  const showGuide = !creativeAgent && !characterRepair && !loading && !messages.some((m) => m.role === "user");
 
   return (
     <section
@@ -146,7 +150,7 @@ export function ChatPanel({
     >
       {/* 标题带（REQ-20261018-175526 DEC-001/FR-001）：阶段条取代会话操作区——
           用户可见范围内没有新建/切换会话入口，会话由阶段自动管理 */}
-      <div className="conversation-top">
+      {!creativeAgent && <div className="conversation-top">
         <div className="panel-heading conversation-heading">
           <StageBar
             onOpenStageHistory={(stage) => openStageHistory(stage)}
@@ -155,7 +159,7 @@ export function ChatPanel({
           />
         </div>
         {automaticPanel}
-      </div>
+      </div>}
 
       {/* 五段制（REQ-20261018-115508 DEC-003）：砍表单纯对话开场——
           对话即入口，新书首轮开场话术由发版的题材段规程决定（executor
@@ -196,7 +200,7 @@ export function ChatPanel({
               data-status={message.status}
               key={`${message.role}-${index}`}
             >
-              <span className="message-role">{label}</span>
+              <span className="message-role">{message.role === "assistant" && creativeAgent ? creativeAgent.label : label}</span>
               {/* ExecutionView：取代 StageFlowView，按 executionPhase 渲染小衍执行体验 */}
               {message.role === "assistant" && (isLastAssistant || flow) ? (
                 <ExecutionView
@@ -246,6 +250,7 @@ export function ChatPanel({
                     ) : null}
                     {message.awaitingInput.kind === "review" ? (
                       <ReviewCard
+                        scoped={Boolean(creativeAgent)}
                         reviewKind={message.awaitingInput.review_kind ?? "stage"}
                         onSubmit={onResumeSubmit}
                         disabled={loading}
@@ -286,7 +291,7 @@ export function ChatPanel({
           );
         })}
         {/* 完成卡片（FR-004/DEC-003）：阶段已变的缓冲，挂在旧对话末尾 */}
-        {pendingTransition && !characterRepair ? (
+        {pendingTransition && !characterRepair && !creativeAgent ? (
           <StageTransitionCard onOpenStageHistory={(stage) => openStageHistory(stage)} />
         ) : null}
       </div>
@@ -294,13 +299,13 @@ export function ChatPanel({
       {/* composer：无卡时输入框是唯一输入（DEC-005 单输入面）；
           完成卡片挂起时输入框保持可用——直接发送即隐式切换（DEC-012） */}
       <form className="chat-composer" onSubmit={(event) => {
-        if (automaticBusy) { event.preventDefault(); return; }
+        if (automaticBusy || inputLocked) { event.preventDefault(); return; }
         onSubmit(event);
       }}>
-        <BillingBudget phase={characterRepair ? "character" : pipeline?.phase ?? "default"} />
+        <BillingBudget phase={creativeAgent?.id ?? (characterRepair ? "character" : pipeline?.phase ?? "default")} />
         {characterRepair ? <div className="character-repair-banner"><p role="status">正在重做人物卡。请说明人物和重做要求。</p><button className="sidebar-skill-new" type="button" onClick={onExitCharacterRepair}>返回写作</button></div> : null}
         <div className={`chat-input-wrap${expanded ? " expanded" : ""}`}>
-          {!characterRepair ? <ModeToggle /> : null}
+          {!characterRepair && !creativeAgent ? <ModeToggle /> : null}
           <textarea
             ref={inputRef}
             className="chat-input"
@@ -308,12 +313,12 @@ export function ChatPanel({
             rows={1}
             onChange={(event) => onPromptChange(event.target.value)}
             onKeyDown={handleInputKeyDown}
-            disabled={awaitingWithOptions || automaticBusy}
+            disabled={awaitingWithOptions || automaticBusy || inputLocked}
             placeholder={
               automaticBusy ? "全自动任务执行中，可在任务栏停止"
               : awaitingWithOptions
                 ? "请在上方拍板卡选择并提交"
-                : loading
+                : creativeAgent ? `给${creativeAgent.label}的指令` : loading
                   ? "生成中，可以直接输入并回车排队发送"
                   : characterRepair ? "请输入人物姓名和重做要求" : undefined
             }
@@ -336,7 +341,7 @@ export function ChatPanel({
                 <Square size={14} fill="currentColor" aria-hidden="true" />
               </button>
             ) : (
-              <button className="send-button" type="submit" disabled={awaitingWithOptions || automaticBusy} aria-label="发送" title="发送">
+              <button className="send-button" type="submit" disabled={awaitingWithOptions || automaticBusy || inputLocked} aria-label="发送" title="发送">
                 <ArrowUp size={16} aria-hidden="true" />
               </button>
             )}

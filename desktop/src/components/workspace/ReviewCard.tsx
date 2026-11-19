@@ -17,6 +17,7 @@ import { useWorkspaceStore } from "@/stores/workspace";
 import { updateWritingMode } from "@/lib/api";
 
 type ReviewCardProps = {
+  scoped?: boolean;
   reviewKind: "batch" | "style" | "stage";
   onSubmit: (resume: string) => Promise<void>;
   disabled?: boolean;
@@ -31,7 +32,7 @@ const KIND_TITLES: Record<ReviewCardProps["reviewKind"], string> = {
   stage: "本段产物已齐，请审查",
 };
 
-export function ReviewCard({ reviewKind, onSubmit, disabled, traceId, reviewId }: ReviewCardProps) {
+export function ReviewCard({ reviewKind, onSubmit, disabled, traceId, reviewId, scoped }: ReviewCardProps) {
   const batchSize = useStageSessionStore((s) => s.batchSize);
   const lastBatchUsage = useStageSessionStore((s) => s.lastBatchUsage);
   const hydrateModes = useStageSessionStore((s) => s.hydrateModes);
@@ -48,7 +49,7 @@ export function ReviewCard({ reviewKind, onSubmit, disabled, traceId, reviewId }
     if (locked) return;
     setSubmitted(true);
     // 批次 N 回写服务端（DEC-007）：下一轮 directive 读到新批次大小
-    if (batchN && workspaceId) {
+    if (batchN && workspaceId && !scoped) {
       try {
         await updateWritingMode(workspaceId, "text", "auto", batchN);
         void hydrateModes(workspaceId);
@@ -57,7 +58,7 @@ export function ReviewCard({ reviewKind, onSubmit, disabled, traceId, reviewId }
       }
     }
     // 回调根据当前会话是否仍有停等卡选择 resume；跨段后必须已切到空会话。
-    if (stageAdvance) {
+    if (stageAdvance && !scoped) {
       if (!workspaceId || !await confirmStageAdvance(workspaceId, traceId ?? "", reviewId)) {
         setSubmitted(false);
         return;
@@ -77,12 +78,12 @@ export function ReviewCard({ reviewKind, onSubmit, disabled, traceId, reviewId }
   return (
     <div className="review-card" data-testid="review-card">
       <div className="review-card-title">{KIND_TITLES[reviewKind]}</div>
-      {reviewKind === "batch" ? (
+      {reviewKind === "batch" && !scoped ? (
         <div className="review-card-row">
           <span className="review-usage">{usageLine}</span>
         </div>
       ) : null}
-      {reviewKind === "batch" ? (
+      {reviewKind === "batch" && !scoped ? (
         <div className="review-card-actions">
           <label className="review-batch-input">
             继续

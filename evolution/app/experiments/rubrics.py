@@ -6,10 +6,25 @@ import threading
 from app.benchmark.rubric_v3 import DISCIPLINE_RULES
 from app.experiments import repo
 from app.experiments.schemas import RuleCreate
+from contracts.target_tasks import configured_task_type
 
 _lock = threading.RLock()
 PROFILE = "stage-eval-v2"
 _DIMENSIONS = {
+    "master_outline": [
+        ("主题清晰度", "总纲是否将用户意图落实为能贯穿全书的主题？",
+         ["缺少主题或与需求相反", "只有模糊口号", "主题清楚但联系剧情不足", "主题和主要事件对应",
+          "主题明确并由人物选择与结局具体支撑"]),
+        ("主角目标与冲突", "主角的目标、对立力量和失败代价是否明确？",
+         ["缺少可辨目标", "有目标但没有实质阻力", "目标与冲突基本明确", "行动动机及失败代价清楚",
+          "目标、阻力、代价与关键选择紧密对应"]),
+        ("主线转折因果", "关键转折能否由人物的选择及后果推出？",
+         ["事件互不关联", "多处转折依赖巧合", "主线成立但关键连接欠充分", "关键选择和转折有据",
+          "转折前因和后果可逐一追溯，并为结局铺垫"]),
+        ("可分卷性", "能否据此划分各卷的推进任务和交接点？",
+         ["无法识别分卷任务", "分卷仅有标题", "可分卷但目标重叠", "各卷功能与交接清楚",
+          "各卷的起点、冲突、结果及交接均可用于下一步规划"]),
+    ],
     "volume_outlines": [
         ("需求兑现", "需求中的题材、核心设定、主角目标及明确限制，是否落实在整本卷纲的具体安排中？", [
             "卷纲改换了核心题材、设定或主角目标，与需求中不可变更的承诺相反。",
@@ -123,7 +138,9 @@ def save_rule(request: RuleCreate) -> dict:
     with _lock:
         old = list_rules(request.task_type)
         value = request.model_dump(mode="json")
-        value["profile"] = request.profile or PROFILE
+        value["profile"] = request.profile or ("isolated-writing-v1" if configured_task_type() else PROFILE)
+        if configured_task_type():
+            value["flow_version"] = 3
         value.update(id=repo.identifier("rule"), version=max((item["version"] for item in old), default=0) + 1, created_at=repo.now())
         repo.insert("self_evolution_rules", value)
         return value
@@ -132,11 +149,15 @@ def save_rule(request: RuleCreate) -> dict:
 def seed_rules() -> None:
     with _lock:
         for kind, dimensions in _DIMENSIONS.items():
-            if any(rule.get("profile") == PROFILE for rule in list_rules(kind)):
+            scope = configured_task_type()
+            if (scope and kind != scope) or (not scope and kind == "master_outline"):
+                continue
+            profile = "isolated-writing-v1" if scope else PROFILE
+            if any(rule.get("profile") == profile for rule in list_rules(kind)):
                 continue
             save_rule(RuleCreate.model_validate({
-                "task_type": kind, "profile": PROFILE,
-                "name": {"volume_outlines": "整本卷纲", "chapter_outlines": "单章章纲", "chapter_text": "单章正文"}[kind] + "试验规则",
+                "task_type": kind, "profile": profile,
+                "name": {"master_outline": "总纲", "volume_outlines": "卷纲", "chapter_outlines": "单章章纲", "chapter_text": "单章正文"}[kind] + "试验规则",
                 "discipline_rules": DISCIPLINE_RULES,
                 "dimensions": [{"key": key, "question": question, "weight": 1,
                                 "anchors": {str(level): text for level, text in enumerate(anchors, 1)}}

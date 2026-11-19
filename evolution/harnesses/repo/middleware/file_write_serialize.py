@@ -99,6 +99,7 @@ class FileWriteSerializeMiddleware(AgentMiddleware):
         if lock.locked() and self.intervention_callback is not None:
             try:
                 self.intervention_callback(
+                    middleware_name=type(self).__name__,
                     action="write_serialization",
                     hook="awrap_tool_call",
                     affected_fields=["control_flow", "file_path"],

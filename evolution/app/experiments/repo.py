@@ -9,6 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 from app.core import db
+from contracts.target_tasks import configured_task_type
 
 _locks: dict[str, threading.RLock] = {}
 _locks_guard = threading.Lock()
@@ -44,11 +45,18 @@ def insert(table: str, payload: dict[str, Any]) -> None:
 
 def _get(table: str, identifier_: str) -> dict | None:
     row = db.query_one(f"SELECT payload FROM {table} WHERE id=?", (identifier_,))
-    return json.loads(row["payload"]) if row else None
+    value = json.loads(row["payload"]) if row else None
+    return value if value and _visible(value) else None
+
+
+def _visible(value: dict) -> bool:
+    scope = configured_task_type()
+    return not scope or (value.get("task_type") == scope and value.get("flow_version") == 3)
 
 
 def _list(table: str) -> list[dict]:
-    return [json.loads(row["payload"]) for row in db.query_all(f"SELECT payload FROM {table} ORDER BY created_at DESC,id")]
+    rows = db.query_all(f"SELECT payload FROM {table} ORDER BY created_at DESC,id")
+    return [value for row in rows if _visible(value := json.loads(row["payload"]))]
 
 
 def get_package(package_id: str) -> dict | None:
@@ -56,7 +64,29 @@ def get_package(package_id: str) -> dict | None:
 
 
 def list_packages() -> list[dict]:
-    return _list("self_evolution_packages")
+    return [p for p in _list("self_evolution_packages") if not p.get("superseded_by")]
+
+
+def replace_package(previous_id: str, new: dict) -> dict:
+    table = "self_evolution_packages"
+    with db.transaction() as connection:
+        row = connection.execute(f"SELECT payload FROM {table} WHERE id=?", (previous_id,)).fetchone()
+        previous = json.loads(row["payload"]) if row else None
+        if not previous or not _visible(previous):
+            raise KeyError(previous_id)
+        if previous.get("superseded_by"):
+            raise ValueError("该题已被替换，请刷新后修订当前版本")
+        if previous["purpose"] != new["purpose"] or previous["task_type"] != new["task_type"]:
+            raise ValueError("替换题须保留所属 Agent 和用途")
+        previous["superseded_by"] = new["id"]
+        new["supersedes"] = previous_id
+        if previous.get("suite"):
+            new["suite"] = previous["suite"]
+        connection.execute(f"UPDATE {table} SET payload=? WHERE id=?",
+                           (json.dumps(previous, ensure_ascii=False), previous_id))
+        connection.execute(f"INSERT INTO {table}(id,payload,created_at) VALUES (?,?,?)",
+                           (new["id"], json.dumps(new, ensure_ascii=False), new["created_at"]))
+    return new
 
 
 def get_rule(rule_id: str) -> dict | None:
@@ -135,7 +165,8 @@ def public_models(run: dict) -> dict:
 
 
 def next_run_name(task_type: str) -> str:
-    labels = {"volume_outlines": "整本卷纲", "chapter_outlines": "单章章纲", "chapter_text": "单章正文"}
+    labels = {"master_outline": "总纲", "volume_outlines": "卷纲" if configured_task_type() else "整本卷纲",
+              "chapter_outlines": "单章章纲", "chapter_text": "单章正文"}
     date = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
     prefix = f"{labels[task_type]} · {date} · "
     numbers = [int(value["name"][len(prefix):]) for value in list_runs()

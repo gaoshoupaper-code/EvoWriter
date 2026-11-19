@@ -9,10 +9,11 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import APIRouter, FastAPI
 
 # Windows 控制台默认用 GBK（代码页 936）解码，Python 日志输出 UTF-8 中文会乱码。
 # 强制 stderr 流用 UTF-8，根治中文日志乱码（root logger + uvicorn logger 都受益）。
@@ -35,6 +36,7 @@ from app.view.users import router as users_router
 from app.versioning.snapshot_api import router as snapshot_router
 from app.versioning.elements_api import router as elements_router
 from app.versioning.prompt_assets_api import router as prompt_assets_router
+from app.versioning.asset_candidates import router as asset_candidates_router
 from app.view.active import router as active_api_router
 # 观测事件流 SSE 通道（REQ-20260920-193428 FR-004）：大盘实时推送
 from app.view.events import router as events_router
@@ -146,36 +148,46 @@ app.add_middleware(SSOAuthMiddleware)
 app.add_middleware(NotifyTokenMiddleware)
 
 # API 路由统一挂 /api 前缀，避免与页面路由（/、/traces、/rules）冲突
+def scoped_router(router: APIRouter, paths: set[str]) -> APIRouter:
+    """Keep the shared authentication/configuration APIs and stage-specific workflows."""
+    if not os.getenv("WRITING_AGENT_ID"):
+        return router
+    selected = APIRouter()
+    selected.routes.extend(route for route in router.routes if route.path in paths)
+    return selected
+
+
 app.include_router(ingestion_router, prefix="/api")
 app.include_router(traces_router, prefix="/api")
 app.include_router(trace_workbenches_router, prefix="/api")
 app.include_router(users_router, prefix="/api")
 # 三层用量观测（REQ-20261027-012631）：用户层/作品层聚合 API
 app.include_router(usage_router, prefix="/api")
-app.include_router(snapshot_router, prefix="/api")
+app.include_router(scoped_router(snapshot_router, {"/snapshots", "/snapshots/production", "/snapshots/{version}", "/snapshots/{version}/upgrade-diff"}), prefix="/api")
 # Harness 要素展示（前端「Harness 要素」页）
 app.include_router(elements_router, prefix="/api")
 # 提示词草稿审核/编辑/一键发版（Harness 要素页 Prompt Tab）
-app.include_router(prompt_assets_router, prefix="/api")
+app.include_router(scoped_router(prompt_assets_router, set()), prefix="/api")
+app.include_router(asset_candidates_router, prefix="/api")
 # 监测前端新增端点（D7 active 富化 / D8 agent-package）
 app.include_router(active_api_router, prefix="/api")
 # 观测事件流（REQ-20260920-193428）：GET /api/events/stream
 app.include_router(events_router, prefix="/api")
-app.include_router(agent_package_router, prefix="/api")
+app.include_router(scoped_router(agent_package_router, set()), prefix="/api")
 # 进化端单进化 Agent：手动触发 + 查询 + SSE（替换旧 adapt 4 阶段）
 app.include_router(evolve_router, prefix="/api")
 # 进化 Agent 实体 CRUD（作品绑定，REQ-20261001-131018）
 app.include_router(agents_router, prefix="/api")
 # 手动单次测试入口（数据集选择 + Agent 版本选择 + 独立测试记录，D-Q9）
-app.include_router(tests_router, prefix="/api")
+app.include_router(scoped_router(tests_router, set()), prefix="/api")
 # 评估 Agent（三功能解耦：评估从进化流水线抽离为独立顶层 Agent，S1/S7）
 # 配置版本谱系视图（前端版本谱系页 D8）
 app.include_router(versions_router, prefix="/api")
 # 数据集管理（数据闭环设计：分层数据集 golden/growing + revision 锁定）
-app.include_router(dataset_router, prefix="/api")
+app.include_router(scoped_router(dataset_router, set()), prefix="/api")
 # Promote 闸门（数据闭环设计：生产 trace → 数据集的清洗 + 标注流水线）
 # Benchmark 矩阵 + Runner（数据闭环设计：跨版本对比 + golden 升级重跑）
-app.include_router(benchmark_router, prefix="/api")
+app.include_router(scoped_router(benchmark_router, {"/benchmark/judges", "/benchmark/judge-groups", "/benchmark/judge-groups/{group_id}"}), prefix="/api")
 app.include_router(experiments_router, prefix="/api")
 app.include_router(experiment_internal_router, prefix="/api")
 # 大模型 API 配置（桌面化改造，2026-07-07：桌面端唯一 key 配置入口）

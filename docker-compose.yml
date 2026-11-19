@@ -15,42 +15,43 @@
 
 services:
   # ── 写作 Agent 执行端（用户用，有鉴权）──
-  executor:
+  executor: &executor-service
+    image: writer-executor
     build:
       context: .
       dockerfile: Dockerfile.executor
     container_name: writer-executor
     env_file:
       - executor/.env
-    environment:
+    environment: &executor-environment
       # 容器内 evolution 通知地址（用 docker 服务名，非 localhost）
-      - EVOLUTION_NOTIFY_URL=http://evolution:7789/api/ingestion/notify
-      - EVOLUTION_URL=http://evolution:7789
+      EVOLUTION_NOTIFY_URL: "http://evolution:7789/api/ingestion/notify"
+      EVOLUTION_URL: "http://evolution:7789"
       # 平台控制面（REQ-20260919-202344 Phase A）：artifact 拉取 / Run 绑定 / resume 门禁
-      - PLATFORM_URL=http://platform:7790
+      PLATFORM_URL: "http://platform:7790"
       # working harness 包（A/B 无 commit 时的本地直读源；生产版本走 Platform artifact）
-      - HARNESS_PACKAGE_PATH=/app/evolution/harnesses/repo
-      - TZ=Asia/Shanghai
+      HARNESS_PACKAGE_PATH: "/app/evolution/harnesses/repo"
+      TZ: "Asia/Shanghai"
       # 数据目录指向 volume 挂载点（源码不挂卷，根治旧方案源码被覆盖问题）
-      - DB_PATH=/app/executor/data/app.platform.core.db
-      - WORKSPACE_ROOT=/app/executor/data/workspace
+      DB_PATH: "/app/executor/data/app.platform.core.db"
+      WORKSPACE_ROOT: "/app/executor/data/workspace"
       # artifact 缓存与绑定 spool 落 executor_data 卷（重建容器不重下）
-      - ARTIFACT_CACHE_DIR=/app/executor/data/artifact_cache
-      - BINDING_SPOOL_DIR=/app/executor/data/binding_spool
-      - KNOWN_PRODUCTION_PATH=/app/executor/data/known_production.json
+      ARTIFACT_CACHE_DIR: "/app/executor/data/artifact_cache"
+      BINDING_SPOOL_DIR: "/app/executor/data/binding_spool"
+      KNOWN_PRODUCTION_PATH: "/app/executor/data/known_production.json"
       # 桌面化改造（2026-07-07）：内网通知 token，与 evolution NOTIFY_TOKEN 一致。
       # 部署时在 executor/.env 里设 EVOLUTION_NOTIFY_TOKEN=<同 evolution 的 NOTIFY_TOKEN>。
       # - EVOLUTION_NOTIFY_TOKEN=<强随机 token>
       # 积分制（2026-07-09）：平台代付 key + base_url（优先于 OPENAI_API_KEY）
-      - PLATFORM_API_KEY=${PLATFORM_API_KEY:-}
-      - PLATFORM_BASE_URL=${PLATFORM_BASE_URL:-}
+      PLATFORM_API_KEY: "${PLATFORM_API_KEY:-}"
+      PLATFORM_BASE_URL: "${PLATFORM_BASE_URL:-}"
       # 记忆系统（NWM 重构，2026-07-17）：去 Graphiti/FalkorDB，改 SQLite + sqlite-vec。
       # 配置项（MEMORY_EXTRACT_*/MEMORY_EMBED_*）走 executor/.env，不在此硬编码。
       # memory.db 落在 executor_data 卷内（DB_PATH 同目录的 memory/ 子目录）。
       # 基建指标埋点（REQ-20260918-144856）：OTLP 推送 collector；SEMCONV 固定
       # 新语义约定（http.server.request.duration + http.response.status_code）。
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-      - OTEL_SEMCONV_STABILITY_OPT_IN=http
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+      OTEL_SEMCONV_STABILITY_OPT_IN: "http"
     volumes:
       # 持久化：用户库 + workspace + checkpoints（用户数据，不可丢）
       # 源码不挂卷——留在镜像里，rebuild 自动更新（根治旧方案源码被 volume 覆盖的问题）。
@@ -76,20 +77,21 @@ services:
   # ── 平台控制面（REQ-20260919-202344 Phase A）──
   # 版本账本 / 发版门禁（子进程真实装配候选）/ artifact 打包分发 / Run 绑定 / resume 兼容判定。
   # 内网信任域：不经 nginx 暴露，只被 executor 与 evolution 经 docker 网络访问。
-  platform:
+  platform: &platform-service
+    image: writer-platform
     build:
       context: .
       dockerfile: Dockerfile.platform
     container_name: writer-platform
-    environment:
-      - TZ=Asia/Shanghai
+    environment: &platform-environment
+      TZ: "Asia/Shanghai"
       # 容器内服务地址（docker 服务名）
-      - PLATFORM_EXECUTOR_URL=http://executor:7788
+      PLATFORM_EXECUTOR_URL: "http://executor:7788"
       # harness bare repo（evolution push → platform checkout 门禁/打包）
-      - PLATFORM_BARE_REPO=/app/evolution/harness.git
+      PLATFORM_BARE_REPO: "/app/evolution/harness.git"
       # 账本与 artifact 落 platform_data 卷（版本历史不可丢）
-      - PLATFORM_DB_PATH=/app/platform/data/platform.db
-      - PLATFORM_ARTIFACT_DIR=/app/platform/data/artifacts
+      PLATFORM_DB_PATH: "/app/platform/data/platform.db"
+      PLATFORM_ARTIFACT_DIR: "/app/platform/data/artifacts"
     volumes:
       - platform_data:/app/platform/data
       # bare repo 只读：platform 只 clone 读，push 方仍是 evolution
@@ -107,25 +109,26 @@ services:
       start_period: 30s
 
   # ── 进化/监测后端（桌面化改造，2026-07-07：挂公网，nginx 反代 + SSO 鉴权）──
-  evolution:
+  evolution: &evolution-service
+    image: writer-evolution
     build:
       context: .
       dockerfile: Dockerfile.evolution
     container_name: writer-evolution
     env_file:
       - evolution/.env
-    environment:
+    environment: &evolution-environment
       # 容器内 executor 地址（用 docker 服务名）：trace 拉取 + SSO 回调 /api/auth/me
-      - EXECUTOR_URL=http://executor:7788
+      EXECUTOR_URL: "http://executor:7788"
       # 平台控制面（Phase A）：发版门禁 probe 与晋升 promote 改调 Platform
-      - PLATFORM_URL=http://platform:7790
-      - TZ=Asia/Shanghai
+      PLATFORM_URL: "http://platform:7790"
+      TZ: "Asia/Shanghai"
       # 数据库路径指向 volume（data/evolution.db），否则默认 evolution.db 解析到
       # 工作目录（非 volume），每次重建镜像就丢 llm_configs 等数据。
-      - EVOLUTION_DB=data/evolution.db
+      EVOLUTION_DB: "data/evolution.db"
       # V1 legacy 兼容：旧评估提取器仍需只读 workspace；Trace V2 卷宗只从
       # ArtifactRevision 和受治理 Payload 读取，绝不从可变 workspace 补造历史。
-      - EXECUTOR_WORKSPACE=/app/executor/data/workspace
+      EXECUTOR_WORKSPACE: "/app/executor/data/workspace"
       # 桌面化鉴权（2026-07-07）：SSO 白名单 + 内网通知 token + 加密主密钥。
       # 这三项是安全关键，不写在 .env（避免随源码泄露），由 compose environment 注入。
       # 部署时在 evolution/.env 里设真实值，或用 Docker secrets。
@@ -134,8 +137,8 @@ services:
       # - EVOLUTION_MASTER_KEY=<hex 64 字符>
       # 基建指标埋点（REQ-20260918-144856）：OTLP 推送 collector；SEMCONV 固定
       # 新语义约定（http.server.request.duration + http.response.status_code）。
-      - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
-      - OTEL_SEMCONV_STABILITY_OPT_IN=http
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+      OTEL_SEMCONV_STABILITY_OPT_IN: "http"
     volumes:
       # 持久化：evolution.db（监测数据 + llm_configs 加密 key，不可丢）
       # 只挂 data/ 子目录（2026-07-08）：源码不挂卷，增量更新 build+up 即生效，
@@ -163,6 +166,251 @@ services:
       retries: 3
       start_period: 30s
 
+  # 各套沿用相同镜像。账户和作品由创作端共享，私有运行、进化和版本数据分卷。
+  executor-outline:
+    <<: *executor-service
+    container_name: writer-executor-outline
+    depends_on:
+      executor: {condition: service_healthy}
+      platform-outline: {condition: service_healthy}
+    networks: [creative-outline]
+    environment:
+      <<: *executor-environment
+      WRITING_AGENT_ID: outline
+      PLATFORM_URL: http://platform-outline:7790
+      EVOLUTION_URL: http://evolution-outline:7789
+      EVOLUTION_NOTIFY_URL: http://evolution-outline:7789/api/ingestion/notify
+      ARTIFACT_CACHE_DIR: /app/executor/checkpoints/artifacts
+      BINDING_SPOOL_DIR: /app/executor/checkpoints/bindings
+      KNOWN_PRODUCTION_PATH: /app/executor/checkpoints/production.json
+      TARGET_TASK_ROOT: /app/executor/checkpoints/target_tasks
+    volumes:
+      - executor_data:/app/executor/data
+      - runtime_outline:/app/executor/checkpoints
+      - type: volume
+        source: harness_outline
+        target: /app/evolution/harnesses
+        read_only: true
+        volume: {nocopy: true}
+
+  evolution-outline:
+    <<: *evolution-service
+    container_name: writer-evolution-outline
+    networks: [creative-outline]
+    environment:
+      <<: *evolution-environment
+      WRITING_AGENT_ID: outline
+      SHARED_MIDDLEWARE_DIR: /app/evolution/shared_middleware
+      EXECUTOR_URL: http://executor-outline:7788
+      PLATFORM_URL: http://platform-outline:7790
+    volumes:
+      - evolution_outline:/app/evolution/data
+      - shared_middleware:/app/evolution/shared_middleware
+      - git_outline:/app/evolution/harness.git
+      - type: volume
+        source: harness_outline
+        target: /app/evolution/harnesses
+        read_only: false
+        volume: {nocopy: true}
+
+  platform-outline:
+    <<: *platform-service
+    container_name: writer-platform-outline
+    networks: [creative-outline]
+    depends_on:
+      evolution-outline:
+        condition: service_started
+    environment:
+      <<: *platform-environment
+      WRITING_AGENT_ID: outline
+      PLATFORM_EXECUTOR_URL: http://executor-outline:7788
+    volumes:
+      - platform_outline:/app/platform/data
+      - git_outline:/app/evolution/harness.git:ro
+
+  executor-volume:
+    <<: *executor-service
+    container_name: writer-executor-volume
+    depends_on:
+      executor: {condition: service_healthy}
+      platform-volume: {condition: service_healthy}
+    networks: [creative-volume]
+    environment:
+      <<: *executor-environment
+      WRITING_AGENT_ID: volume
+      PLATFORM_URL: http://platform-volume:7790
+      EVOLUTION_URL: http://evolution-volume:7789
+      EVOLUTION_NOTIFY_URL: http://evolution-volume:7789/api/ingestion/notify
+      ARTIFACT_CACHE_DIR: /app/executor/checkpoints/artifacts
+      BINDING_SPOOL_DIR: /app/executor/checkpoints/bindings
+      KNOWN_PRODUCTION_PATH: /app/executor/checkpoints/production.json
+      TARGET_TASK_ROOT: /app/executor/checkpoints/target_tasks
+    volumes:
+      - executor_data:/app/executor/data
+      - runtime_volume:/app/executor/checkpoints
+      - type: volume
+        source: harness_volume
+        target: /app/evolution/harnesses
+        read_only: true
+        volume: {nocopy: true}
+
+  evolution-volume:
+    <<: *evolution-service
+    container_name: writer-evolution-volume
+    networks: [creative-volume]
+    environment:
+      <<: *evolution-environment
+      WRITING_AGENT_ID: volume
+      SHARED_MIDDLEWARE_DIR: /app/evolution/shared_middleware
+      EXECUTOR_URL: http://executor-volume:7788
+      PLATFORM_URL: http://platform-volume:7790
+    volumes:
+      - evolution_volume:/app/evolution/data
+      - shared_middleware:/app/evolution/shared_middleware
+      - git_volume:/app/evolution/harness.git
+      - type: volume
+        source: harness_volume
+        target: /app/evolution/harnesses
+        read_only: false
+        volume: {nocopy: true}
+
+  platform-volume:
+    <<: *platform-service
+    container_name: writer-platform-volume
+    networks: [creative-volume]
+    depends_on:
+      evolution-volume:
+        condition: service_started
+    environment:
+      <<: *platform-environment
+      WRITING_AGENT_ID: volume
+      PLATFORM_EXECUTOR_URL: http://executor-volume:7788
+    volumes:
+      - platform_volume:/app/platform/data
+      - git_volume:/app/evolution/harness.git:ro
+
+  executor-chapter:
+    <<: *executor-service
+    container_name: writer-executor-chapter
+    depends_on:
+      executor: {condition: service_healthy}
+      platform-chapter: {condition: service_healthy}
+    networks: [creative-chapter]
+    environment:
+      <<: *executor-environment
+      WRITING_AGENT_ID: chapter
+      PLATFORM_URL: http://platform-chapter:7790
+      EVOLUTION_URL: http://evolution-chapter:7789
+      EVOLUTION_NOTIFY_URL: http://evolution-chapter:7789/api/ingestion/notify
+      ARTIFACT_CACHE_DIR: /app/executor/checkpoints/artifacts
+      BINDING_SPOOL_DIR: /app/executor/checkpoints/bindings
+      KNOWN_PRODUCTION_PATH: /app/executor/checkpoints/production.json
+      TARGET_TASK_ROOT: /app/executor/checkpoints/target_tasks
+    volumes:
+      - executor_data:/app/executor/data
+      - runtime_chapter:/app/executor/checkpoints
+      - type: volume
+        source: harness_chapter
+        target: /app/evolution/harnesses
+        read_only: true
+        volume: {nocopy: true}
+
+  evolution-chapter:
+    <<: *evolution-service
+    container_name: writer-evolution-chapter
+    networks: [creative-chapter]
+    environment:
+      <<: *evolution-environment
+      WRITING_AGENT_ID: chapter
+      SHARED_MIDDLEWARE_DIR: /app/evolution/shared_middleware
+      EXECUTOR_URL: http://executor-chapter:7788
+      PLATFORM_URL: http://platform-chapter:7790
+    volumes:
+      - evolution_chapter:/app/evolution/data
+      - shared_middleware:/app/evolution/shared_middleware
+      - git_chapter:/app/evolution/harness.git
+      - type: volume
+        source: harness_chapter
+        target: /app/evolution/harnesses
+        read_only: false
+        volume: {nocopy: true}
+
+  platform-chapter:
+    <<: *platform-service
+    container_name: writer-platform-chapter
+    networks: [creative-chapter]
+    depends_on:
+      evolution-chapter:
+        condition: service_started
+    environment:
+      <<: *platform-environment
+      WRITING_AGENT_ID: chapter
+      PLATFORM_EXECUTOR_URL: http://executor-chapter:7788
+    volumes:
+      - platform_chapter:/app/platform/data
+      - git_chapter:/app/evolution/harness.git:ro
+
+  executor-text:
+    <<: *executor-service
+    container_name: writer-executor-text
+    depends_on:
+      executor: {condition: service_healthy}
+      platform-text: {condition: service_healthy}
+    networks: [creative-text]
+    environment:
+      <<: *executor-environment
+      WRITING_AGENT_ID: text
+      PLATFORM_URL: http://platform-text:7790
+      EVOLUTION_URL: http://evolution-text:7789
+      EVOLUTION_NOTIFY_URL: http://evolution-text:7789/api/ingestion/notify
+      ARTIFACT_CACHE_DIR: /app/executor/checkpoints/artifacts
+      BINDING_SPOOL_DIR: /app/executor/checkpoints/bindings
+      KNOWN_PRODUCTION_PATH: /app/executor/checkpoints/production.json
+      TARGET_TASK_ROOT: /app/executor/checkpoints/target_tasks
+    volumes:
+      - executor_data:/app/executor/data
+      - runtime_text:/app/executor/checkpoints
+      - type: volume
+        source: harness_text
+        target: /app/evolution/harnesses
+        read_only: true
+        volume: {nocopy: true}
+
+  evolution-text:
+    <<: *evolution-service
+    container_name: writer-evolution-text
+    networks: [creative-text]
+    environment:
+      <<: *evolution-environment
+      WRITING_AGENT_ID: text
+      SHARED_MIDDLEWARE_DIR: /app/evolution/shared_middleware
+      EXECUTOR_URL: http://executor-text:7788
+      PLATFORM_URL: http://platform-text:7790
+    volumes:
+      - evolution_text:/app/evolution/data
+      - shared_middleware:/app/evolution/shared_middleware
+      - git_text:/app/evolution/harness.git
+      - type: volume
+        source: harness_text
+        target: /app/evolution/harnesses
+        read_only: false
+        volume: {nocopy: true}
+
+  platform-text:
+    <<: *platform-service
+    container_name: writer-platform-text
+    networks: [creative-text]
+    depends_on:
+      evolution-text:
+        condition: service_started
+    environment:
+      <<: *platform-environment
+      WRITING_AGENT_ID: text
+      PLATFORM_EXECUTOR_URL: http://executor-text:7788
+    volumes:
+      - platform_text:/app/platform/data
+      - git_text:/app/evolution/harness.git:ro
+
   # ── 官网 + 下载页（Astro 静态站，nginx 托管）──
   website:
     build:
@@ -181,6 +429,7 @@ services:
   # 内存预算（DEC-009，服务器 2核4G）：四容器合计硬顶 608M ≤ 640M 预算。
   # 业务不依赖观测栈（FR-006）：观测容器全挂不影响写作/进化。
   otel-collector:
+    networks: [default, creative-outline, creative-volume, creative-chapter, creative-text]
     image: otel/opentelemetry-collector:0.104.0
     container_name: writer-otel-collector
     command: ["--config=/etc/otelcol/config.yaml"]
@@ -257,6 +506,7 @@ services:
 
   # ── 公网入口：nginx 反代 + HTTPS ──
   nginx:
+    networks: [default, creative-outline, creative-volume, creative-chapter, creative-text]
     image: nginx:alpine
     container_name: writer-nginx
     ports:
@@ -286,6 +536,7 @@ services:
       - /tmp
 
 volumes:
+  shared_middleware:  # 只包含显式发布、按摘要选用的公共规则版本
   executor_data:    # executor/.env 的 db_path / workspace_root / checkpoints / memory / artifact 缓存都在此卷内
   evolution_data:   # evolution 的 evolution.db 在此卷内
   platform_data:    # 平台控制面：版本账本 platform.db + artifact 库（REQ-20260919-202344）
@@ -293,3 +544,29 @@ volumes:
   harness_git:      # evolution/harness.git/ 共享 bare repo（evolution push → platform checkout）
   prometheus_data:  # 观测栈：15 天指标（REQ-20260918-144856）
   grafana_data:     # 观测栈：Grafana 配置/面板状态
+  runtime_outline:
+  evolution_outline:
+  platform_outline:
+  git_outline:
+  harness_outline:
+  runtime_volume:
+  evolution_volume:
+  platform_volume:
+  git_volume:
+  harness_volume:
+  runtime_chapter:
+  evolution_chapter:
+  platform_chapter:
+  git_chapter:
+  harness_chapter:
+  runtime_text:
+  evolution_text:
+  platform_text:
+  git_text:
+  harness_text:
+
+networks:
+  creative-outline:
+  creative-volume:
+  creative-chapter:
+  creative-text:

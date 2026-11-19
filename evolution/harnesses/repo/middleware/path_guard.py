@@ -181,6 +181,7 @@ class FilesystemPathGuardMiddleware(AgentMiddleware):
         try:
             self.intervention_callback(
                 action=action,
+                middleware_name=type(self).__name__,
                 hook="wrap_tool_call",
                 affected_fields=["tool_call.args.file_path", "control_flow"],
                 reason=reason,

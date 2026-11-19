@@ -27,6 +27,7 @@ import type { OutlineFileEntry, WorkspacePanel, WorkspaceSummary } from "../../l
 import { SidebarStyle } from "./SidebarStyle";
 
 type SidebarProps = {
+  creative?: boolean;
   activePanel: WorkspacePanel;
   onPanelChange: (panel: WorkspacePanel) => void;
   workspaces: WorkspaceSummary[];
@@ -114,9 +115,10 @@ export function Sidebar({
   filesError = "",
   onRetryFiles,
   onRepairCharacters,
+  creative,
   footer,
 }: SidebarProps) {
-  const groups = treeGroups(files);
+  const groups = treeGroups(files).filter((group) => !creative || group.id !== "theme");
   const [booksExpanded, setBooksExpanded] = useState(false);
   const [charactersExpanded, setCharactersExpanded] = useState(true);
   const characterListId = useId();
@@ -226,7 +228,7 @@ export function Sidebar({
           {(
             groups.map((g) => {
               const Icon = GROUP_ICON[g.id];
-              if (g.id === "style") return <SidebarStyle key={`${activeWorkspaceId}:style`} workspaceId={activeWorkspaceId} hasStyle={g.rels.length > 0} active={activeRel === "文风.md" && activePanel === "artifacts"} onOpen={() => onSelectArtifact("文风.md")} filesLoading={filesLoading} filesError={filesError} />;
+              if (g.id === "style" && !creative) return <SidebarStyle key={`${activeWorkspaceId}:style`} workspaceId={activeWorkspaceId} hasStyle={g.rels.length > 0} active={activeRel === "文风.md" && activePanel === "artifacts"} onOpen={() => onSelectArtifact("文风.md")} filesLoading={filesLoading} filesError={filesError} />;
               if (g.id === "character") return (
                 <div className="sidebar-tree-group sidebar-characters" key={g.id} role="group" aria-label="人物卡">
                   <button className="sidebar-tree-group-label sidebar-character-toggle" type="button" aria-label="人物卡" aria-expanded={charactersExpanded} aria-controls={characterListId} onClick={() => setCharactersExpanded((v) => !v)}>
@@ -238,7 +240,7 @@ export function Sidebar({
                       const rel = relOfLabel("人物", label);
                       return <li key={rel}><button type="button" className={`sidebar-tree-item${rel === activeRel && activePanel === "artifacts" ? " active" : ""}`} onClick={() => onSelectArtifact(rel)} title={label}>{label}</button></li>;
                     })}</ul> : <p className="sidebar-empty">暂无人物卡<br /><span>通过对话创建人物卡。</span></p>}
-                    <button type="button" className="sidebar-skill-new sidebar-character-repair" disabled={!activeWorkspaceId} onClick={onRepairCharacters}>重做人物卡</button>
+                    {!creative && <button type="button" className="sidebar-skill-new sidebar-character-repair" disabled={!activeWorkspaceId} onClick={onRepairCharacters}>重做人物卡</button>}
                   </div> : null}
                 </div>
               );

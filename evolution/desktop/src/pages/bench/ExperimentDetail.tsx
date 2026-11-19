@@ -118,8 +118,7 @@ export default function ExperimentDetail() {
   const samples = experiment.samples.filter((item) => !sampleFilter || item.phase === sampleFilter);
   const canRestore = experiment.can_restore ?? (["failed", "unconfirmed", "activated"].includes(experiment.publish_status) || !!experiment.load_error);
   const currentCandidate = experiment.current_candidate ?? (experiment.current_round === experiment.best_candidate?.round ? experiment.best_candidate : null);
-  const steps = experiment.flow_version === 2 ? ["baseline", "evolving", "exploration", "regression", "validation", "review", "publish"] :
-    ["baseline", "evolving", "exploration", "validation", "review", "publish"];
+  const steps = ["baseline", "evolving", "exploration", "regression", "review", "publish"];
   const activeStep = steps.indexOf(experiment.phase);
   const activeSamples = experiment.samples.filter((item) => ["running", "scoring", "evaluation_error", "interrupted"].includes(item.status));
   const lastEvent = experiment.events.at(-1);
@@ -158,17 +157,16 @@ export default function ExperimentDetail() {
     </header>
     {error && <p role="alert" className="experiment-error">{error}</p>}
     <section className="experiment-section">
-      <div className="experiment-heading"><div><h2>实验进度</h2><p className="experiment-note">优化与回归通过后才做独立终验，通过后等待人工发布。</p></div>
+      <div className="experiment-heading"><div><h2>实验进度</h2><p className="experiment-note">优化与回归通过后才做本套回归，通过后等待人工发布。</p></div>
         <div className="experiment-actions"><button className="config-button" type="button" disabled={busy} onClick={() => void refresh()}>刷新</button>
           {STOPPABLE.has(experiment.status) && <button className="config-button" type="button" disabled={busy || experiment.status === "stopping"} onClick={() => void operate(stopExperiment)}>停止实验</button>}
           <button className="config-button" type="button" onClick={() => downloadTextFile(experiment.id + "-report.json", JSON.stringify(experiment, null, 2), "application/json;charset=utf-8")}>导出报告</button>
         </div>
       </div>
-      {experiment.flow_version !== 2 && <p className="experiment-note">历史实验沿用创建时的目标和流程，终验与回归按原规则核对。</p>}
       <ol className="experiment-stepper" aria-label="自动进化流程">{steps.map((phase, index) => <li key={phase}
         className={index === activeStep ? "active" : index < activeStep ? "done" : ""}
         aria-current={index === activeStep ? "step" : undefined}><span>{index + 1}</span>
-        {experiment.flow_version !== 2 && phase === "validation" ? "终验与回归" : PHASE_LABELS[phase]}</li>)}</ol>
+        {PHASE_LABELS[phase]}</li>)}</ol>
       <ExperimentProgress experiment={experiment} />
       <dl className="experiment-facts experiment-primary-facts">
         <div><dt>Harness 原版 → 当前候选</dt><dd><strong>v{experiment.baseline.version}</strong> → {currentCandidate ? "候选第 " + currentCandidate.round + " 轮" : candidatePlaceholder(experiment.phase, experiment.status, experiment.current_round)}</dd></div>
@@ -194,7 +192,7 @@ export default function ExperimentDetail() {
     </section>
 
     <section className="experiment-section experiment-publication"><div className="experiment-heading"><div><h2>人工审阅与发布</h2>
-      <p className="experiment-note">只发布通过独立终验的固定候选。生产变化后，需要重新验证。</p></div>
+      <p className="experiment-note">只发布通过本套回归的固定候选。生产变化后，需要重新验证。</p></div>
       <strong className={"experiment-state " + experiment.status}>{PUBLISH_LABELS[experiment.publish_status] ?? experiment.publish_status}</strong></div>
       {experiment.stale_reason && <p role="alert" className="experiment-error">{experiment.stale_reason}</p>}
       {experiment.loaded_revision && <p>执行端已确认版本：<code>{experiment.loaded_revision}</code></p>}
@@ -220,7 +218,7 @@ export default function ExperimentDetail() {
         </section>}
         <section className="experiment-section"><div className="experiment-heading"><h2>运行与 Trace</h2>
           <label className="experiment-filter">评测环节<select className="config-input" value={sampleFilter} onChange={(event) => setSampleFilter(event.target.value)}>
-            <option value="">全部环节</option>{["baseline", "exploration", "regression", "validation"].map((phase) =>
+            <option value="">全部环节</option>{["baseline", "exploration", "regression"].map((phase) =>
               <option key={phase} value={phase}>{PHASE_LABELS[phase]}</option>)}</select></label></div>
           <div className="experiment-table-scroll"><table className="data-table"><thead><tr><th>样本 / 目标</th><th>环节 / 版本</th><th>轮次 / 重复 / 尝试</th><th>状态</th><th>Trace / 输入</th></tr></thead><tbody>
             {samples.map((item) => <tr key={item.id}><td><strong>{item.package_title}</strong>{item.target && <small className="experiment-cell-note">{experimentTargetLabel(item.target)}</small>}</td>
@@ -280,16 +278,15 @@ export default function ExperimentDetail() {
     <section className="experiment-section"><h2>质量与完成率</h2><ExperimentScores report={experiment.report} />
       {experiment.report.reason && <p>{experiment.report.reason}</p>}
       {experiment.report.exploration && <ComparisonReport title="主攻优化复测" report={experiment.report.exploration} />}
-      {TASK_TYPES.filter((kind) => kind !== experiment.task_type).map((kind) => experiment.report.regressions?.[kind] &&
+      {[experiment.task_type].map((kind) => experiment.report.regressions?.[kind] &&
         <ComparisonReport key={kind} title={taskLabel(kind) + "回归"} report={experiment.report.regressions[kind]!} />)}
-      {experiment.report.validation && <ComparisonReport title="主攻独立终验" report={experiment.report.validation} />}
-      {!experiment.report.exploration && !experiment.report.validation && !experiment.report.reason && <p className="experiment-note">尚无完整比较报告。</p>}
+      {!experiment.report.exploration && !experiment.report.regressions?.[experiment.task_type] && !experiment.report.reason && <p className="experiment-note">尚无完整比较报告。</p>}
     </section>
 
         <section className="experiment-section"><h2>各轮评分对比</h2>
           {experiment.rounds.map((round) => <section key={round.round} className="experiment-round"><h3>第 {round.round} 轮</h3>
             <ComparisonReport title="本轮优化复测" report={round.report} />
-            {TASK_TYPES.filter((kind) => kind !== experiment.task_type).map((kind) => round.regressions?.[kind] &&
+            {[experiment.task_type].map((kind) => round.regressions?.[kind] &&
               <ComparisonReport key={kind} title={taskLabel(kind) + "本轮回归"} report={round.regressions[kind]!} />)}
           </section>)}
         </section>

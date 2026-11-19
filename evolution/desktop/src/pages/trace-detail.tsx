@@ -1,3 +1,4 @@
+import { RunMiddleware } from "@/components/harness/RunMiddleware";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
@@ -403,6 +404,7 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
           )}
         </div>
         {traceId && <TraceIdentifier key={traceId} traceId={traceId} />}
+        {traceId && <RunMiddleware key={"middleware:" + traceId} traceId={traceId} eventCount={run.event_count} />}
         {actionError && (
           <div className="action-error">{actionError}</div>
         )}

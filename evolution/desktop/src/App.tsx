@@ -1,4 +1,5 @@
-import { lazy, Suspense, useEffect } from "react";
+import { lazy, Suspense, useEffect, useSyncExternalStore } from "react";
+import { selectedAgent, WRITING_AGENTS } from "@/lib/writing-agent";
 import { HashRouter, Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { setUnauthorizedHandler } from "@/lib/api";
@@ -12,13 +13,10 @@ import ReviewReport from "@/pages/review-report";
 import Harness from "@/pages/harness";
 import Versions from "@/pages/versions";
 import BenchWorkbench from "@/pages/bench/Workbench";
-import BenchBatchDetail from "@/pages/bench/BatchDetail";
 import BenchRules from "@/pages/bench/Rules";
 import BenchDataset from "@/pages/bench/Dataset";
-import BenchArtifacts from "@/pages/bench/Artifacts";
 import ExperimentDetail from "@/pages/bench/ExperimentDetail";
 import ExperimentRecords from "@/pages/bench/ExperimentRecords";
-import Tests from "@/pages/tests";
 import TraceDetail from "@/pages/trace-detail";
 import AdminUsers from "@/pages/admin/users";
 import AdminInviteCodes from "@/pages/admin/invite-codes";
@@ -46,8 +44,16 @@ function UnauthorizedHandler() {
 /// Evolution 桌面端路由（scope 分家 + 管理后台收敛，2026-07-18）。
 /// 信息架构：基础 8 项不动 + 配置拆两（进化端模型/执行端模型）+ 管理后台 tab 化。
 function App() {
+  const agent = useSyncExternalStore(listenForAgent, selectedAgent);
+  if (!agent) return <main className="bench-page">
+    <header className="page-header"><h1>创作 Agent</h1></header>
+    <nav aria-label="选择创作 Agent" className="experiment-actions">
+      {Object.entries(WRITING_AGENTS).map(([key, value]) =>
+        <a className="config-button" key={key} href={`#/agents/${key}/harness`}>{value.name}</a>)}
+    </nav>
+  </main>;
   return (
-    <HashRouter>
+    <HashRouter key={agent} basename={`/agents/${agent}`}>
       <UnauthorizedHandler />
       <Routes>
         <Route path="/login" element={<Login />} />
@@ -59,17 +65,14 @@ function App() {
           <Route path="/evolve/:sessionId/review" element={<ReviewReport />} />
           <Route path="/harness" element={<Harness />} />
           <Route path="/versions" element={<Versions />} />
-          <Route path="/tests" element={<Tests />} />
           <Route path="/history" element={<Navigate to="/" replace />} />
 
           {/* 评测板块（REQ-20260921-135543 FR-001：独立分组 4 入口 + 旧路由重定向） */}
           <Route path="/bench" element={<BenchWorkbench />} />
           <Route path="/bench/experiments" element={<ExperimentRecords />} />
           <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
-          <Route path="/bench/batches/:batchId" element={<BenchBatchDetail />} />
           <Route path="/bench/rules" element={<BenchRules />} />
           <Route path="/bench/dataset" element={<BenchDataset />} />
-          <Route path="/bench/artifacts" element={<BenchArtifacts />} />
           <Route path="/benchmark" element={<Navigate to="/bench" replace />} />
           <Route path="/dataset" element={<Navigate to="/bench/dataset" replace />} />
 
@@ -99,3 +102,8 @@ function App() {
 }
 
 export default App;
+
+function listenForAgent(refresh: () => void) {
+  window.addEventListener("hashchange", refresh);
+  return () => window.removeEventListener("hashchange", refresh);
+}

@@ -16,6 +16,12 @@
 # ════════════════════════════════════════════════════════════════════════════
 set -e
 
+if [ -n "${WRITING_AGENT_ID:-}" ]; then
+  cd /app/evolution
+  python -m app.versioning.seed_agent
+  exec "$@"
+fi
+
 # ── 1. harness 独立仓库初始化 ──
 # 1a. 旧版迁移检测：重构前 volume 里是 current/（旧结构）+ 旧 bare repo 历史。
 #     重构后改用 repo/（独立 git 仓库）。检测到 current/ 存在 = 旧版升级：

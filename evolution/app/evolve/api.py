@@ -803,6 +803,9 @@ def publish_session(session_id: str, request: Request) -> dict[str, Any]:
     session = ev_db.get_session(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail=f"session {session_id} 不存在")
+    if session.get("status") == "candidate_ready":
+        from app.versioning.asset_candidates import freeze_session
+        return freeze_session(session_id)
     if session.get("status") != "pending_review":
         raise HTTPException(
             status_code=400,
@@ -811,6 +814,16 @@ def publish_session(session_id: str, request: Request) -> dict[str, Any]:
     # FR-006 / EDGE-005：并发发版/round 保护——同一 session 有未完成 round 时拒绝，
     # 避免 candidate 冻结与 converse/finalize 竞态 + registry.json 丢失更新。
     _reject_if_round_running(session_id, "发版")
+
+    import os
+    if os.getenv("WRITING_AGENT_ID"):
+        from app.versioning.asset_candidates import freeze_session
+        try:
+            result = freeze_session(session_id)
+        except ValueError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        ev_db.update_session(session_id, status="candidate_ready")
+        return result
 
     from app.core import git_ops
     from app.versioning import registry_repo
@@ -969,6 +982,11 @@ async def discard_session(session_id: str) -> dict[str, Any]:
             status_code=400,
             detail=f"session 状态为 {session.get('status')}，只有 pending_review 可丢弃",
         )
+
+    import os
+    if os.getenv("WRITING_AGENT_ID"):
+        ev_db.update_session(session_id, status="discarded")
+        return {"status": "discarded", "reset_to": ""}
 
     from app.core import git_ops
     from app.versioning import registry_repo

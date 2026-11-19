@@ -1,3 +1,4 @@
+import PageAgentSelector from "@/components/PageAgentSelector";
 import LlmConfigPanel from "./LlmConfigPanel";
 
 /**
@@ -17,6 +18,7 @@ export default function ExecutorConfigPage() {
           可保存多个配置，选一个激活，executor 运行时读激活项（约 60s 内生效）。
         </p>
       </header>
+      <PageAgentSelector />
       <LlmConfigPanel scope="executor" />
     </>
   );

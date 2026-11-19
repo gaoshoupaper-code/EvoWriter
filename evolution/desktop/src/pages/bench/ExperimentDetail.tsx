@@ -1,3 +1,4 @@
+import PageAgentSelector from "@/components/PageAgentSelector";
 import "@/components/bench/experiment-observation.css";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
@@ -112,7 +113,7 @@ export default function ExperimentDetail() {
     } finally { if (mounted.current && sequence === inputRequest.current) setInputLoading(false); }
   }
 
-  if (!experiment) return <div className="bench-page">{error ? <><p role="alert" className="experiment-error">{error}</p>
+  if (!experiment) return <div className="bench-page"><h1>实验详情</h1><PageAgentSelector />{error ? <><p role="alert" className="experiment-error">{error}</p>
     <button className="config-button" onClick={() => void refresh()}>重试</button></> : <p role="status">正在加载实验…</p>}</div>;
   const sample = experiment.samples.find((item) => item.id === selectedSample);
   const samples = experiment.samples.filter((item) => !sampleFilter || item.phase === sampleFilter);
@@ -155,6 +156,7 @@ export default function ExperimentDetail() {
       <p className="page-desc"><span className="experiment-type-label">{taskLabel(experiment.task_type)}</span>
         <span className={"experiment-state " + experiment.status}>{EXPERIMENT_STATUS[experiment.status] ?? experiment.status}</span></p>
     </header>
+    <PageAgentSelector />
     {error && <p role="alert" className="experiment-error">{error}</p>}
     <section className="experiment-section">
       <div className="experiment-heading"><div><h2>实验进度</h2><p className="experiment-note">优化与回归通过后才做本套回归，通过后等待人工发布。</p></div>

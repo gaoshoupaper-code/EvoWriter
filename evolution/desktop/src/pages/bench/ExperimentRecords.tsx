@@ -1,3 +1,4 @@
+import PageAgentSelector from "@/components/PageAgentSelector";
 import { currentTask } from "@/lib/writing-agent";
 import "@/components/bench/experiment-observation.css";
 import { Link } from "react-router-dom";
@@ -14,6 +15,7 @@ export default function ExperimentRecords() {
     <header className="page-header experiment-heading"><div><h1>实验记录</h1>
       <p className="page-desc">一次实验，一份完整记录。按写作阶段整理，最新创建的实验在前。</p></div>
       <Link className="config-button" to="/bench">前往工作台</Link></header>
+    <PageAgentSelector />
     {error && <p role="alert" className="experiment-error">更新失败：{error} <button className="action-link" onClick={refresh}>重试</button></p>}
     {loading ? <p role="status">正在加载实验记录…</p> : visible.length ? <div className="experiment-record-list">
       {visible.map((run) => <article className="experiment-record" key={run.id}>

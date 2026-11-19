@@ -1,10 +1,13 @@
 import { FormEvent, useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { CircleAlert } from "lucide-react";
 import { login, fetchMeOrNull } from "@/lib/api";
 
 export default function LoginPage() {
   const navigate = useNavigate();
+  const { state } = useLocation();
+  const requested = state?.returnTo;
+  const target = typeof requested === "string" && /^\/(?!\/)/.test(requested) && requested !== "/login" ? requested : "/";
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -16,20 +19,20 @@ export default function LoginPage() {
   useEffect(() => {
     // 本地 dev 模式：executor 未启动时直接进首页（绕过登录）
     if (import.meta.env.DEV) {
-      navigate("/", { replace: true });
+      navigate(target, { replace: true });
       return;
     }
     let cancelled = false;
     fetchMeOrNull().then((me) => {
       if (cancelled) return;
       if (me) {
-        navigate("/", { replace: true });
+        navigate(target, { replace: true });
       } else {
         setChecking(false);
       }
     });
     return () => { cancelled = true; };
-  }, [navigate]);
+  }, [navigate, target]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -38,7 +41,7 @@ export default function LoginPage() {
     setSubmitting(true);
     try {
       await login(username.trim(), password);
-      navigate("/", { replace: true });
+      navigate(target, { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "登录失败，请稍后重试。");
     } finally {

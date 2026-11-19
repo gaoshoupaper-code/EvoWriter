@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toast } from "sonner";
@@ -6,8 +6,7 @@ import { toast } from "sonner";
 /**
  * 更新提示横条（2026-07-08 新增）。
  *
- * 启动时 Rust 后端自动检查更新并 emit "update_available" event；
- * 本组件 listen 该 event，有新版时在顶部显示提示条（挂在 Shell.tsx 的 shell-main 内）。
+ * 首次挂载时检查更新，并接收用户在设置页主动检查的结果。
  * 用户点「更新内容 ▾」可展开看本次版本的更新条目（changelog，来自 latest-evo.json 的 notes）；
  * 用户点「立即更新」后下载 + 验签 + 安装 + 重启。
  *
@@ -22,6 +21,37 @@ interface UpdateInfo {
   version: string | null;
   date: string | null;
   body: string | null;
+}
+
+type InstallProgress =
+  | { phase: "connecting" | "retrying" | "installing" }
+  | { phase: "downloading"; downloaded: number; total: number | null };
+
+// 同一次安装会跨越路由切换。重挂提示条时接回原下载。
+let currentProgress: InstallProgress | null = null;
+const listeners = new Set<() => void>();
+const getProgress = () => currentProgress;
+function subscribe(listener: () => void) {
+  listeners.add(listener);
+  return () => { listeners.delete(listener); };
+}
+function setProgress(value: InstallProgress | null) {
+  currentProgress = value;
+  for (const listener of listeners) listener();
+}
+let startupCheck: Promise<UpdateInfo> | undefined;
+
+function updateLabel(progress: InstallProgress | null) {
+  if (!progress) return "立即更新";
+  if (progress.phase === "downloading") {
+    const downloaded = (progress.downloaded / 1_000_000).toFixed(1);
+    if (!progress.total) return `已下载 ${downloaded} MB`;
+    const total = (progress.total / 1_000_000).toFixed(1);
+    const percent = Math.min(100, Math.floor(progress.downloaded * 100 / progress.total));
+    return `已下载 ${downloaded} / ${total} MB（${percent}%）`;
+  }
+  if (progress.phase === "retrying") return "正在切换为普通下载…";
+  return progress.phase === "connecting" ? "正在连接下载…" : "正在验证并安装…";
 }
 
 /**
@@ -49,49 +79,42 @@ function parseChangelog(body: string | null): string[] {
 
 export default function UpdateBanner() {
   const [info, setInfo] = useState<UpdateInfo | null>(null);
-  const [installing, setInstalling] = useState(false);
+  const progress = useSyncExternalStore(subscribe, getProgress);
   const [expanded, setExpanded] = useState(false);
 
   useEffect(() => {
-    // 双保险拉更新信息：
-    //   1. listen 后端启动检查 emit 的 event（check_on_startup 发的）
-    //   2. 挂载后主动 invoke 一次 —— 兜底 event 竞态
-    // 后端 check_on_startup 在 setup 里 spawn，可能在前端 listen() 注册好之前
-    // 就 emit 了 event，瞬态 event 无 listener 即丢失。主动 invoke 走返回值不走 event，
-    // 确保组件挂载后一定能拿到结果。
-    let unlisten: UnlistenFn | undefined;
-    listen<UpdateInfo>("update_available", (event) => {
-      if (event.payload?.available) {
-        setInfo(event.payload);
+    let mounted = true;
+    const subscription = listen<UpdateInfo>("update_available", ({ payload }) => {
+      if (mounted && payload.available) {
+        startupCheck = Promise.resolve(payload);
+        setInfo(payload);
       }
-    }).then((fn) => {
-      unlisten = fn;
-    });
-
-    // 主动拉一次兜底（与 event 互不冲突：setInfo 幂等，都是 available 才设）
-    invoke<UpdateInfo>("check_update")
-      .then((info) => {
-        if (info.available) setInfo(info);
-      })
-      .catch(() => {
-        // 检查失败静默（更新是锦上添花）
-      });
+    }).catch(() => undefined);
+    startupCheck ??= invoke<UpdateInfo>("check_update");
+    startupCheck.then((result) => {
+      if (mounted && result.available) setInfo(result);
+    }).catch(() => { startupCheck = undefined; });
 
     return () => {
-      unlisten?.();
+      mounted = false;
+      void subscription.then(unlisten => unlisten?.());
     };
   }, []);
 
   async function handleInstall() {
-    if (installing) return;
+    if (currentProgress) return;
     if (!confirm("确认现在下载并安装更新？安装完成后应用将自动重启。")) return;
-    setInstalling(true);
+    setProgress({ phase: "connecting" });
+    let unlisten: UnlistenFn | undefined;
     try {
+      unlisten = await listen<InstallProgress>("update_progress", ({ payload }) => setProgress(payload));
       await invoke("install_update");
       // install_update 内部会 app.restart()，这行正常情况执行不到
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "更新安装失败");
-      setInstalling(false);
+      toast.error(err instanceof Error ? err.message : String(err || "更新安装失败"));
+    } finally {
+      unlisten?.();
+      setProgress(null);
     }
   }
 
@@ -119,9 +142,9 @@ export default function UpdateBanner() {
       <button
         className="update-banner-btn"
         onClick={handleInstall}
-        disabled={installing}
+        disabled={progress !== null}
       >
-        {installing ? "下载安装中…" : "立即更新"}
+        {updateLabel(progress)}
       </button>
       {expanded && hasChangelog && (
         <ul className="update-banner-changelog">

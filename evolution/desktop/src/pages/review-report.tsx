@@ -1,5 +1,7 @@
+import PageAgentSelector from "@/components/PageAgentSelector";
 import { useEffect, useState, useMemo } from "react";
 import { useParams, useNavigate } from "react-router-dom";
+import { selectedAgent, withAgent } from "@/lib/writing-agent";
 import { toast } from "sonner";
 import {
   getEvolveSession,
@@ -62,11 +64,13 @@ export default function ReviewReport() {
 
   async function handlePublish() {
     if (!sessionId) return;
+    const origin = selectedAgent();
     setActing(true);
     try {
       const resp = await publishEvolve(sessionId);
+      if (origin !== selectedAgent()) return;
       if (resp.status === "candidate") {
-        navigate("/bench?candidate=" + resp.source_commit + "&base=" + resp.base_commit);
+        navigate(withAgent("/bench?candidate=" + resp.source_commit + "&base=" + resp.base_commit, origin));
         return;
       }
       toast.success(`已发布为 v${resp.snapshot_version}`);
@@ -94,7 +98,7 @@ export default function ReviewReport() {
   }
 
   if (loading) return <div className="page-loading">加载审查报告…</div>;
-  if (!session) return <div className="page-loading">session 不存在</div>;
+  if (!session) return <div><h1>进化审查</h1><PageAgentSelector /><div className="page-loading">session 不存在</div></div>;
 
   const designDoc = session.design_doc;
   const changeLog = session.change_log;
@@ -113,6 +117,7 @@ export default function ReviewReport() {
         <span className={`session-status ${session.status}`}>{statusLabel(session.status)}</span>
       </header>
 
+      <PageAgentSelector />
       {/* session 摘要 */}
       <section className="review-summary">
         <div className="summary-grid">

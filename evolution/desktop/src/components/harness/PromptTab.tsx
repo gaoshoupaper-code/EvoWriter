@@ -1,5 +1,5 @@
-import { selectedAgent } from "@/lib/writing-agent";
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
+import { PageAgentContext } from "@/components/PageAgentSelector";
 import { toast } from "sonner";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type {
@@ -42,7 +42,8 @@ export function PromptTab({
     : false;
 
   // 编辑能力只对清单版本（有 prompt_files）开放；草稿态拉取失败不阻断浏览
-  const editable = !selectedAgent() && agents.some((a) => a.prompt_files?.length);
+  const scope = useContext(PageAgentContext);
+  const editable = !scope?.agent && agents.some((a) => a.prompt_files?.length);
 
   useEffect(() => {
     if (!editable) return;

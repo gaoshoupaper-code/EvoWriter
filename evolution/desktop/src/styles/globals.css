@@ -47,7 +47,7 @@
   --text-ui-sm: calc(var(--ui-font-size) - 2px);
   --text-ui-xs: calc(var(--ui-font-size) - 4px);
   --text-ui-2xs: calc(var(--ui-font-size) - 5px);
-  --font-sans: "MiSans", "HarmonyOS Sans SC", "PingFang SC",
+  --font-sans: "MiSans VF", "MiSans", "HarmonyOS Sans SC", "PingFang SC",
     "Microsoft YaHei UI", "Microsoft YaHei", Inter, ui-sans-serif, system-ui,
     -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
@@ -5562,6 +5562,40 @@ html[data-theme="dark"] {
 }
 
 /* ── Shell 主布局 ── */
+.evolution-app {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+}
+.evolution-app > .shell, .evolution-app > .auth-page, .evolution-app > .shell-loading {
+  flex: 1;
+  min-height: 0;
+}
+.evolution-app > .update-banner { margin: 0; border-radius: 0; }
+.page-agent-nav {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  margin: 8px 0 12px; flex: 0 0 auto;
+}
+.page-agent-nav > span { margin-right: 8px; font-size: var(--text-ui-sm); color: var(--muted); }
+.page-agent-nav a {
+  padding: 4px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--ink);
+  font-size: var(--text-ui-base);
+  text-decoration: none;
+  text-align: center;
+}
+.page-agent-nav a:hover, .page-agent-nav a:focus-visible {
+  background: var(--panel);
+  border-color: var(--line-strong);
+}
+.page-agent-nav a[aria-current] {
+  border-color: var(--teal);
+  background: color-mix(in srgb, var(--teal) 15%, transparent);
+  font-weight: 700;
+}
+
 .shell {
   display: flex;
   height: 100vh;

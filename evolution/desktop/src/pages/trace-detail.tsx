@@ -1,3 +1,4 @@
+import PageAgentSelector from "@/components/PageAgentSelector";
 import { RunMiddleware } from "@/components/harness/RunMiddleware";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
@@ -304,6 +305,7 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
         <header className="trace-detail-header">
           {!embedded && <button className="back-button" onClick={() => navigate(-1)}>← 返回</button>}
         </header>
+        {!embedded && <PageAgentSelector />}
         {availability === "preparing" ? (
           <div className="trace-detail-empty">Trace 准备中…</div>
         ) : (
@@ -319,6 +321,7 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
         <header className="trace-detail-header">
           {!embedded && <button className="back-button" onClick={() => navigate(-1)}>← 返回</button>}
         </header>
+        {!embedded && <PageAgentSelector />}
         <div className="trace-detail-error">{error}</div>
       </div>
     );
@@ -330,6 +333,7 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
         <header className="trace-detail-header">
           {!embedded && <button className="back-button" onClick={() => navigate(-1)}>← 返回</button>}
         </header>
+        {!embedded && <PageAgentSelector />}
         <div className="trace-detail-empty">trace 不存在</div>
       </div>
     );
@@ -478,6 +482,7 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
         )}
       </header>
 
+      {!embedded && <PageAgentSelector />}
       {/* run 概要条 */}
       <section className="trace-detail-summary">
         <div className="summary-item">

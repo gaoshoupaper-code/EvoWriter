@@ -1,3 +1,4 @@
+import PageAgentSelector from "@/components/PageAgentSelector";
 import { useCallback, useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { getVersions, type VersionListItem } from "@/lib/api";
@@ -106,6 +107,7 @@ export default function VersionsPage() {
           </button>
         </div>
       </header>
+      <PageAgentSelector />
 
       {/* DEC-005：账本不可达报错态（含重试），不渲染版本列表。
           后端 502 detail 已带「Platform 账本不可达/查询异常/解析失败」分类前缀，

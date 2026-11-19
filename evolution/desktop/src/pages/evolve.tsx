@@ -1,3 +1,4 @@
+import PageAgentSelector from "@/components/PageAgentSelector";
 import { useCallback, useEffect, useState } from "react";
 import { FileText } from "lucide-react";
 import { useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
@@ -141,6 +142,7 @@ export default function EvolvePage() {
         </button>
       </nav>
 
+      <PageAgentSelector />
       <div className="evolve-tab-panel">
         {tab === "workbench" && (
           <WorkbenchTab

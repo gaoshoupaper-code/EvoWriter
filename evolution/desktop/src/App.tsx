@@ -1,7 +1,8 @@
-import { lazy, Suspense, useEffect, useSyncExternalStore } from "react";
-import { selectedAgent, WRITING_AGENTS } from "@/lib/writing-agent";
-import { HashRouter, Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
+import { lazy, Suspense, useEffect } from "react";
+import { agentArea, isWritingAgent, withAgent } from "@/lib/writing-agent";
+import { HashRouter, Routes, Route, Navigate, useNavigate, useLocation, useParams } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
+import UpdateBanner from "@/components/UpdateBanner";
 import { setUnauthorizedHandler } from "@/lib/api";
 import Login from "@/pages/login";
 import EvolutionConfigPage from "@/pages/config/EvolutionConfigPage";
@@ -33,77 +34,81 @@ function UnauthorizedHandler() {
   useEffect(() => {
     setUnauthorizedHandler(() => {
       if (location.pathname !== "/login") {
-        navigate("/login", { replace: true });
+        navigate("/login", { replace: true, state: { returnTo: location.pathname + location.search + location.hash } });
       }
     });
     return () => setUnauthorizedHandler(null);
-  }, [navigate, location.pathname]);
+  }, [navigate, location]);
   return null;
 }
 
-/// Evolution 桌面端路由（scope 分家 + 管理后台收敛，2026-07-18）。
-/// 信息架构：基础 8 项不动 + 配置拆两（进化端模型/执行端模型）+ 管理后台 tab 化。
+function LegacyAgentLink() {
+  const { agent } = useParams();
+  const { pathname, search, hash, state } = useLocation();
+  if (!isWritingAgent(agent)) return <Navigate to="/" replace />;
+  const page = pathname.replace(/^\/agents\/[^/]+/, "") || "/";
+  if (page.startsWith("//")) return <Navigate to="/" replace />;
+  return <Navigate to={(agentArea(page) ? withAgent(page + search, agent) : page + search) + hash}
+    replace state={state} />;
+}
+
+function MovedPage({ to }: { to: string }) {
+  const { search, hash, state } = useLocation();
+  return <Navigate replace to={to + search + hash} state={state} />;
+}
+
 function App() {
-  const agent = useSyncExternalStore(listenForAgent, selectedAgent);
-  if (!agent) return <main className="bench-page">
-    <header className="page-header"><h1>创作 Agent</h1></header>
-    <nav aria-label="选择创作 Agent" className="experiment-actions">
-      {Object.entries(WRITING_AGENTS).map(([key, value]) =>
-        <a className="config-button" key={key} href={`#/agents/${key}/harness`}>{value.name}</a>)}
-    </nav>
-  </main>;
   return (
-    <HashRouter key={agent} basename={`/agents/${agent}`}>
-      <UnauthorizedHandler />
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route element={<Shell />}>
-          {/* 基础 8 项（D24：不动） */}
-          <Route path="/" element={<Monitor />} />
-          <Route path="/analysis" element={<Suspense fallback={<div className="page-loading">加载分析…</div>}><Analysis /></Suspense>} />
-          <Route path="/evolve" element={<Evolve />} />
-          <Route path="/evolve/:sessionId/review" element={<ReviewReport />} />
-          <Route path="/harness" element={<Harness />} />
-          <Route path="/versions" element={<Versions />} />
-          <Route path="/history" element={<Navigate to="/" replace />} />
+    <HashRouter>
+      <div className="evolution-app">
+        <UpdateBanner />
+        <UnauthorizedHandler />
+        <Routes>
+          <Route path="/agents/:agent/*" element={<LegacyAgentLink />} />
+          <Route path="/login" element={<Login />} />
+          <Route element={<Shell />}>
+            {/* 基础 8 项（D24：不动） */}
+            <Route path="/" element={<Monitor />} />
+            <Route path="/analysis" element={<Suspense fallback={<div className="page-loading">加载分析…</div>}><Analysis /></Suspense>} />
+            <Route path="/evolve" element={<Evolve />} />
+            <Route path="/evolve/:sessionId/review" element={<ReviewReport />} />
+            <Route path="/harness" element={<Harness />} />
+            <Route path="/versions" element={<Versions />} />
+            <Route path="/history" element={<MovedPage to="/" />} />
 
-          {/* 评测板块（REQ-20260921-135543 FR-001：独立分组 4 入口 + 旧路由重定向） */}
-          <Route path="/bench" element={<BenchWorkbench />} />
-          <Route path="/bench/experiments" element={<ExperimentRecords />} />
-          <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
-          <Route path="/bench/rules" element={<BenchRules />} />
-          <Route path="/bench/dataset" element={<BenchDataset />} />
-          <Route path="/benchmark" element={<Navigate to="/bench" replace />} />
-          <Route path="/dataset" element={<Navigate to="/bench/dataset" replace />} />
+            {/* 评测板块（REQ-20260921-135543 FR-001：独立分组 4 入口 + 旧路由重定向） */}
+            <Route path="/bench" element={<BenchWorkbench />} />
+            <Route path="/bench/experiments" element={<ExperimentRecords />} />
+            <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
+            <Route path="/bench/rules" element={<BenchRules />} />
+            <Route path="/bench/dataset" element={<BenchDataset />} />
+            <Route path="/benchmark" element={<MovedPage to="/bench" />} />
+            <Route path="/dataset" element={<MovedPage to="/bench/dataset" />} />
 
-          {/* 配置拆两个（D17），老 /config 重定向到 /config/evolution 保兼容；
-              评测组页 REQ-20260930-162207/DEC-010 */}
-          <Route path="/config/evolution" element={<EvolutionConfigPage />} />
-          <Route path="/config/executor" element={<ExecutorConfigPage />} />
-          <Route path="/config/judge-groups" element={<JudgeGroupPage />} />
-          <Route path="/config" element={<Navigate to="/config/evolution" replace />} />
+            {/* 配置拆两个（D17），老 /config 重定向到 /config/evolution 保兼容；
+                评测组页 REQ-20260930-162207/DEC-010 */}
+            <Route path="/config/evolution" element={<EvolutionConfigPage />} />
+            <Route path="/config/executor" element={<ExecutorConfigPage />} />
+            <Route path="/config/judge-groups" element={<JudgeGroupPage />} />
+            <Route path="/config" element={<MovedPage to="/config/evolution" />} />
 
-          {/* 管理后台嵌套 Layout（D11 + D13），仅超管可见（守卫在 Shell.tsx 菜单层） */}
-          <Route path="/admin" element={<AdminLayout />}>
-            <Route index element={<Navigate to="/admin/users" replace />} />
-            <Route path="users" element={<AdminUsers />} />
-            <Route path="invite-codes" element={<AdminInviteCodes />} />
-            <Route path="credits" element={<AdminCredits />} />
-            <Route path="credits/settings" element={<AdminCreditsSettings />} />
+            {/* 管理后台嵌套 Layout（D11 + D13），仅超管可见（守卫在 Shell.tsx 菜单层） */}
+            <Route path="/admin" element={<AdminLayout />}>
+              <Route index element={<Navigate to="/admin/users" replace />} />
+              <Route path="users" element={<AdminUsers />} />
+              <Route path="invite-codes" element={<AdminInviteCodes />} />
+              <Route path="credits" element={<AdminCredits />} />
+              <Route path="credits/settings" element={<AdminCreditsSettings />} />
+            </Route>
+
+            <Route path="/traces/:traceId" element={<TraceDetail />} />
           </Route>
-
-          <Route path="/traces/:traceId" element={<TraceDetail />} />
-        </Route>
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
-      <Toaster />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+        <Toaster />
+      </div>
     </HashRouter>
   );
 }
 
 export default App;
-
-function listenForAgent(refresh: () => void) {
-  window.addEventListener("hashchange", refresh);
-  return () => window.removeEventListener("hashchange", refresh);
-}

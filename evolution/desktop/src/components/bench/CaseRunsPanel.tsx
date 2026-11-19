@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
+import { withAgent } from "@/lib/writing-agent";
 import { X } from "lucide-react";
 
 import {
@@ -272,7 +273,7 @@ function RunDetail({
         {run.trace_id ? (
           <p className="bench-run-note">
             该行已跑出 trace（生成完成、评分阶段失败）：
-            <Link className="action-link" to={`/traces/${run.trace_id}?tab=artifacts`}>
+            <Link className="action-link" to={withAgent(`/traces/${run.trace_id}?tab=artifacts`)}>
               在运行观测中查看已产出产物
             </Link>
           </p>
@@ -291,7 +292,7 @@ function RunDetail({
         </p>
         {run.trace_id && (
           <p className="bench-run-note">
-            <Link className="action-link" to={`/traces/${run.trace_id}?tab=artifacts`}>
+            <Link className="action-link" to={withAgent(`/traces/${run.trace_id}?tab=artifacts`)}>
               在运行观测中查看该 trace
             </Link>
           </p>
@@ -321,7 +322,7 @@ function RunDetail({
           {rulePassed == null ? "—" : rulePassed ? "：过" : "：未过"}
         </span>
         {run.trace_id && (
-          <Link className="action-link" to={`/traces/${run.trace_id}?tab=artifacts`}>
+          <Link className="action-link" to={withAgent(`/traces/${run.trace_id}?tab=artifacts`)}>
             运行观测产物
           </Link>
         )}

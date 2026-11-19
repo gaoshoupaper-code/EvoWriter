@@ -1,3 +1,4 @@
+import PageAgentSelector from "@/components/PageAgentSelector";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, ChevronLeft, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -178,6 +179,7 @@ export default function MonitorPage() {
         </button>
       </header>
 
+      <PageAgentSelector />
       <div className="workbench-toolbar" aria-label="运行筛选">
         <select
           value={workload}

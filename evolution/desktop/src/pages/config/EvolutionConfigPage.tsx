@@ -1,3 +1,4 @@
+import PageAgentSelector from "@/components/PageAgentSelector";
 import LlmConfigPanel from "./LlmConfigPanel";
 import AppUpdateCheck from "./AppUpdateCheck";
 
@@ -17,6 +18,7 @@ export default function EvolutionConfigPage() {
           可保存多个配置，选一个激活——运行时读激活项。API Key 加密存储在服务器，运行时解密调用。
         </p>
       </header>
+      <PageAgentSelector />
       <LlmConfigPanel scope="evolution" />
       <AppUpdateCheck />
     </>

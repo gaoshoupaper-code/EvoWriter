@@ -12,8 +12,11 @@
 //! - 进化端复用写作端同一把签名密钥（公钥本就在 git 里，无安全顾虑）。
 
 use serde::Serialize;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 use tauri_plugin_updater::UpdaterExt;
+mod ranged;
 
 /// 更新信息（emit 到前端 / 命令返回值）。
 #[derive(Debug, Clone, Serialize)]
@@ -41,7 +44,7 @@ pub struct UpdateInfo {
 /// 检查更新（不自动安装）。
 ///
 /// 前端用法：`const info = await invoke("check_update")`
-/// 也可 listen "update_available" event（启动时 Rust 自动调一次）。
+/// 主动检查时也通知已挂载的更新提示条。
 #[tauri::command]
 pub async fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
     let updater = app
@@ -60,7 +63,6 @@ pub async fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
                 date: update.date.map(|d| d.to_string()),
                 body: update.body.clone(),
             };
-            // emit 给前端（启动时自动检查的场景用 event，主动调用用返回值）
             let _ = app.emit("update_available", info.clone());
             Ok(info)
         }
@@ -88,6 +90,14 @@ pub async fn check_update(app: AppHandle) -> Result<UpdateInfo, String> {
     }
 }
 
+#[derive(Clone, Copy, Serialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum InstallProgress {
+    Downloading { downloaded: u64, total: Option<u64> },
+    Retrying,
+    Installing,
+}
+
 /// 下载并安装更新（用户确认后调）。
 ///
 /// 前端用法：`await invoke("install_update")`
@@ -104,19 +114,57 @@ pub async fn install_update(app: AppHandle) -> Result<(), String> {
         .map_err(|e| format!("检查更新失败: {e}"))?
         .ok_or_else(|| "没有可用更新".to_string())?;
 
-    // 下载 + 验签（pubkey 在 tauri.conf.json 配置）+ 安装
-    // 进度回调（已下载字节, 总字节 Option）；完成回调无参。
-    // 当前不展示下载进度（只做"提示 + 确认安装"），留空回调。
+    let counters = Mutex::new((0_u64, None::<Instant>));
+    let report = |chunk: usize, total: Option<u64>| {
+        let mut state = counters.lock().unwrap();
+        state.0 += chunk as u64;
+        if state
+            .1
+            .is_none_or(|at| at.elapsed() >= Duration::from_millis(200))
+            || total == Some(state.0)
+        {
+            let _ = app.emit(
+                "update_progress",
+                InstallProgress::Downloading {
+                    downloaded: state.0,
+                    total,
+                },
+            );
+            state.1 = Some(Instant::now());
+        }
+    };
+    let installing = || {
+        let _ = app.emit("update_progress", InstallProgress::Installing);
+    };
+    if cfg!(target_os = "windows") {
+        if !ranged::release_url_matches(&update.download_url, &update.version) {
+            return Err("安装包地址与已公布的进化端版本不符".into());
+        }
+        if let Some(bytes) =
+            ranged::fetch(&update.download_url, |len, total| report(len, Some(total))).await
+        {
+            let config = &app.config().plugins.0;
+            let key = config
+                .get("updater")
+                .and_then(|c| c["pubkey"].as_str())
+                .ok_or("缺少内置更新公钥")?;
+            installing();
+            ranged::install_verified(bytes, key, &update.signature, |verified| {
+                update
+                    .install(verified)
+                    .map_err(|e| format!("安装失败: {e}"))
+            })?;
+            app.restart();
+        }
+        let _ = app.emit("update_progress", InstallProgress::Retrying);
+    }
+    // Range 传输不受支持或中断时，原更新器重新下载并独立验签。
+    *counters.lock().unwrap() = (0, None);
     update
-        .download_and_install(|_downloaded, _total| {}, || {})
+        .download_and_install(report, installing)
         .await
         .map_err(|e| format!("下载安装失败: {e}"))?;
 
     // 安装完成，重启 App
     app.restart();
-}
-
-/// 启动时自动检查更新（只检查 + emit event，不自动装）。在 lib.rs setup 里调用。
-pub async fn check_on_startup(app: &AppHandle) {
-    let _ = check_update(app.clone()).await;
 }

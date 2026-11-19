@@ -1,3 +1,4 @@
+import PageAgentSelector from "@/components/PageAgentSelector";
 import { useEffect, useState, useCallback } from "react";
 import { toast } from "sonner";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -18,7 +19,7 @@ import { CandidateEditor } from "@/components/harness/CandidateEditor";
 import { MiddlewareTab } from "@/components/harness/MiddlewareTab";
 
 /**
- * Harness 要素透视页（数据源：Platform 账本 / 架构清单，REQ-20261006-130414）。
+ * Harness 资产透视页（数据源：Platform 账本 / 架构清单，REQ-20261006-130414）。
  *
  * 当前版本的主 Agent 和助手均显示 Prompt、Skills、Tools、Middleware。
  *
@@ -77,7 +78,7 @@ export default function HarnessPage() {
 
     Promise.all([
       getHarnessElements(selectedVersion).catch((err) => {
-        toast.error(err instanceof Error ? err.message : "读取 Harness 要素失败");
+        toast.error(err instanceof Error ? err.message : "读取 Harness 资产失败");
         return null;
       }),
       getUpgradeDiff(selectedVersion).catch((err) => {
@@ -121,18 +122,20 @@ export default function HarnessPage() {
     setSelectedSub(null);
   }, [selectedVersion]);
 
-  if (loading) return <div className="page-loading">加载版本列表…</div>;
+  const header = (
+    <header className="page-header">
+      <h1>Harness 资产</h1>
+      <p className="page-desc">按版本查看本套的提示词、技能、工具、中间件和助手。</p>
+      <PageAgentSelector />
+    </header>
+  );
+  if (loading) return <div className="harness-page">{header}<div className="page-loading">加载版本列表…</div></div>;
 
   // DEC-005：账本不可达报错态（含重试），不渲染任何版本数据
   if (loadError) {
     return (
       <div className="harness-page">
-        <header className="page-header">
-          <h1>Harness 要素</h1>
-          <p className="page-desc">
-            按版本查看本套的提示词、技能、工具、中间件和助手。
-          </p>
-        </header>
+        {header}
         <div className="evo-state-error">
           {loadError || "Platform 账本不可达"}
           <br />
@@ -144,12 +147,7 @@ export default function HarnessPage() {
 
   return (
     <div className="harness-page">
-      <header className="page-header">
-        <h1>Harness 要素</h1>
-        <p className="page-desc">
-          按版本查看本套的提示词、技能、工具、中间件和助手。
-        </p>
-      </header>
+      {header}
 
       {/* 版本选择 */}
       <div className="harness-version-bar">
@@ -258,7 +256,7 @@ export default function HarnessPage() {
           </Tabs>
         </>
       ) : (
-        <div className="page-loading">加载 Harness 要素…</div>
+        <div className="page-loading">加载 Harness 资产…</div>
       )}
     </div>
   );

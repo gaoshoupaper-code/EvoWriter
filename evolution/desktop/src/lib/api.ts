@@ -176,9 +176,20 @@ async function _fetch(input: string, init: RequestInit): Promise<RelayResponse> 
     stream: false,
   };
 
+  // Private responses may trigger follow-up requests. Discard them when their suite closes.
+  const scoped = input.startsWith("/evolution-api/");
+  const originAgent = selectedAgent();
+  function checkRequestAgent() {
+    if (scoped && originAgent !== selectedAgent()) {
+      throw new DOMException("已切换 Agent", "AbortError");
+    }
+  }
+
   // 503 重试循环：executor 不可达时静默重试，不跳登录
   for (let attempt = 0; ; attempt++) {
+    checkRequestAgent();
     const relay = await invoke<HttpRelayResponse>("http_request", { request: reqArgs });
+    checkRequestAgent();
 
     if (relay.status === 503 && attempt < _RETRY_503_MAX) {
       await sleep(_RETRY_503_BASE_MS * Math.pow(2, attempt)); // 1s/2s/4s

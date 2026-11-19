@@ -1,3 +1,4 @@
+import PageAgentSelector from "@/components/PageAgentSelector";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertCircle, CheckCircle2, RefreshCw } from "lucide-react";
 import { useNavigate } from "react-router-dom";
@@ -66,6 +67,7 @@ export default function AnalysisPage() {
         </button>
       </header>
 
+      <PageAgentSelector />
       <div className="analysis-meta-bar">
         <div className="segmented-control" aria-label="分析时间窗">
           {WINDOWS.map((window) => (

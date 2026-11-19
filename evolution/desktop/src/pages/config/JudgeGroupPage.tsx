@@ -1,3 +1,4 @@
+import PageAgentSelector from "@/components/PageAgentSelector";
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import {
@@ -129,6 +130,7 @@ export default function JudgeGroupPage() {
           同维成功 ≥2 才出分。1 人组等价于旧的单 judge 评测。
         </p>
       </header>
+      <PageAgentSelector />
 
       <div className="config-toolbar">
         <button

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import { withAgent } from "@/lib/writing-agent";
 import {
   getSharedVersion, getSharedVersions, listCandidateAssets, readCandidateAsset,
   saveAssetCandidate, shareMiddleware,
@@ -90,7 +91,7 @@ export function CandidateEditor() {
         value={changes[path] ?? original ?? ""} onChange={(event) => edit(event.target.value)} />
       <button type="button" disabled={busy || !Object.keys(changes).length} onClick={save}>保存候选并查看差异</button>
       {saved && <><pre className="experiment-prewrap">{saved.diff}</pre>
-        <Link to={`/bench?candidate=${saved.commit}&base=${base}`}>评测此候选版</Link></>}
+        <Link to={withAgent(`/bench?candidate=${saved.commit}&base=${base}`)}>评测此候选版</Link></>}
     </>}
     {error && <p role="alert">{error}</p>}
   </section>;

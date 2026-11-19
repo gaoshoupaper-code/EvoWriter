@@ -28,13 +28,6 @@ pub fn run() {
                 tauri::async_runtime::block_on(async move { AppState::init(&handle).await });
             app.manage(Arc::new(state) as SharedState);
 
-            // 启动时自动检查更新（只 emit event 提示，不自动装）。
-            // 失败静默——更新是锦上添花，不该阻塞启动。
-            let update_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                updater::check_on_startup(&update_handle).await;
-            });
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

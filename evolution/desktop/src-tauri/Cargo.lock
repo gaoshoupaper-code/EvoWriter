@@ -822,11 +822,13 @@ dependencies = [
 
 [[package]]
 name = "evolution-desktop"
-version = "0.2.93"
+version = "0.2.94"
 dependencies = [
+ "base64 0.22.1",
  "cookie",
  "cookie_store 0.21.1",
  "futures-util",
+ "minisign-verify",
  "reqwest 0.12.28",
  "serde",
  "serde_json",

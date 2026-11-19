@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { useEffect, useLayoutEffect, useState } from "react";
+import { Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Activity,
   BrainCircuit,
@@ -17,9 +17,9 @@ import {
   Wrench,
   type LucideIcon } from "lucide-react";
 import { fetchMeOrNull, logout, type AuthMe } from "@/lib/api";
-import { selectedAgent, WRITING_AGENTS } from "@/lib/writing-agent";
-import UpdateBanner from "@/components/UpdateBanner";
+import { agentArea, pageAgent, rememberPageAgent, withAgent } from "@/lib/writing-agent";
 import ChangePasswordDialog from "@/components/ChangePasswordDialog";
+import { PageAgentContext } from "@/components/PageAgentSelector";
 import { UiFontSizeControl, applyUiFontSize, loadUiFontSize } from "./ui/UiFontSizeControl";
 
 /**
@@ -62,7 +62,7 @@ const NAV_GROUPS: NavGroup[] = [
   {
     title: "系统资产",
     items: [
-      { to: "/harness", label: "Harness 要素", end: false, icon: Wrench },
+      { to: "/harness", label: "Harness 资产", end: false, icon: Wrench },
       { to: "/versions", label: "版本谱系", end: false, icon: FileArchive },
     ],
   },
@@ -78,21 +78,31 @@ const SUPER_ADMIN_NAV_ITEMS: NavItem[] = [
 
 export default function Shell() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const returnTo = location.pathname + location.search + location.hash;
+  const area = agentArea(location.pathname);
+  const agent = area && pageAgent(area, location.search);
+  useLayoutEffect(() => {
+    if (area && agent) rememberPageAgent(area, agent);
+  }, [area, agent]);
   const [me, setMe] = useState<AuthMe | null>(null);
   const [checking, setChecking] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
     // 守卫重试：fetchMeOrNull 失败后重试 2 次（间隔 1s/2s），
     // 全部失败才跳登录。避免 executor 瞬时抖动 → 误跳登录页闪烁。
     async function checkAuth() {
       for (let attempt = 0; attempt < 3; attempt++) {
         const user = await fetchMeOrNull();
+        if (cancelled) return;
         if (user) {
           setMe(user);
           setChecking(false);
           return;
         }
         if (attempt < 2) await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+        if (cancelled) return;
       }
       // 全部失败：dev 模式用 mock 绕过，生产跳登录
       if (import.meta.env.DEV) {
@@ -100,16 +110,25 @@ export default function Shell() {
         setChecking(false);
         return;
       }
-      navigate("/login", { replace: true });
+      navigate("/login", { replace: true, state: { returnTo } });
     }
     checkAuth();
-  }, [navigate]);
+    return () => { cancelled = true; };
+  }, [navigate, returnTo]);
 
   // ── 界面字号(DESIGN-UI.md):启动恢复上次选择 ──
   useEffect(() => { applyUiFontSize(loadUiFontSize()); }, []);
 
   if (checking || !me) {
     return <div className="shell-loading">加载中…</div>;
+  }
+
+  // Keep a detail URL bound to its original suite when reopening it from history.
+  const query = new URLSearchParams(location.search);
+  const privateDetail = /^\/(traces\/|bench\/experiments\/|evolve\/)/.test(location.pathname)
+    || query.has("candidate") || query.has("session");
+  if (agent && privateDetail && query.get("agent") !== agent) {
+    return <Navigate replace to={withAgent(location.pathname + location.search, agent) + location.hash} />;
   }
 
   // 构建分组导航（FR-009）：基础三组 + 超管组（仅超管可见）。
@@ -131,9 +150,7 @@ export default function Shell() {
       <aside className="shell-sidebar">
         <div className="shell-brand">
           <Dna className="shell-brand-icon" size={19} />
-          <a className="shell-brand-text" href="#/" title="返回四个创作入口">
-            {WRITING_AGENTS[selectedAgent() ?? "outline"].name} · 切换 Agent
-          </a>
+          <span className="shell-brand-text">思衍进化</span>
         </div>
         <nav className="shell-nav">
           {groups.map((group) => (
@@ -173,8 +190,9 @@ export default function Shell() {
         </div>
       </aside>
       <main className="shell-main">
-        <UpdateBanner />
-        <Outlet context={{ isSuperAdmin: me.is_super_admin }} />
+        <PageAgentContext.Provider value={{ area, agent, pathname: location.pathname, returnTo }}>
+          <Outlet key={agent} context={{ isSuperAdmin: me.is_super_admin }} />
+        </PageAgentContext.Provider>
       </main>
     </div>
   );

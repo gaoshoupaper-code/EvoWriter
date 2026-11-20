@@ -178,6 +178,15 @@ def replace_package(package_id: str, body: PackageCreate):
         _failure(exc)
 
 
+@router.delete("/packages/{package_id}")
+def delete_package(package_id: str):
+    try:
+        repo.delete_package(package_id)
+    except KeyError as exc:
+        _failure(exc)
+    return {"ok": True}
+
+
 @router.get("/rules")
 def list_rules(task_type: str | None = Query(None)):
     scope = require_suite()

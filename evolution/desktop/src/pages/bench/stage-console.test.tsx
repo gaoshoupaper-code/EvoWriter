@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { EvolutionExperiments } from "@/components/bench/EvolutionExperiments";
 import { StagePackages } from "@/components/bench/StagePackages";
@@ -10,7 +10,7 @@ vi.mock("@/lib/api", () => ({
   getExperimentOptions: vi.fn(), listExperimentPackages: vi.fn(), listExperimentRules: vi.fn(),
   listExperiments: vi.fn(), startExperiment: vi.fn(), saveExperimentRule: vi.fn(),
   getExperimentPackage: vi.fn(), getExperimentPackageTemplates: vi.fn(), importExperimentPackage: vi.fn(),
-  replaceExperimentPackage: vi.fn(),
+  replaceExperimentPackage: vi.fn(), deleteExperimentPackage: vi.fn(),
 }));
 vi.mock("@/lib/download", () => ({ downloadTextFile: vi.fn() }));
 
@@ -128,6 +128,66 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
     await waitFor(() => expect(api.replaceExperimentPackage).toHaveBeenCalledWith(sample.id, expect.objectContaining({
       input: { ...input, input_revision: undefined, skills: [{ stage: "text", name: "对白", content }] },
     })));
+  });
+
+  it("页内编辑保存新版本并保留用途、目标和技能", async () => {
+    window.location.hash = "#/agents/text/bench";
+    const sample = packages.find((item) => item.task_type === "chapter_text")!;
+    const path = "章纲/第001章.md";
+    const input = { demand_md: "原需求", files: { [path]: "旧章纲" }, skills: [{ name: "对白" }],
+      confirmation_rules: "第一条\r\n第二条", input_revision: sample.input_revision };
+    const revision = { ...sample, id: "revised-text", title: "新题目", input_revision: "new-revision" };
+    api.getExperimentPackage.mockResolvedValue({ ...sample, input } as never);
+    api.replaceExperimentPackage.mockResolvedValue(revision as never);
+    api.listExperimentPackages.mockResolvedValueOnce({ items: [sample] as never[], can_read_content: true })
+      .mockResolvedValueOnce({ items: [revision] as never[], can_read_content: true });
+    render(<StagePackages />);
+    const row = (await screen.findByText(sample.title)).closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: "编辑" }));
+    fireEvent.change(await screen.findByLabelText("题目名称"), { target: { value: revision.title } });
+    fireEvent.change(screen.getByLabelText("完整需求"), { target: { value: "新需求" } });
+    fireEvent.change(screen.getByLabelText(path), { target: { value: "新章纲" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存为新版本" }));
+    await waitFor(() => expect(api.replaceExperimentPackage).toHaveBeenCalledWith(sample.id, {
+      title: revision.title, purpose: sample.purpose, target: sample.target,
+      input: { ...input, demand_md: "新需求", files: { [path]: "新章纲" }, input_revision: undefined },
+    }));
+    expect(await screen.findByText(revision.title)).toBeInTheDocument();
+    expect(screen.queryByText(sample.title)).not.toBeInTheDocument();
+  });
+
+  it("确认删除后刷新题库并显示空组提示", async () => {
+    const sample = packages[0];
+    api.listExperimentPackages.mockResolvedValueOnce({ items: [sample] as never[], can_read_content: false })
+      .mockResolvedValueOnce({ items: [], can_read_content: false });
+    api.deleteExperimentPackage.mockResolvedValue({ ok: true });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValueOnce(false).mockReturnValueOnce(true);
+    try {
+      render(<StagePackages />);
+      const row = (await screen.findByText(sample.title)).closest("tr")!;
+      expect(within(row).getByRole("button", { name: "编辑" })).toBeDisabled();
+      const remove = within(row).getByRole("button", { name: "删除" });
+      fireEvent.click(remove);
+      expect(api.deleteExperimentPackage).not.toHaveBeenCalled();
+      fireEvent.click(remove);
+      expect(api.deleteExperimentPackage).toHaveBeenCalledWith(sample.id);
+      expect(await screen.findByText(/本组暂无题目/)).toBeInTheDocument();
+      expect(api.listExperimentPackages).toHaveBeenCalledTimes(2);
+      expect(screen.queryByText(sample.title)).not.toBeInTheDocument();
+    } finally { confirm.mockRestore(); }
+  });
+
+  it("切换 Agent 时不提交仍在读取的导入文件", async () => {
+    let finishRead!: (value: string) => void;
+    const content = new Promise<string>((resolve) => { finishRead = resolve; });
+    const file = new File([], "sample.json");
+    Object.defineProperty(file, "text", { value: () => content });
+    const page = render(<StagePackages />);
+    fireEvent.change(screen.getByLabelText("选择资料包"), { target: { files: [file] } });
+    window.location.hash = "#/agents/text/bench";
+    page.unmount();
+    await act(async () => { finishRead("{}"); });
+    expect(api.importExperimentPackage).not.toHaveBeenCalled();
   });
 
   it("工作台只展示未结束实验，历史实验从实验记录查看", async () => {

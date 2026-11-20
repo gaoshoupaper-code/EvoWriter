@@ -1,8 +1,9 @@
 import { currentTask } from "@/lib/writing-agent";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Download, Upload } from "lucide-react";
 import {
-  getExperimentPackage, getExperimentPackageTemplates, importExperimentPackage, listExperimentPackages, replaceExperimentPackage,
+  deleteExperimentPackage, getExperimentPackage, getExperimentPackageTemplates, importExperimentPackage,
+  listExperimentPackages, replaceExperimentPackage,
   type ExperimentInput, type ExperimentPackage, type ExperimentPackageInput,
 } from "@/lib/api";
 import { PURPOSE_LABELS, TASK_LABELS, experimentTargetLabel } from "@/lib/experiment-types";
@@ -26,7 +27,14 @@ async function readSkills(files: File[]) {
   return skills;
 }
 
+function editedText(form: FormData, name: string, original: string) {
+  const value = String(form.get(name) ?? "");
+  // Textareas normalize line endings even when the content was left alone.
+  return value.replace(/\r\n?/g, "\n") === original.replace(/\r\n?/g, "\n") ? original : value;
+}
+
 export function StagePackages() {
+  const task = currentTask();
   const [packages, setPackages] = useState<ExperimentPackage[]>([]);
   const [canRead, setCanRead] = useState(false);
   const [dataset, setDataset] = useState<DatasetKey>("optimization");
@@ -35,71 +43,137 @@ export function StagePackages() {
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [selected, setSelected] = useState<(ExperimentPackage & { input: ExperimentInput }) | null>(null);
+  const [editing, setEditing] = useState(false);
   const [showOutlineImport, setShowOutlineImport] = useState(false);
+  const mounted = useRef(false);
+  const listRequest = useRef(0);
   const viewRequest = useRef(0);
+  const isCurrentAgent = useCallback(() => mounted.current && currentTask() === task, [task]);
 
   const refresh = useCallback(async () => {
+    const request = ++listRequest.current;
     const result = await listExperimentPackages();
-    setPackages(result.items); setCanRead(result.can_read_content);
-  }, []);
+    if (isCurrentAgent() && request === listRequest.current) {
+      setPackages(result.items); setCanRead(result.can_read_content);
+    }
+  }, [isCurrentAgent]);
   useEffect(() => {
-    void refresh().catch((cause) => setError(cause instanceof Error ? cause.message : "读取资料包失败")).finally(() => setLoading(false));
-    return () => { viewRequest.current += 1; };
+    mounted.current = true;
+    let current = true;
+    void refresh().catch((cause) => {
+      if (current) setError(cause instanceof Error ? cause.message : "读取资料包失败");
+    }).finally(() => { if (current) setLoading(false); });
+    return () => { current = false; mounted.current = false; viewRequest.current += 1; };
   }, [refresh]);
 
+  function closeDetail() {
+    viewRequest.current += 1;
+    setSelected(null); setEditing(false);
+  }
+
   async function savePackage(build: () => Promise<ExperimentPackageInput>, replaceId?: string) {
+    if (busy || !isCurrentAgent()) return;
     setBusy(true); setError(""); setNotice("");
     try {
       const payload = await build();
+      if (!isCurrentAgent()) return;
       const result = replaceId ? await replaceExperimentPackage(replaceId, payload) : await importExperimentPackage(payload);
-      if (replaceId) { viewRequest.current += 1; setSelected(null); }
+      if (!isCurrentAgent()) return;
+      if (replaceId) closeDetail();
+      if (result.purpose !== "validation" && result.purpose !== dataset) changeDataset(result.purpose);
       setShowOutlineImport(false);
-      setNotice("已导入「" + result.title + "」，可在对应题组中查看。");
+      setPackages((items) => [result, ...items.filter((item) => item.id !== replaceId && item.id !== result.id)]);
+      setNotice(replaceId ? `已保存「${result.title}」的新版本。` : `已导入「${result.title}」。`);
       await refresh();
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "资料包导入失败"); }
-    finally { setBusy(false); }
+    } catch (cause) {
+      if (isCurrentAgent()) setError(cause instanceof Error ? cause.message : "资料包保存失败");
+    } finally { if (isCurrentAgent()) setBusy(false); }
   }
   function upload(file: File, replaceId?: string) {
     return savePackage(async () => {
-      try { return JSON.parse(await file.text()) as ExperimentPackageInput; }
+      try {
+        const payload = JSON.parse(await file.text()) as ExperimentPackageInput;
+        if (replaceId && payload?.input && typeof payload.input === "object") delete payload.input.input_revision;
+        return payload;
+      }
       catch { throw new Error("资料包不是有效 JSON，请参照示例修改。"); }
     }, replaceId);
   }
+  function saveEdits(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected) return;
+    const form = new FormData(event.currentTarget);
+    const files = Object.fromEntries(Object.entries(selected.input.files)
+      .map(([path, content]) => [path, editedText(form, `file:${path}`, content)]));
+    void savePackage(async () => ({
+      title: String(form.get("title") ?? "").trim(),
+      purpose: selected.purpose,
+      target: selected.target,
+      input: { ...selected.input, demand_md: editedText(form, "demand", selected.input.demand_md),
+        confirmation_rules: editedText(form, "rules", selected.input.confirmation_rules), files, input_revision: undefined },
+    }), selected.id);
+  }
+  async function removePackage(item: ExperimentPackage) {
+    if (busy || !isCurrentAgent() || !window.confirm(`删除「${item.title}」？今后评测将跳过这道题。`)) return;
+    setBusy(true); setError(""); setNotice("");
+    try {
+      await deleteExperimentPackage(item.id);
+      if (!isCurrentAgent()) return;
+      if (selected?.id === item.id) closeDetail();
+      else viewRequest.current += 1;
+      setPackages((items) => items.filter((entry) => entry.id !== item.id));
+      setNotice(`已删除「${item.title}」。`);
+      await refresh();
+    } catch (cause) {
+      if (isCurrentAgent()) setError(cause instanceof Error ? cause.message : "删除题目失败");
+    } finally { if (isCurrentAgent()) setBusy(false); }
+  }
   async function downloadTemplates() {
+    if (busy || !isCurrentAgent()) return;
     setBusy(true); setError("");
     try {
       const { items } = await getExperimentPackageTemplates();
+      if (!isCurrentAgent()) return;
       for (const item of items) downloadTextFile(item.target.task_type + "-example.json", JSON.stringify(item, null, 2), "application/json;charset=utf-8");
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "读取示例失败"); }
-    finally { setBusy(false); }
+    } catch (cause) {
+      if (isCurrentAgent()) setError(cause instanceof Error ? cause.message : "读取示例失败");
+    } finally { if (isCurrentAgent()) setBusy(false); }
   }
-  async function view(id: string) {
+  async function view(id: string, edit = false) {
     const request = ++viewRequest.current;
-    setError(""); setSelected(null);
+    setError(""); setSelected(null); setEditing(false);
     try {
       const result = await getExperimentPackage(id);
-      if (request === viewRequest.current) setSelected(result);
-    } catch (cause) { if (request === viewRequest.current) setError(cause instanceof Error ? cause.message : "读取输入失败"); }
+      if (request === viewRequest.current && isCurrentAgent()) {
+        setSelected(result); setEditing(edit);
+      }
+    } catch (cause) {
+      if (request === viewRequest.current && isCurrentAgent()) setError(cause instanceof Error ? cause.message : "读取输入失败");
+    }
   }
   function changeDataset(key: DatasetKey) {
-    setDataset(key); viewRequest.current += 1; setSelected(null);
+    setDataset(key); closeDetail();
   }
-  const itemsFor = (key: DatasetKey) => packages.filter((item) => item.task_type === currentTask() && item.purpose === key);
+  const itemsFor = (key: DatasetKey) => packages.filter((item) => item.task_type === task && item.purpose === key);
   const visible = itemsFor(dataset);
   function table(items: ExperimentPackage[]) {
     return <div className="experiment-table-scroll"><table className="data-table experiment-dataset-table"><thead><tr>
-      <th>样本</th><th>阶段</th><th>用途</th><th>目标产物</th><th>输入版本</th><th></th>
+      <th>样本</th><th>阶段</th><th>用途</th><th>目标产物</th><th>输入版本</th><th>操作</th>
     </tr></thead><tbody>{items.map((item) => <tr key={item.id}><td><strong>{item.title}</strong></td>
       <td>{TASK_LABELS[item.task_type]}</td>
       <td><span className={"experiment-purpose " + item.purpose}>{PURPOSE_LABELS[item.purpose]}</span></td>
       <td>{experimentTargetLabel(item.target)}</td><td className="mono" title={item.input_revision}>{item.input_revision.slice(0, 12)}</td>
-      <td><button className="action-link" type="button" disabled={!canRead} title={canRead ? "查看完整固定输入" : "当前账号没有正文读取权限"} onClick={() => void view(item.id)}>查看输入</button></td>
+      <td><div className="experiment-actions">
+        <button className="action-link" type="button" disabled={!canRead || busy} title={canRead ? "查看完整固定输入" : "当前账号没有正文读取权限"} onClick={() => void view(item.id)}>查看输入</button>
+        <button className="action-link" type="button" disabled={!canRead || busy} title={canRead ? undefined : "当前账号没有正文读取权限"} onClick={() => void view(item.id, true)}>编辑</button>
+        <button className="action-link danger" type="button" disabled={busy} onClick={() => void removePackage(item)}>删除</button>
+      </div></td>
     </tr>)}</tbody></table></div>;
   }
   return <section className="experiment-section" aria-labelledby="stage-packages-title">
-    <div className="experiment-heading"><div><h2 id="stage-packages-title">试验数据集 <span className="experiment-count">{packages.length} 条</span></h2>
-      <p className="experiment-note">每道题自带固定输入，每套初始包含两道改进题和两道回归题。</p></div>
-      <div className="experiment-actions">{currentTask() === "chapter_text" && <button className="config-button" type="button"
+    <div className="experiment-heading"><div><h2 id="stage-packages-title">试验数据集 <span className="experiment-count">{itemsFor("optimization").length + itemsFor("regression").length} 条</span></h2>
+      <p className="experiment-note">新评测使用本套全部在用的改进题和回归题。</p></div>
+      <div className="experiment-actions">{task === "chapter_text" && <button className="config-button" type="button"
         aria-expanded={showOutlineImport} onClick={() => setShowOutlineImport(!showOutlineImport)} disabled={busy}>导入章纲</button>}
         <button className="config-button" type="button" onClick={() => void downloadTemplates()} disabled={busy}><Download size={15} />下载完整示例</button>
         <label className={"config-button experiment-upload" + (busy ? " disabled" : "")}><Upload size={15} />{busy ? "处理中…" : "导入资料包"}
@@ -128,11 +202,11 @@ export function StagePackages() {
         <button className="config-button" type="submit" disabled={busy}>保存题目</button>
       </div>
     </form>}
-    {error && <p className="experiment-error" role="alert">{error}</p>}
+    {error && !editing && <p className="experiment-error" role="alert">{error}</p>}
     {notice && <p role="status">{notice}</p>}
     {loading ? <p role="status">正在加载数据集…</p> : <div className="experiment-dataset-layout">
       <div className="experiment-dataset-nav" role="tablist" aria-label="试验数据集" aria-orientation="vertical">
-        {DATASETS.map((key, index) => <button type="button" role="tab" key={key} id={"dataset-tab-" + key}
+        {DATASETS.map((key, index) => <button type="button" role="tab" key={key} id={"dataset-tab-" + key} disabled={busy}
           aria-selected={dataset === key} aria-controls="dataset-content" tabIndex={dataset === key ? 0 : -1}
           onClick={() => changeDataset(key)} onKeyDown={(event) => {
             let next = index;
@@ -152,12 +226,33 @@ export function StagePackages() {
       <div id="dataset-content" role="tabpanel" aria-labelledby={"dataset-tab-" + dataset} className="experiment-dataset-content">
         <div className="experiment-heading"><div><h3>{dataset === "regression" ? "回归题" : "改进题"}</h3>
           <p className="experiment-note">{dataset === "regression" ? "比较候选版与本套基线的组内均分。" : "用改进题定位问题并检验候选版。"}</p></div></div>
-        {visible.length ? table(visible) : <p className="experiment-empty">本组数据尚未就绪，请刷新配置后核对初始化状态。</p>}
+        {visible.length ? table(visible) : <p className="experiment-empty">本组暂无题目。每组至少导入一道题，才能启动评测。</p>}
       </div>
     </div>}
-    {selected && <section className="experiment-input-preview"><div className="experiment-heading"><h3>{selected.title} · 固定输入</h3>
+    {selected && (editing ? <form key={selected.id} className="experiment-input-preview" onSubmit={saveEdits}>
+      <h3>编辑题目</h3>
+      <label className="experiment-field">题目名称<input className="config-input" name="title" required maxLength={200}
+        defaultValue={selected.title} disabled={busy} autoFocus /></label>
+      <label className="experiment-field">完整需求<textarea className="config-input" name="demand" rows={6}
+        defaultValue={selected.input.demand_md} disabled={busy} /></label>
+      <label className="experiment-field">预设确认规则<textarea className="config-input" name="rules" rows={3} required
+        defaultValue={selected.input.confirmation_rules} disabled={busy} /></label>
+      <div className="experiment-files">
+        {Object.entries(selected.input.files).map(([path, content], _, files) => <details key={path} open={files.length === 1}>
+          <summary>{path}</summary>
+          <div className="experiment-field"><textarea className="config-input" aria-label={path}
+            name={`file:${path}`} rows={8} defaultValue={content} disabled={busy} /></div>
+        </details>)}
+      </div>
+      {error && <p className="experiment-error" role="alert">{error}</p>}
+      <div className="experiment-actions">
+        <button type="submit" className="config-button primary" disabled={busy}>保存为新版本</button>
+        <button type="button" className="config-button" disabled={busy} onClick={() => { setEditing(false); setError(""); }}>取消编辑</button>
+      </div>
+    </form> : <section className="experiment-input-preview"><div className="experiment-heading"><h3>{selected.title} · 固定输入</h3>
       <div className="experiment-actions"><button type="button" className="action-link" onClick={() => {
-        const payload: ExperimentPackageInput = { title: selected.title, purpose: selected.purpose, target: selected.target, input: selected.input };
+        const payload: ExperimentPackageInput = { title: selected.title, purpose: selected.purpose, target: selected.target,
+          input: { ...selected.input, input_revision: undefined } };
         downloadTextFile(selected.id + ".json", JSON.stringify(payload, null, 2), "application/json;charset=utf-8");
       }}>下载资料包</button>
         {selected.task_type === "chapter_text" && <label className="config-button experiment-upload">导入技能并替换
@@ -171,12 +266,12 @@ export function StagePackages() {
           <input aria-label="替换资料包" type="file" accept=".json,application/json" disabled={busy}
             onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void upload(file, selected.id); }} />
         </label>
-        <button type="button" className="action-link" onClick={() => { viewRequest.current += 1; setSelected(null); }}>收起</button></div></div>
+        <button type="button" className="action-link" onClick={closeDetail}>收起</button></div></div>
       <p className="mono">输入版本：{selected.input_revision}</p>
       <h4>完整需求</h4><p className="experiment-prewrap">{selected.input.demand_md || "使用下方固定上游文稿"}</p>
       <h4>预设确认规则</h4><p className="experiment-prewrap">{selected.input.confirmation_rules}</p>
       <ArtifactFiles files={selected.input.files} />
       {!!selected.input.skills.length && <details><summary>固定技能</summary><EvidenceValues value={selected.input.skills} /></details>}
-    </section>}
+    </section>)}
   </section>;
 }

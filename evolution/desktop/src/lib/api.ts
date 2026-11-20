@@ -2023,6 +2023,9 @@ export function importExperimentPackage(payload: ExperimentPackageInput): Promis
 export function replaceExperimentPackage(id: string, payload: ExperimentPackageInput): Promise<ExperimentPackage> {
   return evoJson(`/api/experiments/packages/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(payload) });
 }
+export function deleteExperimentPackage(id: string): Promise<{ ok: true }> {
+  return evoJson(`/api/experiments/packages/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
 export function getExperimentPackageTemplates(): Promise<{ items: ExperimentPackageInput[] }> {
   return evoJson("/api/experiments/packages/templates", { method: "GET" });
 }

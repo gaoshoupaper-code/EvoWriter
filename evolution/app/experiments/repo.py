@@ -89,15 +89,14 @@ def run_package(run: dict, package_id: str) -> dict:
 
 
 def list_packages() -> list[dict]:
-    return [p for p in _list("self_evolution_packages") if not p.get("superseded_by")]
+    return [p for p in _list("self_evolution_packages") if not p.get("superseded_by") and not p.get("deleted_at")]
 
 
 def replace_package(previous_id: str, new: dict) -> dict:
     table = "self_evolution_packages"
     with db.transaction() as connection:
-        row = connection.execute(f"SELECT payload FROM {table} WHERE id=?", (previous_id,)).fetchone()
-        previous = json.loads(row["payload"]) if row else None
-        if not previous or not _visible(previous):
+        previous = get_package(previous_id)
+        if not previous or previous.get("deleted_at"):
             raise KeyError(previous_id)
         if previous.get("superseded_by"):
             raise ValueError("该题已被替换，请刷新后修订当前版本")
@@ -112,6 +111,19 @@ def replace_package(previous_id: str, new: dict) -> dict:
         connection.execute(f"INSERT INTO {table}(id,payload,created_at) VALUES (?,?,?)",
                            (new["id"], json.dumps(new, ensure_ascii=False), new["created_at"]))
     return new
+
+
+def delete_package(package_id: str) -> None:
+    """Remove a question from the active dataset while retaining its experiment input."""
+    with db.transaction() as connection:
+        package = get_package(package_id)
+        if not package or package.get("superseded_by"):
+            raise KeyError(package_id)
+        if package.get("deleted_at"):
+            return
+        package["deleted_at"] = now()
+        connection.execute("UPDATE self_evolution_packages SET payload=? WHERE id=?",
+                           (json.dumps(package, ensure_ascii=False), package_id))
 
 
 def get_rule(rule_id: str) -> dict | None:

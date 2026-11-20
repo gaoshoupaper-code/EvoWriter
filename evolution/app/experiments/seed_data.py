@@ -257,7 +257,8 @@ def seed_packages():
                 validate_package(PackageCreate.model_validate(payload))
                 repo.insert("self_evolution_packages", package)
             elif (package["task_type"] == "chapter_text" and package.get("flow_version") == 3
-                  and not existing.get("superseded_by") and existing["input_revision"] != package["input_revision"]):
+                  and not existing.get("superseded_by") and not existing.get("deleted_at")
+                  and existing["input_revision"] != package["input_revision"]):
                 existing = repo.replace_package(existing["id"], {**package, "id": package["id"] + "-outline-only"})
             records.append(existing or package)
     return records

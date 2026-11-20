@@ -102,6 +102,8 @@ def test_http_suite_boundaries_and_frozen_rubric(monkeypatch):
             for hidden_id, hidden in [("old", {"flow_version": 2}), ("foreign", {"task_type": "chapter_text"})]:
                 repo.insert("self_evolution_packages", {**valid, "id": hidden_id, **hidden})
                 assert client.get("/experiments/packages/" + hidden_id).status_code == 404
+                assert client.delete("/experiments/packages/" + hidden_id).status_code == 404
+            assert client.delete("/experiments/packages/missing").status_code == 404
             assert len(client.get("/experiments/packages/templates").json()["items"]) == 1
             assert client.get("/experiments/rules?task_type=chapter_text").status_code == 404
             rubric = client.get("/experiments/rules").json()["items"][0]
@@ -122,6 +124,18 @@ def test_http_suite_boundaries_and_frozen_rubric(monkeypatch):
             assert len(visible) == 4 and valid["id"] not in {p["id"] for p in visible}
             assert client.get("/experiments/packages/" + valid["id"]).json()["input_revision"] == valid["input_revision"]
             assert client.put("/experiments/packages/foreign", json=repaired).status_code == 404
+            assert client.delete("/experiments/packages/" + valid["id"]).status_code == 404
+            updated_url = "/experiments/packages/" + updated.json()["id"]
+            assert client.delete(updated_url).json() == {"ok": True}
+            deleted = client.get(updated_url).json()
+            assert deleted["input_revision"] == updated.json()["input_revision"]
+            assert deleted["input"]["demand_md"] == repaired["input"]["demand_md"]
+            assert client.delete(updated_url).json() == {"ok": True}
+            assert client.get(updated_url).json()["deleted_at"] == deleted["deleted_at"]
+            assert client.put(updated_url, json=repaired).status_code == 404
+            assert {p["id"] for p in client.get("/experiments/packages").json()["items"]} == {
+                p["id"] for p in listed if p["id"] != valid["id"]
+            }
             monkeypatch.delenv("WRITING_AGENT_ID")
             assert client.get("/experiments/packages").status_code == 404
     finally:
@@ -178,8 +192,13 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         changed["id"] = "new-question"
         changed["input"]["demand_md"] = "实验启动后维护的内容"
         repo.replace_package(opt[0], changed)
+        removed = repo.get_package(reg[0])
+        repo.delete_package(reg[0])
+        repo.init_schema()
+        assert reg[0] not in {sample["id"] for sample in repo.list_packages()}
         saved = repo.get_run(run["id"])
         assert "packages" not in saved["private"]
+        assert repo.run_package(saved, reg[0])["input"] == repo.chapter_case(removed)["input"]
         frozen_input = repo.run_package(saved, opt[0])["input"]
         assert frozen_input["demand_md"] != changed["input"]["demand_md"]
         archived = {**run, "id": "old", "flow_version": 2}

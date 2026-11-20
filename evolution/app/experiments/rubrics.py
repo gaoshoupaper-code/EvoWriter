@@ -4,13 +4,13 @@ from __future__ import annotations
 import threading
 
 from app.benchmark.rubric_v3 import DISCIPLINE_RULES
-from app.experiments import repo
+from app.experiments import chapter_rubric, repo
 from app.experiments.schemas import RuleCreate
 from contracts.target_tasks import configured_task_type
 
 _lock = threading.RLock()
 PROFILE = "stage-eval-v2"
-TEXT_PROFILE = "chapter-text-outline-v2"
+TEXT_PROFILE = "chapter-text-outline-v3"
 _DIMENSIONS = {
     "master_outline": [
         ("主题清晰度", "总纲是否将用户意图落实为能贯穿全书的主题？",
@@ -157,10 +157,14 @@ def seed_rules() -> None:
             profile = TEXT_PROFILE if scope == "chapter_text" else "isolated-writing-v1" if scope else PROFILE
             if any(rule.get("profile") == profile for rule in list_rules(kind)):
                 continue
+            discipline_rules = DISCIPLINE_RULES
+            if profile == TEXT_PROFILE:
+                dimensions = chapter_rubric.DIMENSIONS
+                discipline_rules = chapter_rubric.DISCIPLINE_RULES
             save_rule(RuleCreate.model_validate({
                 "task_type": kind, "profile": profile,
                 "name": {"master_outline": "总纲", "volume_outlines": "卷纲", "chapter_outlines": "单章章纲", "chapter_text": "单章正文"}[kind] + "试验规则",
-                "discipline_rules": DISCIPLINE_RULES,
+                "discipline_rules": discipline_rules,
                 "dimensions": [{"key": key, "question": question, "weight": 1,
                                 "anchors": {str(level): text for level, text in enumerate(anchors, 1)}}
                                for key, question, anchors in dimensions],

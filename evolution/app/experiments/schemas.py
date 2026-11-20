@@ -45,21 +45,23 @@ class Dimension(StrictModel):
 class RuleCreate(StrictModel):
     task_type: TaskType
     name: str = Field(min_length=1, max_length=200)
-    profile: Literal["stage-eval-v2", "isolated-writing-v1", "chapter-text-outline-v2"] | None = None
+    profile: Literal["stage-eval-v2", "isolated-writing-v1", "chapter-text-outline-v3"] | None = None
     dimensions: list[Dimension] = Field(min_length=1)
     discipline_rules: list[str] = Field(min_length=1)
 
     @model_validator(mode="after")
     def validate_keys(self):
+        from app.experiments import chapter_rubric, rubrics
+
         scope = configured_task_type()
         if scope and (self.task_type != scope or self.profile == "stage-eval-v2"):
             raise ValueError("只能维护本套评分规则")
-        if (scope == "chapter_text" and self.profile == "isolated-writing-v1"
-                or self.profile == "chapter-text-outline-v2" and scope != "chapter_text"):
+        if (scope == "chapter_text" and self.profile not in {None, rubrics.TEXT_PROFILE}
+                or self.profile == rubrics.TEXT_PROFILE and scope != "chapter_text"):
             raise ValueError("只能维护本套评分规则")
         if scope:
-            from app.experiments.rubrics import _DIMENSIONS
-            if {dimension.key for dimension in self.dimensions} != {row[0] for row in _DIMENSIONS[scope]}:
+            required_dimensions = chapter_rubric.DIMENSIONS if scope == "chapter_text" else rubrics._DIMENSIONS[scope]
+            if {dimension.key for dimension in self.dimensions} != {row[0] for row in required_dimensions}:
                 raise ValueError("评分规则必须使用本套规定的维度")
             if scope == "master_outline" and len({dimension.weight for dimension in self.dimensions}) != 1:
                 raise ValueError("总纲四个规定维度须等权")

@@ -82,17 +82,24 @@ export function ExperimentScores({ report }: { report: Experiment["report"] }) {
 }
 
 export function SampleScoreDetails({ sample, judges }: { sample: ExperimentSample; judges: ExperimentModel[] }) {
-  if (!sample.scores) return null;
-  return <div className="experiment-score-details">{Object.entries(sample.scores.dimensions).map(([dimension, score]) => {
-    const reasons = sample.scores!.reasons[dimension];
-    return <article key={dimension}><h4>{dimension}<span>{number(score)} / 5</span></h4>
+  const scores = sample.scores;
+  const reasonsByDimension = scores?.reasons ?? sample.score_progress?.reasons;
+  if (!reasonsByDimension) return null;
+  const dimensions = Object.keys(scores?.dimensions ?? reasonsByDimension);
+  return <div className="experiment-score-details">{dimensions.map((dimension) => {
+    const reasons = reasonsByDimension[dimension];
+    return <article key={dimension}><h4>{dimension}{scores && <span>{number(scores.dimensions[dimension])} / 5</span>}</h4>
       {Array.isArray(reasons) ? reasons.map((entry, index) => {
         if (!entry || typeof entry !== "object") return <EvidenceValues key={index} value={entry} />;
         const reason = entry as Record<string, unknown>;
         const judge = judges.find((item) => item.id === reason.judge_id);
         return <div className="experiment-judge-reason" key={index}>
-          <p className="experiment-note">{judge?.name || judge?.model || `评委 ${index + 1}`} · {number(typeof reason.score === "number" ? reason.score : null)}</p>
-          {reason.error ? <p className="experiment-error">{String(reason.error)}</p> : <div className="experiment-reason-columns">
+          <p className="experiment-note">{judge?.name || judge?.model || `评委 ${index + 1}`}
+            {typeof reason.repeat === "number" && ` · 第 ${reason.repeat} 次`} · {number(typeof reason.score === "number" ? reason.score : null)}</p>
+          {reason.error ? <p className="experiment-error">{String(reason.error)}</p> : typeof reason.reason === "string" ? <>
+            <p className="experiment-prewrap">{reason.reason}</p>
+            <div><strong>评分依据</strong><EvidenceValues value={reason.evidence} /></div>
+          </> : <div className="experiment-reason-columns">
             <div><strong>达标依据</strong><EvidenceValues value={reason["达标"]} /></div>
             <div><strong>具体不足</strong><EvidenceValues value={reason["不足"]} /></div>
           </div>}

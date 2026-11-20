@@ -23,11 +23,14 @@ import logging
 from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+from contracts.target_tasks import configured_task_type
 
 from app.benchmark import repo, runner, stats, report
 from app.benchmark.manifest import fetch_platform_versions
 from app.benchmark.retirement import RETIRED_MESSAGE
+from app.core.db import JudgeGroupsRepository
 
 logger = logging.getLogger("evolution.benchmark.api")
 
@@ -187,17 +190,19 @@ def _enrich_member(config_id: int) -> dict[str, Any]:
 @router.get("/judge-groups")
 def list_judge_groups() -> dict[str, Any]:
     """评测组列表（FR-001；成员含配置详情与同家族标记）。"""
-    import app.core.db as db
-
+    chapter_text = configured_task_type() == "chapter_text"
     groups = []
-    for g in db.JudgeGroupsRepository.list_all():
-        groups.append({
+    for g in JudgeGroupsRepository.list_all():
+        group = {
             "id": g["id"],
             "name": g["name"],
             "created_at": g["created_at"],
             "updated_at": g["updated_at"],
             "members": [_enrich_member(m["config_id"]) for m in g["members"]],
-        })
+        }
+        if chapter_text:
+            group["score_repeats"] = g["score_repeats"]
+        groups.append(group)
     return {"groups": groups}
 
 
@@ -205,34 +210,37 @@ class JudgeGroupCreateRequest(BaseModel):
     """创建评测组（FR-001：成员 1~5，仅 eval/evolution scope 候选）。"""
     name: str
     member_config_ids: list[int]
+    score_repeats: int = Field(
+        default=JudgeGroupsRepository.DEFAULT_SCORE_REPEATS,
+        strict=True, ge=1, le=JudgeGroupsRepository.MAX_SCORE_REPEATS,
+    )
 
 
 @router.post("/judge-groups")
 def create_judge_group(req: JudgeGroupCreateRequest) -> dict[str, Any]:
-    import app.core.db as db
-
     try:
-        group_id = db.JudgeGroupsRepository.create(
+        group_id = JudgeGroupsRepository.create(
             name=req.name.strip(), member_config_ids=req.member_config_ids,
+            score_repeats=(req.score_repeats if configured_task_type() == "chapter_text"
+                           else JudgeGroupsRepository.DEFAULT_SCORE_REPEATS),
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     return {"group_id": group_id, "status": "created"}
 
 
-class JudgeGroupUpdateRequest(BaseModel):
-    """整组更新（改名 + 全量替换成员）。"""
-    name: str
-    member_config_ids: list[int]
+class JudgeGroupUpdateRequest(JudgeGroupCreateRequest):
+    """整组更新（改名 + 全量替换成员）。旧客户端省略次数时保留原设置。"""
 
 
 @router.put("/judge-groups/{group_id}")
 def update_judge_group(group_id: int, req: JudgeGroupUpdateRequest) -> dict[str, Any]:
-    import app.core.db as db
-
+    score_repeats = (req.score_repeats if configured_task_type() == "chapter_text"
+                     and "score_repeats" in req.model_fields_set else None)
     try:
-        ok = db.JudgeGroupsRepository.update(
+        ok = JudgeGroupsRepository.update(
             group_id, name=req.name.strip(), member_config_ids=req.member_config_ids,
+            score_repeats=score_repeats,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

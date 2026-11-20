@@ -242,6 +242,29 @@ describe("评测组页（AC-001）", () => {
     });
     expect(await screen.findByText("2 人")).toBeInTheDocument();
   });
+
+  it("正文评测组默认三次并可改成一次，选项限于一至三次", async () => {
+    const previousHash = window.location.hash;
+    window.location.hash = "#/config/judge-groups?agent=text";
+    try {
+      const { default: JudgeGroupPage } = await import("@/pages/config/JudgeGroupPage");
+      api.updateJudgeGroup.mockResolvedValue({ status: "updated" });
+      render(<MemoryRouter><JudgeGroupPage /></MemoryRouter>);
+
+      fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
+      const repeats = screen.getByLabelText("每个模型评分次数");
+      expect(repeats).toHaveValue("3");
+      expect(within(repeats).getAllByRole("option").map((option) => option.getAttribute("value"))).toEqual(["1", "2", "3"]);
+      fireEvent.change(repeats, { target: { value: "1" } });
+      fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+      await waitFor(() => expect(api.updateJudgeGroup).toHaveBeenCalledWith(1, {
+        name: "评审团", member_config_ids: [11], score_repeats: 1,
+      }));
+    } finally {
+      window.location.hash = previousHash;
+    }
+  });
 });
 
 // ── AC-012：无权降级 ──

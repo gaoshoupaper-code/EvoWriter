@@ -5,7 +5,8 @@ export const TASK_TYPES = ["master_outline", "volume_outlines", "chapter_outline
 export type ExperimentTaskType = typeof TASK_TYPES[number];
 export const BUILTIN_SUITE = "isolated-writing-v1";
 export const RULE_PROFILE = "isolated-writing-v1";
-const TEXT_RULE_PROFILE = "chapter-text-outline-v2";
+const TEXT_RULE_PROFILE = "chapter-text-outline-v3";
+export const DEFAULT_JUDGE_REPEATS = 3;
 export const ruleProfile = (kind: ExperimentTaskType) => kind === "chapter_text" ? TEXT_RULE_PROFILE : RULE_PROFILE;
 export const TASK_LABELS: Record<ExperimentTaskType, string> = {
   master_outline: "总纲", volume_outlines: "卷纲", chapter_outlines: "章纲", chapter_text: "正文",
@@ -124,11 +125,17 @@ export type ExperimentEvaluationCall = {
     prompt_tokens?: number | null; completion_tokens?: number | null } | null;
 };
 export type ExperimentEvaluationUsagePage = { items: ExperimentEvaluationCall[]; total: number; offset: number; limit: number };
+type ExperimentScoreProgress = {
+  completed: number;
+  total: number;
+  reasons?: Record<string, { judge_id: number; repeat: number; score: number; reason: string; evidence: string[] }[]>;
+};
 export type ExperimentSample = {
   id: string; phase: string; round: number; arm: "baseline" | "candidate"; package_id: string;
   package_title: string; task_type: ExperimentTaskType; repeat: number; attempt: number; status: string;
   task_id: string; trace_ids: string[]; evaluation_trace_ids?: string[]; completed: boolean; checks: Record<string, unknown>;
   scores: null | { overall: number | null; dimensions: Record<string, number | null>; reasons: Record<string, unknown> };
+  score_progress?: ExperimentScoreProgress;
   error: string | null; artifacts: Record<string, string>; usage: Record<string, unknown>;
   input_revision: string; package_revision?: string; source_commit: string; artifact_digest?: string;
   execution_phase?: string | null; target?: ExperimentTarget; score_retry_at?: number;
@@ -136,6 +143,8 @@ export type ExperimentSample = {
 export type Experiment = {
   id: string; name: string; task_type: ExperimentTaskType; status: string; phase: string; flow_version?: number;
   assessment_version?: number;
+  judge_repeats?: number;
+  scoring_rule?: { id: string; name: string; version: number };
   current_round: number; max_rounds: number; end_reason: string | null; settings: ExperimentStart;
   models?: ExperimentModels;
   progress?: {

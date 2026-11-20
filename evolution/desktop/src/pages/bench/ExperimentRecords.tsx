@@ -1,13 +1,74 @@
 import PageAgentSelector from "@/components/PageAgentSelector";
-import { currentTask } from "@/lib/writing-agent";
+import { currentTask, withAgent } from "@/lib/writing-agent";
 import "@/components/bench/experiment-observation.css";
-import { Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useExperiments } from "@/hooks/useExperiments";
-import { EXPERIMENT_STATUS, experimentTaskLabel } from "@/lib/experiment-types";
+import { getExperiment } from "@/lib/api";
+import { EXPERIMENT_STATUS, experimentTaskLabel, type Experiment, type ExperimentSummary } from "@/lib/experiment-types";
+import { ChapterComparison } from "@/components/bench/ChapterComparison";
 import { ExperimentScores } from "@/components/bench/ExperimentEvidence";
 import "@/components/bench/experiments.css";
 
+function scoringDetailsPath(run: ExperimentSummary) {
+  const query = new URLSearchParams({ scoring: run.id });
+  if (run.current_round > 0) query.set("round", String(run.current_round));
+  if (run.phase === "exploration" || run.phase === "regression") query.set("phase", run.phase);
+  if (run.phase === "regression") query.set("task", "chapter_text");
+  return withAgent("/bench/experiments?" + query);
+}
+
 export default function ExperimentRecords() {
+  const [query] = useSearchParams();
+  const scoringId = query.get("scoring");
+  if (scoringId && currentTask() === "chapter_text") {
+    const round = Number(query.get("round")) || null;
+    const phase = query.get("phase");
+    return <ChapterScoringRecord key={query.toString()} id={scoringId} round={round}
+      phase={phase === "exploration" || phase === "regression" ? phase : null} />;
+  }
+  return <ExperimentRecordList />;
+}
+
+function ChapterScoringRecord({ id, round, phase }: {
+  id: string; round: number | null; phase: "exploration" | "regression" | null;
+}) {
+  const navigate = useNavigate();
+  const [experiment, setExperiment] = useState<Experiment | null>(null);
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    getExperiment(id).then((record) => {
+      if (!alive) return;
+      if (record.task_type === "chapter_text") setExperiment(record);
+      else setError("请选择正文实验记录。");
+    }).catch((cause) => { if (alive) setError(cause instanceof Error ? cause.message : "读取评分明细失败"); });
+    return () => { alive = false; };
+  }, [id, attempt]);
+
+  const samples = experiment?.samples.filter((sample) => {
+    if (sample.task_type !== "chapter_text") return false;
+    if (sample.phase === "baseline" && phase !== "regression") return true;
+    return (!phase || sample.phase === phase) && (round == null || sample.round === round);
+  });
+  const rounds = experiment?.rounds.filter((item) => round == null || item.round === round);
+  return <div className="bench-page">
+    <header className="page-header"><Link to={withAgent("/bench/experiments")} className="action-link">返回实验记录</Link>
+      <h1>评分明细</h1>{experiment && <p className="page-desc">{experiment.name}</p>}</header>
+    <PageAgentSelector />
+    {experiment && samples && rounds ? <ChapterComparison experiment={{ ...experiment,
+      rounds: experiment.can_read_content ? rounds : rounds.map((item) => ({ ...item, trace_ids: [] })),
+      samples: experiment.can_read_content ? samples : samples.map((sample) => ({ ...sample, trace_ids: [], evaluation_trace_ids: [] })),
+    }} initialRound={rounds.length ? round : null} onTrace={(traceId) => {
+      if (experiment.can_read_content) navigate(withAgent("/traces/" + encodeURIComponent(traceId)));
+    }} /> : error ? <><p role="alert" className="experiment-error">{error}</p>
+      <button className="config-button" type="button" onClick={() => { setError(""); setAttempt((value) => value + 1); }}>重试</button>
+    </> : <p role="status">正在读取评分明细…</p>}
+  </div>;
+}
+
+function ExperimentRecordList() {
   const { runs, loading, error, refresh } = useExperiments();
 
   const visible = runs.filter((run) => run.task_type === currentTask() && run.flow_version === 3);
@@ -25,6 +86,8 @@ export default function ExperimentRecords() {
         <div><span className={"experiment-state " + run.status}>{EXPERIMENT_STATUS[run.status] ?? run.status}</span>
           <span className="experiment-cell-note">原版 v{run.baseline.version} · 第 {run.current_round} / {run.max_rounds} 轮</span></div>
         <ExperimentScores report={run.report} />
+        {run.task_type === "chapter_text" && run.judge_repeats != null && <Link className="action-link"
+          to={scoringDetailsPath(run)}>查看评分明细</Link>}
       </article>)}
     </div> : !error && <p className="experiment-empty">暂无该阶段实验。到评测工作台启动实验后，记录会保存在这里。</p>}
   </div>;

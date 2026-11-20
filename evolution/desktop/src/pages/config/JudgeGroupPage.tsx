@@ -10,6 +10,8 @@ import {
   type JudgeCandidate,
   type JudgeGroupInfo,
 } from "@/lib/api";
+import { DEFAULT_JUDGE_REPEATS } from "@/lib/experiment-types";
+import { currentTask } from "@/lib/writing-agent";
 
 /**
  * 评测组配置页（REQ-20260930-162207/FR-001/DEC-001、004、010、011）。
@@ -25,14 +27,16 @@ interface GroupFormState {
   editingId: number | null;
   name: string;
   memberIds: number[];
+  scoreRepeats: number;
 }
 
-const EMPTY_FORM: GroupFormState = { editingId: null, name: "", memberIds: [] };
+const EMPTY_FORM: GroupFormState = { editingId: null, name: "", memberIds: [], scoreRepeats: DEFAULT_JUDGE_REPEATS };
 
 const MIN_MEMBERS = 1;
 const MAX_MEMBERS = 5;
 
 export default function JudgeGroupPage() {
+  const chapterText = currentTask() === "chapter_text";
   const [groups, setGroups] = useState<JudgeGroupInfo[]>([]);
   const [candidates, setCandidates] = useState<JudgeCandidate[]>([]);
   const [loading, setLoading] = useState(true);
@@ -87,14 +91,13 @@ export default function JudgeGroupPage() {
     }
     setSaving(true);
     try {
+      const payload = { name: form.name.trim(), member_config_ids: form.memberIds,
+        ...(chapterText ? { score_repeats: form.scoreRepeats } : {}) };
       if (form.editingId === null) {
-        await createJudgeGroup({ name: form.name.trim(), member_config_ids: form.memberIds });
+        await createJudgeGroup(payload);
         toast.success("评测组已创建");
       } else {
-        await updateJudgeGroup(form.editingId, {
-          name: form.name.trim(),
-          member_config_ids: form.memberIds,
-        });
+        await updateJudgeGroup(form.editingId, payload);
         toast.success("评测组已更新");
       }
       setForm(null);
@@ -126,8 +129,8 @@ export default function JudgeGroupPage() {
       <header className="page-header">
         <h1>评测组</h1>
         <p className="page-desc">
-          由 1~5 个 judge 模型组成的评审团：每行评分按维度取成员均分（1 位小数），
-          同维成功 ≥2 才出分。1 人组等价于旧的单 judge 评测。
+          {chapterText ? "每组选择 1～5 个评测模型。各模型按相同次数评同一份成稿，评齐后汇总。" :
+            "由 1~5 个 judge 模型组成的评审团：每行评分按维度取成员均分（1 位小数），同维成功 ≥2 才出分。1 人组等价于旧的单 judge 评测。"}
         </p>
       </header>
       <PageAgentSelector />
@@ -157,6 +160,13 @@ export default function JudgeGroupPage() {
               disabled={saving}
             />
           </label>
+          {chapterText && <label className="config-field">
+            <span className="config-label">每个模型评分次数</span>
+            <select className="config-input" value={form.scoreRepeats} disabled={saving}
+              onChange={(event) => setForm({ ...form, scoreRepeats: Number(event.target.value) })}>
+              {[1, 2, 3].map((times) => <option key={times} value={times}>{times} 次</option>)}
+            </select>
+          </label>}
           <div className="config-field">
             <span className="config-label">
               成员（{form.memberIds.length}/{MAX_MEMBERS}，至少 {MIN_MEMBERS} 个）
@@ -209,6 +219,7 @@ export default function JudgeGroupPage() {
               <div className="config-card-head">
                 <span className="config-card-name">{g.name}</span>
                 <span className="status-meta">{g.members.length} 人</span>
+                {chapterText && <span className="status-meta">每个模型评 {g.score_repeats ?? DEFAULT_JUDGE_REPEATS} 次</span>}
               </div>
               <div className="config-card-meta">
                 {g.members.map((m) => {
@@ -231,7 +242,8 @@ export default function JudgeGroupPage() {
                 <button
                   className="config-button small"
                   onClick={() =>
-                    setForm({ editingId: g.id, name: g.name, memberIds: g.members.map((m) => m.config_id) })
+                    setForm({ editingId: g.id, name: g.name, memberIds: g.members.map((m) => m.config_id),
+                      scoreRepeats: g.score_repeats ?? DEFAULT_JUDGE_REPEATS })
                   }
                 >
                   编辑

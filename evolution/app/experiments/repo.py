@@ -78,13 +78,15 @@ def chapter_case(package: dict, assessment_version: int = 2) -> dict:
     return {**package, "input": source.model_dump(mode="json"), "input_revision": source.input_revision}
 
 
-def run_package(run: dict, package_id: str) -> dict:
+def run_package(run: dict, package_id: str, *, for_scoring: bool = False) -> dict:
     if not run.get("assessment_version"):
         return run["private"]["packages"][package_id]
     source_revision = run["private"]["package_revisions"][package_id]
     package = get_package(package_id)
     if package is None or package["input_revision"] != source_revision:
         raise ValueError("找不到本次评测绑定的题库版本")
+    if for_scoring:
+        return package
     return chapter_case(package, run["assessment_version"])
 
 

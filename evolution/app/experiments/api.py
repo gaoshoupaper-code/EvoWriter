@@ -11,7 +11,7 @@ from contracts.target_tasks import configured_task_type
 
 from app.core import db
 from app.core.settings import settings
-from app.experiments import clients, packages, release, repo, rubrics, runner
+from app.experiments import clients, evaluation, packages, release, repo, rubrics, runner
 from app.experiments.schemas import PackageCreate, RuleCreate, RunCreate
 from app.trace.access import require_full_content_access
 from app.view.display_context import trace_run_views
@@ -49,7 +49,7 @@ def _usage_group(records) -> dict:
     for usage, status in records:
         calls += 1
         failed_calls += status == "failed"
-        usage = usage or {}
+        usage = usage if isinstance(usage, dict) else {}
         tokens = normalize_usage(usage)
         for field in fields:
             if tokens[field] is not None:
@@ -83,6 +83,10 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
     if summary:
         omitted.add("events")
     value = copy.deepcopy({key: item for key, item in run.items() if key not in omitted})
+    if run.get("task_type") == "chapter_text":
+        rule = run.get("private", {}).get("rules", {}).get("chapter_text")
+        if rule and all(key in rule for key in ("id", "name", "version")):
+            value["scoring_rule"] = {key: rule[key] for key in ("id", "name", "version")}
     if not summary:
         value["rounds"] = [copy.deepcopy({key: item for key, item in round_.items()
             if key not in {"work_root", "frozen_candidate"}}) for round_ in run.get("rounds", [])]
@@ -90,6 +94,11 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
         for sample in run.get("samples", []):
             public = {key: item for key, item in sample.items() if key not in {"judge_results", "judge_errors", "usage"}}
             public["usage"] = {key: item for key, item in sample.get("usage", {}).items() if key != "judge_attempts"}
+            if "judge_repeats" in run and sample.get("completed") and sample.get("scores") is None:
+                progress = evaluation.score_progress(run, sample)
+                if not can_read_content:
+                    progress.pop("reasons")
+                public["score_progress"] = progress
             value["samples"].append(copy.deepcopy(public))
         value["usage"] = _usage(run)
         trace_ids = [trace_id for sample in run.get("samples", [])
@@ -102,7 +111,7 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
             safe = {key: sample[key] for key in (
                 "id", "phase", "round", "arm", "package_id", "package_title", "task_type", "repeat", "attempt",
                 "status", "task_id", "trace_ids", "evaluation_trace_ids", "completed", "input_revision", "source_commit", "artifact_digest", "usage",
-                "execution_phase", "target", "score_retry_at", "scoring_attempts",
+                "execution_phase", "target", "score_retry_at", "scoring_attempts", "score_progress",
             ) if key in sample}
             checks = sample.get("checks") or {}
             safe["checks"] = {key: checks[key] for key in ("complete", "passed", "missing", "volume_ranges") if key in checks}
@@ -263,10 +272,14 @@ def evaluation_usage(run_id: str, offset: int = Query(0, ge=0), limit: int = Que
     total = sum(len(sample.get("usage", {}).get("judge_attempts", [])) for sample in samples)
     attempts = ((sample["id"], attempt) for sample in samples
                 for attempt in sample.get("usage", {}).get("judge_attempts", []))
-    return {"items": [{"sample_id": sample_id, **{key: copy.deepcopy(attempt.get(key))
-        for key in ("judge_id", "dimension", "status", "usage")}}
-        for sample_id, attempt in islice(attempts, offset, offset + limit)],
-        "total": total, "offset": offset, "limit": limit}
+    items = []
+    for sample_id, attempt in islice(attempts, offset, offset + limit):
+        usage = attempt.get("usage")
+        counters = ("input_tokens", "output_tokens", "total_tokens", "prompt_tokens", "completion_tokens")
+        safe_usage = ({key: usage[key] for key in counters if type(usage.get(key)) is int} if isinstance(usage, dict) else None)
+        items.append({"sample_id": sample_id, "judge_id": attempt.get("judge_id"), "dimension": attempt.get("dimension"),
+                      "status": attempt.get("status"), "usage": safe_usage})
+    return {"items": items, "total": total, "offset": offset, "limit": limit}
 
 
 @router.get("/runs/{run_id}/versions/{round_number}/source")

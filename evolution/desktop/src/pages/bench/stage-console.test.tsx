@@ -1,14 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
+import { ChapterComparison } from "@/components/bench/ChapterComparison";
 import { EvolutionExperiments } from "@/components/bench/EvolutionExperiments";
+import { SampleScoreDetails } from "@/components/bench/ExperimentEvidence";
 import { StagePackages } from "@/components/bench/StagePackages";
 import { StageRules } from "@/components/bench/StageRules";
 import * as apiModule from "@/lib/api";
+import type { ExperimentSample } from "@/lib/experiment-types";
+import ExperimentRecords from "./ExperimentRecords";
 
 vi.mock("@/lib/api", () => ({
   getExperimentOptions: vi.fn(), listExperimentPackages: vi.fn(), listExperimentRules: vi.fn(),
-  listExperiments: vi.fn(), startExperiment: vi.fn(), saveExperimentRule: vi.fn(),
+  getExperiment: vi.fn(), listExperiments: vi.fn(), startExperiment: vi.fn(), saveExperimentRule: vi.fn(),
   getExperimentPackage: vi.fn(), getExperimentPackageTemplates: vi.fn(), importExperimentPackage: vi.fn(),
   replaceExperimentPackage: vi.fn(), deleteExperimentPackage: vi.fn(),
 }));
@@ -17,7 +21,7 @@ vi.mock("@/lib/download", () => ({ downloadTextFile: vi.fn() }));
 const api = vi.mocked(apiModule);
 const kinds = ["volume_outlines", "chapter_outlines", "chapter_text"] as const;
 const rules = kinds.map((task_type, index) => ({
-  id: `rule-${index}`, task_type, profile: task_type === "chapter_text" ? "chapter-text-outline-v2" : "isolated-writing-v1",
+  id: `rule-${index}`, task_type, profile: task_type === "chapter_text" ? "chapter-text-outline-v3" : "isolated-writing-v1",
   name: `${task_type}新规则`, version: 2,
   dimensions: [{ key: "需求兑现", question: "当前阶段是否兑现固定要求？", weight: 1,
     anchors: { "1": "目标缺失", "2": "两处实质缺陷", "3": "一处实质缺陷", "4": "仅局部不足", "5": "全部落实" } }],
@@ -220,5 +224,102 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
     await waitFor(() => expect(api.saveExperimentRule).toHaveBeenCalledWith(expect.objectContaining({
       dimensions: [expect.objectContaining({ question: "只检查当前阶段固定目标" })],
     })));
+  });
+});
+
+describe("正文三项评测 / REQ-20261120-161028", () => {
+  const judges = [{ id: 12, name: "评测配置", model: "judge-frozen" }];
+  const reason = { judge_id: 12, repeat: 1, score: 4, reason: "主线依据充分，局部承接略弱。", evidence: ["她跟着铃声回头。"] };
+  const sample: ExperimentSample = { id: "sample", task_type: "chapter_text", package_id: "p", package_title: "正文题", input_revision: "r1",
+    phase: "baseline", round: 0, arm: "baseline", repeat: 1, attempt: 1, artifacts: {}, trace_ids: [],
+    completed: true, status: "failed", scores: null, task_id: "task", checks: {}, error: null, usage: {}, source_commit: "frozen" };
+
+  it("规则页默认打开新版，并能查看旧版五档", async () => {
+    window.location.hash = "#/bench/rules?agent=text";
+    const current = rules[2];
+    api.listExperimentRules.mockResolvedValue({ items: [
+      { ...current, id: "chapter-v2", profile: "chapter-text-outline-v2", name: "正文历史规则", version: 1 }, current,
+    ] as never[] });
+    render(<StageRules />);
+    const versions = await screen.findByLabelText("规则版本");
+    expect(versions).toHaveValue(current.id);
+    expect(screen.getByRole("button", { name: "编辑规则" })).toBeInTheDocument();
+    fireEvent.change(versions, { target: { value: "chapter-v2" } });
+    expect(screen.getByText(/历史规则只读/)).toBeInTheDocument();
+    expect(screen.getByText("全部落实")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "编辑规则" })).not.toBeInTheDocument();
+  });
+
+  it("正文实验启动前显示每模型次数，并使用新版规则", async () => {
+    window.location.hash = "#/bench?agent=text";
+    render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
+    fireEvent.change(await screen.findByLabelText("评测模型"), { target: { value: "5" } });
+    expect(screen.getByText(/每个模型评 3 次/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "启动自进化实验" }));
+    await waitFor(() => expect(api.startExperiment).toHaveBeenCalledWith(expect.objectContaining({
+      task_type: "chapter_text", judge_group_id: 5, rule_versions: { chapter_text: "rule-2" },
+    })));
+  });
+
+  it("完整评分可独立核对每次分数、理由和依据，历史评语仍可读", () => {
+    render(<SampleScoreDetails sample={{ ...sample, scores: { overall: 4, dimensions: { 剧情逻辑: 4 },
+      reasons: { 剧情逻辑: [reason, { ...reason, repeat: 2, score: 5, reason: "前后自洽。" },
+        { judge_id: 12, score: 4, 达标: ["历史达标依据"], 不足: ["历史不足"] }] } } }} judges={judges} />);
+    expect(screen.getByText(/评测配置 · 第 1 次 · 4/)).toBeInTheDocument();
+    expect(screen.getByText(/评测配置 · 第 2 次 · 5/)).toBeInTheDocument();
+    expect(screen.getByText(reason.reason)).toBeInTheDocument();
+    expect(screen.getAllByText(reason.evidence[0])).toHaveLength(2);
+    expect(screen.getByText("历史达标依据")).toBeInTheDocument();
+  });
+
+  it("部分评分显示已完成的评语和冻结设置，维持无汇总分", () => {
+    const run = { rounds: [], baseline: { version: 1, commit: "frozen" }, can_read_content: true,
+      models: { executor: null, judges }, judge_repeats: 2, scoring_rule: { id: "frozen-rule", name: "冻结规则", version: 8 },
+      samples: [{ ...sample, score_progress: { completed: 1, total: 2, reasons: { 剧情逻辑: [reason] } } }] };
+    const view = render(<ChapterComparison experiment={run} onTrace={vi.fn()} initialRound={null} />);
+    expect(screen.getByText(/冻结规则.*v8/)).toBeInTheDocument();
+    expect(screen.getByText(/每个模型评 2 次/)).toBeInTheDocument();
+    expect(screen.getByText(/已完成 1 \/ 2 份评分/)).toBeInTheDocument();
+    expect(screen.getByText(reason.reason)).toBeInTheDocument();
+    expect(within(screen.getByRole("table", { name: "质量变化" })).getAllByText("未评分")).toHaveLength(2);
+
+    view.rerender(<ChapterComparison experiment={{ ...run, can_read_content: false }} onTrace={vi.fn()} initialRound={null} />);
+    expect(screen.getByText(/已完成 1 \/ 2 份评分/)).toBeInTheDocument();
+    expect(screen.queryByText(reason.reason)).not.toBeInTheDocument();
+    expect(screen.queryByText(reason.evidence[0])).not.toBeInTheDocument();
+  });
+
+  it("新正文实验无总体对比结果时也能从记录打开评分明细", async () => {
+    window.location.hash = "#/bench/experiments?agent=text";
+    const record = { id: "archive", task_type: "chapter_text", flow_version: 3, name: "未评齐的正文实验",
+      status: "failed", phase: "baseline", report: {}, baseline: { version: 1 }, current_round: 0, max_rounds: 3, judge_repeats: 3,
+      created_at: "2026-11-20T00:00:00Z" };
+    api.listExperiments.mockResolvedValue({ items: [record,
+      { ...record, id: "explore", name: "未评齐的优化复测", phase: "exploration", current_round: 3 },
+      { ...record, id: "regress", name: "未评齐的回归", phase: "regression", current_round: 2 },
+      { ...record, id: "old", name: "历史正文实验", judge_repeats: undefined }] as never[] });
+    api.getExperiment.mockResolvedValue({ ...record, can_read_content: true, rounds: [], models: { executor: null, judges },
+      baseline: { version: 1, commit: "frozen" }, samples: [{ ...sample,
+        score_progress: { completed: 1, total: 2, reasons: { 剧情逻辑: [reason] } },
+      }] } as never);
+    render(<MemoryRouter initialEntries={["/bench/experiments?agent=text"]}><ExperimentRecords /></MemoryRouter>);
+    await screen.findByRole("link", { name: "未评齐的正文实验" });
+    for (const [name, href] of [
+      ["未评齐的正文实验", "/bench/experiments?scoring=archive&agent=text"],
+      ["未评齐的优化复测", "/bench/experiments?scoring=explore&round=3&phase=exploration&agent=text"],
+      ["未评齐的回归", "/bench/experiments?scoring=regress&round=2&phase=regression&task=chapter_text&agent=text"],
+    ]) {
+      expect(within(screen.getByRole("link", { name }).closest("article")!).getByRole("link", { name: "查看评分明细" }))
+        .toHaveAttribute("href", href);
+    }
+    expect(within(screen.getByRole("link", { name: "历史正文实验" }).closest("article")!)
+      .queryByRole("link", { name: "查看评分明细" })).not.toBeInTheDocument();
+    fireEvent.click(within(screen.getByRole("link", { name: "未评齐的正文实验" }).closest("article")!)
+      .getByRole("link", { name: "查看评分明细" }));
+    expect(await screen.findByText(/已完成 1 \/ 2 份评分/)).toBeInTheDocument();
+    expect(screen.getByText(reason.reason)).toBeInTheDocument();
+    expect(api.getExperiment).toHaveBeenCalledWith("archive");
+    fireEvent.click(screen.getByRole("link", { name: "返回实验记录" }));
+    expect(await screen.findByRole("link", { name: "未评齐的正文实验" })).toBeInTheDocument();
   });
 });

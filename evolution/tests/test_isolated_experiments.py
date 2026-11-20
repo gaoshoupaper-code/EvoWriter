@@ -148,7 +148,7 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
     from app.core import db
     from app.core.security import encrypt_secret
     from app.experiments import agent, api, clients, evaluation, release as publishing, repo, rubrics, runner
-    from app.experiments.schemas import RunCreate
+    from app.experiments.schemas import RuleCreate, RunCreate
 
     monkeypatch.setenv("WRITING_AGENT_ID", "text")
     monkeypatch.setattr(db.settings, "evolution_db", str(tmp_path / "evolution.db"))
@@ -188,6 +188,17 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         monkeypatch.setattr(snapshots, "retain", lambda archive, commit: None)
         run = runner.create_run(settings, "author")
         assert run["assessment_version"] == 2
+        assert run["judge_repeats"] == 3
+        first_rule = run["private"]["rules"][kind]
+        next_rule = rubrics.save_rule(RuleCreate.model_validate({key: first_rule[key] for key in
+            ("task_type", "profile", "name", "dimensions", "discipline_rules")}))
+        db.JudgeGroupsRepository.update(1, name="改过的评委组", member_config_ids=[3], score_repeats=1)
+        db.execute("UPDATE llm_configs SET model = 'gemini-test' WHERE id = 3")
+        updated = runner.create_run(settings.model_copy(update={"rule_versions": {kind: next_rule["id"]}}), "author")
+        assert updated["judge_repeats"] == 1
+        assert updated["models"]["judges"][0]["id"] == 3
+        assert updated["private"]["rules"][kind]["id"] == next_rule["id"]
+        db.JudgeGroupsRepository.delete(1)
         changed = repo.get_package(opt[0])
         changed["id"] = "new-question"
         changed["input"]["demand_md"] = "实验启动后维护的内容"
@@ -198,6 +209,9 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         assert reg[0] not in {sample["id"] for sample in repo.list_packages()}
         saved = repo.get_run(run["id"])
         assert "packages" not in saved["private"]
+        assert saved["judge_repeats"] == 3
+        assert saved["models"]["judges"][0]["id"] == 2
+        assert saved["private"]["rules"][kind] == first_rule
         assert repo.run_package(saved, reg[0])["input"] == repo.chapter_case(removed)["input"]
         frozen_input = repo.run_package(saved, opt[0])["input"]
         assert frozen_input["demand_md"] != changed["input"]["demand_md"]
@@ -206,7 +220,7 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         for hidden in (archived, foreign):
             repo.insert("self_evolution_runs", hidden)
             assert repo.get_run(hidden["id"]) is None
-        assert [row["id"] for row in repo.list_runs()] == [run["id"]]
+        assert {row["id"] for row in repo.list_runs()} == {run["id"], updated["id"]}
         def completed(payload):
             return {"task_id": payload["task_id"], "status": "completed", "completed": True, "trace_ids": [],
                     "artifacts": {"正文/第001章.md": "测试文稿"}, "checks": {"complete": True},

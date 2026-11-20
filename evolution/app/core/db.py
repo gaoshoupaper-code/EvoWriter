@@ -438,7 +438,9 @@ def init_db() -> None:
                 id          INTEGER PRIMARY KEY AUTOINCREMENT,
                 name        TEXT NOT NULL UNIQUE,             -- 组名（用户起，如「三人评审团」）
                 created_at  TEXT NOT NULL,
-                updated_at  TEXT NOT NULL
+                updated_at  TEXT NOT NULL,
+                score_repeats INTEGER NOT NULL DEFAULT 3
+                    CHECK(typeof(score_repeats) = 'integer' AND score_repeats BETWEEN 1 AND 3)
             );
             -- judge_group_members：组成员（config_id → llm_configs.id）。
             -- 删除联动由 JudgeGroupsRepository.remove_member_everywhere 在
@@ -703,6 +705,14 @@ def init_db() -> None:
             """
         )
         conn.commit()
+
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(judge_groups)")}
+        if "score_repeats" not in columns:
+            conn.execute(
+                "ALTER TABLE judge_groups ADD COLUMN score_repeats INTEGER NOT NULL DEFAULT 3 "
+                "CHECK(typeof(score_repeats) = 'integer' AND score_repeats BETWEEN 1 AND 3)"
+            )
+            conn.commit()
 
         # Phase 7 幂等迁移：DROP 废弃的 surface_versions/harness_manifests（D10=b1）
         _drop_legacy_harness_tables(conn)
@@ -2122,19 +2132,21 @@ class JudgeGroupsRepository:
 
     MIN_MEMBERS = 1
     MAX_MEMBERS = 5
+    DEFAULT_SCORE_REPEATS = 3
+    MAX_SCORE_REPEATS = 3
     ALLOWED_SCOPES = ("eval", "evolution")
 
     @staticmethod
     def list_all() -> list[dict[str, Any]]:
         """全部组（含成员，按 position 排序）。
 
-        Returns: [{id, name, members: [{config_id, position}], created_at, updated_at}]
+        Returns: [{id, name, score_repeats, members: [{config_id, position}], created_at, updated_at}]
         """
         with _lock:
             conn = get_conn()
             groups = [
                 dict(r) for r in conn.execute(
-                    "SELECT id, name, created_at, updated_at FROM judge_groups ORDER BY id ASC"
+                    "SELECT id, name, created_at, updated_at, score_repeats FROM judge_groups ORDER BY id ASC"
                 ).fetchall()
             ]
             members: dict[int, list[dict[str, Any]]] = {}
@@ -2155,7 +2167,7 @@ class JudgeGroupsRepository:
         with _lock:
             conn = get_conn()
             row = conn.execute(
-                "SELECT id, name, created_at, updated_at FROM judge_groups WHERE id=?",
+                "SELECT id, name, created_at, updated_at, score_repeats FROM judge_groups WHERE id=?",
                 (group_id,),
             ).fetchone()
             if row is None:
@@ -2172,9 +2184,10 @@ class JudgeGroupsRepository:
             return group
 
     @staticmethod
-    def create(*, name: str, member_config_ids: list[int]) -> int:
+    def create(*, name: str, member_config_ids: list[int], score_repeats: int = DEFAULT_SCORE_REPEATS) -> int:
         """建组（校验成员数/重名/成员 scope），返回组 id。任一校验失败抛 ValueError。"""
         _validate_members(member_config_ids)
+        _validate_judge_score_repeats(score_repeats)
         now = datetime.now(UTC).isoformat()
         conn = get_conn()
         with _lock:
@@ -2184,8 +2197,8 @@ class JudgeGroupsRepository:
             if dup:
                 raise ValueError(f"评测组名「{name}」已存在")
             cur = conn.execute(
-                "INSERT INTO judge_groups (name, created_at, updated_at) VALUES (?, ?, ?)",
-                (name, now, now),
+                "INSERT INTO judge_groups (name, created_at, updated_at, score_repeats) VALUES (?, ?, ?, ?)",
+                (name, now, now, score_repeats),
             )
             group_id = cur.lastrowid
             _write_members(conn, group_id, member_config_ids)
@@ -2193,9 +2206,11 @@ class JudgeGroupsRepository:
             return group_id
 
     @staticmethod
-    def update(group_id: int, *, name: str, member_config_ids: list[int]) -> bool:
+    def update(group_id: int, *, name: str, member_config_ids: list[int], score_repeats: int | None = None) -> bool:
         """整组更新（改名 + 全量替换成员）；组不存在返回 False。"""
         _validate_members(member_config_ids)
+        if score_repeats is not None:
+            _validate_judge_score_repeats(score_repeats)
         now = datetime.now(UTC).isoformat()
         conn = get_conn()
         with _lock:
@@ -2205,8 +2220,8 @@ class JudgeGroupsRepository:
             if dup:
                 raise ValueError(f"评测组名「{name}」已存在")
             cur = conn.execute(
-                "UPDATE judge_groups SET name=?, updated_at=? WHERE id=?",
-                (name, now, group_id),
+                "UPDATE judge_groups SET name=?, updated_at=?, score_repeats=COALESCE(?, score_repeats) WHERE id=?",
+                (name, now, score_repeats, group_id),
             )
             if cur.rowcount == 0:
                 return False
@@ -2247,6 +2262,11 @@ class JudgeGroupsRepository:
             for row in empty:
                 conn.execute("DELETE FROM judge_groups WHERE id=?", (row["id"],))
             return [row["name"] for row in empty]
+
+
+def _validate_judge_score_repeats(score_repeats: int) -> None:
+    if type(score_repeats) is not int or not 1 <= score_repeats <= JudgeGroupsRepository.MAX_SCORE_REPEATS:
+        raise ValueError(f"每个模型的评测次数须为 1～{JudgeGroupsRepository.MAX_SCORE_REPEATS} 的整数")
 
 
 def _validate_members(member_config_ids: list[int]) -> None:

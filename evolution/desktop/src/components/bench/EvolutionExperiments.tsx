@@ -8,7 +8,7 @@ import {
   type ExperimentOptions, type ExperimentPackage, type ExperimentRule, type ExperimentStart,
 } from "@/lib/api";
 import {
-  RULE_PROFILE, ruleProfile, EXPERIMENT_STATUS, TASK_LABELS,
+  DEFAULT_JUDGE_REPEATS, RULE_PROFILE, ruleProfile, EXPERIMENT_STATUS, TASK_LABELS,
   experimentTaskLabel, type ExperimentTaskType,
 } from "@/lib/experiment-types";
 import { ExperimentProgress } from "./ExperimentEvidence";
@@ -43,6 +43,8 @@ export function EvolutionExperiments() {
   const [reload, setReload] = useState(0);
 
   const selectedGroup = options?.judge_groups.find((group) => String(group.id) === judges);
+  const judgeRepeats = selectedGroup?.score_repeats ?? DEFAULT_JUDGE_REPEATS;
+  const repeatedScoring = kind === "chapter_text" && rules.some((rule) => rule.id === ruleIds[kind] && rule.profile === ruleProfile(kind));
   const selectedSamples = packages.filter((item) => item.task_type === kind);
   const selectedIds = (type: ExperimentTaskType, purpose: ExperimentPackage["purpose"]) =>
     selectedSamples.filter((item) => item.task_type === type && item.purpose === purpose).map((item) => item.id);
@@ -135,7 +137,8 @@ export function EvolutionExperiments() {
         <div><span>过关门槛</span><strong>全部完成 · 改进题均分提高至少 0.1 分</strong>
           <small>回归均分不降 · 最多 {rounds} 轮</small></div>
         <div><span>评测模型</span><strong>{selectedGroup?.members.map((member) => member.model).join(" + ") || "等待选择"}</strong>
-          <small>规则、输入与模型在启动后固定</small></div>
+          {repeatedScoring && selectedGroup && <small>每个模型评 {judgeRepeats} 次 · 每份成稿 {selectedGroup.members.length * judgeRepeats} 份评分</small>}
+          <small>{repeatedScoring ? "规则、输入、模型与评分次数在启动后固定" : "规则、输入与模型在启动后固定"}</small></div>
       </div>
       <details className="experiment-advanced" open={advanced}>
         <summary aria-expanded={advanced} onClick={(event) => { event.preventDefault(); setAdvanced((current) => !current); }}><SlidersHorizontal size={15} />高级设置</summary>

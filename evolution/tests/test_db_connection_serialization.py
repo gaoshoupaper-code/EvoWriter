@@ -16,13 +16,13 @@ def connection():
     current = db.sqlite3.connect(":memory:", check_same_thread=False)
     current.row_factory = db.sqlite3.Row
     current.executescript("""
-        CREATE TABLE judge_groups (id INTEGER, name TEXT, created_at TEXT, updated_at TEXT);
+        CREATE TABLE judge_groups (id INTEGER, name TEXT, created_at TEXT, updated_at TEXT, score_repeats INTEGER);
         CREATE TABLE judge_group_members (group_id INTEGER, config_id INTEGER, position INTEGER);
         CREATE TABLE llm_configs (id INTEGER, scope TEXT);
         CREATE TABLE benchmark_batch_meta (batch_id TEXT, stop_reason TEXT);
         CREATE TABLE runs (trace_id TEXT, evidence_status TEXT, evidence_gaps_json TEXT);
         CREATE TABLE counter (value INTEGER);
-        INSERT INTO judge_groups VALUES (1, 'test', 'now', 'now');
+        INSERT INTO judge_groups VALUES (1, 'test', 'now', 'now', 3);
         INSERT INTO judge_group_members VALUES (1, 1, 0);
         INSERT INTO llm_configs VALUES (1, 'evolution');
         INSERT INTO benchmark_batch_meta VALUES ('batch', 'user_stop');

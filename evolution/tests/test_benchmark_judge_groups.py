@@ -193,6 +193,64 @@ class JudgeGroupDeleteLinkageTest(JudgeGroupTestBase):
 class JudgeGroupApiTest(JudgeGroupTestBase):
     """FR-001 API 面：组 CRUD 端点 + 成员详情/同家族标记（DEC-011）。"""
 
+    def test_chapter_group_saves_repeat_settings(self):
+        from app.benchmark import api as bench_api
+
+        cfg = self._seed_config()
+        with patch.dict(os.environ, {"WRITING_AGENT_ID": "text"}):
+            group_id = bench_api.create_judge_group(
+                bench_api.JudgeGroupCreateRequest(name="正文评测", member_config_ids=[cfg])
+            )["group_id"]
+            self.assertEqual(bench_api.list_judge_groups()["groups"][0]["score_repeats"], 3)
+
+            bench_api.update_judge_group(group_id, bench_api.JudgeGroupUpdateRequest(
+                name="正文评测", member_config_ids=[cfg], score_repeats=1,
+            ))
+            self.assertEqual(self.db.JudgeGroupsRepository.get(group_id)["score_repeats"], 1)
+            bench_api.update_judge_group(group_id, bench_api.JudgeGroupUpdateRequest(
+                name="正文评测改名", member_config_ids=[cfg],
+            ))
+            self.assertEqual(bench_api.list_judge_groups()["groups"][0]["score_repeats"], 1)
+
+        for agent in ("outline", "volume", "chapter"):
+            with self.subTest(agent=agent), patch.dict(os.environ, {"WRITING_AGENT_ID": agent}):
+                self.assertNotIn("score_repeats", bench_api.list_judge_groups()["groups"][0])
+
+    def test_repeat_settings_require_bounded_integers(self):
+        from pydantic import ValidationError
+
+        from app.benchmark import api as bench_api
+
+        for model in (bench_api.JudgeGroupCreateRequest, bench_api.JudgeGroupUpdateRequest):
+            for invalid in (0, 4, 1.5, 2.0, "2", True, None):
+                with self.subTest(model=model.__name__, invalid=invalid), self.assertRaises(ValidationError):
+                    model(name="正文评测", member_config_ids=[1], score_repeats=invalid)
+
+    def test_existing_group_migration_defaults_to_three_repeats(self):
+        import sqlite3
+        from contextlib import closing
+
+        from app.benchmark import api as bench_api
+
+        with closing(sqlite3.connect(":memory:")) as legacy:
+            legacy.row_factory = sqlite3.Row
+            legacy.executescript("""
+                CREATE TABLE judge_groups (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT INTO judge_groups VALUES (1, '旧评测组', 'now', 'now');
+            """)
+            with patch.object(self.db, "_conn", legacy), patch.dict(os.environ, {"WRITING_AGENT_ID": "text"}):
+                self.db.init_db()
+                group = bench_api.list_judge_groups()["groups"][0]
+                self.assertEqual((group["name"], group["score_repeats"]), ("旧评测组", 3))
+                legacy.execute("UPDATE judge_groups SET score_repeats=2 WHERE id=1")
+                self.db.init_db()
+                self.assertEqual(self.db.JudgeGroupsRepository.get(1)["score_repeats"], 2)
+
     def test_crud_endpoints(self):
         from app.benchmark import api as bench_api
 

@@ -68,7 +68,11 @@ function unchangedParagraphs(left: string[], right: string[]) {
   return [leftMatches, rightMatches];
 }
 
-export function ChapterComparison({ experiment, onTrace, initialRound }: { experiment: Experiment; onTrace: (id: string) => void; initialRound: number | null }) {
+export function ChapterComparison({ experiment, onTrace, initialRound }: {
+  experiment: Pick<Experiment, "baseline" | "can_read_content" | "judge_repeats" | "models" | "rounds" | "samples" | "scoring_rule">;
+  onTrace: (id: string) => void;
+  initialRound: number | null;
+}) {
   const [sourceVersion, setSourceVersion] = useState(0);
   const [targetVersion, setTargetVersion] = useState<number | null>(initialRound);
   const [chosenPair, setChosenPair] = useState("");
@@ -101,6 +105,11 @@ export function ChapterComparison({ experiment, onTrace, initialRound }: { exper
   }
   return <section className="experiment-section" aria-label="跨版本终稿对比">
     <h2>跨版本终稿对比</h2>
+    {(experiment.scoring_rule || experiment.judge_repeats != null) && <p className="experiment-note">
+      {experiment.scoring_rule && <>评测规则 {experiment.scoring_rule.name} · v{experiment.scoring_rule.version}</>}
+      {experiment.scoring_rule && experiment.judge_repeats != null && " · "}
+      {experiment.judge_repeats != null && <>每个模型评 {experiment.judge_repeats} 次</>}
+    </p>}
     <div className="chapter-pair-controls">{["源版本", "对照版本"].map((label, index) => <label key={label}>{label}
       <select className="config-input" value={rounds[index]} disabled={versions.length === 1} onChange={(event) => {
         const version = Number(event.target.value);
@@ -144,8 +153,12 @@ export function ChapterComparison({ experiment, onTrace, initialRound }: { exper
           {sample.error && <p className="experiment-error">{experiment.can_read_content ? sample.error : "本次运行异常，完整原因需正文读取权限。"}</p>}
           {sample.trace_ids.map((id, index) => <button className="action-link" key={id} onClick={() => onTrace(id)}>生成 Trace {index + 1}</button>)}
           {sample.evaluation_trace_ids?.map((id, index) => <button className="action-link" key={id} onClick={() => onTrace(id)}>评分 Trace {index + 1}</button>)}
+          {!sample.scores && sample.score_progress && <p className="experiment-note">
+            已完成 {sample.score_progress.completed} / {sample.score_progress.total} 份评分 · 尚无汇总评分
+          </p>}
           {experiment.can_read_content && <>
-            {sample.scores && <details><summary>逐项评语与依据</summary><SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} /></details>}
+            {(sample.scores || sample.score_progress?.reasons) && <details><summary>逐项评语与依据</summary>
+              <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} /></details>}
             <h4>{sample.completed ? "最终正文" : "已保存正文（未完成）"}</h4>
             {paragraphs[side].length ? paragraphs[side].map((line, n) => <p key={n}>{!compareText || unchanged[side].has(n) ? line
               : side ? <ins>{line}</ins> : <del>{line}</del>}</p>) : <p className="experiment-note">尚无目标章正文。</p>}

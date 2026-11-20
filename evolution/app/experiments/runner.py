@@ -61,6 +61,10 @@ def create_run(request: RunCreate, actor: str) -> dict:
     group = db.JudgeGroupsRepository.get(request.judge_group_id)
     if group is None or not group["members"]:
         raise ValueError("评委组不存在或没有成员")
+    if chapter_assessment:
+        judge_repeats = group.get("score_repeats", db.JudgeGroupsRepository.DEFAULT_SCORE_REPEATS)
+        if type(judge_repeats) is not int or not 1 <= judge_repeats <= 3:
+            raise ValueError("每个评测模型的评分次数须为 1～3 的整数")
     judges = [repo.freeze_credentials(member["config_id"]) for member in group["members"]]
     if any(judge["scope"] not in ("eval", "evolution") for judge in judges):
         raise ValueError("评委组包含不可用于评测的模型配置")
@@ -116,6 +120,7 @@ def create_run(request: RunCreate, actor: str) -> dict:
         snapshots.ensure_baseline(selected["commit"])
         snapshots.retain(run["id"], selected["commit"])
         run["assessment_version"] = 2
+        run["judge_repeats"] = judge_repeats
         run["private"]["package_revisions"] = {key: p["input_revision"] for key, p in frozen_packages.items()}
         del run["private"]["packages"]
     run["models"] = repo.public_models(run)
@@ -263,6 +268,28 @@ def _finish(run: dict, status: str, reason: str) -> None:
     repo.put_run(run)
 
 
+def _stop_incomplete_phase(run: dict, samples: list[dict], package_ids: list[str], *, arms: tuple[str, ...], repeats: int = 1) -> bool:
+    if "judge_repeats" not in run:
+        return False
+    expected = {(arm, package_id, repeat) for arm in arms for package_id in package_ids for repeat in range(1, repeats + 1)}
+    actual = {(sample["arm"], sample["package_id"], sample["repeat"]) for sample in samples
+              if sample.get("completed") and sample.get("scores") is not None}
+    if expected and actual == expected and len(samples) == len(expected):
+        return False
+    evaluation_error = any(sample.get("completed") and sample.get("scores") is None for sample in samples)
+    reason = ("评测异常：必做评分未补齐，已保留原稿和已有评分。" if evaluation_error
+              else "必做生成样本未完成，未生成本轮总体分差。")
+    if run["rounds"]:
+        run["rounds"][-1].update(status="failed", error=reason)
+    if evaluation_error or run["phase"] == "baseline":
+        _finish(run, "failed", reason)
+    else:
+        run["phase"] = "evolving"
+        repo.event(run, "round_failed", reason)
+        repo.put_run(run)
+    return True
+
+
 def _run_pending(run: dict, samples: list[dict]) -> bool:
     pending = [sample for sample in samples if sample["status"] not in {"completed", "failed", "stopped"}]
     if not pending:
@@ -358,7 +385,8 @@ def advance_one(run_id: str) -> None:
     run.pop("recovery_error", None)
     try:
         if run["phase"] == "baseline":
-            if _run_pending(run, [sample for sample in run["samples"] if sample["phase"] == "baseline"]):
+            baseline = [sample for sample in run["samples"] if sample["phase"] == "baseline"]
+            if _run_pending(run, baseline) or _stop_incomplete_phase(run, baseline, run["settings"]["optimization_ids"], arms=("baseline",)):
                 return
             run["phase"] = "evolving"
             repo.event(run, "evolving", "原版评测完成，开始自动改进 Harness。")
@@ -404,6 +432,8 @@ def advance_one(run_id: str) -> None:
             if _run_pending(run, candidate):
                 return
             baseline = [sample for sample in run["samples"] if sample["phase"] == "baseline"]
+            if _stop_incomplete_phase(run, baseline + candidate, run["settings"]["optimization_ids"], arms=("baseline", "candidate")):
+                return
             thresholds = run["settings"]["thresholds"]
             report = evaluation.compare_results(baseline, candidate, completion_rate=thresholds["completion_rate"], quality_gain=thresholds["quality_gain"])
             round_record = run["rounds"][-1]
@@ -434,6 +464,8 @@ def advance_one(run_id: str) -> None:
             if _run_pending(run, selected):
                 return
             kind = run["task_type"]
+            if _stop_incomplete_phase(run, selected, run["settings"]["regression_ids"][kind], arms=("baseline", "candidate"), repeats=3):
+                return
             report = _compare_final(run, selected, kind, 0)
             current = run["rounds"][-1]
             passed = report["passed"] and current["report"]["passed"]

@@ -7,6 +7,7 @@ import sqlite3
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -116,6 +117,39 @@ class SeedDatabaseTest(unittest.TestCase):
         self.assertEqual(edited["profile"], "stage-eval-v2")
         self.assertGreater(edited["version"], chapter["version"])
         self.assertEqual(repo.get_rule(chapter["id"]), chapter)
+
+    @patch.dict("os.environ", {"WRITING_AGENT_ID": "text"})
+    def test_chapter_rule_seeds_current_revision_without_changing_old_rule(self):
+        from pydantic import ValidationError
+
+        from app.experiments import repo, rubrics
+        from app.experiments.schemas import RuleCreate
+
+        old = {"id": "old-text-rule", "task_type": "chapter_text", "version": 3, "created_at": repo.now(),
+               "profile": "chapter-text-outline-v2", "flow_version": 3, "name": "旧单章正文规则",
+               "dimensions": [], "discipline_rules": []}
+        repo.insert("self_evolution_rules", old)
+
+        rubrics.seed_rules()
+        rubrics.seed_rules()
+
+        current, previous = rubrics.list_rules("chapter_text")
+        self.assertEqual(previous, old)
+        self.assertEqual(current["profile"], "chapter-text-outline-v3")
+        self.assertEqual(current["version"], 4)
+        dimensions = current["dimensions"]
+        self.assertEqual([d["key"] for d in dimensions], ["剧情逻辑", "章纲兑现", "语言清晰度"])
+        self.assertEqual({d["weight"] for d in dimensions}, {1})
+        self.assertTrue(all(set(d["anchors"]) == {"1", "2", "3", "4", "5"} for d in dimensions))
+        self.assertTrue(all(anchor.count("。") >= 3 for d in dimensions for anchor in d["anchors"].values()))
+        self.assertIn("谜底可以留到后文", dimensions[0]["question"])
+
+        payload = {key: current[key] for key in ("task_type", "name", "dimensions", "discipline_rules")}
+        edited = rubrics.save_rule(RuleCreate.model_validate(payload))
+        self.assertEqual(edited["profile"], current["profile"])
+        self.assertEqual(repo.get_rule(current["id"]), current)
+        with self.assertRaises(ValidationError):
+            RuleCreate.model_validate({**payload, "dimensions": dimensions[:-1]})
 
 
 if __name__ == "__main__":

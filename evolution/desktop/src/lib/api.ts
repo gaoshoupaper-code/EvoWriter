@@ -1803,6 +1803,7 @@ export interface JudgeGroupInfo {
   id: number;
   name: string;
   members: JudgeGroupMemberInfo[];
+  score_repeats?: number;
   created_at?: string;
   updated_at?: string;
 }
@@ -1814,6 +1815,7 @@ export async function listJudgeGroups(): Promise<{ groups: JudgeGroupInfo[] }> {
 export async function createJudgeGroup(payload: {
   name: string;
   member_config_ids: number[];
+  score_repeats?: number;
 }): Promise<{ group_id: number; status: string }> {
   return evoJson("/api/benchmark/judge-groups", {
     method: "POST",
@@ -1824,7 +1826,7 @@ export async function createJudgeGroup(payload: {
 
 export async function updateJudgeGroup(
   groupId: number,
-  payload: { name: string; member_config_ids: number[] },
+  payload: { name: string; member_config_ids: number[]; score_repeats?: number },
 ): Promise<{ status: string }> {
   return evoJson(`/api/benchmark/judge-groups/${groupId}`, {
     method: "PUT",

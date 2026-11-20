@@ -271,7 +271,7 @@ class ReleaseRecoveryV2Test(fixtures.DatabaseTest):
 class DefaultsAndRetryTest(fixtures.DatabaseTest):
     @patch.dict("os.environ", {"WRITING_AGENT_ID": "text"})
     def test_options_only_default_to_current_rules_and_safe_models(self):
-        from app.experiments import api, repo
+        from app.experiments import api, repo, rubrics
         repo.init_schema()
         with patch("app.experiments.clients.versions", return_value={"items": [], "production_version": None}), \
              patch("app.benchmark.api.list_judge_groups", return_value={"groups": []}), \
@@ -284,7 +284,7 @@ class DefaultsAndRetryTest(fixtures.DatabaseTest):
         self.assertEqual(options["defaults"]["thresholds"]["quality_gain"], .1)
         self.assertEqual(options["defaults"]["max_rounds"], 3)
         for identifier in options["defaults"]["rule_versions"].values():
-            self.assertEqual(repo.get_rule(identifier)["profile"], "isolated-writing-v1")
+            self.assertEqual(repo.get_rule(identifier)["profile"], rubrics.TEXT_PROFILE)
         self.assertNotIn("base_url", str(options["models"]))
         self.assertNotIn("secret", str(options["models"]))
 

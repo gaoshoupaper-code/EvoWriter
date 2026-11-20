@@ -28,7 +28,8 @@ async function readSkills(files: File[]) {
 }
 
 function editedText(form: FormData, name: string, original: string) {
-  const value = String(form.get(name) ?? "");
+  const value = form.get(name);
+  if (typeof value !== "string") return original;
   // Textareas normalize line endings even when the content was left alone.
   return value.replace(/\r\n?/g, "\n") === original.replace(/\r\n?/g, "\n") ? original : value;
 }
@@ -99,6 +100,12 @@ export function StagePackages() {
       catch { throw new Error("资料包不是有效 JSON，请参照示例修改。"); }
     }, replaceId);
   }
+  function replacementUpload(id: string) {
+    return <label className="config-button experiment-upload">替换资料包
+      <input aria-label="替换资料包" type="file" accept=".json,application/json" disabled={busy}
+        onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void upload(file, id); }} />
+    </label>;
+  }
   function saveEdits(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!selected) return;
@@ -156,6 +163,9 @@ export function StagePackages() {
   }
   const itemsFor = (key: DatasetKey) => packages.filter((item) => item.task_type === task && item.purpose === key);
   const visible = itemsFor(dataset);
+  const editedFiles = selected ? Object.entries(selected.input.files).filter(([path]) =>
+    selected.task_type !== "chapter_text" || path === `章纲/第${String(selected.target.chapter).padStart(3, "0")}章.md`,
+  ) : [];
   function table(items: ExperimentPackage[]) {
     return <div className="experiment-table-scroll"><table className="data-table experiment-dataset-table"><thead><tr>
       <th>样本</th><th>阶段</th><th>用途</th><th>目标产物</th><th>输入版本</th><th>操作</th>
@@ -165,7 +175,8 @@ export function StagePackages() {
       <td>{experimentTargetLabel(item.target)}</td><td className="mono" title={item.input_revision}>{item.input_revision.slice(0, 12)}</td>
       <td><div className="experiment-actions">
         <button className="action-link" type="button" disabled={!canRead || busy} title={canRead ? "查看完整固定输入" : "当前账号没有正文读取权限"} onClick={() => void view(item.id)}>查看输入</button>
-        <button className="action-link" type="button" disabled={!canRead || busy} title={canRead ? undefined : "当前账号没有正文读取权限"} onClick={() => void view(item.id, true)}>编辑</button>
+        {canRead ? <button className="action-link" type="button" disabled={busy} onClick={() => void view(item.id, true)}>编辑</button>
+          : replacementUpload(item.id)}
         <button className="action-link danger" type="button" disabled={busy} onClick={() => void removePackage(item)}>删除</button>
       </div></td>
     </tr>)}</tbody></table></div>;
@@ -233,12 +244,13 @@ export function StagePackages() {
       <h3>编辑题目</h3>
       <label className="experiment-field">题目名称<input className="config-input" name="title" required maxLength={200}
         defaultValue={selected.title} disabled={busy} autoFocus /></label>
-      <label className="experiment-field">完整需求<textarea className="config-input" name="demand" rows={6}
-        defaultValue={selected.input.demand_md} disabled={busy} /></label>
+      {selected.task_type !== "chapter_text" && <label className="experiment-field">完整需求
+        <textarea className="config-input" name="demand" rows={6} defaultValue={selected.input.demand_md} disabled={busy} />
+      </label>}
       <label className="experiment-field">预设确认规则<textarea className="config-input" name="rules" rows={3} required
         defaultValue={selected.input.confirmation_rules} disabled={busy} /></label>
       <div className="experiment-files">
-        {Object.entries(selected.input.files).map(([path, content], _, files) => <details key={path} open={files.length === 1}>
+        {editedFiles.map(([path, content]) => <details key={path} open={editedFiles.length === 1}>
           <summary>{path}</summary>
           <div className="experiment-field"><textarea className="config-input" aria-label={path}
             name={`file:${path}`} rows={8} defaultValue={content} disabled={busy} /></div>
@@ -262,10 +274,7 @@ export function StagePackages() {
               input: { ...selected.input, input_revision: undefined, skills: await readSkills(files) } }), selected.id);
           }} />
         </label>}
-        <label className="config-button experiment-upload">替换资料包
-          <input aria-label="替换资料包" type="file" accept=".json,application/json" disabled={busy}
-            onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ""; if (file) void upload(file, selected.id); }} />
-        </label>
+        {replacementUpload(selected.id)}
         <button type="button" className="action-link" onClick={closeDetail}>收起</button></div></div>
       <p className="mono">输入版本：{selected.input_revision}</p>
       <h4>完整需求</h4><p className="experiment-prewrap">{selected.input.demand_md || "使用下方固定上游文稿"}</p>

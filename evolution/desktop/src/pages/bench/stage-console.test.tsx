@@ -134,7 +134,8 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
     window.location.hash = "#/agents/text/bench";
     const sample = packages.find((item) => item.task_type === "chapter_text")!;
     const path = "章纲/第001章.md";
-    const input = { demand_md: "原需求", files: { [path]: "旧章纲" }, skills: [{ name: "对白" }],
+    const previous = "章纲/第002章.md";
+    const input = { demand_md: "原需求", files: { [path]: "旧章纲", [previous]: "其他章纲" }, skills: [{ name: "对白" }],
       confirmation_rules: "第一条\r\n第二条", input_revision: sample.input_revision };
     const revision = { ...sample, id: "revised-text", title: "新题目", input_revision: "new-revision" };
     api.getExperimentPackage.mockResolvedValue({ ...sample, input } as never);
@@ -145,12 +146,13 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
     const row = (await screen.findByText(sample.title)).closest("tr")!;
     fireEvent.click(within(row).getByRole("button", { name: "编辑" }));
     fireEvent.change(await screen.findByLabelText("题目名称"), { target: { value: revision.title } });
-    fireEvent.change(screen.getByLabelText("完整需求"), { target: { value: "新需求" } });
+    expect(screen.queryByLabelText("完整需求")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(previous)).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(path), { target: { value: "新章纲" } });
     fireEvent.click(screen.getByRole("button", { name: "保存为新版本" }));
     await waitFor(() => expect(api.replaceExperimentPackage).toHaveBeenCalledWith(sample.id, {
       title: revision.title, purpose: sample.purpose, target: sample.target,
-      input: { ...input, demand_md: "新需求", files: { [path]: "新章纲" }, input_revision: undefined },
+      input: { ...input, files: { ...input.files, [path]: "新章纲" }, input_revision: undefined },
     }));
     expect(await screen.findByText(revision.title)).toBeInTheDocument();
     expect(screen.queryByText(sample.title)).not.toBeInTheDocument();
@@ -165,7 +167,8 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
     try {
       render(<StagePackages />);
       const row = (await screen.findByText(sample.title)).closest("tr")!;
-      expect(within(row).getByRole("button", { name: "编辑" })).toBeDisabled();
+      expect(within(row).getByRole("button", { name: "查看输入" })).toBeDisabled();
+      expect(within(row).getByLabelText("替换资料包")).toBeEnabled();
       const remove = within(row).getByRole("button", { name: "删除" });
       fireEvent.click(remove);
       expect(api.deleteExperimentPackage).not.toHaveBeenCalled();

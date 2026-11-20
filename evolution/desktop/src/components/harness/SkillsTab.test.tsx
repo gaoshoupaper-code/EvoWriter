@@ -8,8 +8,8 @@
  * - diff 模式：新增技能卡片头标绿、删除路径红底行从 diff 补出
  * - content 为空（读取失败）显示 load_error，不渲染正文
  */
-import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import type { HarnessElementView, AgentDiff } from "@/lib/api";
 import { SkillsTab } from "./SkillsTab";
 
@@ -118,5 +118,56 @@ describe("SkillsTab 技能卡片", () => {
     // 空态文案可见（v48 起架构无 skills 目录，诚实提示避免误判为加载失败）
     expect(screen.getByText("该版本所有 Agent 均无 skills。")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /skill-card/ })).toBeNull();
+  });
+
+  it("只接受 SKILL.md，导入空技能页所选角色", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<SkillsTab agents={[makeAgent({ name: "review", skills: [] })]} diffs={null} onSave={onSave} />);
+    const input = screen.getByLabelText("导入 SKILL.md");
+    fireEvent.change(input, { target: { files: [new File(["# other"], "other.md")] } });
+    expect(await screen.findByRole("alert")).toHaveTextContent("只支持导入 SKILL.md");
+    expect(onSave).not.toHaveBeenCalled();
+
+    const file = new File([SKILL_MD], "SKILL.md");
+    Object.defineProperty(file, "arrayBuffer", { value: async () => new TextEncoder().encode(SKILL_MD).buffer });
+    fireEvent.change(input, { target: { files: [file] } });
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith({
+      role: "review", operation: "skill_import", filename: "SKILL.md", content: SKILL_MD,
+    }));
+  });
+
+  it("切出当前角色后不会提交仍在读取的技能文件", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const { unmount } = render(<SkillsTab agents={[makeAgent({ name: "review" })]} diffs={null} onSave={onSave} />);
+    let finishRead!: (buffer: ArrayBuffer) => void;
+    const file = new File([SKILL_MD], "SKILL.md");
+    Object.defineProperty(file, "arrayBuffer", { value: () => new Promise<ArrayBuffer>((resolve) => { finishRead = resolve; }) });
+
+    fireEvent.change(screen.getByLabelText("导入 SKILL.md"), { target: { files: [file] } });
+    unmount();
+    await act(async () => { finishRead(new TextEncoder().encode(SKILL_MD).buffer); });
+
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("编辑和移除只发送当前角色与选中的技能路径", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<SkillsTab agents={[makeAgent({ name: "review" })]} diffs={null} onSave={onSave} />);
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    expect(screen.getByRole("textbox")).toHaveValue(SKILL_MD);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: SKILL_MD + "\n改后内容" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存草稿" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith({
+      role: "review", operation: "skill_edit", path: "skills/storybuilding-initial", content: SKILL_MD + "\n改后内容",
+    }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    fireEvent.click(screen.getByRole("button", { name: "删除" }));
+    expect(onSave).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith({
+      role: "review", operation: "skill_delete", path: "skills/storybuilding-initial",
+    }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 });

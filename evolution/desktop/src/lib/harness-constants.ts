@@ -2,8 +2,7 @@
  * Harness 要素页共享常量。
  *
  * hook 顺序按 DeepAgents AgentMiddleware 生命周期（langchain.agents.middleware.types），
- * 列名直接用英文 hook 标识符，贴合 DeepAgents 原生术语——
- * 后端 VALID_HOOKS 是 frozenset（无序），前端必须用这里的 HOOK_ORDER 排列泳道图列。
+ * 前端按 HOOK_ORDER 纵向排列六个钩子。
  * agent 中文名与后端 elements_api._SUBAGENT_ROLE_MAP 对齐，meta_pipeline 是前端补充。
  */
 
@@ -36,13 +35,6 @@ export const AGENT_LABELS: Record<string, string> = {
   writing: "正文写作",
   writing_review: "正文审查",
   general_purpose: "通用助手",
-};
-
-export const MIDDLEWARE_GROUP_LABELS: Record<string, string> = {
-  base: "基础链",
-  meta: "主控专属",
-  agent: "Agent 专属",
-  runtime: "运行时注入",
 };
 
 /** 获取 agent 中文名，未知 agent 回退机器名 */

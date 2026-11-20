@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+from collections.abc import Iterable, Iterator
 from typing import Any
 
 HOOK_ORDER = (
@@ -54,7 +55,7 @@ def build_middleware_projection(
       storyline 追加单线护栏，worldview/character 为纯通用骨架。
     - v7 单故事专家架构（旧版本）：两泳道（storybuilding + reviewer）。
     """
-    catalog = _build_catalog(package_sources)
+    catalog, _ = _build_catalog(package_sources)
     root = package_sources.get("__init__.py", "")
 
     # 两代架构共用：__init__.py 的 middleware_factory 产出各 agent 通用骨架。
@@ -68,7 +69,7 @@ def build_middleware_projection(
 def _project_v14(
     package_sources: dict[str, str],
     root: str,
-    common: list[dict[str, Any]],
+    common: list[dict[str, Any]] | None,
     catalog: dict[str, dict[str, Any]],
 ) -> dict[str, list[dict[str, Any]]]:
     """v14 多 Agent 架构投影（orchestrator + worldview/character/storyline + reviewer）。"""
@@ -98,21 +99,22 @@ def _project_v14(
     # 五泳道：领域代理中仅 storyline 追加护栏，worldview/character 为纯通用骨架
     stacks = {
         "orchestrator": orchestrator,
-        "worldview": [dict(mw) for mw in common],
-        "character": [dict(mw) for mw in common],
+        "worldview": common,
+        "character": common,
         "storyline": storyline,
         "storybuilding_review": review_storybuilding,
     }
     return {
-        agent: [_enrich_mount(mount, catalog) for mount in mounts]
+        agent: [_enrich_mount(mount, catalog.get(mount["class_name"], {})) for mount in mounts]
         for agent, mounts in stacks.items()
+        if mounts is not None
     }
 
 
 def _project_v7(
     package_sources: dict[str, str],
     root: str,
-    common: list[dict[str, Any]],
+    common: list[dict[str, Any]] | None,
     catalog: dict[str, dict[str, Any]],
 ) -> dict[str, list[dict[str, Any]]]:
     """v7 单故事专家架构投影（两泳道，含 v7 之前的历史形态）。"""
@@ -130,9 +132,11 @@ def _project_v7(
     )
 
     factory_source = package_sources.get("subagents/factory.py", "")
-    storybuilding = _extract_stack(
+    factory_stack = _extract_stack(
         factory_source, "build_deep_subagent", "mw", base=storybuilding, group="agent"
     )
+    if factory_stack is not None:
+        storybuilding = factory_stack
     storybuilding = _resolve_conditional_mount(
         storybuilding,
         "ArtifactValidationMiddleware",
@@ -155,13 +159,17 @@ def _project_v7(
         "storybuilding_review": review_storybuilding,
     }
     return {
-        agent: [_enrich_mount(mount, catalog) for mount in mounts]
+        agent: [_enrich_mount(mount, catalog.get(mount["class_name"], {})) for mount in mounts]
         for agent, mounts in stacks.items()
+        if mounts is not None
     }
 
 
-def _build_catalog(package_sources: dict[str, str]) -> dict[str, dict[str, Any]]:
+def _build_catalog(
+    package_sources: dict[str, str],
+) -> tuple[dict[str, dict[str, Any]], dict[str, dict[str, Any]]]:
     catalog = {name: dict(info) for name, info in _RUNTIME_MIDDLEWARE.items()}
+    modules: dict[str, dict[str, Any]] = {}
     for path, source in package_sources.items():
         if not path.startswith("middleware/") or not path.endswith(".py"):
             continue
@@ -169,23 +177,73 @@ def _build_catalog(package_sources: dict[str, str]) -> dict[str, dict[str, Any]]
             tree = ast.parse(source)
         except SyntaxError:
             continue
+        classes = {node.name: node for node in tree.body if isinstance(node, ast.ClassDef)}
+        candidates = [name for name in classes if name.endswith("Middleware")]
+        built_class = _factory_class(tree, classes)
+        if built_class is None and len(candidates) == 1:
+            built_class = candidates[0]
+        if built_class and built_class not in candidates:
+            candidates.append(built_class)
         description = ast.get_docstring(tree)
-        for node in tree.body:
-            if not isinstance(node, ast.ClassDef) or not node.name.endswith("Middleware"):
-                continue
-            hooks: list[str] = []
-            for item in node.body:
-                if not isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    continue
-                name = item.name[1:] if item.name.startswith("a") else item.name
-                if name in HOOK_ORDER and name not in hooks:
-                    hooks.append(name)
-            catalog[node.name] = {
+        for name in candidates:
+            hook_descriptions = _class_hooks(classes[name], classes)
+            info = {
+                "class_name": name,
                 "source_path": path,
-                "description": description,
-                "hooks": sorted(hooks, key=HOOK_ORDER.index),
+                "description": description or ast.get_docstring(classes[name]),
+                "hooks": [hook for hook in HOOK_ORDER if hook in hook_descriptions],
+                "hook_descriptions": hook_descriptions,
             }
-    return catalog
+            catalog[name] = info
+            if name == built_class:
+                modules[path] = info
+    return catalog, modules
+
+
+def _factory_returns(nodes: Iterable[ast.AST]) -> Iterator[ast.expr | None]:
+    for node in nodes:
+        if isinstance(node, ast.Return):
+            yield node.value
+        elif not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            yield from _factory_returns(ast.iter_child_nodes(node))
+
+
+def _factory_class(tree: ast.Module, classes: dict[str, ast.ClassDef]) -> str | None:
+    factory = next((node for node in reversed(tree.body)
+                    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == "build"), None)
+    if factory is None:
+        return None
+    targets = {
+        value.func.id if isinstance(value, ast.Call) and isinstance(value.func, ast.Name) else None
+        for value in _factory_returns(factory.body)
+    }
+    if len(targets) == 1:
+        target, = targets
+        if target is not None and target in classes:
+            return target
+    return None
+
+
+def _class_hooks(node: ast.ClassDef, classes: dict[str, ast.ClassDef]) -> dict[str, str | None]:
+    hooks: dict[str, str | None] = {}
+    visited: set[str] = set()
+    pending = [node]
+    while pending:
+        current = pending.pop()
+        if current.name in visited:
+            continue
+        visited.add(current.name)
+        declared: dict[str, str | None] = {}
+        for item in current.body:
+            if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                name = item.name if item.name in HOOK_ORDER else item.name.removeprefix("a")
+                if name in HOOK_ORDER:
+                    declared[name] = declared.get(name) or ast.get_docstring(item)
+        for hook, description in declared.items():
+            hooks.setdefault(hook, description)
+        pending.extend(classes[base.id] for base in reversed(current.bases)
+                       if isinstance(base, ast.Name) and base.id in classes)
+    return hooks
 
 
 def _call_supplies_keyword(source: str, function_name: str, keyword_name: str) -> bool:
@@ -204,10 +262,12 @@ def _call_supplies_keyword(source: str, function_name: str, keyword_name: str) -
 
 
 def _resolve_conditional_mount(
-    stack: list[dict[str, Any]],
+    stack: list[dict[str, Any]] | None,
     class_name: str,
     enabled: bool,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]] | None:
+    if stack is None:
+        return None
     if not enabled:
         return [mount for mount in stack if mount["class_name"] != class_name]
     return [
@@ -223,13 +283,14 @@ def _extract_stack(
     *,
     base: list[dict[str, Any]] | None = None,
     group: str,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]] | None:
+    fallback = [dict(mw) for mw in base] if base else None
     if not source:
-        return [dict(mw) for mw in (base or [])]
+        return fallback
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        return [dict(mw) for mw in (base or [])]
+        return fallback
     function = next(
         (
             node
@@ -240,7 +301,7 @@ def _extract_stack(
         None,
     )
     if function is None:
-        return [dict(mw) for mw in (base or [])]
+        return fallback
 
     stack: list[dict[str, Any]] = []
     initialized = False
@@ -254,8 +315,9 @@ def _extract_stack(
                 target = statement.targets[0] if isinstance(statement, ast.Assign) else statement.target
                 value = statement.value
                 if isinstance(target, ast.Name) and target.id == variable_name and value is not None:
-                    stack = _initial_stack(value, base or [], group)
-                    initialized = True
+                    initial = _initial_stack(value, base, group)
+                    stack = initial or []
+                    initialized = initial is not None
                     continue
             if isinstance(statement, ast.Expr) and isinstance(statement.value, ast.Call):
                 call = statement.value
@@ -282,20 +344,23 @@ def _extract_stack(
                         visit(nested, conditional)
 
     visit(function.body)
-    return stack if initialized else [dict(mw) for mw in (base or [])]
+    return stack if initialized or stack else fallback
 
 
 def _initial_stack(
     expression: ast.expr,
-    base: list[dict[str, Any]],
+    base: list[dict[str, Any]] | None,
     group: str,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]] | None:
     if isinstance(expression, ast.List):
-        return [
+        mounts = [
             mount
             for item in expression.elts
             if (mount := _mount_from_expr(item, group, False)) is not None
         ]
+        return mounts if mounts or not expression.elts else None
+    if base is None:
+        return None
     if isinstance(expression, ast.ListComp):
         excluded = {
             node.id
@@ -307,7 +372,7 @@ def _initial_stack(
         return [dict(mw) for mw in base]
     if isinstance(expression, ast.Call) and _expr_name(expression.func) == "list":
         return [dict(mw) for mw in base]
-    return []
+    return None
 
 
 def _mount_from_expr(
@@ -369,29 +434,33 @@ def _literal(expression: ast.expr) -> Any | None:
 
 def _enrich_mount(
     mount: dict[str, Any],
-    catalog: dict[str, dict[str, Any]],
+    info: dict[str, Any],
 ) -> dict[str, Any]:
-    info = catalog.get(mount["class_name"], {})
+    class_name = mount["class_name"]
     hooks = info.get("hooks", [])
+    description = info.get("description")
+    hook_details = {}
+    for hook in hooks:
+        details = _HOOK_DETAILS.get((class_name, hook))
+        if details:
+            trigger, action, effect = details
+        else:
+            hook_description = info.get("hook_descriptions", {}).get(hook)
+            if not hook_description and len(hooks) == 1:
+                hook_description = description
+            trigger, effect = None, None
+            action = hook_description.splitlines()[0] if hook_description else None
+        hook_details[hook] = {"trigger": trigger, "action": action, "effect": effect}
     return {
         **mount,
         # `hook` keeps already-installed desktop clients functional; new clients use
-        # `hooks` so one mounted instance can appear in every lifecycle column it owns.
+        # `hooks` so a middleware can appear under each stage where it acts.
         "hook": hooks[0] if hooks else None,
         "hooks": hooks,
-        "source_path": info.get("source_path"),
-        "description": info.get("description"),
+        "hook_details": hook_details,
+        "source_path": info.get("source_path", mount.get("source_path")),
+        "description": description,
     }
-
-
-def _module_to_class_map(catalog: dict[str, dict[str, Any]]) -> dict[str, str]:
-    """middleware 模块名 → 类名（借 catalog 的 source_path 反查）。"""
-    mapping: dict[str, str] = {}
-    for class_name, info in catalog.items():
-        src = info.get("source_path") or ""
-        if src.startswith("middleware/") and src.endswith(".py"):
-            mapping[src[len("middleware/"):-len(".py")]] = class_name
-    return mapping
 
 
 def project_manifest_stacks(
@@ -409,36 +478,31 @@ def project_manifest_stacks(
     """
     from contracts.architecture_manifest import BASE_CHAIN_MODULES
 
-    catalog = _build_catalog(package_sources)
-    module_class = _module_to_class_map(catalog)
+    catalog, modules = _build_catalog(package_sources)
 
-    def _mount(module: str, group: str, optional: bool = False) -> dict[str, Any] | None:
-        class_name = module_class.get(module)
-        if class_name is None:
-            return None
-        # params 必填：前端 MiddlewareNode 直接 Object.keys(mw.params)，
-        # 缺字段会崩整页（manifest 布局曾漏此字段导致 Middleware Tab 黑屏）
-        return {"class_name": class_name, "params": {}, "group": group, "optional": optional}
+    def _mount(module: str, group: str, optional: bool = False) -> dict[str, Any]:
+        path = f"middleware/{module}.py"
+        return {
+            "class_name": modules.get(path, {}).get("class_name", module),
+            "source_path": path,
+            "params": {},
+            "group": group,
+            "optional": optional,
+        }
 
     stacks: dict[str, list[dict[str, Any]]] = {}
     for agent in manifest.agents:
         mounts: list[dict[str, Any]] = []
         for module in BASE_CHAIN_MODULES:
-            m = _mount(module, "base", optional=module == "artifact_snapshot")
-            if m:
-                mounts.append(m)
+            mounts.append(_mount(module, "base", optional=module == "artifact_snapshot"))
         mounts.insert(1, {"class_name": "TraceMiddleware", "params": {}, "group": "runtime", "optional": True})
         for module in agent.middleware:
-            m = _mount(module, "agent")
-            if m:
-                mounts.append(m)
+            mounts.append(_mount(module, "agent"))
         compiled = agent.role == "main" or bool(agent.delegates)
         if compiled and agent.context_files:
             mounts.append({"class_name": "ContextAssemblerMiddleware", "params": {}, "group": "runtime", "optional": False})
         if compiled:
-            m = _mount("revision_limit", "agent")
-            if m:
-                mounts.append(m)
+            mounts.append(_mount("revision_limit", "agent"))
         if compiled and agent.artifact_paths:
             mounts.append({"class_name": "ArtifactValidationMiddleware", "params": {}, "group": "runtime", "optional": False})
         if any(row.role == "main" and row.name in {"outline", "volume", "chapter", "text"} for row in manifest.agents):
@@ -446,7 +510,11 @@ def project_manifest_stacks(
                 {"class_name": name, "params": {}, "group": "runtime", "optional": False}
                 for name in ("PlatformArtifactCaptureMiddleware", "InstructionScopeMiddleware")
             ]
-        stack = [_enrich_mount(mount, catalog) for mount in mounts]
+        stack = [
+            _enrich_mount(mount, modules.get(mount["source_path"], {}) if "source_path" in mount
+                          else catalog.get(mount["class_name"], {}))
+            for mount in mounts
+        ]
         for position, row in enumerate(stack, start=1):
             source = package_sources.get(row["source_path"])
             row["position"] = position
@@ -458,12 +526,89 @@ def project_manifest_stacks(
 
 __all__ = ["HOOK_ORDER", "build_middleware_projection", "project_manifest_stacks"]
 
+# Each entry describes the action at one hook. Only hooks found in the selected
+# version are shown, even if descriptions are available for other hooks.
+_HOOK_DETAILS: dict[tuple[str, str], tuple[str, str, str]] = {
+    ("RevisionLimitMiddleware", "before_agent"): (
+        "本次 Agent 运行开始。", "重置本轮的审查次数。", "上一轮的审查次数不会占用本轮额度。",
+    ),
+    ("RevisionLimitMiddleware", "wrap_tool_call"): (
+        "工具请求委托一个设有次数上限的审查助手。", "按审查助手计数，拦截超过上限的审查。",
+        "助手在额度内继续审查，超限时收到停止委托的提示。",
+    ),
+    ("TextCompletionMiddleware", "before_model"): (
+        "正文任务准备调用模型。", "更新正文的保存与审稿状态。", "本轮交付检查会使用最新记录。",
+    ),
+    ("TextCompletionMiddleware", "after_model"): (
+        "模型准备交付当前正文。", "检查正文是否已保存和审稿，缺步骤时要求补齐。",
+        "交付条件不足时暂缓交付，纠正次数用尽后反馈未完成原因。",
+    ),
+    ("ToolCallRecoveryMiddleware", "after_model"): (
+        "正文模型把工具调用写成普通文字。", "要求模型改为真正调用工具。", "最多纠正两次，仍失败时停止本轮并提示。",
+    ),
+    ("TraceMiddleware", "wrap_model_call"): (
+        "本轮启用运行记录，且模型被调用。", "记录模型请求、回复与调用结果。", "可在运行记录中查看模型怎样处理本轮任务。",
+    ),
+    ("TraceMiddleware", "wrap_tool_call"): (
+        "本轮启用运行记录，且工具被调用。", "记录工具名称、参数与调用结果。", "可查出哪些工具执行过以及执行结果。",
+    ),
+    ("CreditsMiddleware", "wrap_model_call"): (
+        "已预扣积分的创作收到模型用量。", "把模型用量换算为积分并累计。", "达到扣费上限时结算并停止创作。",
+    ),
+    ("CreditsMiddleware", "wrap_tool_call"): (
+        "工具首次委托正式创作，且本轮尚未预扣。", "在创作开始前预扣积分。", "积分不足时阻止这次创作开始。",
+    ),
+    ("ContextAssemblerMiddleware", "before_model"): (
+        "清单指定了任务输入文件，且模型即将调用。", "读取任务所需的资料文件。", "准备好本轮的文件上下文。",
+    ),
+    ("ContextAssemblerMiddleware", "wrap_model_call"): (
+        "模型发起请求时已装配资料。", "把任务资料加入发给模型的请求。", "模型可以参考当前任务的文件内容。",
+    ),
+    ("ArtifactValidationMiddleware", "after_model"): (
+        "模型准备结束，清单指定了必交产物。", "检查必须交付的产物是否齐全。", "缺少产物时反馈缺项。",
+    ),
+    ("StageGateMiddleware", "wrap_tool_call"): (
+        "创作工具请求写入产物。", "检查产物是否在当前创作阶段的职责范围内。", "拦住越权写入，避免改错产物。",
+    ),
+    ("InstructionScopeMiddleware", "wrap_tool_call"): (
+        "本套创作任务调用工具。", "核对目标卷章、允许写入的产物和已登记指令。", "拒绝超出本次任务范围的操作。",
+    ),
+    ("PlatformArtifactCaptureMiddleware", "wrap_tool_call"): (
+        "写作工具完成保存。", "记录实际保存的产物和修订。", "运行记录可追溯这次写入。",
+    ),
+    ("ErrorRecoveryMiddleware", "wrap_tool_call"): (
+        "工具调用出现可恢复的异常。", "自动重试可恢复的工具错误。", "重试仍失败时返回错误和修正建议。",
+    ),
+    ("ReadSentinelMiddleware", "wrap_tool_call"): (
+        "同样的读取参数再次返回相同内容。", "提醒模型已读过相同内容。", "减少无效的反复读取。",
+    ),
+    ("FilesystemPathGuardMiddleware", "wrap_tool_call"): (
+        "文件工具请求写入某个路径。", "修正可规范的写入路径并拦截越界路径。", "写入只发生在允许的目录范围内。",
+    ),
+    ("EncodingGuardMiddleware", "wrap_tool_call"): (
+        "文件工具读取文本，或完成写入后需要校验。", "尝试兼容解码，检查写入编码与内容截断。",
+        "读取遇到编码问题时尝试 UTF-8-SIG。写入校验失败时尝试删除损坏文件，并返回错误。",
+    ),
+    ("FileStateTrackerMiddleware", "wrap_tool_call"): (
+        "工具尝试按原文片段编辑文件。", "验证待替换的文字仍能在文件中匹配。", "匹配失败时反馈当前文件状态。",
+    ),
+    ("FileWriteSerializeMiddleware", "wrap_tool_call"): (
+        "多个写操作同时指向同一个文件。", "让同一个文件的写操作依次执行。", "减少同时写入造成的内容覆盖。",
+    ),
+    ("WriteResultInspectorMiddleware", "wrap_tool_call"): (
+        "写工具返回错误状态。", "把写入失败交给外层的错误恢复规则。", "失败能进入重试或清晰的错误处理。",
+    ),
+    ("ArtifactSnapshotMiddleware", "wrap_tool_call"): (
+        "快照功能已启用，且写工具成功保存产物。", "保存这次产物修订的快照。", "后续可以追溯和查看当时的内容。",
+    ),
+}
+
 _CONDITIONS = {
     "FilesystemPathGuardMiddleware": "写入路径需要规范时修正路径，超出允许范围时拒绝写入。",
     "ErrorRecoveryMiddleware": "工具调用抛出可恢复异常时重试；仍失败时返回错误和修正建议。",
     "FileWriteSerializeMiddleware": "写工具并发操作同一文件时依次执行，避免写入互相覆盖。",
     "ReadSentinelMiddleware": "按相同参数重复读到相同内容时，给返回结果加上重复读取提示。",
-    "EncodingGuardMiddleware": "文件写入后检查编码与完整性，发现损坏时给出错误。",
+    "EncodingGuardMiddleware": "读取时尝试兼容解码。写入后检查编码和截断，校验失败时清理损坏文件并报错。",
     "FileStateTrackerMiddleware": "编辑前检查原文能否匹配；匹配失败时返回文件状态提示。",
     "WriteResultInspectorMiddleware": "写工具以错误状态返回时，转为异常，由外层恢复规则处理。",
     "ArtifactSnapshotMiddleware": "已接入快照回调且写工具成功落盘时，记录该次产物修订。",

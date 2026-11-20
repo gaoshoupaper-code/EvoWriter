@@ -1,7 +1,7 @@
 """internal 路由的 Phase A 改造测试：
 
-- POST /internal/platform/reload：ensure_artifact（digest 校验）→ reload_current
-  → 重算 runtime_identity → 返回 {status, commit, runtime_identity}
+- POST /internal/platform/reload：按指定账本版本校验包摘要并加载，
+  返回实际加载的版本和 commit。
 - 旧 POST /internal/reload 保留：内部调 reload_current()（向 Platform 对账）
 - /internal/harness/probe 已删除（FR-002：门禁迁 Platform，executor 无门禁语义）
 """
@@ -25,28 +25,16 @@ def _client() -> TestClient:
 
 
 class PlatformReloadTest(unittest.TestCase):
-    def test_platform_reload_ensure_then_reload(self) -> None:
-        """带 commit+digest 的 reload 通知：ensure_artifact 收到 digest，reload_current 用通知 commit。"""
-        calls = SimpleNamespace(ensured=[], reloaded=[])
+    def test_platform_reload_requests_exact_version_and_digest(self) -> None:
+        calls = SimpleNamespace(reloaded=[])
 
-        def fake_ensure(commit, expected_digest=None):
-            calls.ensured.append((commit, expected_digest))
-            return Path("cached")
-
-        def fake_reload(commit=None, digest=None):
-            calls.reloaded.append((commit, digest))
-
-        fake_client = SimpleNamespace(ensure_artifact=fake_ensure)
+        def fake_reload(commit=None, digest=None, *, version=None):
+            calls.reloaded.append((commit, digest, version))
         with patch(
-            "app.platform.agent.artifact_client.get_artifact_client",
-            return_value=fake_client,
-        ), patch(
             "app.platform.agent.loader.reload_current", side_effect=fake_reload,
         ), patch(
-            "app.platform.agent.loader.production_commit", return_value="c" * 40,
-        ), patch(
-            "app.platform.agent.loader.production_checkout",
-            return_value=Path(__file__).parent,  # 任意目录均可算身份
+            "app.platform.agent.loader.production_release",
+            return_value=SimpleNamespace(version=3, commit="c" * 40, checkout=Path(__file__).parent),
         ):
             resp = _client().post("/internal/platform/reload", json={
                 "version": 3, "commit": "c" * 40, "artifact_digest": "d" * 64,
@@ -55,11 +43,20 @@ class PlatformReloadTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertEqual(body["status"], "reloaded")
+        self.assertEqual(body["version"], 3)
         self.assertEqual(body["commit"], "c" * 40)
         self.assertIn("identity_digest", body["runtime_identity"])
-        # 顺序语义：先 ensure（digest 校验）再 reload；reload 用通知 commit 不再对账
-        self.assertEqual(calls.ensured, [("c" * 40, "d" * 64)])
-        self.assertEqual(calls.reloaded, [("c" * 40, None)])
+        self.assertEqual(calls.reloaded, [("c" * 40, "d" * 64, 3)])
+
+    def test_platform_reload_rejects_same_commit_with_different_loaded_version(self) -> None:
+        with patch("app.platform.agent.loader.reload_current"), patch(
+            "app.platform.agent.loader.production_release",
+            return_value=SimpleNamespace(version=4, commit="c" * 40, checkout=Path(__file__).parent),
+        ):
+            response = _client().post("/internal/platform/reload", json={
+                "version": 3, "commit": "c" * 40, "artifact_digest": "d" * 64,
+            })
+        self.assertEqual(response.status_code, 409)
 
     def test_platform_reload_bad_body_rejected(self) -> None:
         """缺 commit（min_length=1）→ 422 契约校验。"""
@@ -70,16 +67,14 @@ class PlatformReloadTest(unittest.TestCase):
         """旧 /internal/reload：无 git 操作，等价于向 Platform 对账拉最新。"""
         calls = SimpleNamespace(reloaded=[])
 
-        def fake_reload(commit=None, digest=None):
+        def fake_reload(commit=None, digest=None, *, version=None):
             calls.reloaded.append(commit)
 
         with patch(
             "app.platform.agent.loader.reload_current", side_effect=fake_reload,
         ), patch(
-            "app.platform.agent.loader.production_commit", return_value="e" * 40,
-        ), patch(
-            "app.platform.agent.loader.production_checkout",
-            return_value=Path(__file__).parent,
+            "app.platform.agent.loader.production_release",
+            return_value=SimpleNamespace(version=5, commit="e" * 40, checkout=Path(__file__).parent),
         ):
             resp = _client().post("/internal/reload")
 

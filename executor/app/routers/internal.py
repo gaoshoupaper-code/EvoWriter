@@ -449,7 +449,7 @@ def snapshot_refreshed(body: "SnapshotRefreshNotice") -> dict[str, Any]:
     """evolution 通知执行端「有新 production 快照发布」（Phase 7 T5.4）。
 
     evolution 发布新快照后（snapshot_publisher.notify_executor），发此通知。
-    Phase 7 语义：执行端的 Agent 包是进程级缓存（package_loader._loaded_package），
+    Phase 7 语义：执行端的 Agent 包是进程级缓存，
     换版本需重启进程（D11 设计）。本端点只记录日志——真正生效靠下次进程重启
     重新 load_current_package 加载新包内容。
 
@@ -472,28 +472,23 @@ class SnapshotRefreshNotice(BaseModel):
 
 
 def _reload_and_report(
-    commit: str | None = None, *, expected_digest: str | None = None
+    commit: str | None = None, *, expected_digest: str | None = None, version: int | None = None,
 ) -> dict[str, Any]:
-    """两个 reload 端点的公共尾段：ensure（可选）→ reload → 读回生产身份。
-
-    带 commit（晋升通知路径）先 ensure_artifact（digest 校验在下载时比对），
-    reload_current 命中缓存不再二次下载；不带 commit 由 reload_current 向
-    Platform 对账取当前生产版本。响应体两端点一致：{status, commit,
-    runtime_identity}。
-    """
-    from app.platform.agent.loader import production_checkout, production_commit, reload_current
+    """校验并加载指定产物，无指定版本时从 Platform 读取生产版本。"""
+    from app.platform.agent.loader import production_release, reload_current
     from app.platform.agent.runtime_identity import build_runtime_identity
 
-    if commit is not None:
-        from app.platform.agent.artifact_client import get_artifact_client
-
-        get_artifact_client().ensure_artifact(commit, expected_digest=expected_digest)
-    reload_current(commit=commit)
-    current = production_commit()
+    reload_current(commit=commit, digest=expected_digest, version=version)
+    current = production_release()
+    if current is None or (version is not None and (current.version, current.commit) != (version, commit)):
+        raise HTTPException(409, "指定版本当前未加载。")
     runtime_identity = build_runtime_identity(
-        harness_root=production_checkout(), harness_commit=current
+        harness_root=current.checkout, harness_commit=current.commit,
     )
-    return {"status": "reloaded", "commit": current, "runtime_identity": runtime_identity}
+    return {
+        "status": "reloaded", "version": current.version,
+        "commit": current.commit, "runtime_identity": runtime_identity,
+    }
 
 
 @router.post("/reload")
@@ -517,7 +512,7 @@ def platform_reload(notice: HarnessReloadNotice) -> dict[str, Any]:
     artifact_digest 调此端点，executor 校验 digest 与 Platform 账本一致后装配。
     """
     result = _reload_and_report(
-        notice.commit, expected_digest=notice.artifact_digest,
+        notice.commit, expected_digest=notice.artifact_digest, version=notice.version,
     )
     logger.info("platform reload 完成: version=%s commit=%s", notice.version, result["commit"])
     return result

@@ -56,7 +56,13 @@ def probe_candidate(commit_hash: str) -> ProbeResult:
     return result
 
 
-def promote_release(source_commit: str, version_note: str = "") -> PromoteResult:
+def promote_release(
+    source_commit: str,
+    version_note: str = "",
+    *,
+    expected_production_commit: str | None = None,
+    expected_production_version: int | None = None,
+) -> PromoteResult:
     """调 Platform 晋升原语：账本晋升 + artifact 打包 + executor reload 通知。
 
     Returns:
@@ -70,7 +76,9 @@ def promote_release(source_commit: str, version_note: str = "") -> PromoteResult
         response = httpx.post(
             f"{_platform_url()}/api/release/promote",
             json=PromoteRequest(
-                source_commit=source_commit, version_note=version_note
+                source_commit=source_commit, version_note=version_note,
+                expected_production_commit=expected_production_commit,
+                expected_production_version=expected_production_version,
             ).model_dump(exclude_none=True),
             timeout=PROMOTE_TIMEOUT_SECONDS,
         )

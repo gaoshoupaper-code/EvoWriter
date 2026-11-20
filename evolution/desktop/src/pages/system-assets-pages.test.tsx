@@ -8,7 +8,7 @@
  * - AC-004 升级总览（ancestor 摘要 / same_code 无差异占位）
  * - AC-007 Platform 不可达报错态 + 重试（DEC-005）
  */
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/api", () => ({
@@ -17,17 +17,24 @@ vi.mock("@/lib/api", () => ({
   getMemoryElements: vi.fn(),
   getUpgradeDiff: vi.fn(),
   getVersions: vi.fn(),
-  getPromptDrafts: vi.fn(),
-  savePromptDraft: vi.fn(),
-  releasePromptDraft: vi.fn(),
+}));
+
+vi.mock("@/lib/manual-assets-api", () => ({
+  getManualAssetDraft: vi.fn(),
+  saveManualAssetDraft: vi.fn(),
+  releaseManualAssetDraft: vi.fn(),
+  discardManualAssetDraft: vi.fn(),
 }));
 
 import * as apiModule from "@/lib/api";
 import type { Snapshot, UpgradeDiffView } from "@/lib/api";
+import * as manualModule from "@/lib/manual-assets-api";
+import type { ManualAssetDraft } from "@/lib/manual-assets-api";
 import HarnessPage from "@/pages/harness";
 import VersionsPage from "@/pages/versions";
 
 const api = vi.mocked(apiModule);
+const manualApi = vi.mocked(manualModule);
 
 // ── 造数：对齐线上账本 v6–v14 关键形态（9 条流水 / 6 份不同代码） ──
 
@@ -103,6 +110,9 @@ const ELEMENTS = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  manualApi.getManualAssetDraft.mockResolvedValue({
+    base_version: 14, base_commit: "c14", revision: 0, state: "editing", agents: null, changes: [],
+  });
 });
 
 describe("VersionsPage（账本时间线）", () => {
@@ -275,5 +285,131 @@ describe("HarnessPage（要素透视）", () => {
     // 其余四 Tab 在
     expect(screen.getByText("Prompt")).toBeTruthy();
     expect(screen.getByText("Middleware")).toBeTruthy();
+  });
+
+  const basePrompt = {
+    path: "prompts/main.md", title: "主角色提示词", kind: "base" as const, body: "生产提示词",
+  };
+  const existingDraft: ManualAssetDraft = {
+    base_version: 14, base_commit: "c14", revision: 7, state: "editing",
+    changes: [{ role: "storybuilding", operation: "prompt", name: "主角色提示词", before: basePrompt.body, after: "手动提示词" }],
+    agents: [
+      { name: "storybuilding", prompt_files: [{ ...basePrompt, body: "手动提示词" }], skills: [] },
+      { name: "storybuilding_review", prompt_files: [], skills: [] },
+    ],
+  };
+
+  it("恢复已存草稿，合并其他角色的导入并预览整批上线", async () => {
+    mockManifest();
+    manualApi.getManualAssetDraft.mockResolvedValue(existingDraft);
+    const skillContent = "---\nname: editor\ndescription: 审查节奏\n---\n核对每段节奏。";
+    const changed: ManualAssetDraft = {
+      ...existingDraft, revision: 8,
+      changes: [...existingDraft.changes, {
+        role: "storybuilding_review", operation: "skill_import", name: "editor", before: null, after: skillContent,
+      }],
+    };
+    manualApi.saveManualAssetDraft.mockResolvedValue(changed);
+    const pending: ManualAssetDraft = { ...changed, state: "unconfirmed", published_version: 15 };
+    manualApi.releaseManualAssetDraft.mockResolvedValue(pending);
+
+    render(<HarnessPage />);
+    expect(await screen.findByText("手动提示词")).toBeTruthy();
+    fireEvent.click(screen.getByText("SubAgent（1）"));
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Skills" }), { button: 0 });
+    const file = new File([skillContent], "SKILL.md");
+    Object.defineProperty(file, "arrayBuffer", { value: async () => new TextEncoder().encode(skillContent).buffer });
+    fireEvent.change(screen.getByLabelText("导入 SKILL.md"), { target: { files: [file] } });
+    expect(await screen.findByText("2 项手动草稿待上线 · 基于 v14")).toBeTruthy();
+    expect(manualApi.saveManualAssetDraft).toHaveBeenCalledWith(existingDraft, {
+      role: "storybuilding_review", operation: "skill_import", filename: "SKILL.md", content: skillContent,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "预览上线变更" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByRole("heading", { name: "故事专家" })).toBeTruthy();
+    expect(within(dialog).getByRole("heading", { name: "故事审查" })).toBeTruthy();
+    expect(within(dialog).getByText("修改提示词 · 主角色提示词")).toBeTruthy();
+    expect(within(dialog).getByText("导入技能 · editor")).toBeTruthy();
+    expect(manualApi.releaseManualAssetDraft).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "确认上线" }));
+    expect(await screen.findByText("v15 等待执行端确认")).toBeTruthy();
+    expect(manualApi.releaseManualAssetDraft).toHaveBeenCalledWith(changed);
+    expect(manualApi.releaseManualAssetDraft).toHaveBeenCalledTimes(1);
+
+    const activated: ManualAssetDraft = {
+      base_version: 15, base_commit: "c15-manual", revision: 8, state: "activated",
+      published_version: 15, agents: null, changes: [],
+    };
+    manualApi.getManualAssetDraft.mockResolvedValue(activated);
+    api.getSnapshots.mockResolvedValue([
+      makeSnapshot(15, "c15-manual", { status: "production" }), makeSnapshot(14, "c14", { status: "retired" }),
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "核对上线状态" }));
+    await waitFor(() => expect(screen.getByRole("combobox")).toHaveValue("15"));
+    expect(await screen.findByText("v15 已上线")).toBeTruthy();
+    expect(manualApi.releaseManualAssetDraft).toHaveBeenCalledTimes(1);
+    const refreshCount = api.getSnapshots.mock.calls.length;
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "14" } });
+    await screen.findByText("Prompt");
+    expect(screen.getByRole("combobox")).toHaveValue("14");
+    expect(api.getSnapshots).toHaveBeenCalledTimes(refreshCount);
+    expect(screen.queryByRole("region", { name: "手动资产草稿" })).toBeNull();
+  });
+
+  it("上线响应丢失后，核对到同一份草稿已发布并关闭确认", async () => {
+    mockManifest();
+    manualApi.getManualAssetDraft.mockResolvedValueOnce(existingDraft).mockResolvedValue({
+      ...existingDraft, state: "unconfirmed", published_version: 15,
+    });
+    manualApi.releaseManualAssetDraft.mockRejectedValue(new Error("网络连接已断开"));
+    render(<HarnessPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "预览上线变更" }));
+    fireEvent.click(screen.getByRole("button", { name: "确认上线" }));
+
+    expect(await screen.findByText("v15 等待执行端确认")).toBeTruthy();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(manualApi.releaseManualAssetDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it("其他套的路由生效后，旧页不能发送上线请求", async () => {
+    const original = window.location.href;
+    try {
+      window.history.replaceState(null, "", "#/harness?agent=outline");
+      mockManifest();
+      manualApi.getManualAssetDraft.mockResolvedValue(existingDraft);
+      render(<HarnessPage />);
+
+      fireEvent.click(await screen.findByRole("button", { name: "预览上线变更" }));
+      window.history.replaceState(null, "", "#/harness?agent=volume");
+      fireEvent.click(screen.getByRole("button", { name: "确认上线" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent("已离开当前 Harness 资产页");
+      expect(manualApi.releaseManualAssetDraft).not.toHaveBeenCalled();
+    } finally {
+      window.history.replaceState(null, "", original);
+    }
+  });
+
+  it("生产冲突后保留草稿详情，历史版本只读", async () => {
+    mockManifest();
+    manualApi.getManualAssetDraft.mockResolvedValue(existingDraft);
+    manualApi.releaseManualAssetDraft.mockRejectedValue(new Error("生产版本冲突"));
+    render(<HarnessPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "预览上线变更" }));
+    manualApi.getManualAssetDraft.mockResolvedValue({ ...existingDraft, state: "stale" });
+    fireEvent.click(screen.getByRole("button", { name: "确认上线" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("生产版本冲突");
+    expect(screen.getByText("修改提示词 · 主角色提示词")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "确认上线" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "关闭" }));
+    expect(screen.getByText("生产版本已变化，手动草稿已保留。")).toBeTruthy();
+
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "13" } });
+    await screen.findByText("Prompt");
+    expect(screen.queryByRole("button", { name: "编辑" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "查看草稿变更" })).toBeNull();
   });
 });

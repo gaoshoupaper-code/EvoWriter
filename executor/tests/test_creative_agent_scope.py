@@ -34,7 +34,13 @@ def test_each_package_contains_only_its_agent_and_helpers(tmp_path, monkeypatch,
     assert package.assemble(ctx, agent_name=agent)
 
 
-def test_private_skill_reader_is_scoped_to_the_mounted_files(tmp_path, monkeypatch):
+@pytest.mark.parametrize(("suite", "role_name", "role"), [
+    ("outline", "outline", "main"),
+    ("volume", "volume_qc", "sub"),
+    ("chapter", "chapter", "main"),
+    ("text", "review", "sub"),
+])
+def test_private_skill_reader_is_scoped_to_the_mounted_files(tmp_path, monkeypatch, suite, role_name, role):
     from app.platform.agent.architecture import AgentBuildCtx, _build_tools
     from contracts.architecture_manifest import AgentSpec
     from contracts.creative_harness import write_denial
@@ -50,10 +56,10 @@ def test_private_skill_reader_is_scoped_to_the_mounted_files(tmp_path, monkeypat
     other = skill.parent / "separate" / "SKILL.md"
     other.parent.mkdir()
     other.write_text("another role's skill", encoding="utf-8")
-    agent = AgentSpec(name="review", role="sub", prompt="review.md", skills=["quiet"])
+    agent = AgentSpec(name=role_name, role=role, prompt="review.md", skills=["quiet"])
     ctx = SimpleNamespace(workspace_path=tmp_path / "book")
-    monkeypatch.setenv("WRITING_AGENT_ID", "text")
-    [reader] = _build_tools(AgentBuildCtx(ctx, None, agent, "text", tmp_path))
+    monkeypatch.setenv("WRITING_AGENT_ID", suite)
+    [reader] = _build_tools(AgentBuildCtx(ctx, None, agent, suite, tmp_path))
     assert reader.invoke({"file_path": "/_skills_0/SKILL.md"}) == skill.read_text(encoding="utf-8")
     assert reader.invoke({"file_path": "/_skills_0/references/examples.md"}) == "A clock ticks."
     assert "examples.md" not in reader.description
@@ -63,11 +69,9 @@ def test_private_skill_reader_is_scoped_to_the_mounted_files(tmp_path, monkeypat
                       "/_skills_0/../separate/SKILL.md"):
         with pytest.raises(ValueError, match="未挂载"):
             reader.invoke({"file_path": unmounted})
-    for suite in ("text", "chapter", "volume", "outline"):
-        assert write_denial(suite, "read_file", {"file_path": "/book.md"}, 1, 1)
-        if suite != "text":
-            monkeypatch.setenv("WRITING_AGENT_ID", suite)
-            assert _build_tools(AgentBuildCtx(ctx, None, agent, "package", tmp_path)) == []
+    assert write_denial(suite, "read_file", {"file_path": "/book.md"}, 1, 1)
+    monkeypatch.delenv("WRITING_AGENT_ID")
+    assert _build_tools(AgentBuildCtx(ctx, None, agent, "package", tmp_path)) == []
 
 
 def test_gates_accept_drafts_and_first_chapter_needs_no_prior_text(tmp_path):
@@ -215,11 +219,9 @@ def test_release_discovery_never_imports_published_python(tmp_path, monkeypatch)
     from app.platform.agent import loader
     (tmp_path / "__init__.py").write_text("raise AssertionError('parent imported published code')", encoding="utf8")
     monkeypatch.setenv("WRITING_AGENT_ID", "text")
-    monkeypatch.setattr(loader, "_loaded_package", None)
-    monkeypatch.setattr(loader, "_current_commit", "")
-    monkeypatch.setattr(loader, "_current_checkout", None)
+    monkeypatch.setattr(loader, "_loaded_production", None)
     monkeypatch.setattr(loader, "_artifact_client", lambda: SimpleNamespace(
-        current_production=lambda: SimpleNamespace(commit="a" * 40, version=1),
+        current_production=lambda: SimpleNamespace(commit="a" * 40, version=1, artifact_digest=None),
         ensure_artifact=lambda *args, **kwargs: tmp_path))
     loader.load_current_package()
     assert loader.production_commit() == "a" * 40

@@ -5,8 +5,8 @@
  * - mw.params 缺失（后端清单投影曾漏字段）不崩组件——渲染参数区显示「无参数」
  *   而不是 Object.keys(undefined) 抛 TypeError 白屏
  */
-import { render, screen, fireEvent } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { cleanup, render, screen, fireEvent } from "@testing-library/react";
+import { afterEach, describe, expect, it } from "vitest";
 import { MiddlewareNode } from "./MiddlewareNode";
 
 const BASE_MW = {
@@ -22,8 +22,10 @@ const BASE_MW = {
 function renderOpened(mw: unknown) {
   // @ts-expect-error 测试数据故意宽松——覆盖 params 缺失的破损契约形态
   render(<MiddlewareNode mw={mw} activeHook="before_agent" />);
-  fireEvent.click(screen.getByText("ErrorRecoveryMiddleware"));
+  fireEvent.click(screen.getByRole("button", { name: /ErrorRecoveryMiddleware/ }));
 }
+
+afterEach(cleanup);
 
 describe("MiddlewareNode 渲染韧性", () => {
   it("mw.params 缺失时不崩，参数区显示无参数", () => {

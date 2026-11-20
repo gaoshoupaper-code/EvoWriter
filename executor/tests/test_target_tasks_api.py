@@ -16,14 +16,32 @@ def _client():
     return TestClient(app)
 
 
-def test_runtime_reports_loaded_commit_without_reload(monkeypatch):
+def test_runtime_reports_loaded_release_when_ledger_moves_to_same_commit(tmp_path, monkeypatch):
     from app.platform.agent import loader
-    monkeypatch.setattr(loader, "production_commit", lambda: "a" * 40)
-    monkeypatch.setattr(loader, "production_checkout", lambda: None)
-    monkeypatch.setattr(loader, "reload_current", lambda *a, **k: (_ for _ in ()).throw(AssertionError("must not reload")))
-    response = _client().get("/internal/target-tasks/runtime")
-    assert response.status_code == 200
-    assert response.json()["commit"] == "a" * 40
+
+    commit, digest = "a" * 40, "b" * 64
+    (tmp_path / ".digest").write_text(digest, encoding="utf-8")
+    monkeypatch.setenv("WRITING_AGENT_ID", "text")
+    status = SimpleNamespace(version=1, commit=commit, artifact_digest=digest)
+    monkeypatch.setattr(loader, "_artifact_client", lambda: SimpleNamespace(
+        current_production=lambda: status, ensure_artifact=lambda *_a, **_k: tmp_path,
+    ))
+    loader.reset_cache()
+    try:
+        loader.load_current_package()
+        status.version = 2
+        client = _client()
+        response = client.get("/internal/target-tasks/runtime")
+        assert response.status_code == 200
+        assert response.json() == {"version": 1, "commit": commit, "artifact_digest": digest}
+
+        loader.reload_current(commit, digest, version=2)
+        loader.reload_current(commit, digest, version=1)
+        assert client.get("/internal/target-tasks/runtime").json() == {
+            "version": 2, "commit": commit, "artifact_digest": digest,
+        }
+    finally:
+        loader.reset_cache()
 
 
 def test_public_start_rejects_unowned_workspace(monkeypatch):

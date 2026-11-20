@@ -1,142 +1,95 @@
-import { useState } from "react";
-import type { ProcessorChange } from "@/lib/api";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { MIDDLEWARE_GROUP_LABELS } from "@/lib/harness-constants";
+import type { HarnessElementView, ProcessorChange } from "@/lib/api";
+import { Sheet, SheetClose, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 
-/** middleware 展示元信息（HarnessElementView.middlewares 的元素类型） */
-interface MWInfo {
-  hooks: string[];
-  group: string | null;
-  class_name: string;
-  params: Record<string, any>;
-  source_path: string | null;
-  description: string | null;
-  optional: boolean;
-  condition?: string;
-  position?: number;
-  rule_version?: string;
-}
-
-/**
- * 泳道格子里的单个 middleware 小卡片。
- *
- * - 默认显示 class_name + group，按 diff 着色（D13）
- * - 点击打开侧边弹窗（Sheet）：用途说明（docstring）+ 元信息 + params（modified 时新旧对比，D11）
- */
 export function MiddlewareNode({
   mw,
   change,
   activeHook,
 }: {
-  mw: MWInfo;
+  mw: Omit<HarnessElementView["middlewares"][number], "hook">;
   change?: ProcessorChange;
   activeHook: string;
 }) {
-  const [open, setOpen] = useState(false);
-
-  // diff 语义 → CSS 类
-  const diffClass =
-    change?.change_type === "added"
-      ? "diff-add"
-      : change?.change_type === "removed"
-        ? "diff-del"
-        : change?.change_type === "modified"
-          ? "diff-mod"
-          : "";
+  const detail = mw.hook_details?.[activeHook];
+  const action = detail?.action || (mw.hooks?.length === 1 ? mw.description?.split("\n")[0] : null);
+  const rowDescription = action || "用途资料不足。";
+  const diffClass = change?.change_type === "added" ? "diff-add"
+    : change?.change_type === "modified" ? "diff-mod" : "";
 
   return (
-    <>
-      <div className={`mw-node ${diffClass}`} onClick={() => setOpen(true)}>
-        <div className="mw-node-class">{mw.position && `${mw.position}. `}{mw.class_name}</div>
-        <div className="mw-node-group">
-          {mw.group ? MIDDLEWARE_GROUP_LABELS[mw.group] ?? mw.group : "—"}
-          {mw.optional ? " · 条件" : ""}
-        </div>
-      </div>
+    <Sheet>
+      <SheetTrigger asChild>
+        <button type="button" className={`mw-node ${diffClass}`}>
+          <code className="mw-node-class" title={mw.class_name}>{mw.class_name}</code>
+          <span className="mw-node-desc" title={rowDescription}>{rowDescription}</span>
+        </button>
+      </SheetTrigger>
 
-      <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="right">
-          <SheetHeader>
-            <SheetTitle>{mw.class_name}</SheetTitle>
-          </SheetHeader>
+      <SheetContent side="right" aria-describedby={undefined}>
+        <SheetHeader>
+          <SheetTitle title={mw.class_name}>{mw.class_name}</SheetTitle>
+          <SheetClose className="mw-sheet-close">关闭详情</SheetClose>
+        </SheetHeader>
 
-          <div className="mw-sheet-body">
-            <p>{mw.condition}</p>
-            {mw.rule_version && <p>本套采用的版本 <code title={mw.rule_version}>{mw.rule_version.slice(0, 12)}</code></p>}
-            {/* 元信息：当前泳道位置 / 完整 hooks / 分组 */}
-            <div className="mw-sheet-meta">
-              <div className="mw-detail-row">
-                <span className="mw-detail-label">当前 hook：</span>
-                <span className="mw-detail-val">{activeHook}</span>
-              </div>
-              <div className="mw-detail-row">
-                <span className="mw-detail-label">全部 hooks：</span>
-                <span className="mw-detail-val">{mw.hooks.join(" / ") || "—"}</span>
-              </div>
-              <div className="mw-detail-row">
-                <span className="mw-detail-label">group：</span>
-                <span className="mw-detail-val">
-                  {mw.group ? MIDDLEWARE_GROUP_LABELS[mw.group] ?? mw.group : "—"}
-                </span>
-              </div>
-              <div className="mw-detail-row">
-                <span className="mw-detail-label">挂载条件：</span>
-                <span className="mw-detail-val">{mw.optional ? "满足运行条件时启用" : "固定启用"}</span>
-              </div>
+        <div className="mw-sheet-body">
+          <dl className="mw-sheet-meta">
+            <div className="mw-detail-row">
+              <dt className="mw-detail-label">当前钩子</dt>
+              <dd className="mw-detail-val">{activeHook}</dd>
             </div>
+            {mw.rule_version && (
+              <div className="mw-detail-row">
+                <dt className="mw-detail-label">规则版本</dt>
+                <dd className="mw-detail-val" title={mw.rule_version}>{mw.rule_version.slice(0, 12)}</dd>
+              </div>
+            )}
+          </dl>
 
-            {/* 用途说明（docstring）：主要展示区 */}
+          <dl className="mw-sheet-function">
+            <div><dt>触发条件</dt><dd>{detail?.trigger || "资料不足。"}</dd></div>
+            <div><dt>执行动作</dt><dd>{rowDescription}</dd></div>
+            <div><dt>影响</dt><dd>{detail?.effect || "资料不足。"}</dd></div>
+          </dl>
+
+          {mw.description && mw.description !== action && (
             <div className="mw-sheet-section">
-              <div className="mw-sheet-section-title">用途说明</div>
-              {mw.description ? (
-                <pre className="mw-sheet-desc">{mw.description}</pre>
-              ) : (
-                <p className="text-dim mw-sheet-empty">该 middleware 无 docstring 说明。</p>
-              )}
+              <h3 className="mw-sheet-section-title">规则说明</h3>
+              <pre className="mw-sheet-desc">{mw.description}</pre>
             </div>
+          )}
 
-            {/* params：modified 时对比，否则直接展示 */}
-            <div className="mw-sheet-section">
-              <div className="mw-sheet-section-title">参数</div>
-              {change?.change_type === "modified" ? (
-                <>
-                  <div className="mw-detail-row">
-                    <span className="mw-detail-label">旧参数：</span>
-                    <span className="mw-detail-val diff-del">
-                      {JSON.stringify(change.params_change.old ?? {}, null, 2)}
-                    </span>
-                  </div>
-                  <div className="mw-detail-row">
-                    <span className="mw-detail-label">新参数：</span>
-                    <span className="mw-detail-val diff-add">
-                      {JSON.stringify(change.params_change.new ?? {}, null, 2)}
-                    </span>
-                  </div>
-                </>
-              ) : Object.keys(mw.params ?? {}).length > 0 ? (
+          <div className="mw-sheet-section">
+            <h3 className="mw-sheet-section-title">参数</h3>
+            {change?.change_type === "modified" ? (
+              <>
                 <div className="mw-detail-row">
-                  <span className="mw-detail-val">{JSON.stringify(mw.params, null, 2)}</span>
+                  <span className="mw-detail-label">旧参数</span>
+                  <span className="mw-detail-val diff-del">{JSON.stringify(change.params_change.old ?? {}, null, 2)}</span>
                 </div>
-              ) : (
-                <p className="text-dim mw-sheet-empty">无参数。</p>
-              )}
-            </div>
-
-            {/* modified：展示 class 变更 */}
-            {change?.change_type === "modified" &&
-              change.class_change.old !== change.class_change.new && (
-                <div className="mw-sheet-section">
-                  <div className="mw-sheet-section-title">类变更</div>
-                  <div className="mw-detail-row">
-                    <span className="mw-detail-val diff-del">{change.class_change.old || "—"}</span>
-                    {" → "}
-                    <span className="mw-detail-val diff-add">{change.class_change.new || "—"}</span>
-                  </div>
+                <div className="mw-detail-row">
+                  <span className="mw-detail-label">新参数</span>
+                  <span className="mw-detail-val diff-add">{JSON.stringify(change.params_change.new ?? {}, null, 2)}</span>
                 </div>
-              )}
+              </>
+            ) : Object.keys(mw.params ?? {}).length > 0 ? (
+              <div className="mw-detail-val">{JSON.stringify(mw.params, null, 2)}</div>
+            ) : (
+              <p className="mw-sheet-empty">无参数。</p>
+            )}
           </div>
-        </SheetContent>
-      </Sheet>
-    </>
+
+          {change?.change_type === "modified" && change.class_change.old !== change.class_change.new && (
+            <div className="mw-sheet-section">
+              <h3 className="mw-sheet-section-title">类变更</h3>
+              <div className="mw-detail-row">
+                <span className="mw-detail-val diff-del">{change.class_change.old || "—"}</span>
+                {" → "}
+                <span className="mw-detail-val diff-add">{change.class_change.new || "—"}</span>
+              </div>
+            </div>
+          )}
+        </div>
+      </SheetContent>
+    </Sheet>
   );
 }

@@ -64,8 +64,9 @@ async def target_billing(tmp_path, monkeypatch):
     monkeypatch.setattr(core_db, "WritingSkillRepository", lambda database: SimpleNamespace(
         get_global_state=lambda owner: {"pending_stages": []}, list_enabled_for_owner=lambda owner: []))
     monkeypatch.setattr(loader, "load_current_package", lambda: object())
-    monkeypatch.setattr(loader, "production_commit", lambda: "a" * 40)
-    monkeypatch.setattr(loader, "production_checkout", lambda: package)
+    monkeypatch.setattr(loader, "production_release", lambda: SimpleNamespace(
+        commit="a" * 40, artifact_digest="2" * 64,
+    ))
     monkeypatch.setattr(loader, "load_package", lambda *args: object())
     monkeypatch.setattr(agent, "build_llm_snapshot", lambda: LlmConfigSnapshot(model="model", base_url="https://model.invalid"))
     monkeypatch.setattr(settings_module, "get_settings", lambda: SimpleNamespace(evolution_notify_url=""))

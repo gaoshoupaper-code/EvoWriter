@@ -4,7 +4,7 @@
 - load_current_package：current_production 失败 → known_production.json 的
   commit + 本地 artifact 缓存装配成功（除失败的 /api/production 外零 HTTP）；
   known/缓存都没有 → 抛原异常。
-- reconcile：Platform 生产 commit ≠ 当前加载 → reload_current(commit, digest)；
+- reconcile：Platform 生产版本或 commit 有变化时，按账本身份加载；
   一致或未加载 → 不动；对账异常不外抛。
 """
 from __future__ import annotations
@@ -78,6 +78,7 @@ class LoadCurrentPackageFailStaticTest(unittest.TestCase):
             self.assertEqual(pkg.X, 1)
             self.assertEqual(loader_mod.production_commit(), commit)
             self.assertEqual(loader_mod.production_checkout(), dest)
+            self.assertIsNone(loader_mod.production_release().version)
             # 缓存命中零下载：唯一 HTTP 是失败的 /api/production
             self.assertEqual(requests, ["/api/production"])
 
@@ -142,31 +143,20 @@ class ReconcileLoopTest(unittest.TestCase):
             surface_fingerprint={}, promoted_at="",
         )
 
-    def test_reconcile_triggers_reload_on_new_commit(self) -> None:
-        """对账发现新生产 commit → reload_current(commit, digest)。"""
-        fake_client = SimpleNamespace(
-            current_production=lambda: self._status("b" * 40),
-        )
-        reloads: list[tuple] = []
-
-        def fake_reload(commit=None, digest=None):
-            reloads.append((commit, digest))
-            return None
-
-        with patch(
-            "app.platform.agent.artifact_client.get_artifact_client",
-            return_value=fake_client,
-        ), patch(
-            "app.platform.agent.loader.production_commit", return_value="a" * 40,
-        ), patch(
-            "app.platform.agent.loader.reload_current", side_effect=fake_reload,
-        ):
-            asyncio.run(reconcile_mod.reconcile_production_once())
-
-        self.assertEqual(reloads, [("b" * 40, "d" * 64)])
+    def test_reconcile_triggers_reload_on_new_version_with_or_without_new_commit(self) -> None:
+        for commit in ("a" * 40, "b" * 40):
+            with self.subTest(commit=commit), patch(
+                "app.platform.agent.artifact_client.get_artifact_client",
+                return_value=SimpleNamespace(current_production=lambda: self._status(commit)),
+            ), patch(
+                "app.platform.agent.loader.production_release",
+                return_value=SimpleNamespace(commit="a" * 40, version=6),
+            ), patch("app.platform.agent.loader.reload_current") as reload:
+                asyncio.run(reconcile_mod.reconcile_production_once())
+                reload.assert_called_once_with(commit, "d" * 64, version=7)
 
     def test_reconcile_noop_when_same_or_unloaded(self) -> None:
-        """commit 一致或尚未加载生产包 → 不触发 reload。"""
+        """版本和 commit 一致或尚未加载生产包时，不触发 reload。"""
         reloads: list[tuple] = []
 
         def fake_reload(commit=None, digest=None):
@@ -180,7 +170,7 @@ class ReconcileLoopTest(unittest.TestCase):
             "app.platform.agent.artifact_client.get_artifact_client",
             return_value=fake_client,
         ), patch(
-            "app.platform.agent.loader.production_commit", return_value="a" * 40,
+            "app.platform.agent.loader.production_release", return_value=self._status("a" * 40),
         ), patch(
             "app.platform.agent.loader.reload_current", side_effect=fake_reload,
         ):
@@ -198,7 +188,7 @@ class ReconcileLoopTest(unittest.TestCase):
             "app.platform.agent.artifact_client.get_artifact_client",
             return_value=SimpleNamespace(current_production=_prod),
         ), patch(
-            "app.platform.agent.loader.production_commit", return_value="",
+            "app.platform.agent.loader.production_release", return_value=None,
         ), patch(
             "app.platform.agent.loader.reload_current", side_effect=fake_reload,
         ):
@@ -223,7 +213,7 @@ class ReconcileLoopTest(unittest.TestCase):
             "app.platform.agent.artifact_client.get_artifact_client",
             return_value=SimpleNamespace(current_production=_boom),
         ), patch(
-            "app.platform.agent.loader.production_commit", return_value="a" * 40,
+            "app.platform.agent.loader.production_release", return_value=self._status("a" * 40),
         ):
             asyncio.run(run())
 

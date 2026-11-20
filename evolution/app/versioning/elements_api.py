@@ -22,6 +22,7 @@ import ast
 import json
 import logging
 import time
+from os import getenv
 from typing import Any
 
 import yaml
@@ -32,6 +33,7 @@ from contracts.architecture_manifest import (
     BASE_CHAIN_MODULES,
     ArchitectureManifest,
 )
+from contracts.target_tasks import AGENT_TASK_TYPES
 
 from app.core.git_ops import show_file, version_source
 from app.versioning import platform_ledger
@@ -385,16 +387,21 @@ def _build_middleware_stacks(commit: str | None) -> dict[str, list[dict[str, Any
     return build_middleware_projection(sources)
 
 
+_TOOL_FUNCTIONS = {
+    "read_artifact": "读取指定的总纲、章纲、正文或人物卡，也可只读其中一个小节。",
+    "list_characters": "列出本书已有的人物卡，方便找到要查看的人物。",
+    "save_artifact": "保存或修改总纲、卷纲、章纲、正文等创作产物。",
+    "confirm_with_user": "把当前草稿和选项交给用户确认，收到决定后再继续。",
+    "request_review": "提交阶段产物或正文批次，暂停等待用户审查。",
+    "update_character_state": "保留人物原设定，更新人物现状并记下本章的变化。",
+    "update_foreshadow_table": "更新总纲中的伏笔登记表，保留总纲其余内容。",
+    "rewrite_rhythm_table": "更新指定卷纲的剧情推进表，保留其余内容。",
+    "append_chapter_deviation": "把定稿正文与章纲的实际偏差记到对应章纲。",
+}
+
+
 def _build_tool_infos(commit: str | None) -> list[dict[str, Any]]:
-    """扫 tools/ 目录，读每个 .py 的模块 docstring 首句 + 作用域标注。
-
-    harness 的 tools/ 是全局平铺的，不存在 tool→agent 映射；每个文件的真实作用域
-    各不相同（global/middleware/agent/memory）。作用域从 TOOL_SCOPE_MAP 查得，
-    查不到填 {kind: "unknown"} 兜底，前端会显示"⚠ 未登记作用域"提醒补登记。
-
-    与 middleware 投影的差异：描述只取 docstring 首句（需求 D8），且
-    多一个 scope 字段；排除 __init__.py（包初始化不是 tool）。
-    """
+    """从所选版本读取工具用途，保留旧客户端所需的 scope 字段。"""
     if not commit:
         return []
     py_files = [
@@ -408,9 +415,10 @@ def _build_tool_infos(commit: str | None) -> list[dict[str, Any]]:
         load_error: str | None = None
         try:
             src = show_file(commit, f)
-            # 首句 = docstring 第一行（harness tool docstring 首行均为一句话概述）
             full_doc = ast.get_docstring(ast.parse(src))
-            description = full_doc.split("\n", 1)[0].strip() if full_doc else None
+            description = _TOOL_FUNCTIONS.get(name) if f == f"tools/{name}.py" else None
+            if not description and full_doc:
+                description = full_doc.splitlines()[0]
         except Exception as e:  # noqa: BLE001
             logger.debug("tool docstring 解析失败: %s @ %s", f, commit)
             load_error = str(e)
@@ -418,7 +426,6 @@ def _build_tool_infos(commit: str | None) -> list[dict[str, Any]]:
             "path": f,
             "name": name,
             "description": description,
-            # 查不到作用域兜底 unknown，逼开发者补登记 TOOL_SCOPE_MAP
             "scope": TOOL_SCOPE_MAP.get(f, {"kind": "unknown"}),
             "load_error": load_error,
         })
@@ -474,6 +481,7 @@ def _elements_at(version: int, commit: str | None) -> dict[str, Any]:
             "prompt": {"body": read_prompt_body(commit, prompt_files)},
             "skills": _agent_skills(skills, name, kind, layout),
             "middlewares": middleware_stacks.get(name, []),
+            "middleware_available": name in middleware_stacks,
             "tools": [],
         }
         for name, kind, prompt_files in specs
@@ -520,7 +528,7 @@ def _build_manifest_elements_view(
     skills = _build_skill_infos(commit)
     stacks = _manifest_middleware_stacks(commit, manifest)
     tools = _build_tool_infos(commit)
-    tool_names = {t["name"] for t in tools}
+    exact_skill_mounts = getenv("WRITING_AGENT_ID") in AGENT_TASK_TYPES
 
     stage_files: list[str] = []
     if commit:
@@ -564,10 +572,10 @@ def _build_manifest_elements_view(
             "prompt_files": _prompt_files(agent.prompt, agent.role == "main"),
             "skills": [s for s in skills
                        if any(s["path"] == f"skills/{name}"
-                              or s["path"].startswith(f"skills/{name}/")
+                              or (not exact_skill_mounts and s["path"].startswith(f"skills/{name}/"))
                               for name in agent.skills)],
             "middlewares": stacks.get(agent.name, []),
-            "tools": [t for t in agent.tools if t in tool_names],
+            "tools": list(agent.tools),
         }
         for agent in manifest.agents
     ]

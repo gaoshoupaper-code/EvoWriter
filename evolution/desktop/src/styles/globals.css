@@ -7495,17 +7495,6 @@ html[data-theme="dark"] {
   color: var(--evo-ink-tertiary);
 }
 
-/* SubAgent 视角 Tools Tab 的挂载说明条（DEC-005 空态说明） */
-.tool-mounted-strip {
-  font-size: var(--evo-text-xs);
-  color: var(--evo-ink-secondary);
-  background: var(--evo-surface);
-  border: 1px dashed var(--evo-line);
-  border-radius: var(--evo-radius-sm);
-  padding: var(--evo-space-2) var(--evo-space-3);
-  margin-bottom: var(--evo-space-3);
-}
-
 /* 拍板进化点的架构级醒目标识（FR-005） */
 .point-arch-badge {
   display: inline-block;
@@ -7872,148 +7861,90 @@ html[data-theme="dark"] {
 }
 .prompt-edit-actions button:disabled { opacity: 0.5; cursor: not-allowed; }
 
-/* tools 平铺列表（Tools Tab）—— 与 skill-row 同族，但平铺不分段 + 右侧 scope 彩签 */
+/* Harness Tools */
 .tool-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 .tool-row {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: minmax(0, min(45%, 13rem)) minmax(0, 1fr);
+  align-items: baseline;
   gap: var(--evo-space-3);
   font-size: var(--evo-text-sm);
-  padding: var(--evo-space-2);
-  border-radius: var(--evo-radius-sm);
+  padding: var(--evo-space-2) var(--evo-space-3);
+  border-bottom: 1px solid var(--evo-line);
   color: var(--evo-ink);
 }
-.tool-row-main {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0; /* 让长 path 可截断而非撑开行 */
+.tool-name {
+  font-family: var(--evo-font-mono);
+  overflow-wrap: anywhere;
 }
-.tool-path { font-family: var(--evo-font-mono); }
 .tool-desc {
-  font-size: var(--evo-text-xs);
   line-height: 1.5;
   color: var(--evo-ink-muted);
 }
-.tool-load-error { color: var(--evo-danger); font-size: var(--evo-text-xs); }
 .tool-empty {
+  margin: 0;
   padding: var(--evo-space-6) var(--evo-space-2);
   font-size: var(--evo-text-sm);
   color: var(--evo-ink-muted);
   text-align: center;
 }
 
-/* scope 彩签：语义令牌区分 tool 的真实作用域 */
-.tool-scope {
-  flex-shrink: 0;
-  display: inline-block;
-  font-size: var(--evo-text-xs);
-  font-weight: 600;
-  padding: 2px var(--evo-space-2);
-  border-radius: var(--evo-radius-sm);
-  white-space: nowrap;
-}
-.tool-scope-global     { background: var(--evo-cancelled-soft); color: var(--evo-cancelled); }
-.tool-scope-middleware { background: var(--evo-info-soft);     color: var(--evo-info); }
-.tool-scope-agent      { background: var(--evo-accent-soft);   color: var(--evo-accent); }
-.tool-scope-memory     { background: var(--evo-warning-soft);  color: var(--evo-warning); }
-.tool-scope-unknown    { background: var(--evo-danger-soft);   color: var(--evo-danger); }
-
-/* ── Middleware 泳道图 ── */
-.swimlane {
-  border: 1px solid var(--evo-line);
-  border-radius: var(--evo-radius-lg);
-  overflow: hidden;
-  background: var(--evo-surface);
-}
-
-.swimlane-scroll {
-  overflow-x: auto;
-}
-
-.swimlane-grid {
-  display: grid;
-  grid-template-columns: 140px repeat(6, minmax(150px, 1fr));
-  min-width: 1000px;
-}
-
-.swimlane-head-cell {
-  padding: var(--evo-space-3) var(--evo-space-2);
-  font-size: var(--evo-text-xs);
-  font-weight: 600;
-  color: var(--evo-ink);
-  border-bottom: 1px solid var(--evo-line);
-  background: var(--evo-surface-2);
-  text-align: center;
-}
-.swimlane-head-cell .hook-name { display: block; }
-
-.swimlane-row-label {
-  padding: var(--evo-space-3);
+/* Harness Middleware */
+.mw-lifecycle + .mw-lifecycle { margin-top: var(--evo-space-5); }
+.mw-agent-title {
+  margin: 0 0 var(--evo-space-3);
   font-size: var(--evo-text-sm);
   font-weight: 600;
-  color: var(--evo-ink);
-  border-bottom: 1px solid var(--evo-line);
-  border-right: 1px solid var(--evo-line);
-  display: flex;
-  align-items: center;
 }
-
-.swimlane-cell {
-  padding: var(--evo-space-2);
-  border-bottom: 1px solid var(--evo-line);
-  border-right: 1px solid var(--evo-line);
-  min-height: 40px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--evo-space-1);
-}
-.swimlane-cell:last-child { border-right: none; }
-
-/* 折叠的 agent 行（无 middleware） */
-.swimlane-row-collapsed {
-  grid-column: 1 / -1;
-  display: flex;
-  align-items: center;
-  gap: var(--evo-space-2);
-  padding: var(--evo-space-2) var(--evo-space-3);
+.mw-lifecycle-warning {
+  margin: 0 0 var(--evo-space-3);
   font-size: var(--evo-text-sm);
   color: var(--evo-ink-muted);
+}
+.mw-hook + .mw-hook { margin-top: var(--evo-space-3); }
+.mw-hook-title {
+  margin: 0;
+  padding: var(--evo-space-2) var(--evo-space-3);
   border-bottom: 1px solid var(--evo-line);
-  cursor: pointer;
+  background: var(--evo-surface-2);
+  font-family: var(--evo-font-mono);
+  font-size: var(--evo-text-sm);
+  font-weight: 600;
+  color: var(--evo-ink);
 }
-.swimlane-row-collapsed:hover { background: var(--evo-surface-2); }
-.swimlane-row-collapsed .collapse-count { font-weight: 600; color: var(--evo-ink); }
-
-/* middleware 小卡片 */
 .mw-node {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, min(48%, 18rem)) minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--evo-space-3);
   background: var(--evo-surface);
-  border: 1px solid var(--evo-line-strong);
-  border-radius: var(--evo-radius-sm);
-  padding: var(--evo-space-1) var(--evo-space-2);
-  font-size: var(--evo-text-xs);
+  border: 0;
+  border-bottom: 1px solid var(--evo-line);
+  padding: var(--evo-space-2) var(--evo-space-3);
+  text-align: left;
+  font-size: var(--evo-text-sm);
   cursor: pointer;
-  transition: box-shadow var(--motion-duration) var(--motion-ease);
 }
-.mw-node:hover { box-shadow: var(--evo-shadow-sm); } /* design-lint:allow 画布节点 hover 浮起反馈 */
-.mw-node.diff-add { border-color: var(--evo-success); background: var(--evo-success-soft); }
-.mw-node.diff-del { border-color: var(--evo-danger); background: var(--evo-danger-soft); }
-.mw-node.diff-mod { border-color: var(--evo-warning); background: var(--evo-warning-soft); }
-
+.mw-node:hover { background: var(--evo-surface-2); }
+.mw-node:focus-visible { outline: 2px solid var(--evo-accent); outline-offset: -2px; }
+.mw-node.diff-add { background: var(--evo-success-soft); }
+.mw-node.diff-mod { background: var(--evo-warning-soft); }
+.mw-node-class, .mw-node-desc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .mw-node-class {
   font-family: var(--evo-font-mono);
   font-weight: 600;
   color: var(--evo-ink);
 }
-.mw-node-group {
-  font-size: var(--evo-text-xs);
-  color: var(--evo-ink-muted);
-}
+.mw-node-desc { color: var(--evo-ink-muted); }
 
 /* middleware 弹窗（Sheet）内的键值行，复用于元信息/参数/类变更 */
 .mw-detail-row {
@@ -8036,9 +7967,27 @@ html[data-theme="dark"] {
   gap: var(--evo-space-4);
 }
 .mw-sheet-meta {
+  margin: 0;
   padding-bottom: var(--evo-space-3);
   border-bottom: 1px solid var(--evo-line);
 }
+.mw-sheet-meta dd, .mw-sheet-function dd { margin: 0; }
+.mw-sheet-function {
+  display: grid;
+  gap: var(--evo-space-3);
+  margin: 0;
+  font-size: var(--evo-text-sm);
+}
+.mw-sheet-function dt { font-weight: 600; color: var(--evo-ink-muted); }
+.mw-sheet-function dd { color: var(--evo-ink); }
+.mw-sheet-close {
+  padding: var(--evo-space-1) var(--evo-space-2);
+  border: 1px solid var(--evo-line);
+  border-radius: var(--evo-radius-sm);
+  font-size: var(--evo-text-xs);
+  cursor: pointer;
+}
+.mw-sheet-close:hover { background: var(--evo-surface-2); }
 .mw-sheet-section-title {
   font-size: var(--evo-text-sm);
   font-weight: 600;
@@ -8189,7 +8138,7 @@ html[data-theme="dark"] {
   flex-shrink: 0;
 }
 
-/* 通用彩签基类（语义令牌底 + 同色字，与 tool-scope-* 系对齐） */
+/* 通用彩签基类（语义令牌底 + 同色字） */
 .memory-tag {
   display: inline-block;
   padding: 1px var(--evo-space-2);
@@ -8200,7 +8149,7 @@ html[data-theme="dark"] {
   white-space: nowrap;
 }
 
-/* type 三色：prompt 灰 / middleware 蓝 / tool 青（与 tool-scope-* 系对齐） */
+/* type 三色：prompt 灰 / middleware 蓝 / tool 青 */
 .memory-tag-type-prompt     { background: var(--evo-cancelled-soft); color: var(--evo-cancelled); }
 .memory-tag-type-middleware { background: var(--evo-info-soft);      color: var(--evo-info); }
 .memory-tag-type-tool       { background: var(--evo-accent-soft);    color: var(--evo-accent); }

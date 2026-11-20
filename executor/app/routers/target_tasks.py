@@ -51,15 +51,13 @@ def _owned_task(workspace_id, task_id, user):
 
 @internal_router.get("/runtime")
 def runtime_identity():
-    from app.platform.agent.loader import production_commit, production_checkout
-    digest = None
-    try:
-        root = production_checkout()
-        if root is not None and (Path(root) / ".digest").is_file():
-            digest = (Path(root) / ".digest").read_text(encoding="utf-8").strip()
-    except RuntimeError:
-        pass
-    return {"commit": production_commit(), "artifact_digest": digest}
+    from app.platform.agent.loader import production_release
+    release = production_release()
+    return {
+        "version": release.version if release else None,
+        "commit": release.commit if release else "",
+        "artifact_digest": release.artifact_digest if release else None,
+    }
 
 
 @internal_router.post("", response_model=TargetTaskResult, status_code=202)
@@ -163,11 +161,14 @@ def _admit_public(workspace_id, payload, user, root, thread, operation, task_id,
            for run in get_trace_recorder().list_active_runs()):
         raise HTTPException(409, "作品正在生成，请先停止当前创作。")
     try:
-        from app.platform.agent.loader import load_current_package, production_commit, production_checkout
+        from app.platform.agent.loader import load_current_package, production_release
         from app.domains.writing.agent import build_llm_snapshot
         from app.domains.writing.target_tasks import validate_input
         from app.platform.core.db import WritingSkillRepository, get_database
         load_current_package()
+        release = production_release()
+        if release is None:
+            raise RuntimeError("生产版本尚未加载。")
         files = collect_artifacts(root)
         previous_demand = files.pop("demand.md", "")
         demand = payload.demand_md if payload.demand_md is not None else previous_demand
@@ -188,11 +189,10 @@ def _admit_public(workspace_id, payload, user, root, thread, operation, task_id,
             snapshot = LlmConfigSnapshot(model=settings.writer_model,
                                          base_url=settings.platform_base_url or settings.openai_base_url or "https://api.openai.com/v1",
                                          source="environment")
-        digest_path = production_checkout() / ".digest"
         request = TargetTaskRequest(
             task_id=task_id, attempt_id=uuid.uuid4().hex,
-            source_commit=production_commit(),
-            artifact_digest=digest_path.read_text(encoding="utf-8").strip() if digest_path.is_file() else None,
+            source_commit=release.commit,
+            artifact_digest=release.artifact_digest,
             model_snapshot=snapshot, target=payload.target, input=data,
         )
         return get_manager().submit(request, workspace=root, thread=thread, owner_id=user.user_id,

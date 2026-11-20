@@ -12,8 +12,8 @@ Phase A 变更（REQ-20260919-202344，DEC-012 去 git 化）：
   - 生产/候选包来源从「git pull bare repo」改为「Platform artifact 下载 + digest
     校验 + 本地缓存解包」（artifact_client），本模块不再有任何 git 操作。
   - load_current_package()：Platform 查生产 commit → ensure_artifact → 加载。
-  - reload_current(commit, digest)：热重载指定/当前生产版本（晋升通知触发）。
-  - production_commit()/production_checkout()：记忆最近一次加载的 commit/解包目录，
+  - reload_current(commit, digest, version=...)：热重载指定/当前生产版本（晋升通知触发）。
+  - production_release()：读取执行端实际加载的版本、commit、摘要和解包目录，
     供 Run 绑定与 runtime_identity 使用（不再读 git 元数据——artifact 目录无 .git）。
 
 设计依据：设计文档 D8=X + D10b + #16 + D9a + REQ-20260919-202344 DEC-012。
@@ -24,17 +24,24 @@ import importlib.util
 import logging
 import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 from types import ModuleType
 
 logger = logging.getLogger("writer.package_loader")
 
-# 模块级缓存：生产包加载一次后复用（热加载时清缓存重建，决策 #16）
-_loaded_package: ModuleType | None = None
-# 最近一次加载的生产 commit（未加载时为空串）——Run 绑定 / trace 快照用
-_current_commit: str = ""
-# 最近一次加载的 artifact 解包目录——runtime_identity / 身份指纹用
-_current_checkout: Path | None = None
+@dataclass(frozen=True)
+class LoadedProduction:
+    version: int | None
+    commit: str
+    checkout: Path
+    artifact_digest: str | None
+    package: ModuleType
+
+
+_loaded_production: LoadedProduction | None = None
+_load_lock = RLock()
 
 
 def _artifact_client():
@@ -94,6 +101,16 @@ def _production_package(checkout: Path) -> ModuleType:
     return load_package(checkout, "harness_current")
 
 
+def _activate(checkout: Path, commit: str, version: int | None) -> ModuleType:
+    global _loaded_production
+    package = _production_package(checkout)
+    digest_path = checkout / ".digest"
+    digest = digest_path.read_text(encoding="utf-8").strip() if digest_path.is_file() else None
+    # Run admission and runtime confirmation read the same loaded version, source and digest.
+    _loaded_production = LoadedProduction(version, commit, checkout, digest, package)
+    return package
+
+
 def load_current_package() -> ModuleType:
     """加载生产 Agent 包，返回包模块。
 
@@ -108,32 +125,32 @@ def load_current_package() -> ModuleType:
         RuntimeError: Platform 不可达（且无本地回退）/ 无生产版本 /
                       artifact 校验失败（调用方决定是否降级）。
     """
-    global _loaded_package, _current_commit, _current_checkout
-    if _loaded_package is not None:
-        return _loaded_package
+    loaded = production_release()
+    if loaded is not None:
+        return loaded.package
 
-    client = _artifact_client()
-    try:
-        status = client.current_production()
-    except Exception as exc:
-        _load_from_known_production(client, exc)
-        return _loaded_package
-    checkout = client.ensure_artifact(status.commit)
-    _loaded_package = _production_package(checkout)
-    _current_commit = status.commit
-    _current_checkout = checkout
-    logger.info("生产包已就绪: commit=%s version=%s", status.commit, status.version)
-    return _loaded_package
+    with _load_lock:
+        loaded = production_release()
+        if loaded is not None:
+            return loaded.package
+        client = _artifact_client()
+        try:
+            status = client.current_production()
+        except Exception as exc:
+            return _load_from_known_production(client, exc)
+        checkout = client.ensure_artifact(status.commit, expected_digest=status.artifact_digest)
+        package = _activate(checkout, status.commit, status.version)
+        logger.info("生产包已就绪: commit=%s version=%s", status.commit, status.version)
+        return package
 
 
-def _load_from_known_production(client, exc: Exception) -> None:
+def _load_from_known_production(client, exc: Exception) -> ModuleType:
     """Platform 不可达时的冷启动回退：known_production commit + 本地缓存装配。
 
-    成功则填好模块级缓存（_loaded_package/_current_commit/_current_checkout）
+    成功则填好模块级缓存，账本版本未知
     并 warning 标记降级；known_production 或本地缓存不可用则抛回原异常
     （exc）——根因是 Platform 不可达，回退失败的细节只进日志。
     """
-    global _loaded_package, _current_commit, _current_checkout
     from app.platform.agent.binding_client import get_binding_client
 
     known = get_binding_client().get_known_production()
@@ -151,39 +168,52 @@ def _load_from_known_production(client, exc: Exception) -> None:
         "冷启动降级：Platform 不可达，用本地缓存装配已知生产 commit=%s（err=%s）",
         fallback_commit, exc,
     )
-    _loaded_package = _production_package(checkout)
-    _current_commit = fallback_commit
-    _current_checkout = checkout
+    return _activate(checkout, fallback_commit, version=None)
 
 
-def reload_current(commit: str | None = None, digest: str | None = None) -> ModuleType:
+def reload_current(
+    commit: str | None = None, digest: str | None = None, *, version: int | None = None,
+) -> ModuleType:
     """热加载：清缓存 + 拉取 artifact + 重新加载生产包（决策 #16，不重启进程）。
 
     有 commit（晋升 reload 通知携带）用之；无 commit 向 Platform 对账取当前
-    生产版本。digest 非空时 ensure_artifact 会比对 Platform meta，不符拒绝装配。
+    生产版本。digest 非空时 ensure_artifact 会核对摘要，不符拒绝装配。
+    版本号可防止较早的通知或对账结果覆盖已上线的新版本。
 
     Returns: 重新加载后的包模块。
     """
-    global _loaded_package, _current_commit, _current_checkout
-    # 清缓存：pop sys.modules 里包及其子模块（middleware.* 等）
-    if not os.getenv("WRITING_AGENT_ID"):
-        _purge_package_modules("harness_current")
-    _loaded_package = None
+    with _load_lock:
+        client = _artifact_client()
+        if commit is None:
+            status = client.current_production()
+            commit = status.commit
+            digest = digest or status.artifact_digest
+            version = status.version
 
-    client = _artifact_client()
-    if commit is None:
-        commit = client.current_production().commit
-    checkout = client.ensure_artifact(commit, expected_digest=digest)
-    _loaded_package = _production_package(checkout)
-    _current_commit = commit
-    _current_checkout = checkout
-    logger.info("生产包热加载完成: commit=%s", commit)
-    return _loaded_package
+        loaded = production_release()
+        if loaded is not None:
+            if version is not None and loaded.version is not None and version < loaded.version:
+                return loaded.package
+            if version is None and commit == loaded.commit:
+                version = loaded.version
+
+        checkout = client.ensure_artifact(commit, expected_digest=digest)
+        if not os.getenv("WRITING_AGENT_ID"):
+            _purge_package_modules("harness_current")
+        package = _activate(checkout, commit, version)
+        logger.info("生产包热加载完成: commit=%s version=%s", commit, version)
+        return package
+
+
+def production_release() -> LoadedProduction | None:
+    """已经加载的生产包身份。读取时不访问账本，也不触发装配。"""
+    return _loaded_production
 
 
 def production_commit() -> str:
     """最近一次加载的生产 commit（str；尚未加载时为空串，不触发加载/HTTP）。"""
-    return _current_commit
+    loaded = production_release()
+    return loaded.commit if loaded else ""
 
 
 def production_checkout() -> Path:
@@ -192,9 +222,10 @@ def production_checkout() -> Path:
     Raises:
         RuntimeError: 尚未加载生产包（先 load_current_package / reload_current）。
     """
-    if _current_checkout is None:
+    loaded = production_release()
+    if loaded is None:
         raise RuntimeError("生产 artifact 尚未加载（先 load_current_package）")
-    return _current_checkout
+    return loaded.checkout
 
 
 def _purge_package_modules(prefix: str) -> None:
@@ -206,9 +237,8 @@ def _purge_package_modules(prefix: str) -> None:
 
 def reset_cache() -> None:
     """清除包缓存（测试用，或手动重载）。生产路径用 reload_current()。"""
-    global _loaded_package, _current_commit, _current_checkout
-    if _loaded_package is not None:
-        _purge_package_modules("harness_current")
-        _loaded_package = None
-    _current_commit = ""
-    _current_checkout = None
+    global _loaded_production
+    with _load_lock:
+        if _loaded_production is not None:
+            _purge_package_modules("harness_current")
+        _loaded_production = None

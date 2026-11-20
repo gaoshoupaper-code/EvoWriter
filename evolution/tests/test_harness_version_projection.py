@@ -26,6 +26,7 @@ class MiddlewareProjectionTest(unittest.TestCase):
             manifest = ArchitectureManifest.model_validate(
                 json.loads(manifest_file.read_text(encoding="utf-8"))
             )
+            cls.manifest_agent_names = {agent.name for agent in manifest.agents}
             sources = {
                 f"middleware/{p.name}": p.read_text(encoding="utf-8")
                 for p in (cls.package_root / "middleware").glob("*.py")
@@ -58,7 +59,9 @@ class MiddlewareProjectionTest(unittest.TestCase):
 
     def test_projects_layout_lanes(self) -> None:
         """按 working 包形态产出对应泳道集合。"""
-        if self.layout == "v14":
+        if self.layout == "manifest":
+            self.assertEqual(set(self.stacks), self.manifest_agent_names)
+        elif self.layout == "v14":
             self.assertEqual(
                 set(self.stacks),
                 {"orchestrator", "worldview", "character", "storyline", "storybuilding_review"},

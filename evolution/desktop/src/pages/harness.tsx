@@ -16,6 +16,7 @@ import { PromptTab } from "@/components/harness/PromptTab";
 import { SkillsTab } from "@/components/harness/SkillsTab";
 import { ToolsTab } from "@/components/harness/ToolsTab";
 import { CandidateEditor } from "@/components/harness/CandidateEditor";
+import { ManualDraftPanel, useManualAssetDraft } from "@/components/harness/ManualDraftPanel";
 import { MiddlewareTab } from "@/components/harness/MiddlewareTab";
 
 /**
@@ -41,12 +42,13 @@ export default function HarnessPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   // 主/Sub 高层切换（DEC-003）+ SubAgent 视图内子代理选择器（DEC-004）
   const [scope, setScope] = useState<"main" | "sub">("main");
+  const [selectedMain, setSelectedMain] = useState<string | null>(null);
   const [selectedSub, setSelectedSub] = useState<string | null>(null);
 
   // 拉取版本列表（仅首次 / 手动重试）。
   // refresh 不依赖 selectedVersion：用函数式 setSelectedVersion 读最新值，
   // 保持 refresh 引用稳定（空依赖），避免 effect 重跑导致重复请求。
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (select?: number | "production") => {
     setLoading(true);
     setLoadError(null);
     try {
@@ -55,7 +57,9 @@ export default function HarnessPage() {
       if (snaps.length > 0) {
         const prod = snaps.find((s) => s.status === "production") ?? snaps[0];
         // 函数式更新：仅在当前仍为 null 时设置默认选中，不覆盖用户已选
-        setSelectedVersion((prev) => prev ?? prod.version);
+        setSelectedVersion((prev) => select === "production"
+          ? prod.version
+          : select != null && snaps.some((s) => s.version === select) ? select : prev ?? prod.version);
       }
     } catch (err) {
       // DEC-005：报错态替代 toast + 空列表——旧账本数据比没数据危害大
@@ -72,22 +76,24 @@ export default function HarnessPage() {
   // 版本切换：并行拉主要素 + 记忆要素 + 升级 diff
   useEffect(() => {
     if (selectedVersion == null) return;
+    let current = true;
     setElements(null);
     setUpgradeDiff(null);
     setDiffFailed(false);
 
     Promise.all([
       getHarnessElements(selectedVersion).catch((err) => {
-        toast.error(err instanceof Error ? err.message : "读取 Harness 资产失败");
+        if (current) toast.error(err instanceof Error ? err.message : "读取 Harness 资产失败");
         return null;
       }),
       getUpgradeDiff(selectedVersion).catch((err) => {
         // diff 失败不阻断要素展示（提示不阻断，REQ-20260923-145931 FR-003）；
         // 置失败态让总览条显示「变更计算失败」占位，而非停留假加载
-        toast.error(err instanceof Error ? err.message : "读取升级 diff 失败");
+        if (current) toast.error(err instanceof Error ? err.message : "读取升级 diff 失败");
         return { failed: true as const };
       }),
     ]).then(([els, diff]) => {
+      if (!current) return;
       setElements(els);
       if (diff && "failed" in diff) {
         setDiffFailed(true);
@@ -95,7 +101,21 @@ export default function HarnessPage() {
         setUpgradeDiff(diff as UpgradeDiffView | null);
       }
     });
+    return () => { current = false; };
   }, [selectedVersion]);
+
+  const isProduction = snapshots.some((s) => s.version === selectedVersion && s.status === "production");
+  const manualEnabled = isProduction && elements?.layout === "manifest";
+  const manual = useManualAssetDraft(manualEnabled);
+  const manualDraft = manual.draft;
+  const canEdit = manualEnabled && manualDraft?.base_version === selectedVersion
+    && (manualDraft.state === "editing" || manualDraft.state === "activated");
+  const publishedVersion = manualDraft?.state === "activated" ? manualDraft.published_version : undefined;
+  useEffect(() => {
+    if (manualEnabled && publishedVersion != null && publishedVersion === manualDraft?.base_version && publishedVersion !== selectedVersion) {
+      void refresh(publishedVersion);
+    }
+  }, [manualEnabled, publishedVersion, manualDraft?.base_version, selectedVersion, refresh]);
 
   // 构建 diffs 查找表：agent 名 → AgentDiff
   const diffs = (() => {
@@ -110,15 +130,20 @@ export default function HarnessPage() {
   // 主/Sub 分组（role 由后端清单/回退路径统一提供，缺失时兜底单主架构）
   const mainAgents = elements?.agents.filter((a) => (a.role ?? "main") === "main") ?? [];
   const subAgents = elements?.agents.filter((a) => a.role === "sub") ?? [];
+  const activeMain = mainAgents.find((a) => a.name === selectedMain) ?? mainAgents[0];
   const activeSub =
     subAgents.find((a) => a.name === selectedSub) ?? subAgents[0] ?? null;
-  // 当前视角喂给要素 Tab 的 agent 集合：主视角 = 全部主 agent；
-  // Sub 视角 = 当前选中的单个子代理（五要素作用于选中者，DEC-004）
-  const scopedAgents = scope === "main" ? mainAgents : activeSub ? [activeSub] : [];
+  const activeRole = scope === "main" ? activeMain : activeSub;
+  const scopedAgents = activeRole ? [activeRole] : [];
+  const savedRole = canEdit ? manualDraft.agents?.find((agent) => agent.name === activeRole?.name) : undefined;
+  const editableAgents = activeRole && savedRole ? [{
+    ...activeRole, prompt_files: savedRole.prompt_files, skills: savedRole.skills,
+  }] : scopedAgents;
 
   // 切版本时重置视角（新版本可能没有子代理，防止停留在空 Sub 视图）
   useEffect(() => {
     setScope("main");
+    setSelectedMain(null);
     setSelectedSub(null);
   }, [selectedVersion]);
 
@@ -139,7 +164,7 @@ export default function HarnessPage() {
         <div className="evo-state-error">
           {loadError || "Platform 账本不可达"}
           <br />
-          <button className="evo-retry-button" onClick={refresh}>重试</button>
+          <button className="evo-retry-button" onClick={() => void refresh()}>重试</button>
         </div>
       </div>
     );
@@ -155,6 +180,7 @@ export default function HarnessPage() {
         <select
           className="evolve-select"
           value={selectedVersion ?? ""}
+          disabled={manual.busy}
           onChange={(e) => setSelectedVersion(Number(e.target.value))}
         >
           {snapshots.map((s) => (
@@ -167,7 +193,15 @@ export default function HarnessPage() {
         </select>
       </div>
 
-      {snapshots.find((s) => s.version === selectedVersion)?.status === "production" && <CandidateEditor />}
+      {manualEnabled && selectedVersion != null && (
+        <ManualDraftPanel
+          manual={manual}
+          selectedVersion={selectedVersion}
+          roleNames={new Map(elements?.agents.map((agent) => [agent.name, agent.display_name ?? agent.name]))}
+          onRefreshProduction={() => void refresh("production")}
+        />
+      )}
+      {isProduction && <CandidateEditor />}
 
       {/* 升级总览条（diff 拉取失败显示占位，FR-003 提示不阻断） */}
       <UpgradeOverview diff={upgradeDiff} failed={diffFailed} />
@@ -189,6 +223,19 @@ export default function HarnessPage() {
               SubAgent（{subAgents.length}）
             </button>
           </div>
+
+          {scope === "main" && mainAgents.length > 1 && (
+            <div className="harness-sub-selector">
+              {mainAgents.map((agent) => (
+                <button
+                  key={agent.name}
+                  type="button"
+                  className={`harness-sub-chip ${activeMain?.name === agent.name ? "active" : ""}`}
+                  onClick={() => setSelectedMain(agent.name)}
+                >{agent.display_name ?? agent.name}</button>
+              ))}
+            </div>
+          )}
 
           {/* SubAgent 视图：子代理选择器（DEC-004）+ 未挂载孤儿（DEC-005 诚实呈现） */}
           {scope === "sub" && (
@@ -216,7 +263,7 @@ export default function HarnessPage() {
           )}
 
           <Tabs
-            key={`${scope}-${activeSub?.name ?? "main"}`}
+            key={selectedVersion}
             defaultValue="prompt"
             className="harness-tabs"
           >
@@ -228,22 +275,22 @@ export default function HarnessPage() {
             </TabsList>
             <TabsContent value="prompt">
               <PromptTab
-                agents={scopedAgents}
+                key={activeRole?.name}
+                agents={editableAgents}
                 diffs={diffs}
-                /* 草稿发版成功：切到新版本（触发要素重拉）+ 刷新版本下拉 */
-                onReleased={(version) => {
-                  setSelectedVersion(version);
-                  refresh();
-                }}
+                onSave={canEdit ? manual.save : undefined}
+                busy={manual.busy}
               />
             </TabsContent>
             <TabsContent value="skills">
-              <SkillsTab agents={scopedAgents} diffs={diffs} />
+              <SkillsTab key={activeRole?.name} agents={editableAgents} diffs={diffs}
+                onSave={canEdit ? manual.save : undefined} busy={manual.busy} />
             </TabsContent>
             <TabsContent value="tools">
               <ToolsTab
                 tools={elements.tools}
-                mountedTools={scope === "sub" ? activeSub?.tools ?? [] : undefined}
+                agents={scopedAgents}
+                layout={elements.layout}
               />
             </TabsContent>
             <TabsContent value="middleware">

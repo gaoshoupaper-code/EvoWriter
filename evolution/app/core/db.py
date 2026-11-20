@@ -188,6 +188,13 @@ def init_db() -> None:
             DROP TABLE IF EXISTS version_changes;
             DROP TABLE IF EXISTS harness_snapshots;
 
+            -- Hand-edited assets share one draft per isolated Harness.
+            CREATE TABLE IF NOT EXISTS manual_asset_drafts (
+                harness TEXT PRIMARY KEY,
+                payload TEXT NOT NULL,
+                patch   BLOB NOT NULL
+            );
+
             -- Phase 8 adapt（AEGIS 进化循环，决策 E3a）：
             -- adapt_rounds 存历轮 landscape/scores/shipped edits，planner 查跨轮连续性。
             -- 一个 session = 一次 /api/adapt/start，含多轮（T=3-5）。

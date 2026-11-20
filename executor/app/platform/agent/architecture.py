@@ -39,6 +39,7 @@ from contracts.architecture_manifest import (
     validate_architecture_manifest,
 )
 from contracts.runtime_context import RuntimeContext
+from contracts.target_tasks import AGENT_TASK_TYPES
 
 from app.platform.agent.middleware import (
     ArtifactValidationMiddleware,
@@ -87,7 +88,7 @@ class AgentBuildCtx:
 
     @functools.cached_property
     def scoped_skill_files(self) -> dict[str, Path]:
-        if getenv("WRITING_AGENT_ID") != "text":
+        if getenv("WRITING_AGENT_ID") not in AGENT_TASK_TYPES:
             return {}
         base = self.pkg_dir / "skills"
         files = {}

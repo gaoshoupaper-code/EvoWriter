@@ -2,7 +2,7 @@
 
 reload 通知（晋升时 Platform POST /internal/platform/reload）是版本跟进的
 主通道，但通知失败/网络分区时 executor 会一直跑旧版。本协程每 600s 向
-Platform 对账一次：生产 commit 与当前加载的不一致 → reload_current 拉新版。
+Platform 对账一次：生产版本号或 commit 与当前加载的不一致 → reload_current 拉新版。
 
 对账/重载失败静默等下一轮——对账是兜底通道，异常不允许抛进 lifespan；
 尚未加载过生产包（production_commit 为空）时不对账，由首个 Run 的
@@ -20,22 +20,23 @@ _RECONCILE_INTERVAL = 600.0  # 10min：reload 通知是主通道，对账只需�
 
 
 async def reconcile_production_once() -> None:
-    """单轮对账：Platform 生产 commit ≠ 当前加载 → 热加载新版。"""
+    """单轮对账：Platform 生产版本与当前加载不一致时，热加载新版。"""
     from app.platform.agent import loader
     from app.platform.agent.artifact_client import get_artifact_client
 
-    current = loader.production_commit()
-    if not current:
+    current = loader.production_release()
+    if current is None:
         return
     # HTTP 是同步调用，放线程池避免阻塞事件循环
     status = await asyncio.to_thread(get_artifact_client().current_production)
-    if status.commit and status.commit != current:
+    if status.commit and (status.version, status.commit) != (current.version, current.commit):
         logger.info(
-            "生产对账发现新版本: %s → %s，触发热加载", current, status.commit,
+            "生产对账发现新版本: v%s → v%s，触发热加载 commit=%s",
+            current.version, status.version, status.commit,
         )
         # 带账本 digest 装配：与 reload 通知同语义，通知/账本不一致时拒绝
         await asyncio.to_thread(
-            loader.reload_current, status.commit, status.artifact_digest,
+            loader.reload_current, status.commit, status.artifact_digest, version=status.version,
         )
 
 

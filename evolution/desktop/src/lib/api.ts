@@ -242,7 +242,7 @@ async function apiJson<T>(input: string, init: RequestInit, fetcher = apiFetch):
 }
 
 /** evolution JSON 辅助（加前缀）。 */
-async function evoJson<T>(path: string, init: RequestInit): Promise<T> {
+export async function evoJson<T>(path: string, init: RequestInit): Promise<T> {
   return apiJson<T>(path, init, evoFetch);
 }
 
@@ -1112,6 +1112,12 @@ export interface PromptFileInfo {
   body: string;
 }
 
+export interface MiddlewareHookDetail {
+  trigger: string | null;
+  action: string | null;
+  effect: string | null;
+}
+
 export interface HarnessElementView {
   name: string;
   kind: string; // main | sub（旧版本客户端可能仍见 story_expert 等历史值）
@@ -1122,17 +1128,20 @@ export interface HarnessElementView {
   prompt: { body: string };
   prompt_files?: PromptFileInfo[]; // 完整提示词面（base + stage；旧版本缺省走 body）
   skills: { path: string; name: string; description: string | null; content: string | null; load_error: string | null }[];
+  middleware_available?: boolean; // 历史版本能否还原当前角色的中间件
   middlewares: {
     hook: string | null; // 旧桌面客户端兼容字段；新客户端使用 hooks
     hooks: string[];
+    hook_details?: Record<string, MiddlewareHookDetail>;
     group: string | null;
     class_name: string;
     params: Record<string, any>;
     source_path: string | null;
     description: string | null;
     optional: boolean;
+    rule_version?: string;
   }[];
-  tools?: string[]; // 该 agent 清单挂载的工具名（当前均为空，未来扩展）
+  tools?: string[]; // 清单为该角色配置的工具名
 }
 
 /** Tool 作用域——诚实反映 harness 里 tool 的真实归属（非全局即 agent） */
@@ -1147,7 +1156,7 @@ export type ToolScope =
 export interface ToolInfo {
   path: string;                  // 如 "tools/goal.py"
   name: string;                  // 文件名去后缀，如 "goal"
-  description: string | null;    // 模块 docstring 首句
+  description: string | null;    // 工具用途
   scope: ToolScope;              // 作用域标注
   load_error: string | null;     // 解析失败时填
 }
@@ -1165,7 +1174,7 @@ export interface HarnessElementsView {
   has_source: boolean;
   layout?: "manifest" | "v7" | "v14"; // manifest = 架构清单真相源
   agents: HarnessElementView[];
-  tools: ToolInfo[]; // 顶层平级——tools/ 是全局平铺的，不属于任何 agent
+  tools: ToolInfo[]; // 本版本的工具目录，供角色工具名单查找用途
   subagent_relations: { from: string; to: string; role: string }[];
   unmounted?: UnmountedElements;
 }

@@ -1,0 +1,63 @@
+.manual-draft .prompt-draft-bar {
+  flex-wrap: wrap;
+}
+
+.manual-draft-message {
+  margin-top: 4px;
+}
+
+.manual-draft-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--evo-space-3);
+  min-height: 0;
+  overflow: auto;
+  padding: var(--evo-space-3);
+}
+
+.manual-change-group h3 {
+  font-weight: 600;
+}
+
+.manual-change {
+  padding-block: var(--evo-space-2);
+  border-bottom: 1px solid var(--evo-line);
+}
+
+.manual-change summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.manual-change p {
+  margin-top: var(--evo-space-2);
+}
+
+.manual-asset-editor {
+  flex: 1;
+  overflow: auto;
+}
+
+.manual-skill-import {
+  position: relative;
+  margin-left: auto;
+}
+
+.manual-skill-import input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.manual-skill-import:focus-within {
+  outline: 2px solid var(--evo-primary);
+  outline-offset: 2px;
+}
+
+.manual-skill-import:has(input:disabled),
+.prompt-file-edit:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

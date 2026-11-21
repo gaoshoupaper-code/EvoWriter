@@ -174,6 +174,16 @@ def _system_prompt(assessment: bool) -> str:
             "可以调整这些资产及其装配关系。设计文档须注明问题、证据编号、拟改资产和预期效果。"
             "涉及改进题时，将样本列表返回的 evidence_ref 原样写入设计条目的 evidence_ref。"
             "只能查看本次档案；独立复测题只提供掉分项和幅度。"
+            "\n\n正文进化先判断改法能否跨章节复用。单次错误可以作为线索。"
+            "结合真实运行记录和现行规则或实际装配，查实会影响同类场景的共同成因后，才允许改动。"
+            "把改法提炼为针对共因的规则或流程。作品名、章号、人物和情节等个案细节只留在证据和说明中。"
+            "\n每项修正须在设计文档写明适用条件、具体改法、一个适用例和一个不适用例。"
+            "假设例只用于说明适用边界，真实证据仍按上述规则引用。"
+            "改法只适用于原样本或说不清边界时，先重新提炼。仍不成立就跳过。"
+            "\n证据不足时先核查本次档案里的相关证据，仍无法查实就跳过该问题。"
+            "只有查实通用缺口的修正才进入设计、修改、校验和改动记录流程。"
+            "若整轮没有符合条件的修正，说明证据缺口，保留原有资产。"
+            "即使流程提示缺少产出，也禁止制造占位改动或虚构报告。"
         )
     return prompt
 
@@ -312,7 +322,7 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     assessment = bool(run.get("assessment_version"))
     prompt = _system_prompt(assessment)
     if assessment:
-        task = "使用本次档案的历史工具定位正文问题，再改进正文 Agent 并完成校验。"
+        task = "使用本次档案的历史工具定位正文问题。查实通用缺口后，再改进正文 Agent 并完成校验。"
     else:
         task = "请依据给定的改进题证据修改候选并完成校验：\n" + json.dumps(evidence, ensure_ascii=False)
     config = {"configurable": {"thread_id": session_id}, "recursion_limit": 200}

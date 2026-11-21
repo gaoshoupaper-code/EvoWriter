@@ -165,6 +165,7 @@ def _system_prompt(assessment: bool) -> str:
         "不得修改registry.json、.git、数据集、评测、权限、服务框架；不得寻找终验或其他作品数据。"
         "先探查并write_design_doc，再修改、validate_changes、write_change_log。运行时不允许调用发布。"
         "每次只处理有证据的问题，保留现有质量检查和取证行为。"
+        "作出关键判断或改动时，在发起工具调用的同一条回复里，用普通消息简述具体依据和下一步。常规读取无需说明。"
     )
     if assessment:
         prompt += (
@@ -238,6 +239,18 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     from app.evolve.agent.middleware.flow_guard import FlowGuardMiddleware
     from app.experiments import runner
     from app.trace import TraceMiddleware, TraceCallbackHandler
+
+    class EvolverModel(ChatOpenAI):
+        def _get_request_payload(self, input_, *, stop=None, **kwargs):
+            payload = super()._get_request_payload(input_, stop=stop, **kwargs)
+            # Opt in only after LangChain has selected Responses, since adding
+            # reasoning to a Chat Completions request would change its routing.
+            model = self.model_name.lower()
+            if "input" in payload and model.startswith(("gpt-5", "gpt-6", "o3", "o4")) and "-chat" not in model:
+                reasoning = payload.get("reasoning") or {}
+                if reasoning.get("effort") != "none":
+                    payload["reasoning"] = {"summary": "auto", **reasoning}
+            return payload
 
     class ExperimentSourceGuard(AgentMiddleware):
         def scoped_request(self, request):
@@ -333,9 +346,9 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
         # has its own asyncio.run loop. Close this round's pool before that loop.
         async with DefaultAsyncHttpxClient(timeout=300) as http_client, \
                 AsyncSqliteSaver.from_conn_string(str(checkpoint_path)) as checkpointer:
-            model = ChatOpenAI(model=credentials["model"].split(":", 1)[-1], base_url=credentials["base_url"],
-                               api_key=credentials["api_key"], temperature=.2, max_tokens=8192,
-                               request_timeout=300, max_retries=1, http_async_client=http_client)
+            model = EvolverModel(model=credentials["model"].split(":", 1)[-1], base_url=credentials["base_url"],
+                                 api_key=credentials["api_key"], temperature=.2, max_tokens=8192,
+                                 request_timeout=300, max_retries=1, http_async_client=http_client)
             agent = create_deep_agent(model=model, tools=tools, system_prompt=prompt, middleware=middleware,
                                       subagents=None, backend=backend, checkpointer=checkpointer)
             await _run_agent_streamed(agent, task, config, ctx, input_message_id=session_id + "-optimization")

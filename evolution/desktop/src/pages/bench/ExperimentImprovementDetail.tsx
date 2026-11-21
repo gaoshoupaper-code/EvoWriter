@@ -32,6 +32,8 @@ function ImprovementContent({ id, round }: { id: string; round: number }) {
   const track = !!(experiment?.can_read_content && entry && experimentRunning(experiment));
   const { runs, error: liveError } = useExperimentActivity(track);
   const live = track ? runs.filter(run => matchesImprovement(run, id, round)) : [];
+  const rationale = entry?.design?.replace(/^# 改动设计文档\s*\n/, "").trim();
+  const hasTrace = !!(live.length || entry?.trace_ids?.length);
   const archivedFiles = experiment?.task_type === "chapter_text" && (experiment.assessment_version ?? 0) >= 1;
   return <ExperimentDetailPage id={id} title="进化详情" anchor={"record-improvement-" + round}
     loading={!experiment} error={error} retry={retry}>
@@ -52,15 +54,15 @@ function ImprovementContent({ id, round }: { id: string; round: number }) {
       <section aria-label="进化运行详情">
         <details className="experiment-improvement-disclosure">
           <summary>进化运行详情</summary>
-          <ExperimentRecordTrace title="进化记录" prioritizeModelIO experiment={experiment} waiting={waiting} unavailable={liveError}
+          <ExperimentRecordTrace title="进化记录" prioritizeModelIO modelRationale={rationale} experiment={experiment} waiting={waiting} unavailable={liveError}
             archived={entry.trace_ids} live={live} context={{ experiment_name: experiment.name, task_type: experiment.task_type,
               operation: "improvement", phase: "improvement", round }} />
         </details>
       </section>
-      {experiment.can_read_content && (entry.design || !!entry.evidence_samples?.length) && <section aria-label="改进依据">
+      {experiment.can_read_content && ((!hasTrace && rationale) || !!entry.evidence_samples?.length) && <section aria-label="改进依据">
         <details className="experiment-improvement-disclosure">
           <summary>改进依据</summary>
-          {entry.design && <p className="experiment-prewrap">{entry.design}</p>}
+          {!hasTrace && rationale && <p className="experiment-prewrap">{rationale}</p>}
           {experiment.settings && <ImprovementSources experiment={experiment} references={entry.evidence_samples ?? []}
             onTrace={traceId => navigate(withAgent("/traces/" + encodeURIComponent(traceId) + search, pageAgent("evaluation", search)))} />}
         </details>

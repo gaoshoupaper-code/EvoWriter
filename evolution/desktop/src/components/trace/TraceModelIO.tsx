@@ -3,11 +3,13 @@ import { getTraceModelIO, type TraceModelIOPage } from "@/lib/api";
 import "./trace-model-io.css";
 
 const ROLES = new Map(Object.entries({
-  system: "系统提示词", human: "用户消息", user: "用户消息",
-  ai: "助手消息", assistant: "助手消息", tool: "工具消息",
+  system: "系统提示词", developer: "开发者消息", human: "用户消息", user: "用户消息",
+  ai: "助手消息", assistant: "助手消息", tool: "工具消息", function: "工具消息",
 }));
 
-export function TraceModelIO({ traceId, eventCount }: { traceId: string; eventCount: number }) {
+export function TraceModelIO({ traceId, eventCount, modelRationale }: {
+  traceId: string; eventCount: number; modelRationale?: string;
+}) {
   const [page, setPage] = useState<TraceModelIOPage | null>(null);
   const [syncedEvents, setSyncedEvents] = useState(-1);
   const [loading, setLoading] = useState(false);
@@ -51,12 +53,15 @@ export function TraceModelIO({ traceId, eventCount }: { traceId: string; eventCo
     <section className="trace-model-panel" aria-label="模型输出">
       <h2>模型输出</h2>
       <div className="trace-model-scroll" tabIndex={0} role="group" aria-label="按记录顺序排列的输出">
+        {modelRationale && <div className="trace-model-payload trace-model-summary">
+          <h3 className="trace-model-role">本轮改进依据</h3><PreviewText text={modelRationale} />
+        </div>}
         {page?.outputs.length ? <ol className="trace-model-responses">
           {page.outputs.map((event, index) => <li key={event.event_id}>
             <h3>{event.node_name || `第 ${index + 1} 次调用`}</h3>
             {event.model_name && <p className="trace-model-meta">{event.model_name}</p>}
             {event.type === "llm_error" && <p className="trace-model-error">{event.error || "模型调用失败。"}</p>}
-            <ModelPayload value={event.output} toolCalls={event.tool_calls}
+            <ModelPayload value={event.output} toolCalls={event.tool_calls} showSummary
               empty={event.type === "llm_error" ? undefined : "本次调用未保存可读取的输出正文。"} />
           </li>)}
         </ol> : page && !loading && !failed && <p>暂无模型输出。</p>}
@@ -74,30 +79,68 @@ export function TraceModelIO({ traceId, eventCount }: { traceId: string; eventCo
   </div>;
 }
 
-function ModelPayload({ value, toolCalls, showRoles, empty }: { value: unknown; toolCalls?: unknown; showRoles?: boolean; empty?: string }) {
+function ModelPayload({ value, toolCalls, showRoles, showSummary, empty }: {
+  value: unknown; toolCalls?: unknown; showRoles?: boolean; showSummary?: boolean; empty?: string;
+}) {
   const payload = record(value);
   const structured = textOf(payload?.structured_response);
   const messages = payload && "messages" in payload ? payload.messages : structured ? null : value;
-  const items = (Array.isArray(messages) ? messages : [messages]).flatMap(raw => {
+  const items = (Array.isArray(messages) ? messages : [messages]).map(raw => {
     const message = record(raw);
     const role = message?.role ?? message?.type;
-    const content = message && "content" in message ? message.content : raw;
-    const text = Array.isArray(content) ? content.map(block => textOf(record(block)?.text ?? block)).join("\n") : textOf(content);
+    const label = typeof role === "string" ? ROLES.get(role) : undefined;
+    const content = message && "content" in message && (label || role == null) ? message.content : raw;
+    const { text, summary, hasThinking } = modelContent(content);
     const tools = toolNames(message?.tool_calls);
-    return text.trim() || tools.length ? [{ label: typeof role === "string" ? ROLES.get(role) : undefined, text, tools }] : [];
+    return { label, text, summary, hasThinking, tools };
   });
-  const messageTools = new Set(items.flatMap(item => item.tools));
-  const otherTools = toolNames(toolCalls).filter(name => !messageTools.has(name));
-  if (!items.length && !structured && !otherTools.length) return empty ? <p>{empty}</p> : null;
+  const summary = showSummary ? items.flatMap(item => item.summary) : [];
+  const tools = [...new Set([...items.flatMap(item => item.tools), ...toolNames(toolCalls)])];
+  const text = items.filter(item => item.text.trim());
+  const unavailableSummary = showSummary && !summary.length && items.some(item => item.hasThinking);
+  if (!text.length && !summary.length && !structured && !tools.length && !unavailableSummary) {
+    return empty ? <p>{empty}</p> : null;
+  }
   return <div className="trace-model-payload">
-    {items.map(({ label, text, tools }, index) => <div key={index}>
+    {!!summary.length && <div className="trace-model-summary">
+      <p className="trace-model-role">思考摘要</p><PreviewText text={summary.join("\n\n")} />
+    </div>}
+    {unavailableSummary && <p className="trace-model-meta">本次调用没有可读的思考摘要。</p>}
+    {text.map(({ label, text }, index) => <div key={index}>
       {showRoles && label && <p className="trace-model-role">{label}</p>}
-      {text && <PreviewText text={text} />}
-      {!!tools.length && <p className="trace-model-meta">请求调用工具 · {tools.join("、")}</p>}
+      <PreviewText text={text} />
     </div>)}
     {structured && <div><p className="trace-model-role">结构化输出</p><PreviewText text={structured} /></div>}
-    {!!otherTools.length && <p className="trace-model-meta">请求调用工具 · {otherTools.join("、")}</p>}
+    {!!tools.length && <details className="trace-model-tools">
+      <summary>工具调用（{tools.length}）</summary><p>{tools.join("、")}</p>
+    </details>}
   </div>;
+}
+
+function modelContent(content: unknown) {
+  const text: string[] = [];
+  const summary: string[] = [];
+  let hasThinking = false;
+  for (const value of Array.isArray(content) ? content : [content]) {
+    const block = record(value);
+    if (block?.type === "reasoning") {
+      hasThinking = true;
+      if (Array.isArray(block.summary)) {
+        for (const part of block.summary) {
+          const item = record(part);
+          if (item?.type === "summary_text" && typeof item.text === "string" && item.text.trim()) summary.push(item.text);
+        }
+      }
+    } else if (typeof value === "string") {
+      text.push(value);
+    } else if (typeof block?.text === "string"
+      && (block.type == null || block.type === "text" || block.type === "input_text" || block.type === "output_text")) {
+      text.push(block.text);
+    } else if (!Array.isArray(content) && block?.type == null) {
+      text.push(textOf(value));
+    }
+  }
+  return { text: text.join("\n"), summary, hasThinking };
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

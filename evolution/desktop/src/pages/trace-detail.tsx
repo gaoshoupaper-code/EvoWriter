@@ -36,9 +36,9 @@ import { formatTokensW } from "@/lib/tokenFormat";
  * - 点击 LLM 节点的"跳转图表"按钮 → 切到 Token 图表 tab + 高亮 loopIndex
  * - Token 图表点击数据点 → 切到调用链 tab + 高亮 nodeId + 滚动定位
  */
-export default function TraceDetailPage({ traceIdOverride, embedded = false, canReadContent, displayContextOverride, prioritizeModelIO }: {
+export default function TraceDetailPage({ traceIdOverride, embedded = false, canReadContent, displayContextOverride, prioritizeModelIO, modelRationale }: {
   traceIdOverride?: string; embedded?: boolean; canReadContent?: boolean; displayContextOverride?: TraceDisplayContext;
-  prioritizeModelIO?: boolean;
+  prioritizeModelIO?: boolean; modelRationale?: string;
 } = {}) {
   const { traceId: routeTraceId } = useParams<{ traceId: string }>();
   const traceId = traceIdOverride ?? routeTraceId;
@@ -645,7 +645,7 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
   return (
     <div className={"trace-detail-page" + (embedded ? " experiment-embedded-trace" : "")}>
       {showModelIO && traceId ? <>
-        <TraceModelIO key={traceId} traceId={traceId} eventCount={modelEventCount} />
+        <TraceModelIO key={traceId} traceId={traceId} eventCount={modelEventCount} modelRationale={modelRationale} />
         <details className="trace-technical-details" onToggle={event => setTechnicalOpen(event.currentTarget.open)}>
           <summary>运行详情</summary>
           {technicalOpen && technicalDetails}

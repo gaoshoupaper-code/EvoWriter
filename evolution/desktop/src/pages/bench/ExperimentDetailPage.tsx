@@ -131,9 +131,9 @@ export function ExperimentDetailPage({ id, title, anchor, loading, error, retry,
   </div>;
 }
 
-export function ExperimentRecordTrace({ title, experiment, archived = [], live = [], waiting, unavailable, context, prioritizeModelIO }: {
+export function ExperimentRecordTrace({ title, experiment, archived = [], live = [], waiting, unavailable, context, prioritizeModelIO, modelRationale }: {
   title: string; experiment: Experiment; archived?: string[]; live?: ActiveRun[]; waiting?: boolean;
-  unavailable?: boolean; context: TraceDisplayContext; prioritizeModelIO?: boolean;
+  unavailable?: boolean; context: TraceDisplayContext; prioritizeModelIO?: boolean; modelRationale?: string;
 }) {
   const [selected, setSelected] = useState("");
   const traces = [...new Set([...archived, ...live.map(run => run.trace_id)])];
@@ -151,7 +151,7 @@ export function ExperimentRecordTrace({ title, experiment, archived = [], live =
           <select value={traceId} className="config-input" onChange={event => setSelected(event.target.value)}>
             {traces.map((id, i) => <option key={id} value={id}>{prioritizeModelIO ? `第 ${i + 1} 段运行` : `${i + 1} · ${id}`}</option>)}
           </select></label>}
-        <TraceDetailPage key={traceId} traceIdOverride={traceId} embedded canReadContent prioritizeModelIO={prioritizeModelIO}
+        <TraceDetailPage key={traceId} traceIdOverride={traceId} embedded canReadContent prioritizeModelIO={prioritizeModelIO} modelRationale={modelRationale}
           displayContextOverride={traceDisplayContext(trace, context)} />
       </>}
   </section>;

@@ -64,7 +64,13 @@ describe("评测运行的模型输入和输出", () => {
       initial_input: event(2, { type: "llm_start", input: { messages: [
         { type: "system", content: "遵循写作规则" }, { role: "user", content: "写出下一章" },
       ] } }),
-      outputs: [event(3, { output: { messages: [{ type: "ai", content: "读取材料" }] } }),
+      outputs: [event(3, { output: { messages: [{ type: "ai", content: [
+        { type: "reasoning", encrypted_content: "encrypted-provider-data", summary: [
+          { type: "summary_text", text: "先核对章纲中的因果关系。" },
+          { type: "reasoning_text", text: "private-reasoning-text" },
+        ] },
+        { type: "text", text: "读取材料" },
+      ] }] } }),
         event(8, { output: null, tool_calls: [{ name: "read_file" }] })], has_more: true,
     }).mockResolvedValueOnce({ initial_input: null, outputs: [event(12, { output: "最终输出" })], has_more: false });
     mockDetail(detail());
@@ -74,19 +80,40 @@ describe("评测运行的模型输入和输出", () => {
     expect(await within(input).findByText("写出下一章")).toBeVisible();
     expect(within(input).getByText("系统提示词")).toBeVisible();
     const outputs = within(screen.getByRole("region", { name: "模型输出" }));
+    expect(outputs.getByText("思考摘要")).toBeVisible();
+    expect(outputs.getByText("先核对章纲中的因果关系。")).toBeVisible();
     expect(outputs.getByText("读取材料")).toBeVisible();
-    expect(outputs.getByText("请求调用工具 · read_file")).toBeVisible();
+    expect(outputs.queryByText(/encrypted-provider-data|private-reasoning-text/)).not.toBeInTheDocument();
+    expect(outputs.getByText("read_file")).not.toBeVisible();
+    fireEvent.click(outputs.getByText("工具调用（1）"));
+    expect(outputs.getByText("read_file")).toBeVisible();
     expect(screen.queryByRole("button", { name: "调用链" })).not.toBeInTheDocument();
 
     fireEvent.click(outputs.getByRole("button", { name: "加载更多输出" }));
     expect(await outputs.findByText("最终输出")).toBeVisible();
     expect(getTraceModelIO).toHaveBeenLastCalledWith("trace-metrics", 8, false);
-    expect(outputs.getAllByRole("listitem").map(item => item.textContent)).toEqual([
-      "第 1 次调用读取材料", "第 2 次调用请求调用工具 · read_file", "第 3 次调用最终输出",
+    expect(outputs.getAllByRole("heading", { level: 3 }).map(item => item.textContent)).toEqual([
+      "第 1 次调用", "第 2 次调用", "第 3 次调用",
     ]);
 
     fireEvent.click(screen.getByText("运行详情"));
     expect(await screen.findByRole("button", { name: "调用链" })).toBeVisible();
+  });
+
+  it("用已有改进依据解释历史操作，空摘要不会显示加密内容", async () => {
+    mockDetail(detail());
+    vi.mocked(getTraceModelIO).mockResolvedValueOnce({ initial_input: null, has_more: false, outputs: [{
+      trace_id: "trace-metrics", event_id: "model-old", timestamp: "2026-11-21T00:00:00Z", sequence: 3,
+      type: "llm_end", status: "completed", source: "middleware",
+      output: { messages: [{ type: "reasoning", summary: [], content: "private-reasoning-text", encrypted_content: "ciphertext" }] },
+      tool_calls: [{ name: "write_design_doc" }],
+    }] });
+    render(<TraceDetailPage prioritizeModelIO modelRationale="关键选择没有体现替代行动。" />);
+    const output = within(screen.getByRole("region", { name: "模型输出" }));
+    expect(output.getByText("本轮改进依据")).toBeVisible();
+    expect(output.getByText("关键选择没有体现替代行动。")).toBeVisible();
+    expect(await output.findByText("本次调用没有可读的思考摘要。")).toBeVisible();
+    expect(output.queryByText(/ciphertext|private-reasoning-text/)).not.toBeInTheDocument();
   });
 
   it("正文权限缺失时不加载模型输入和输出", () => {
@@ -101,7 +128,9 @@ describe("评测运行的模型输入和输出", () => {
       .mockResolvedValueOnce({ initial_input: null, outputs: [], has_more: false })
       .mockResolvedValueOnce({ initial_input: null, has_more: false, outputs: [{
         trace_id: "trace-metrics", event_id: "model-3", timestamp: "2026-11-21T00:00:00Z", sequence: 3,
-        type: "llm_end", status: "completed", source: "middleware", output: "模型刚完成的回复",
+        type: "llm_end", status: "completed", source: "middleware", output: { messages: [
+          { type: "ai", content: [{ type: "reasoning", summary: [{ type: "summary_text", text: "模型刚返回的思考摘要" }] }] },
+        ] },
       }] });
     const snapshot = detail();
     mockDetail(snapshot);
@@ -111,7 +140,7 @@ describe("评测运行的模型输入和输出", () => {
       node_id: "llm:model-2", kind: "llm", label: "模型调用", depth: 0, status: "completed", raw_event_ids: ["model-2", "model-3"],
     }] });
     page.rerender(<TraceDetailPage prioritizeModelIO />);
-    expect(await screen.findByText("模型刚完成的回复")).toBeVisible();
+    expect(await screen.findByText("模型刚返回的思考摘要")).toBeVisible();
   });
 });
 

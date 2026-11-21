@@ -47,6 +47,19 @@
   white-space: pre-wrap;
 }
 
+.trace-model-summary {
+  padding-left: 10px;
+  border-left: 2px solid var(--evo-accent);
+}
+
+.trace-model-tools {
+  color: var(--evo-ink-secondary);
+  font-size: var(--text-ui-caption);
+}
+
+.trace-model-tools > summary { width: fit-content; cursor: pointer; }
+.trace-model-tools > p { padding-top: 4px; }
+
 .trace-model-expand {
   background: none;
   border: 0;

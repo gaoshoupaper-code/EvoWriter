@@ -1,6 +1,6 @@
 /** 评测共享能力回归与旧版入口退役验证。旧批次页面行为由新实验观测测试接替。 */
 import { render, screen, fireEvent, waitFor, within } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { HashRouter, MemoryRouter, Route, Routes } from "react-router-dom";
 import { beforeEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 // ── api mock（vi.mock 工厂被提升，内部不能引用顶层变量；此处只定义 mock 函数，
@@ -45,6 +45,7 @@ import BatchDetail from "@/pages/bench/BatchDetail";
 import Rules from "@/pages/bench/Rules";
 import Dataset from "@/pages/bench/Dataset";
 import Artifacts from "@/pages/bench/Artifacts";
+import JudgeGroupPage, { JudgeGroupPanel } from "@/pages/config/JudgeGroupPage";
 
 const api = vi.mocked(apiModule);
 
@@ -103,6 +104,7 @@ describe("Shell 导航（AC-001）", () => {
     }
     // 系统资产分组下不再有旧「数据集」项；质量闭环下不再有旧「评测」项
     const nav = document.querySelector(".shell-nav")!;
+    expect(within(nav as HTMLElement).queryByRole("link", { name: "评测组" })).not.toBeInTheDocument();
     const sysAssets = [...nav.querySelectorAll(".shell-nav-group")]
       .find((g) => g.textContent?.includes("系统资产"))!;
     expect(sysAssets.textContent).not.toContain("数据集");
@@ -200,8 +202,6 @@ describe("维度卡组评分（AC-006/007）", () => {
 
 describe("评测组页（AC-001）", () => {
   it("列表渲染组与成员；无组时引导创建", async () => {
-    const judgeGroupModule = await import("@/pages/config/JudgeGroupPage");
-    const JudgeGroupPage = judgeGroupModule.default;
     api.listJudgeGroups.mockResolvedValue({ groups: [] });
     api.listJudgeCandidates.mockResolvedValue({
       judges: [
@@ -212,7 +212,7 @@ describe("评测组页（AC-001）", () => {
     });
     render(
       <MemoryRouter>
-        <JudgeGroupPage />
+        <JudgeGroupPanel />
       </MemoryRouter>,
     );
     expect(await screen.findByText(/还没有评测组/)).toBeInTheDocument();
@@ -247,9 +247,8 @@ describe("评测组页（AC-001）", () => {
     const previousHash = window.location.hash;
     window.location.hash = "#/config/judge-groups?agent=text";
     try {
-      const { default: JudgeGroupPage } = await import("@/pages/config/JudgeGroupPage");
       api.updateJudgeGroup.mockResolvedValue({ status: "updated" });
-      render(<MemoryRouter><JudgeGroupPage /></MemoryRouter>);
+      render(<MemoryRouter><JudgeGroupPanel /></MemoryRouter>);
 
       fireEvent.click(await screen.findByRole("button", { name: "编辑" }));
       const repeats = screen.getByLabelText("每个模型评分次数");
@@ -261,6 +260,63 @@ describe("评测组页（AC-001）", () => {
       await waitFor(() => expect(api.updateJudgeGroup).toHaveBeenCalledWith(1, {
         name: "评审团", member_config_ids: [11], score_repeats: 1,
       }));
+    } finally {
+      window.location.hash = previousHash;
+    }
+  });
+});
+
+describe("评测规则内的评测组", () => {
+  function renderRoutes() {
+    return render(<HashRouter><Routes><Route element={<Shell />}>
+      <Route path="/bench/rules" element={<Rules />} />
+      <Route path="/config/judge-groups" element={<JudgeGroupPage />} />
+    </Route></Routes></HashRouter>);
+  }
+
+  it("评测组标签和评分规则共用选择，切换 Agent 保留标签", async () => {
+    const previousHash = window.location.hash;
+    window.location.hash = "#/bench/rules?agent=text";
+    try {
+      renderRoutes();
+      expect(await screen.findByRole("tab", { name: "评分规则" })).toHaveAttribute("aria-selected", "true");
+      expect(api.listJudgeGroups).not.toHaveBeenCalled();
+      fireEvent.mouseDown(screen.getByRole("tab", { name: "评测组" }), { button: 0 });
+      expect(await screen.findByText("每个模型评 3 次")).toBeInTheDocument();
+      const selector = screen.getByRole("navigation", { name: "评测对象" });
+      expect(within(selector).getByRole("link", { name: "正文" })).toHaveAttribute("aria-current", "true");
+      fireEvent.click(within(selector).getByRole("link", { name: "卷纲" }));
+      await waitFor(() => expect(window.location.hash).toContain("agent=volume"));
+      expect(screen.getByRole("tab", { name: "评测组" })).toHaveAttribute("aria-selected", "true");
+      expect(screen.queryByText("每个模型评 3 次")).not.toBeInTheDocument();
+    } finally {
+      window.location.hash = previousHash;
+    }
+  });
+
+  it("旧入口保留 Agent 并转到评测组标签", async () => {
+    const previousHash = window.location.hash;
+    window.location.hash = "#/config/judge-groups?agent=text";
+    try {
+      renderRoutes();
+      expect(await screen.findByRole("tab", { name: "评测组" })).toHaveAttribute("aria-selected", "true");
+      expect(await screen.findByText("每个模型评 3 次")).toBeInTheDocument();
+      expect(window.location.hash).toMatch(/^#\/bench\/rules\?/);
+    } finally {
+      window.location.hash = previousHash;
+    }
+  });
+
+  it("普通账号打开评测组地址时只加载评分规则", async () => {
+    api.fetchMeOrNull.mockResolvedValue({ user_id: "u2", username: "reader", is_admin: false,
+      is_super_admin: false, has_api_key: false });
+    const previousHash = window.location.hash;
+    window.location.hash = "#/bench/rules?agent=text&tab=judge-groups";
+    try {
+      renderRoutes();
+      expect(await screen.findByRole("heading", { name: "本套评分规则" })).toBeInTheDocument();
+      expect(screen.queryByRole("tab", { name: "评测组" })).not.toBeInTheDocument();
+      expect(api.listJudgeGroups).not.toHaveBeenCalled();
     } finally {
       window.location.hash = previousHash;
     }

@@ -1,5 +1,5 @@
-import PageAgentSelector from "@/components/PageAgentSelector";
 import { useCallback, useEffect, useState } from "react";
+import { Navigate, useLocation } from "react-router-dom";
 import { toast } from "sonner";
 import {
   listJudgeCandidates,
@@ -11,7 +11,7 @@ import {
   type JudgeGroupInfo,
 } from "@/lib/api";
 import { DEFAULT_JUDGE_REPEATS } from "@/lib/experiment-types";
-import { currentTask } from "@/lib/writing-agent";
+import { currentTask, pageAgent } from "@/lib/writing-agent";
 
 /**
  * 评测组配置页（REQ-20260930-162207/FR-001/DEC-001、004、010、011）。
@@ -36,6 +36,14 @@ const MIN_MEMBERS = 1;
 const MAX_MEMBERS = 5;
 
 export default function JudgeGroupPage() {
+  const { search, hash, state } = useLocation();
+  const query = new URLSearchParams(search);
+  query.set("tab", "judge-groups");
+  query.set("agent", pageAgent("models", search));
+  return <Navigate to={`/bench/rules?${query}${hash}`} replace state={state} />;
+}
+
+export function JudgeGroupPanel() {
   const chapterText = currentTask() === "chapter_text";
   const [groups, setGroups] = useState<JudgeGroupInfo[]>([]);
   const [candidates, setCandidates] = useState<JudgeCandidate[]>([]);
@@ -125,16 +133,14 @@ export default function JudgeGroupPage() {
   const byId = new Map(candidates.map((c) => [c.config_id, c]));
 
   return (
-    <div className="config-page">
+    <section className="config-page">
       <header className="page-header">
-        <h1>评测组</h1>
+        <h2>评测组</h2>
         <p className="page-desc">
           {chapterText ? "每组选择 1～5 个评测模型。各模型按相同次数评同一份成稿，评齐后汇总。" :
             "由 1~5 个 judge 模型组成的评审团：每行评分按维度取成员均分（1 位小数），同维成功 ≥2 才出分。1 人组等价于旧的单 judge 评测。"}
         </p>
       </header>
-      <PageAgentSelector />
-
       <div className="config-toolbar">
         <button
           className="config-button primary"
@@ -256,6 +262,6 @@ export default function JudgeGroupPage() {
           ))
         )}
       </section>
-    </div>
+    </section>
   );
 }

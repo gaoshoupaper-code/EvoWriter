@@ -13,7 +13,6 @@ import {
   PenTool,
   ScrollText,
   ShieldCheck,
-  Users,
   Wrench,
   type LucideIcon } from "lucide-react";
 import { fetchMeOrNull, logout, type AuthMe } from "@/lib/api";
@@ -72,7 +71,6 @@ const NAV_GROUPS: NavGroup[] = [
 const SUPER_ADMIN_NAV_ITEMS: NavItem[] = [
   { to: "/config/evolution", label: "进化端模型", end: false, icon: BrainCircuit },
   { to: "/config/executor", label: "执行端模型", end: false, icon: PenTool },
-  { to: "/config/judge-groups", label: "评测组", end: false, icon: Users },
   { to: "/admin", label: "管理后台", end: false, icon: ShieldCheck },
 ];
 

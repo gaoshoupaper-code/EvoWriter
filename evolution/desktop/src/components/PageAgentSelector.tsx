@@ -9,7 +9,7 @@ export const PageAgentContext = createContext<{
   returnTo: string;
 } | null>(null);
 
-export default function PageAgentSelector() {
+export default function PageAgentSelector({ switchPath }: { switchPath?: string } = {}) {
   const scope = useContext(PageAgentContext);
   if (!scope?.area || !scope.agent) return null;
   const label = AREA_LABELS[scope.area];
@@ -17,7 +17,7 @@ export default function PageAgentSelector() {
     <nav className="page-agent-nav" aria-label={label}>
       <span>{label}</span>
       {(Object.keys(WRITING_AGENTS) as WritingAgent[]).map(key => (
-        <Link key={key} to={key === scope.agent ? scope.returnTo : switchAgentPath(scope.pathname, key)} aria-current={key === scope.agent ? "true" : undefined}>
+        <Link key={key} to={key === scope.agent ? scope.returnTo : switchAgentPath(switchPath ?? scope.pathname, key)} aria-current={key === scope.agent ? "true" : undefined}>
           {WRITING_AGENTS[key].name}
         </Link>
       ))}

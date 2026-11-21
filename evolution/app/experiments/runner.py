@@ -13,6 +13,7 @@ from app.experiments.schemas import PackageCreate, RunCreate, TASK_TYPES
 from contracts.target_tasks import configured_task_type
 
 ACTIVE = {"pending", "running", "recovering", "stopping"}
+_GENERATION_RETRY_LIMIT = 3
 _SCORING_FAILURE_LIMIT = 3
 _workers: dict[str, threading.Thread] = {}
 _stops: dict[str, threading.Event] = {}
@@ -291,8 +292,32 @@ def _stop_incomplete_phase(run: dict, samples: list[dict], package_ids: list[str
 
 
 def _run_pending(run: dict, samples: list[dict]) -> bool:
+    generation_failures = [sample for sample in samples
+                           if sample["status"] == "failed" and sample.get("generation_status") == "failed"]
+    retryable = [sample for sample in generation_failures if sample.get("attempt", 1) <= _GENERATION_RETRY_LIMIT]
     pending = [sample for sample in samples if sample["status"] not in {"completed", "failed", "stopped"}]
+    if retryable:
+        sample = retryable[0]
+        attempt = sample.get("attempt", 1) + 1
+        if sample.get("request_saved"):
+            usage = sample.setdefault("usage", {})
+            sample.setdefault("generation_retries", []).append({
+                "trace_ids": sample.get("trace_ids", []), "usage": usage.pop("generation", {}),
+            })
+        sample.update(attempt=attempt, task_id=f"{sample['id']}-a{attempt}", status="pending", request_saved=False,
+                      trace_ids=[], checks={}, artifacts={}, execution_phase=None, error=None)
+        sample.pop("generation_status", None)
+        repo.event(run, "generation_retry", f"{sample['package_title']}：生成失败，开始第 {attempt - 1} 次重试。")
+        repo.put_run(run)
+        process_sample(run, sample)
+        return True
     if not pending:
+        if generation_failures:
+            reason = f"必做样本生成失败，已用完 {_GENERATION_RETRY_LIMIT} 次重试。"
+            if run["rounds"]:
+                run["rounds"][-1].update(status="generation_failed", error=reason)
+            _finish(run, "failed", reason)
+            return True
         return False
     # A judging outage must not keep other samples from generating.
     pending.sort(key=lambda sample: sample["status"] == "evaluation_error")

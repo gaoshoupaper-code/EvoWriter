@@ -416,35 +416,80 @@ class ExperimentLifecycleTest(DatabaseTest):
         self.assertEqual(improve.call_count, 1)
 
     def test_real_runner_retains_failed_sample_then_runs_the_next_one(self):
-        from app.experiments import repo, runner
+        from app.experiments import api, repo, runner
         run = self.create_experiment(second_optimization=True)
         first_id = run["settings"]["optimization_ids"][0]
         first_demand = run["private"]["packages"][first_id]["input"]["demand_md"]
+        failed_requests = []
         def task(payload):
             result = self.completed_task(payload)
             if payload["source_commit"] == "b" * 40 and payload["input"]["demand_md"] == first_demand:
+                failed_requests.append(payload)
                 result.update(status="failed", completed=False, error="样本业务失败",
-                              artifacts={"主题.md": "失败现场仍在"})
+                              artifacts={"主题.md": "失败现场仍在"}, usage={"total_tokens": 12})
             return result
         def score(_run, sample):
             return {"overall": 4.0 if sample["arm"] == "candidate" else 3.0, "dimensions": {}, "reasons": {}}
         with patch("app.experiments.clients.start_task", side_effect=task), \
              patch("app.experiments.evaluation.score_sample", side_effect=score), \
-             patch("app.experiments.agent.improve_candidate", return_value={"commit": "b" * 40, "digest": "2" * 64, "summary": "改动", "diff": "+修复"}):
+             patch("app.experiments.agent.improve_candidate", return_value={"commit": "b" * 40, "digest": "2" * 64, "summary": "改动", "diff": "+修复"}) as improve:
             for _ in range(15):
                 runner.advance_one(run["id"])
-                actual = repo.get_run(run["id"])
-                if actual["report"].get("exploration"):
-                    break
+        actual = repo.get_run(run["id"])
         candidates = [sample for sample in actual["samples"] if sample["phase"] == "exploration"]
         self.assertEqual([sample["status"] for sample in candidates], ["failed", "completed"])
         self.assertEqual(candidates[0]["artifacts"], {"主题.md": "失败现场仍在"})
         self.assertTrue(candidates[0]["trace_ids"])
-        report = actual["report"]["exploration"]
-        self.assertEqual(report["candidate"]["total"], 2)
-        self.assertEqual(report["candidate"]["completion_rate"], .5)
-        self.assertEqual(report["new_failures"], [first_id])
-        self.assertFalse(report["passed"])
+        self.assertEqual(candidates[0]["attempt"], 4)
+        sample_id = candidates[0]["id"]
+        self.assertEqual([payload["task_id"] for payload in failed_requests],
+                         [sample_id, *[f"{sample_id}-a{attempt}" for attempt in (2, 3, 4)]])
+        for payload in failed_requests[1:]:
+            for key in ("source_commit", "artifact_digest", "model_snapshot", "input", "target"):
+                self.assertEqual(payload[key], failed_requests[0][key])
+        self.assertEqual(actual["status"], "failed")
+        self.assertEqual(actual["phase"], "exploration")
+        self.assertEqual(actual["current_round"], 1)
+        self.assertEqual(actual["rounds"][0]["status"], "generation_failed")
+        self.assertIn("3 次重试", actual["end_reason"])
+        self.assertNotIn("exploration", actual["report"])
+        generation = api._usage(actual)["generation"]
+        self.assertEqual((generation["calls"], generation["failed_calls"], generation["total_tokens"]), (7, 4, 48))
+        public = api.public_run(actual, can_read_content=True)
+        failed_sample = next(sample for sample in public["samples"] if sample["id"] == sample_id)
+        self.assertEqual(failed_sample["trace_ids"], ["trace-" + payload["task_id"] for payload in reversed(failed_requests)])
+        improve.assert_called_once()
+
+    def test_generation_retry_recovers_the_new_task_and_scores_the_same_sample(self):
+        from app.experiments import clients, repo, runner
+        run = self.create_experiment()
+        before = run["samples"][0]
+        failed = {"status": "failed", "completed": False, "error": "写作失败"}
+        with patch.object(clients, "start_task", return_value=failed), \
+             patch("app.experiments.evaluation.score_sample") as score:
+            runner.advance_one(run["id"])
+        score.assert_not_called()
+        with patch.object(clients, "start_task", side_effect=clients.ServiceUnavailable("响应丢失")) as retry:
+            runner.advance_one(run["id"])
+        payload = retry.call_args.args[0]
+        self.assertEqual(payload["task_id"], f"{before['id']}-a2")
+        recovering = repo.get_run(run["id"])
+        self.assertEqual(recovering["status"], "recovering")
+        self.assertTrue(recovering["samples"][0]["request_saved"])
+        with patch.object(clients, "get_task", return_value=self.completed_task(payload)) as lookup, \
+             patch.object(clients, "start_task") as duplicate, \
+             patch("app.experiments.evaluation.score_sample", return_value={"overall": 3.0}) as score:
+            runner.advance_one(run["id"])
+        lookup.assert_called_once_with(payload["task_id"])
+        duplicate.assert_not_called()
+        score.assert_called_once()
+        actual = repo.get_run(run["id"])
+        self.assertEqual((actual["phase"], actual["current_round"]), ("baseline", 0))
+        self.assertEqual(len(actual["samples"]), 1)
+        sample = actual["samples"][0]
+        self.assertEqual((sample["id"], sample["repeat"], sample["attempt"], sample["status"]),
+                         (before["id"], before["repeat"], 2, "completed"))
+        self.assertIsNone(sample["error"])
 
     def test_ambiguous_dispatch_reconciles_task_before_retrying(self):
         from app.experiments import clients, repo, runner

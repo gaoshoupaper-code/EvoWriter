@@ -13,10 +13,15 @@ from app.platform.trace.recorder import TraceRecorder
 from app.schemas.screenplay import ThreadSummary
 
 
-@pytest.mark.parametrize("review_kind", ["stage", "batch"])
-def test_four_volume_confirmations_are_recorded_and_continue(tmp_path, review_kind):
+@pytest.mark.parametrize(("review_kind", "attempt"), [("stage", 1), ("batch", 1), ("stage", 2)])
+def test_four_volume_confirmations_are_recorded_and_continue(tmp_path, review_kind, attempt):
+    sample_id = "sample-" + "1" * 32
+    attempt_id = f"{sample_id}-a{attempt}"
     request = TargetTaskRequest(
-        task_id="confirm-four", attempt_id="first", source_commit="a" * 40,
+        task_id=sample_id if attempt == 1 else attempt_id,
+        attempt_id=attempt_id, source_commit="a" * 40,
+        model_snapshot={"model": "test", "base_url": "https://model.invalid/v1",
+                        "api_key_ref": "experiment:confirm-four:model"},
         target={"task_type": "chapter_outlines", "volume_ids": [1, 2, 3, 4]},
         input={"confirmation_rules": "按既定需求确认，继续下一卷", "files": {
             "主题.md": "主题", "总纲.md": "总纲", "文风.md": "文风",
@@ -51,6 +56,11 @@ def test_four_volume_confirmations_are_recorded_and_continue(tmp_path, review_ki
     trace_ids = store.get(request.task_id).trace_ids
     assert len(trace_ids) == 4
     for trace_id in trace_ids:
+        refs = recorder.find_run_by_trace_id(trace_id).external_refs
+        assert refs["experiment_id"] == "confirm-four"
+        assert refs["sample_id"] == sample_id
+        assert refs["task_id"] == request.task_id
+        assert refs["attempt_id"] == attempt_id
         events = recorder.read_trace_events(trace_id, hydrate_payloads=True)
         confirmations = [event for event in events if event.type == "run_meta"
                          and (event.input or {}).get("target_confirmation")]

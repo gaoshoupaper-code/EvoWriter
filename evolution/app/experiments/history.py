@@ -165,8 +165,10 @@ def make_history_tools(run: dict) -> list:
         checks = sample.get("checks") or {}
         identity = checks.get("identity") or {}
         workspace = f"target-{task_id}"
+        attempt = sample.get("attempt", 1)
+        expected_task = f"{sample['id']}-a{attempt}" if attempt > 1 else sample["id"]
         if (snapshot.keys() - {"display_context"} or row["integrity_status"] != "incomplete"
-                or run["task_type"] != "chapter_text" or sample["id"] != task_id
+                or run["task_type"] != "chapter_text" or task_id != expected_task
                 or sample.get("generation_status") != "completed" or sample.get("completed") is not True
                 or checks.get("complete") is not True or row["run_purpose"] != "optimization"
                 or row["workspace_id"] != workspace or row["thread_id"] != f"{workspace}-1"

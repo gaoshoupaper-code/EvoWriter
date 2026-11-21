@@ -597,7 +597,10 @@ async def drive_task(request, workspace, service, thread, execution, store):
         reference = request.model_snapshot.api_key_ref if request.model_snapshot else None
         match = re.fullmatch(r"experiment:([A-Za-z0-9_-]+):model", reference or "")
         if match:
-            refs.update(experiment_id=match[1], sample_id=request.task_id)
+            # A retry has a separate executor workspace but belongs to the original experiment sample.
+            retry = re.fullmatch(r"(sample-[0-9a-f]{32})-a(?:[2-9]|[1-9][0-9]+)", task_id)
+            sample_id = retry[1] if retry and task_id == request.attempt_id else task_id
+            refs.update(experiment_id=match[1], sample_id=sample_id)
         with execution, observation_context(refs):
             async for frame in service.generate_stream(
                 payload, current_thread, owner_id=current_thread.user_id,

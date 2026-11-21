@@ -65,9 +65,15 @@ def _usage_group(records) -> dict:
 
 
 def _usage(run: dict) -> dict:
-    generation = _usage_group((sample.get("usage", {}).get("generation", {}),
-                               sample.get("generation_status") or sample.get("status"))
-                              for sample in run.get("samples", []) if sample.get("request_saved"))
+    def generation_records():
+        for sample in run.get("samples", []):
+            usage = sample.get("usage", {})
+            for retry in sample.get("generation_retries", []):
+                yield retry["usage"], "failed"
+            if sample.get("request_saved"):
+                yield usage.get("generation", {}), sample.get("generation_status") or sample.get("status")
+
+    generation = _usage_group(generation_records())
     evaluation = _usage_group((attempt.get("usage"), attempt.get("status"))
                               for sample in run.get("samples", [])
                               for attempt in sample.get("usage", {}).get("judge_attempts", []))
@@ -92,7 +98,13 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
             if key not in {"work_root", "frozen_candidate"}}) for round_ in run.get("rounds", [])]
         value["samples"] = []
         for sample in run.get("samples", []):
-            public = {key: item for key, item in sample.items() if key not in {"judge_results", "judge_errors", "usage"}}
+            public = {key: item for key, item in sample.items()
+                      if key not in {"judge_results", "judge_errors", "usage", "generation_retries"}}
+            if sample.get("generation_retries"):
+                public["trace_ids"] = list(dict.fromkeys([
+                    *sample.get("trace_ids", []),
+                    *(trace_id for retry in reversed(sample["generation_retries"]) for trace_id in retry["trace_ids"]),
+                ]))
             public["usage"] = {key: item for key, item in sample.get("usage", {}).items() if key != "judge_attempts"}
             if "judge_repeats" in run and sample.get("completed") and sample.get("scores") is None:
                 progress = evaluation.score_progress(run, sample)
@@ -101,7 +113,7 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
                 public["score_progress"] = progress
             value["samples"].append(copy.deepcopy(public))
         value["usage"] = _usage(run)
-        trace_ids = [trace_id for sample in run.get("samples", [])
+        trace_ids = [trace_id for sample in value["samples"]
                      for key in ("trace_ids", "evaluation_trace_ids") for trace_id in sample.get(key, [])]
         trace_ids.extend(trace_id for round_ in run.get("rounds", []) for trace_id in round_.get("trace_ids", []))
         value["trace_runs"] = trace_run_views(trace_ids)

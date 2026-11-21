@@ -100,20 +100,30 @@ def _evidence_issue(citation: str, sources: dict[str, str], numbered_lines: list
             return None
         return f"正文第 {number} 行找不到连续原文"
 
-    path, colon, line = citation.rpartition(":")
+    path, colon, position_and_quote = citation.partition(":")
     if colon and (path in sources or path.endswith(".md")):
         if path not in sources:
             return "文件路径不存在"
-        position = re.fullmatch(r"([1-9][0-9]*)(?:-([1-9][0-9]*))?", line)
+        position = re.fullmatch(
+            r"([1-9][0-9]*)(?:-([1-9][0-9]*))?(?:[:：][ \t]*(.+))?",
+            position_and_quote, flags=re.DOTALL,
+        )
         if not position:
             return "行号须为正整数，范围格式为起始行-结束行"
-        first, last = position.groups()
+        first, last, quote = position.groups()
         last = last or first
-        line_count = len(sources[path].splitlines())
+        lines = sources[path].splitlines()
+        line_count = len(lines)
         if not _line_exists(first, line_count) or not _line_exists(last, line_count):
             return "行号超出文件范围"
         if int(first) > int(last):
             return "起始行不得大于结束行"
+        if quote is not None:
+            cited_lines = lines[int(first) - 1:int(last)]
+            if not _quote_in(quote, "\n".join(cited_lines)) and not (
+                " / " in quote and _quote_in(quote, " / ".join(line for line in cited_lines if line.strip()))
+            ):
+                return "指定行号范围内找不到连续原文"
         return None
 
     if any(_quote_in(citation, text) for text in sources.values()):
@@ -293,8 +303,9 @@ def score_sample(run: dict, sample: dict) -> dict:
         }}
     user_message = {"role": "user", "content": json.dumps(judge_material, ensure_ascii=False)}
     output_format = ('只输出 JSON：{"score": 1到5的整数, "reason": "一段定档理由，说明为何符合本档和相邻档差异", '
-                     '"evidence": ["正文原句、行号: 正文原句，或文件路径:行号"]}。'
-                     '带编号的原句须与该正文行逐字对应。跨行位置可填写文件路径:起始行-结束行。'
+                     '"evidence": ["文件路径:行号"]}。'
+                     '评分依据优先填写文件路径:行号或文件路径:起始行-结束行。带路径的条目到行号为止。'
+                     '引文可写在定档理由里，也可单独占一条评分依据，格式为正文原句或行号: 正文原句。'
                      '每项至少给一条正文依据。判定漏写时可另逐字引用章纲要求。'
                      if repeats is not None else
                      '只输出JSON：{"score":1到5的整数,"达标":["引用原文的证据"],"不足":["引用原文的缺陷"]}。')

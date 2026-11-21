@@ -359,6 +359,15 @@ def test_quote_equivalence_preserves_meaning_and_requires_every_citation(citatio
     ("正文/第001章.md:0-2", False),
     ("正文/第001章.md:1-4", False),
     ("正文/第999章.md:1-3", False),
+    ("正文/第001章.md:1: 她说“不能开门”。", True),
+    ("正文/第001章.md:3：见 memo.md: 记录", True),
+    ("正文/第001章.md:1-3: 她说“不能开门”。 / 他把钥匙收好。", True),
+    ("正文/第001章.md:1-3: 她说“不能开门”。\n\n他把钥匙收好。", True),
+    ("正文/第001章.md:1：他把钥匙收好。", False),
+    ("正文/第001章.md:1-2: 她说“不能开门”。 / 他把钥匙收好。", False),
+    ("正文/第001章.md:1-3: 她说“能开门”。 / 他把钥匙收好。", False),
+    ("正文/第001章.md:1-3: 她说“不能开门”。……他把钥匙收好。", False),
+    ("正文/第001章.md:1:", False),
 ])
 def test_numbered_quote_and_line_range_require_the_declared_source(citation, accepted):
     material = {
@@ -395,6 +404,7 @@ def test_retry_uses_saved_evidence_feedback_only_for_the_failed_scoring_item(cha
     instructions, scoring_input = calls[0]["messages"]
     assert "行号: 正文原句" in instructions["content"]
     assert "文件路径:起始行-结束行" in instructions["content"]
+    assert "带路径的条目到行号为止" in instructions["content"]
     first_material = json.loads(scoring_input["content"])
     assert first_material["artifacts"][manuscript] == "1: 门开了。\n2: \n3: 她在门边停下，听清脚步后才出门。"
 

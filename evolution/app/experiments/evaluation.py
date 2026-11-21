@@ -78,22 +78,45 @@ class _InvalidEvidence(ValueError):
         self.details = details
 
 
-def _evidence_issue(citation: str, sources: dict[str, str]) -> str | None:
+def _quote_in(quote: str, text: str) -> bool:
+    quote = quote.strip().strip('“”「」"').strip()
+    return bool(quote) and (
+        quote in text or quote.translate(_EVIDENCE_QUOTES) in text.translate(_EVIDENCE_QUOTES)
+    )
+
+
+def _line_exists(number: str, line_count: int) -> bool:
+    return len(number) <= len(str(line_count)) and int(number) <= line_count
+
+
+def _evidence_issue(citation: str, sources: dict[str, str], numbered_lines: list[str] | None = None) -> str | None:
     citation = citation.strip().strip('“”「」"').strip()
+    numbered_quote = re.fullmatch(r"([1-9][0-9]*):[ \t]+(.+)", citation)
+    if numbered_quote and numbered_lines is not None:
+        number, quote = numbered_quote.groups()
+        if not _line_exists(number, len(numbered_lines)):
+            return "行号超出正文范围"
+        if _quote_in(quote, numbered_lines[int(number) - 1]):
+            return None
+        return f"正文第 {number} 行找不到连续原文"
+
     path, colon, line = citation.rpartition(":")
     if colon and (path in sources or path.endswith(".md")):
         if path not in sources:
             return "文件路径不存在"
-        if not re.fullmatch(r"[1-9][0-9]*", line):
-            return "行号须为正整数"
+        position = re.fullmatch(r"([1-9][0-9]*)(?:-([1-9][0-9]*))?", line)
+        if not position:
+            return "行号须为正整数，范围格式为起始行-结束行"
+        first, last = position.groups()
+        last = last or first
         line_count = len(sources[path].splitlines())
-        if len(line) > len(str(line_count)) or int(line) > line_count:
+        if not _line_exists(first, line_count) or not _line_exists(last, line_count):
             return "行号超出文件范围"
+        if int(first) > int(last):
+            return "起始行不得大于结束行"
         return None
-    if citation and any(citation in text for text in sources.values()):
-        return None
-    normalized = citation.translate(_EVIDENCE_QUOTES)
-    if normalized and any(normalized in text.translate(_EVIDENCE_QUOTES) for text in sources.values()):
+
+    if any(_quote_in(citation, text) for text in sources.values()):
         return None
     return "找不到连续原文"
 
@@ -116,12 +139,13 @@ def _judgement(raw: str, dimension: str, *, material: dict | None = None) -> dic
             raise ValueError("缺少可核对的评分依据")
         manuscript = material["artifacts"]
         sources = {**material["input"]["files"], **manuscript}
+        numbered_lines = next(iter(manuscript.values())).splitlines() if len(manuscript) == 1 else None
         issues = [
             {"index": index, "citation": item[:160], "reason": issue}
             for index, item in enumerate(evidence, 1)
-            if (issue := _evidence_issue(item, sources)) is not None
+            if (issue := _evidence_issue(item, sources, numbered_lines)) is not None
         ]
-        if not any(_evidence_issue(item, manuscript) is None for item in evidence):
+        if not any(_evidence_issue(item, manuscript, numbered_lines) is None for item in evidence):
             issues.append({"reason": "缺少本章最终正文依据"})
         if issues:
             raise _InvalidEvidence(issues)
@@ -269,8 +293,8 @@ def score_sample(run: dict, sample: dict) -> dict:
         }}
     user_message = {"role": "user", "content": json.dumps(judge_material, ensure_ascii=False)}
     output_format = ('只输出 JSON：{"score": 1到5的整数, "reason": "一段定档理由，说明为何符合本档和相邻档差异", '
-                     '"evidence": ["逐字引用正文短句，或填写正文文件路径:行号"]}。'
-                     '正文每行开头的编号是行号，逐字引用时复制编号后的原文。'
+                     '"evidence": ["正文原句、行号: 正文原句，或文件路径:行号"]}。'
+                     '带编号的原句须与该正文行逐字对应。跨行位置可填写文件路径:起始行-结束行。'
                      '每项至少给一条正文依据。判定漏写时可另逐字引用章纲要求。'
                      if repeats is not None else
                      '只输出JSON：{"score":1到5的整数,"达标":["引用原文的证据"],"不足":["引用原文的缺陷"]}。')

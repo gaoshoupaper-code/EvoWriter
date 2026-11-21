@@ -342,6 +342,38 @@ def test_quote_equivalence_preserves_meaning_and_requires_every_citation(citatio
             evaluation._judgement(raw, "剧情逻辑", material=material)
 
 
+@pytest.mark.parametrize(("citation", "accepted"), [
+    ("1: 她说“不能开门”。", True),
+    ("3: 钥匙收好", True),
+    ("3: 见 memo.md: 记录", True),
+    ("3: 她说“不能开门”。", False),
+    ("1: 她说“能开门”。", False),
+    ("1: 她说……开门", False),
+    ("1: 章纲要求脱身", False),
+    ("2: 他把钥匙收好。", False),
+    ("2: ", False),
+    ("4: 他把钥匙收好。", False),
+    ("0: 她说“不能开门”。", False),
+    ("正文/第001章.md:1-3", True),
+    ("正文/第001章.md:3-1", False),
+    ("正文/第001章.md:0-2", False),
+    ("正文/第001章.md:1-4", False),
+    ("正文/第999章.md:1-3", False),
+])
+def test_numbered_quote_and_line_range_require_the_declared_source(citation, accepted):
+    material = {
+        "input": {"files": {"章纲/第001章.md": "章纲要求脱身"}},
+        "artifacts": {"正文/第001章.md": '她说"不能开门"。\n\n他把钥匙收好。见 memo.md: 记录。'},
+    }
+    evidence = [citation] if accepted else ["他把钥匙收好", citation]
+    raw = json.dumps({"score": 4, "reason": "原文有清楚的动机。", "evidence": evidence})
+    if accepted:
+        assert evaluation._judgement(raw, "语言清晰度", material=material)["evidence"] == evidence
+    else:
+        with pytest.raises(ValueError, match="评分依据"):
+            evaluation._judgement(raw, "语言清晰度", material=material)
+
+
 def test_retry_uses_saved_evidence_feedback_only_for_the_failed_scoring_item(chapter_run, monkeypatch):
     run, sample = chapter_run
     manuscript = next(path for path in sample["artifacts"] if path.startswith("正文/"))
@@ -351,14 +383,19 @@ def test_retry_uses_saved_evidence_feedback_only_for_the_failed_scoring_item(cha
     invalid_line = f"{manuscript}:99"
     valid_quote = "她在门边停下"
     calls = stub_judges(monkeypatch, http_error_at={6}, evidence_at={
-        2: [valid_quote, invalid_quote], 13: [invalid_line],
+        1: [f"3: {valid_quote}", f"{manuscript}:1-3"],
+        2: [valid_quote, invalid_quote],
+        13: [invalid_line],
     })
 
     runner.process_sample(run, sample)
     assert len(calls) == 18
     assert len(sample["judge_results"]) == 15
     assert sample["status"] == "evaluation_error"
-    first_material = json.loads(calls[0]["messages"][1]["content"])
+    instructions, scoring_input = calls[0]["messages"]
+    assert "行号: 正文原句" in instructions["content"]
+    assert "文件路径:起始行-结束行" in instructions["content"]
+    first_material = json.loads(scoring_input["content"])
     assert first_material["artifacts"][manuscript] == "1: 门开了。\n2: \n3: 她在门边停下，听清脚步后才出门。"
 
     saved = repo.get_run(run["id"])

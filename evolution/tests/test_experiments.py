@@ -518,6 +518,7 @@ class ExperimentLifecycleTest(DatabaseTest):
         self.assertEqual(saved["private"]["judges"][0]["model"], "claude-test")
 
     def test_real_judging_emits_valid_shared_trace_events_and_known_usage(self):
+        import httpx
         from contracts.trace import TraceLogEvent
         from app.experiments import evaluation
         run = self.create_experiment()
@@ -534,14 +535,16 @@ class ExperimentLifecycleTest(DatabaseTest):
                 pass
             def fail_run(self, *args):
                 pass
-        response = SimpleNamespace(is_success=True, json=lambda: {"choices": [{"message": {"content": json.dumps(
+        response = httpx.Response(200, json={"choices": [{"message": {"content": json.dumps(
             {"score": 4, "达标": ["卷纲事件因果清楚"], "不足": ["局部节奏略快"]}, ensure_ascii=False)}}],
             "usage": {"prompt_tokens": 100, "completion_tokens": 30, "total_tokens": 130}})
         with patch("app.experiments.runner._recorder", StrictRecorder()), \
              patch("app.experiments.repo.decrypt_credentials", return_value={"api_key": "test", "base_url": "https://model.invalid/v1", "model": "claude-test"}), \
              patch("app.experiments.evaluation.httpx.Client") as client:
-            client.return_value.__enter__.return_value.post.return_value = response
+            stream = client.return_value.__enter__.return_value.stream
+            stream.return_value.__enter__.return_value = response
             score = evaluation.score_sample(run, sample)
+        self.assertEqual(stream.call_count, 4)
         self.assertEqual(score["overall"], 4.0)
         self.assertEqual(len(events), 8)
         self.assertEqual(events[-1].usage.input_tokens, 100)

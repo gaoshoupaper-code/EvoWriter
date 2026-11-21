@@ -2044,6 +2044,13 @@ export function saveExperimentRule(payload: ExperimentRuleInput): Promise<Experi
 export function getExperimentOptions(): Promise<ExperimentOptions> {
   return evoJson("/api/experiments/options", { method: "GET" });
 }
+export interface ExperimentEvolverAssets {
+  system_prompt: string;
+  tools: { name: string; description: string }[];
+}
+export function getExperimentEvolverAssets(): Promise<ExperimentEvolverAssets> {
+  return evoJson("/api/experiments/evolver-assets", { method: "GET" });
+}
 export function listExperiments(active?: boolean): Promise<{ items: ExperimentSummary[] }> {
   const query = active === undefined ? "" : `?active=${active}`;
   return evoJson(`/api/experiments/runs${query}`, { method: "GET" });

@@ -16,7 +16,7 @@ import {
   Wrench,
   type LucideIcon } from "lucide-react";
 import { fetchMeOrNull, logout, type AuthMe } from "@/lib/api";
-import { agentArea, pageAgent, rememberPageAgent, withAgent } from "@/lib/writing-agent";
+import { agentArea, EVOLUTION_AGENT_ASSETS_PATH, isEvolutionAgentAssetsView, pageAgent, rememberPageAgent, withAgent } from "@/lib/writing-agent";
 import ChangePasswordDialog from "@/components/ChangePasswordDialog";
 import { PageAgentContext } from "@/components/PageAgentSelector";
 import { UiFontSizeControl, applyUiFontSize, loadUiFontSize } from "./ui/UiFontSizeControl";
@@ -50,6 +50,7 @@ const NAV_GROUPS: NavGroup[] = [
       { to: "/bench/rules", label: "评测规则", end: false, icon: ScrollText },
       { to: "/bench/dataset", label: "评测数据集", end: false, icon: Database },
       { to: "/bench/experiments", label: "实验记录", end: false, icon: FileArchive },
+      { to: EVOLUTION_AGENT_ASSETS_PATH, label: "进化 Agent 资产", end: true, icon: BrainCircuit },
     ],
   },
   {
@@ -123,6 +124,7 @@ export default function Shell() {
 
   // Keep a detail URL bound to its original suite when reopening it from history.
   const query = new URLSearchParams(location.search);
+  const showsEvolutionAssets = isEvolutionAgentAssetsView(query);
   const privateDetail = /^\/(traces\/|bench\/experiments\/|evolve\/)/.test(location.pathname)
     || query.has("candidate") || query.has("session");
   if (agent && privateDetail && query.get("agent") !== agent) {
@@ -156,13 +158,16 @@ export default function Shell() {
               <div className="shell-nav-group-title">{group.title}</div>
               {group.items.map((item) => {
                 const Icon = item.icon;
+                const matchesView = (item.to !== "/bench" || !showsEvolutionAssets)
+                  && (item.to !== EVOLUTION_AGENT_ASSETS_PATH || showsEvolutionAssets);
                 return (
                   <NavLink
                     key={item.to}
                     to={item.to}
                     end={item.end}
+                    aria-current={matchesView ? "page" : false}
                     className={({ isActive }) =>
-                      `shell-nav-item ${isActive ? "active" : ""}`
+                      `shell-nav-item ${isActive && matchesView ? "active" : ""}`
                     }
                   >
                     <Icon className="shell-nav-icon" size={16} />

@@ -158,10 +158,64 @@ def _compile_candidate(root: Path) -> list[str]:
     return errors
 
 
+def _system_prompt(assessment: bool) -> str:
+    prompt = (
+        "你是Writer Harness进化工程师。本实验已授权自动修改，无需逐点人工采纳。"
+        "只允许在当前Harness包内修改提示词、技能、工具、中间件和装配代码。"
+        "不得修改registry.json、.git、数据集、评测、权限、服务框架；不得寻找终验或其他作品数据。"
+        "先探查并write_design_doc，再修改、validate_changes、write_change_log。运行时不允许调用发布。"
+        "每次只处理有证据的问题，保留现有质量检查和取证行为。"
+    )
+    if assessment:
+        prompt += (
+            "你负责正文 Agent 从题目到单章交稿的整体效果。先调用 list_assessment_history，按需读取改进题的"
+            "终稿、评分和真实 Trace；可以核对初稿、review 意见和实际修订。根据证据决定改哪里。"
+            "读取 architecture.json 核对实际装配的提示词、技能、工具、中间件与子 Agent。"
+            "可以调整这些资产及其装配关系。设计文档须注明问题、证据编号、拟改资产和预期效果。"
+            "涉及改进题时，将样本列表返回的 evidence_ref 原样写入设计条目的 evidence_ref。"
+            "只能查看本次档案；独立复测题只提供掉分项和幅度。"
+        )
+    return prompt
+
+
+def _evolver_tools(backend, run: dict, ctx=None):
+    from langchain_core.tools import tool
+
+    from app.evolve.agent.tools.flow import make_flow_tools
+    from app.evolve.agent.tools.inspect import make_inspect_tools
+    from app.evolve.agent.tools.writers import make_writer_tools
+
+    @tool
+    def validate_changes() -> str:
+        """Compile candidate Python without executing imports; Platform does the isolated assembly check."""
+        if ctx is None:
+            raise RuntimeError("Validation requires an experiment checkout")
+        errors = _compile_candidate(ctx.harness_root)
+        ctx.validation_result = {"passed": not errors, "errors": errors, "env_diffs": []}
+        ctx.code_mutations_since_validate = 0
+        return json.dumps(ctx.validation_result, ensure_ascii=False)
+
+    tools = make_inspect_tools() + make_writer_tools(backend)
+    tools += [item for item in make_flow_tools() if item.name != "validate_changes"] + [validate_changes]
+    if run.get("assessment_version"):
+        from app.experiments.history import make_history_tools
+        tools.extend(make_history_tools(run))
+    return tools, validate_changes
+
+
+def evolver_assets(*, assessment: bool) -> dict:
+    from deepagents.backends import StateBackend
+
+    # Tool definitions can be read without a checkout or an experiment's evidence.
+    run = {"assessment_version": assessment, "settings": {"optimization_ids": []}}
+    tools, _ = _evolver_tools(StateBackend(), run)
+    return {"system_prompt": _system_prompt(assessment),
+            "tools": [{"name": item.name, "description": item.description} for item in tools]}
+
+
 async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dict]) -> dict:
     from deepagents import create_deep_agent
     from deepagents.backends.filesystem import FilesystemBackend
-    from langchain_core.tools import tool
     from langchain_openai import ChatOpenAI
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.messages import ToolMessage
@@ -172,9 +226,6 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     from app.evolve.ctx import EvolveContext, set_tool_context
     from app.evolve.agent.agent import _run_agent_streamed
     from app.evolve.agent.middleware.flow_guard import FlowGuardMiddleware
-    from app.evolve.agent.tools.inspect import make_inspect_tools
-    from app.evolve.agent.tools.writers import make_writer_tools
-    from app.evolve.agent.tools.flow import make_flow_tools
     from app.experiments import runner
     from app.trace import TraceMiddleware, TraceCallbackHandler
 
@@ -249,20 +300,8 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
         round_record.setdefault("trace_ids", []).append(ctx.trace_id_self)
         repo.put_run(run)
 
-    @tool
-    def validate_changes() -> str:
-        """Compile candidate Python without executing imports; Platform does the isolated assembly check."""
-        errors = _compile_candidate(root)
-        ctx.validation_result = {"passed": not errors, "errors": errors, "env_diffs": []}
-        ctx.code_mutations_since_validate = 0
-        return json.dumps(ctx.validation_result, ensure_ascii=False)
-
     backend = FilesystemBackend(root_dir=str(root), virtual_mode=True)
-    tools = make_inspect_tools() + make_writer_tools(backend)
-    tools += [item for item in make_flow_tools() if item.name != "validate_changes"] + [validate_changes]
-    if run.get("assessment_version"):
-        from app.experiments.history import make_history_tools
-        tools.extend(make_history_tools(run))
+    tools, validate_changes = _evolver_tools(backend, run, ctx)
     allowed_tools = {item.name for item in tools}
     _ensure_gp_disabled()
     credentials = repo.decrypt_credentials(run["private"]["evolver"])
@@ -270,23 +309,10 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     if ctx.recorder and ctx.trace_id_self:
         middleware.append(TraceMiddleware(recorder=ctx.recorder, trace_id=ctx.trace_id_self, agent_name="experiment-evolver"))
     checkpoint_path = root.parent / f"round-{round_record['round']}.sqlite"
-    prompt = (
-        "你是Writer Harness进化工程师。本实验已授权自动修改，无需逐点人工采纳。"
-        "只允许在当前Harness包内修改提示词、技能、工具、中间件和装配代码。"
-        "不得修改registry.json、.git、数据集、评测、权限、服务框架；不得寻找终验或其他作品数据。"
-        "先探查并write_design_doc，再修改、validate_changes、write_change_log。运行时不允许调用发布。"
-        "每次只处理有证据的问题，保留现有质量检查和取证行为。"
-    )
-    if run.get("assessment_version"):
+    assessment = bool(run.get("assessment_version"))
+    prompt = _system_prompt(assessment)
+    if assessment:
         task = "使用本次档案的历史工具定位正文问题，再改进正文 Agent 并完成校验。"
-        prompt += (
-            "你负责正文 Agent 从题目到单章交稿的整体效果。先调用 list_assessment_history，按需读取改进题的"
-            "终稿、评分和真实 Trace；可以核对初稿、review 意见和实际修订。根据证据决定改哪里。"
-            "读取 architecture.json 核对实际装配的提示词、技能、工具、中间件与子 Agent。"
-            "可以调整这些资产及其装配关系。设计文档须注明问题、证据编号、拟改资产和预期效果。"
-            "涉及改进题时，将样本列表返回的 evidence_ref 原样写入设计条目的 evidence_ref。"
-            "只能查看本次档案；独立复测题只提供掉分项和幅度。"
-        )
     else:
         task = "请依据给定的改进题证据修改候选并完成校验：\n" + json.dumps(evidence, ensure_ascii=False)
     config = {"configurable": {"thread_id": session_id}, "recursion_limit": 200}

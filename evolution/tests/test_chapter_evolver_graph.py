@@ -5,6 +5,9 @@ import sqlite3
 import sys
 from pathlib import Path
 
+import deepagents
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
 from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
@@ -14,11 +17,25 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.core import db
 from app.core.settings import settings
 from app.evolve import docs
-from app.experiments import agent, repo
+from app.experiments import agent, api, repo
 
 
 def test_real_chapter_evolution_graph_queries_evidence_and_commits_a_design(tmp_path, monkeypatch):
     monkeypatch.setenv("WRITING_AGENT_ID", "text")
+    app = FastAPI()
+    app.include_router(api.router, prefix="/api")
+    with TestClient(app) as client:
+        response = client.get("/api/experiments/evolver-assets")
+    assert response.status_code == 200
+    assets = response.json()
+    tool_descriptions = {tool["name"]: tool["description"] for tool in assets["tools"]}
+    create_deep_agent = deepagents.create_deep_agent
+
+    def check_system_prompt(**kwargs):
+        assert kwargs["system_prompt"] == assets["system_prompt"]
+        return create_deep_agent(**kwargs)
+
+    monkeypatch.setattr(deepagents, "create_deep_agent", check_system_prompt)
     monkeypatch.setattr(settings, "evolution_db", str(tmp_path / "evolution.db"))
     monkeypatch.setattr(docs, "_docs_root", lambda: tmp_path / "docs")
     conn = sqlite3.connect(":memory:", check_same_thread=False)
@@ -76,6 +93,7 @@ def test_real_chapter_evolution_graph_queries_evidence_and_commits_a_design(tmp_
 
     class ChapterModel(FakeMessagesListChatModel):
         def bind_tools(self, tools, **kwargs):
+            assert {tool.name: tool.description for tool in tools} == tool_descriptions
             registered.append({tool.name for tool in tools})
             return self
 

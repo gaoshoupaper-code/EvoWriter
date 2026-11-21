@@ -11,7 +11,7 @@ from contracts.target_tasks import configured_task_type
 
 from app.core import db
 from app.core.settings import settings
-from app.experiments import clients, evaluation, packages, release, repo, rubrics, runner
+from app.experiments import agent, clients, evaluation, packages, release, repo, rubrics, runner
 from app.experiments.schemas import PackageCreate, RuleCreate, RunCreate
 from app.trace.access import require_full_content_access
 from app.view.display_context import trace_run_views
@@ -207,6 +207,11 @@ def list_rules(task_type: str | None = Query(None)):
 @router.post("/rules", status_code=201)
 def save_rule(body: RuleCreate):
     return rubrics.save_rule(body)
+
+
+@router.get("/evolver-assets")
+def get_evolver_assets(scope: str = Depends(require_suite)):
+    return agent.evolver_assets(assessment=scope == "chapter_text")
 
 
 @router.get("/options")

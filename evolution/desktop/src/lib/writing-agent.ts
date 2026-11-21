@@ -7,6 +7,13 @@ export const WRITING_AGENTS = {
 
 export type WritingAgent = keyof typeof WRITING_AGENTS;
 
+const EVOLUTION_ASSETS_VIEW = "evolution-agent-assets";
+export const EVOLUTION_AGENT_ASSETS_PATH = `/bench?view=${EVOLUTION_ASSETS_VIEW}`;
+
+export function isEvolutionAgentAssetsView(query: URLSearchParams) {
+  return query.get("view") === EVOLUTION_ASSETS_VIEW;
+}
+
 export const AREA_LABELS = {
   observation: "运行记录所属 Agent", evaluation: "评测对象", assets: "Harness 资产所属 Agent",
   evolution: "进化对象", versions: "版本所属 Agent", models: "模型配置所属 Agent",

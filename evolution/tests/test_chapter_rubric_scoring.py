@@ -60,7 +60,7 @@ def chapter_run(monkeypatch, tmp_path):
         connection.close()
 
 
-def stub_judges(monkeypatch, *, invalid_at=(), reject_after=None, http_error_at=()):
+def stub_judges(monkeypatch, *, invalid_at=(), reject_after=None, http_error_at=(), evidence_at=None):
     calls = []
 
     class JudgeClient:
@@ -84,6 +84,8 @@ def stub_judges(monkeypatch, *, invalid_at=(), reject_after=None, http_error_at=
                          "evidence": ["她在门边停下"], "达标": ["她在门边停下"], "不足": ["局部交代偏少"]}
             if index in invalid_at:
                 judgement.pop("reason")
+            if evidence_at and index in evidence_at:
+                judgement["evidence"] = evidence_at[index]
             return httpx.Response(200, json={**make_completion(judgement), "usage": {
                 "prompt_tokens": 3, "completion_tokens": 4, "provider_detail": "专用评语 与 她在门边停下",
             }})
@@ -318,6 +320,73 @@ def test_reason_requires_a_verifiable_manuscript_quote_or_line():
     for citations in (["无可核对内容"], ["章纲要求脱身"], ["正文/第001章.md:3"], []):
         with pytest.raises(ValueError, match="评分依据"):
             evaluation._judgement(json.dumps({**reason, "evidence": citations}), "章纲兑现", material=material)
+
+
+@pytest.mark.parametrize(("citation", "accepted"), [
+    ("她说“不能开门”，收起3号钥匙。", True),
+    ("她说「不能开门」，收起3号钥匙。", True),
+    ("她说不能开门，收起3号钥匙。", False),
+    ("她说“能开门”，收起3号钥匙。", False),
+    ("她说“不能开门”，收起4号钥匙。", False),
+    ("她说“不能开门”……钥匙。", False),
+    ("正文/第001章.md：1", False),
+])
+def test_quote_equivalence_preserves_meaning_and_requires_every_citation(citation, accepted):
+    material = {"input": {"files": {}}, "artifacts": {"正文/第001章.md": '她说"不能开门"，收起3号钥匙。'}}
+    evidence = ["收起3号钥匙", citation]
+    raw = json.dumps({"score": 4, "reason": "原文有清楚的动机。", "evidence": evidence})
+    if accepted:
+        assert evaluation._judgement(raw, "剧情逻辑", material=material)["evidence"] == evidence
+    else:
+        with pytest.raises(ValueError, match="评分依据"):
+            evaluation._judgement(raw, "剧情逻辑", material=material)
+
+
+def test_retry_uses_saved_evidence_feedback_only_for_the_failed_scoring_item(chapter_run, monkeypatch):
+    run, sample = chapter_run
+    manuscript = next(path for path in sample["artifacts"] if path.startswith("正文/"))
+    sample["artifacts"][manuscript] = "门开了。\n\n她在门边停下，听清脚步后才出门。"
+    repo.put_run(run)
+    invalid_quote = "她在门边……才出门"
+    invalid_line = f"{manuscript}:99"
+    valid_quote = "她在门边停下"
+    calls = stub_judges(monkeypatch, http_error_at={6}, evidence_at={
+        2: [valid_quote, invalid_quote], 13: [invalid_line],
+    })
+
+    runner.process_sample(run, sample)
+    assert len(calls) == 18
+    assert len(sample["judge_results"]) == 15
+    assert sample["status"] == "evaluation_error"
+    first_material = json.loads(calls[0]["messages"][1]["content"])
+    assert first_material["artifacts"][manuscript] == "1: 门开了。\n2: \n3: 她在门边停下，听清脚步后才出门。"
+
+    saved = repo.get_run(run["id"])
+    recovered = saved["samples"][0]
+    for can_read_content in (False, True):
+        public = api.public_run(saved, can_read_content=can_read_content)
+        assert "judge_evidence_feedback" not in public["samples"][0]
+        serialized = json.dumps(public, ensure_ascii=False)
+        assert invalid_quote not in serialized and invalid_line not in serialized
+
+    runner.process_sample(saved, recovered)
+    assert len(calls) == 21
+    assert calls[19] == calls[5]
+    for original, retry, index, citation, reason in (
+        (calls[1], calls[18], 2, invalid_quote, "找不到连续原文"),
+        (calls[12], calls[20], 1, invalid_line, "行号超出文件范围"),
+    ):
+        assert retry["model"] == original["model"]
+        assert retry["messages"][:2] == original["messages"]
+        _, _, feedback = retry["messages"]
+        assert feedback["role"] == "user"
+        errors = json.loads(feedback["content"])["previous_evidence_errors"]
+        assert [error for error in errors if "citation" in error] == [
+            {"index": index, "citation": citation, "reason": reason},
+        ]
+    assert recovered["status"] == "completed"
+    assert recovered["scores"]["overall"] == 4
+    assert not recovered.get("judge_evidence_feedback")
 
 
 def test_exhausted_incomplete_score_does_not_evolve_or_compare(chapter_run, monkeypatch):

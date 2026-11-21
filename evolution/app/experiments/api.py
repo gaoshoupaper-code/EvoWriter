@@ -98,8 +98,9 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
             if key not in {"work_root", "frozen_candidate"}}) for round_ in run.get("rounds", [])]
         value["samples"] = []
         for sample in run.get("samples", []):
-            public = {key: item for key, item in sample.items()
-                      if key not in {"judge_results", "judge_errors", "usage", "generation_retries"}}
+            public = {key: item for key, item in sample.items() if key not in {
+                "judge_results", "judge_errors", "judge_evidence_feedback", "usage", "generation_retries",
+            }}
             if sample.get("generation_retries"):
                 public["trace_ids"] = list(dict.fromkeys([
                     *sample.get("trace_ids", []),

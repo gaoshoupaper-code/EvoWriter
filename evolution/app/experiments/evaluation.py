@@ -69,12 +69,33 @@ def compare_results(baseline: list[dict], candidate: list[dict], *, completion_r
             "quality_delta": delta, "new_failures": sorted(set(new_failures)), "changes": changes, "problems": problems}
 
 
-def _evidence_in(citation: str, sources: dict[str, str]) -> bool:
+_EVIDENCE_QUOTES = str.maketrans("“”「」", '""""')
+
+
+class _InvalidEvidence(ValueError):
+    def __init__(self, details: list[dict]) -> None:
+        super().__init__("评分依据须对应正文原句或有效位置")
+        self.details = details
+
+
+def _evidence_issue(citation: str, sources: dict[str, str]) -> str | None:
     citation = citation.strip().strip('“”「」"').strip()
-    position = re.fullmatch(r"(.+):([1-9][0-9]*)", citation)
-    if position and position[1] in sources:
-        return int(position[2]) <= len(sources[position[1]].splitlines())
-    return bool(citation) and any(citation in text for text in sources.values())
+    path, colon, line = citation.rpartition(":")
+    if colon and (path in sources or path.endswith(".md")):
+        if path not in sources:
+            return "文件路径不存在"
+        if not re.fullmatch(r"[1-9][0-9]*", line):
+            return "行号须为正整数"
+        line_count = len(sources[path].splitlines())
+        if len(line) > len(str(line_count)) or int(line) > line_count:
+            return "行号超出文件范围"
+        return None
+    if citation and any(citation in text for text in sources.values()):
+        return None
+    normalized = citation.translate(_EVIDENCE_QUOTES)
+    if normalized and any(normalized in text.translate(_EVIDENCE_QUOTES) for text in sources.values()):
+        return None
+    return "找不到连续原文"
 
 
 def _judgement(raw: str, dimension: str, *, material: dict | None = None) -> dict:
@@ -95,8 +116,15 @@ def _judgement(raw: str, dimension: str, *, material: dict | None = None) -> dic
             raise ValueError("缺少可核对的评分依据")
         manuscript = material["artifacts"]
         sources = {**material["input"]["files"], **manuscript}
-        if not all(_evidence_in(item, sources) for item in evidence) or not any(_evidence_in(item, manuscript) for item in evidence):
-            raise ValueError("评分依据须对应正文原句或有效位置")
+        issues = [
+            {"index": index, "citation": item[:160], "reason": issue}
+            for index, item in enumerate(evidence, 1)
+            if (issue := _evidence_issue(item, sources)) is not None
+        ]
+        if not any(_evidence_issue(item, manuscript) is None for item in evidence):
+            issues.append({"reason": "缺少本章最终正文依据"})
+        if issues:
+            raise _InvalidEvidence(issues)
         return {"score": score, "reason": " ".join(reason.splitlines()).strip(),
                 "evidence": [line.strip() for line in evidence]}
     _validate_dim_judgement(value, dimension)
@@ -233,14 +261,22 @@ def score_sample(run: dict, sample: dict) -> dict:
     judges = run["private"]["judges"]
     material = (_chapter_score_material(package, sample) if repeats is not None else
                 {"target": package["target"], "input": package["input"], "artifacts": sample["artifacts"], "checks": sample.get("checks", {})})
-    user_message = {"role": "user", "content": json.dumps(material, ensure_ascii=False)}
+    judge_material = material
+    if repeats is not None:
+        judge_material = {**material, "artifacts": {
+            path: "\n".join(f"{number}: {line}" for number, line in enumerate(text.splitlines(), 1))
+            for path, text in material["artifacts"].items()
+        }}
+    user_message = {"role": "user", "content": json.dumps(judge_material, ensure_ascii=False)}
     output_format = ('只输出 JSON：{"score": 1到5的整数, "reason": "一段定档理由，说明为何符合本档和相邻档差异", '
                      '"evidence": ["逐字引用正文短句，或填写正文文件路径:行号"]}。'
+                     '正文每行开头的编号是行号，逐字引用时复制编号后的原文。'
                      '每项至少给一条正文依据。判定漏写时可另逐字引用章纲要求。'
                      if repeats is not None else
                      '只输出JSON：{"score":1到5的整数,"达标":["引用原文的证据"],"不足":["引用原文的缺陷"]}。')
     progress = sample.setdefault("judge_results", {})
     errors = sample.setdefault("judge_errors", {})
+    feedback = sample.get("judge_evidence_feedback", {})
     from app.experiments import runner
     recorder = runner.recorder()
     trace_id = None
@@ -273,6 +309,11 @@ def score_sample(run: dict, sample: dict) -> dict:
                      "\n".join(rule["discipline_rules"]) + "\n" + json.dumps(dimension, ensure_ascii=False) + "\n" + output_format},
                     user_message,
                 ]
+                if key in feedback:
+                    messages.append({"role": "user", "content": json.dumps({
+                        "previous_evidence_errors": feedback[key],
+                        "instruction": "以下引用片段用于定位此前未通过的依据。请核对原材料，修正依据后重新提交完整评分 JSON。",
+                    }, ensure_ascii=False)})
                 node_name = dimension["key"] if repeat is None else f"第 {repeat} 次 · {dimension['key']}"
                 call = {"source": "runtime", "run_id": "judge-" + uuid4().hex, "agent_name": "experiment-judge",
                         "node_name": node_name, "model_name": judge["model"]}
@@ -296,11 +337,17 @@ def score_sample(run: dict, sample: dict) -> dict:
                     call_record["usage"] = normalize_usage(tokens) if repeat is not None and tokens is not None else tokens
                     progress[key] = _judgement(raw, dimension["key"], material=material if repeat is not None else None)
                 except Exception as exc:
-                    errors[key] = f"{dimension['key']}评测异常：{type(exc).__name__}：{str(exc)[:200]}"
+                    error_type = type(exc).__name__
+                    if isinstance(exc, _InvalidEvidence):
+                        feedback[key] = exc.details
+                        sample["judge_evidence_feedback"] = feedback
+                        error_type = "ValueError"
+                    errors[key] = f"{dimension['key']}评测异常：{error_type}：{str(exc)[:200]}"
                     event = {"type": "llm_error", "status": "failed", "error": errors[key]}
                 else:
                     call_record["status"] = "completed"
                     errors.pop(key, None)
+                    feedback.pop(key, None)
                     event = {"type": "llm_end", "status": "completed"}
                 repo.put_run(run)
                 if trace_id:

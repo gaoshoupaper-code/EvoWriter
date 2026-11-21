@@ -76,7 +76,9 @@ def split(run: dict):
         key, number, version = sample["id"], sample["round"], sample["source_commit"]
         outputs = sample.pop("artifacts", {})
         add("artifact", key, number, version, {name: _store_text(directory, value) for name, value in outputs.items()})
-        add("evaluation", key, number, version, _take(sample, ("checks", "scores", "judge_results", "judge_errors")))
+        add("evaluation", key, number, version, _take(sample, (
+            "checks", "scores", "judge_results", "judge_errors", "judge_evidence_feedback",
+        )))
         add("trace", key, number, version, _take(sample, ("trace_ids", "evaluation_trace_ids", "generation_retries")))
         header["samples"].append(sample)
     return header, rows

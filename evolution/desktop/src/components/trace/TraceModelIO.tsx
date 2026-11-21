@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTraceModelStream } from "@/hooks/useTraceModelStream";
 import { getTraceModelIO, type TraceModelIOPage } from "@/lib/api";
 import "./trace-model-io.css";
 
@@ -7,14 +8,15 @@ const ROLES = new Map(Object.entries({
   ai: "助手消息", assistant: "助手消息", tool: "工具消息", function: "工具消息",
 }));
 
-export function TraceModelIO({ traceId, eventCount, modelRationale }: {
-  traceId: string; eventCount: number; modelRationale?: string;
+export function TraceModelIO({ traceId, eventCount, modelRationale, live, archiveReady }: {
+  traceId: string; eventCount: number; modelRationale?: string; live: boolean; archiveReady: boolean;
 }) {
   const [page, setPage] = useState<TraceModelIOPage | null>(null);
   const [syncedEvents, setSyncedEvents] = useState(-1);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const inFlight = useRef(false);
+  const stream = useTraceModelStream(traceId, live);
 
   const load = useCallback(async () => {
     if (inFlight.current) return;
@@ -35,10 +37,14 @@ export function TraceModelIO({ traceId, eventCount, modelRationale }: {
   }, [traceId, page, eventCount]);
 
   useEffect(() => {
-    if (!loading && !failed && !page?.has_more && syncedEvents !== eventCount) void load();
-  }, [load, loading, failed, page?.has_more, syncedEvents, eventCount]);
+    if (archiveReady && !loading && !failed && !page?.has_more && syncedEvents !== eventCount) void load();
+  }, [archiveReady, load, loading, failed, page?.has_more, syncedEvents, eventCount]);
 
   const initial = page?.initial_input;
+  const archived = new Set(page?.outputs.map(event => event.run_id));
+  const pending = stream.calls.filter(call => !archived.has(call.run_id));
+  const generating = pending.filter(call => !call.finished);
+  const currentCalls = generating.length ? generating : pending.slice(-1);
   return <div className="trace-model-io">
     <section className="trace-model-panel" aria-label="初始模型输入">
       <h2>初始模型输入</h2>
@@ -53,6 +59,16 @@ export function TraceModelIO({ traceId, eventCount, modelRationale }: {
     <section className="trace-model-panel" aria-label="模型输出">
       <h2>模型输出</h2>
       <div className="trace-model-scroll" tabIndex={0} role="group" aria-label="按记录顺序排列的输出">
+        {stream.status !== "closed" && <section className="trace-model-stream" aria-label="实时模型输出">
+          <p className="trace-model-stream-status" role="status">
+            {stream.status === "connecting" ? "正在连接实时输出…" : stream.status === "retrying" ? "实时输出重新连接中…"
+              : generating.length ? "模型正在输出…" : currentCalls.length ? "本次模型输出已结束" : "等待模型输出…"}
+          </p>
+          {currentCalls.map(call => <div className="trace-model-payload" key={call.run_id}>
+            {call.reasoning && <StreamingText label="思考" text={call.reasoning} />}
+            {call.text && <StreamingText label="回复" text={call.text} />}
+          </div>)}
+        </section>}
         {modelRationale && <div className="trace-model-payload trace-model-summary">
           <h3 className="trace-model-role">本轮改进依据</h3><PreviewText text={modelRationale} />
         </div>}
@@ -64,7 +80,7 @@ export function TraceModelIO({ traceId, eventCount, modelRationale }: {
             <ModelPayload value={event.output} toolCalls={event.tool_calls} showSummary
               empty={event.type === "llm_error" ? undefined : "本次调用未保存可读取的输出正文。"} />
           </li>)}
-        </ol> : page && !loading && !failed && <p>暂无模型输出。</p>}
+        </ol> : stream.status === "closed" && page && !loading && !failed && <p>暂无模型输出。</p>}
         {loading && !page?.outputs.length && <p role="status">正在读取模型输出…</p>}
       </div>
       {page?.has_more && !failed && <div className="trace-model-actions">
@@ -76,6 +92,23 @@ export function TraceModelIO({ traceId, eventCount, modelRationale }: {
     {failed && <p role="alert" className="trace-model-error">模型输入和输出读取失败。{" "}
       <button type="button" className="action-link" onClick={() => void load()}>重试</button>
     </p>}
+  </div>;
+}
+
+function StreamingText({ label, text }: { label: string; text: string }) {
+  const ref = useRef<HTMLPreElement>(null);
+  const follow = useRef(true);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (element && follow.current) element.scrollTop = element.scrollHeight;
+  }, [text]);
+
+  return <div>
+    <p className="trace-model-role">{label}</p>
+    <pre ref={ref} tabIndex={0} aria-label={label} onScroll={({ currentTarget }) => {
+      follow.current = currentTarget.scrollHeight - currentTarget.clientHeight - currentTarget.scrollTop <= 8;
+    }}>{text}</pre>
   </div>;
 }
 

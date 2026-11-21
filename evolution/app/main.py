@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -111,12 +112,15 @@ async def lifespan(app: FastAPI):
     checkpoint_pool = EvolveCheckpointPool(settings.evolve_checkpoints_path)
     init_checkpoint_pool(checkpoint_pool)
 
-    from app.experiments import runner as experiment_runner
+    from app.experiments import live_output, runner as experiment_runner
     experiment_runner.startup(recorder)
+    live_output_reaper = asyncio.create_task(live_output.reap())
 
     yield
 
     # 关闭：停 recorder drain + flush 残余事件落盘（D5）+ 关闭所有 checkpoint saver。
+    live_output_reaper.cancel()
+    await asyncio.gather(live_output_reaper, return_exceptions=True)
     experiment_runner.shutdown()
     await recorder.aclose()
     # 观测收尾：flush 余量指标（每进程代最后一个 ≤30s 导出批次，review 整改）。

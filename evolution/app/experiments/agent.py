@@ -340,7 +340,9 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
         task = "请依据给定的改进题证据修改候选并完成校验：\n" + json.dumps(evidence, ensure_ascii=False)
     config = {"configurable": {"thread_id": session_id}, "recursion_limit": 200}
     if ctx.recorder and ctx.trace_id_self:
-        config["callbacks"] = [TraceCallbackHandler(ctx.recorder, ctx.trace_id_self)]
+        from app.experiments.evolver_output import EvolverOutputCallback
+
+        config["callbacks"] = [TraceCallbackHandler(ctx.recorder, ctx.trace_id_self), EvolverOutputCallback(ctx.trace_id_self)]
     try:
         # ChatOpenAI's default HTTP pool is cached across rounds, but each round
         # has its own asyncio.run loop. Close this round's pool before that loop.

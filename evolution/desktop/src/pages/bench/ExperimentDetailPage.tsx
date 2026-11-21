@@ -152,6 +152,7 @@ export function ExperimentRecordTrace({ title, experiment, archived = [], live =
             {traces.map((id, i) => <option key={id} value={id}>{prioritizeModelIO ? `第 ${i + 1} 段运行` : `${i + 1} · ${id}`}</option>)}
           </select></label>}
         <TraceDetailPage key={traceId} traceIdOverride={traceId} embedded canReadContent prioritizeModelIO={prioritizeModelIO} modelRationale={modelRationale}
+          modelLiveHint={!!active || (waiting && traceId === defaultArchived)}
           displayContextOverride={traceDisplayContext(trace, context)} />
       </>}
   </section>;

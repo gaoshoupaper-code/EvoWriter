@@ -15,7 +15,7 @@ from contracts.target_tasks import configured_task_type
 from contracts.writing_artifacts import KIND_CHAPTER, KIND_TEXT, artifact_relpath, parse_relpath
 
 from app.common.model_factory import _model_family
-from app.experiments import repo
+from app.experiments import live_output, repo
 
 
 def require_heterogeneous_judges(writer_model: str, judges: list[dict]) -> None:
@@ -149,6 +149,82 @@ def _chapter_score_material(package: dict, sample: dict) -> dict:
             "artifacts": {manuscript: sample["artifacts"][manuscript]}}
 
 
+def _judge_json(response: httpx.Response) -> tuple[str, dict | None]:
+    if not response.is_success:
+        raise RuntimeError(f"评委调用失败：HTTP {response.status_code}")
+    data = response.json()
+    return data["choices"][0]["message"]["content"], data.get("usage")
+
+
+def _stream_rejected(response: httpx.Response) -> bool:
+    if response.status_code == 501:
+        return True
+    if response.status_code not in (400, 422):
+        return False
+    response.read()
+    detail = response.text.lower()
+    return "stream" in detail and any(word in detail for word in (
+        "unsupported", "not support", "unknown", "unrecognized", "extra_forbidden", "不支持", "未知参数",
+    ))
+
+
+def _judge_chat(client, url, headers, request, trace_id, call_id, stopped):
+    if not trace_id:
+        return _judge_json(client.post(url, headers=headers, json=request))
+    try:
+        with client.stream("POST", url, headers=headers, json={
+            **request, "stream": True, "stream_options": {"include_usage": True},
+        }) as response:
+            if not _stream_rejected(response):
+                if not response.is_success:
+                    raise RuntimeError(f"评委调用失败：HTTP {response.status_code}")
+                if "text/event-stream" not in response.headers.get("content-type", "").lower():
+                    response.read()
+                    return _judge_json(response)
+                return _read_judge_stream(response, trace_id, call_id, stopped)
+        if stopped():
+            raise asyncio.CancelledError()
+        # Older compatible gateways can reject streaming before generating any output.
+        return _judge_json(client.post(url, headers=headers, json=request))
+    finally:
+        live_output.finish_call(trace_id, call_id)
+
+
+def _read_judge_stream(response, trace_id, call_id, stopped):
+    parts: list[str] = []
+    tokens = None
+    complete = False
+    for line in response.iter_lines():
+        if stopped():
+            raise asyncio.CancelledError()
+        if not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            complete = True
+            break
+        if not data:
+            continue
+        chunk = json.loads(data)
+        if chunk.get("error"):
+            raise RuntimeError("评委流式响应失败")
+        if chunk.get("usage") is not None:
+            tokens = chunk["usage"]
+        for choice in chunk.get("choices") or []:
+            complete = complete or bool(choice.get("finish_reason"))
+            delta = choice.get("delta") or {}
+            thought = delta.get("reasoning_content")
+            if isinstance(thought, str) and thought:
+                live_output.publish_delta(trace_id, call_id, "reasoning", thought)
+            text = delta.get("content")
+            if isinstance(text, str) and text:
+                parts.append(text)
+                live_output.publish_delta(trace_id, call_id, "text", text)
+    if not complete:
+        raise RuntimeError("评委流式响应提前中断")
+    return "".join(parts), tokens
+
+
 def score_sample(run: dict, sample: dict) -> dict:
     repeats = run.get("judge_repeats")
     package = (repo.run_package(run, sample["package_id"], for_scoring=True) if repeats is not None
@@ -213,15 +289,11 @@ def score_sample(run: dict, sample: dict) -> dict:
                 try:
                     # Use the same generation window as the benchmark scorer for full manuscripts.
                     with httpx.Client(timeout=httpx.Timeout(300, connect=15)) as client:
-                        response = client.post(credentials["base_url"].rstrip("/") + "/chat/completions",
-                            headers={"Authorization": "Bearer " + credentials["api_key"]},
-                            json={"model": credentials["model"].split(":", 1)[-1], "temperature": 0, "messages": messages})
-                    if not response.is_success:
-                        raise RuntimeError(f"评委调用失败：HTTP {response.status_code}")
-                    data = response.json()
-                    tokens = data.get("usage")
+                        raw, tokens = _judge_chat(client, credentials["base_url"].rstrip("/") + "/chat/completions",
+                            {"Authorization": "Bearer " + credentials["api_key"]},
+                            {"model": credentials["model"].split(":", 1)[-1], "temperature": 0, "messages": messages},
+                            trace_id, call["run_id"], lambda: runner.is_stopped(run["id"]))
                     call_record["usage"] = normalize_usage(tokens) if repeat is not None and tokens is not None else tokens
-                    raw = data["choices"][0]["message"]["content"]
                     progress[key] = _judgement(raw, dimension["key"], material=material if repeat is not None else None)
                 except Exception as exc:
                     errors[key] = f"{dimension['key']}评测异常：{type(exc).__name__}：{str(exc)[:200]}"

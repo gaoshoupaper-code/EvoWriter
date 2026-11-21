@@ -9,14 +9,17 @@ Phase 3 重构：不再读执行端文件系统，改调 GET /internal/traces/{t
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from contracts.cancel_state import is_terminal
 
 import app.core.db as db
+from app.experiments import live_output
 from app.ingestion import importer
 from app.core.settings import settings
 from app.trace.facts import append_outcome
@@ -55,6 +58,29 @@ class OutcomeBody(BaseModel):
     actor_user_id: str | None = None
     payload: Any | None = None
     capture_status: Literal["captured", "payload_rejected"]
+
+
+_LiveId = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")]
+_ModelRunId = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$")]
+
+
+class _ModelDelta(BaseModel):
+    op: Literal["delta"]
+    run_id: _ModelRunId
+    channel: live_output.Channel
+    text: str = Field(min_length=1, max_length=live_output.MAX_DELTA_CHARS)
+
+
+class _ModelEnd(BaseModel):
+    op: Literal["end"]
+    run_id: _ModelRunId
+
+
+class ModelStreamBatch(BaseModel):
+    trace_id: _LiveId
+    experiment_id: _LiveId
+    sample_id: _LiveId
+    updates: list[Annotated[_ModelDelta | _ModelEnd, Field(discriminator="op")]] = Field(min_length=1, max_length=64)
 
 
 def _fetch_trace_content(
@@ -404,6 +430,36 @@ def ingest_outcome(body: OutcomeBody) -> dict[str, str]:
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "accepted", "outcome_id": outcome_id}
+
+
+@router.post("/ingestion/model-stream", status_code=204)
+def ingest_model_stream(body: ModelStreamBatch) -> None:
+    """Accept live fragments from the trusted executor, independently of Trace ingest."""
+    if not settings.notify_token:
+        raise HTTPException(503, "Model stream intake requires notification authentication")
+    source = (body.experiment_id, body.sample_id)
+    trace = db.query_one("SELECT status,run_purpose,external_refs_json FROM runs WHERE trace_id=?", (body.trace_id,))
+    if trace and is_terminal(trace["status"]):
+        return
+    refs = json.loads(trace["external_refs_json"] or "{}") if trace else {}
+    if trace and (trace["run_purpose"] == "user_generation" or any(
+        refs.get(key) not in (None, "", value) for key, value in zip(("experiment_id", "sample_id"), source)
+    )):
+        raise HTTPException(404, "Experiment trace not found")
+    if live_output.writing_sample(body.trace_id) != source:
+        # A worker can send the first fragment before its Trace is ingested.
+        sample = db.query_one("""SELECT 1 FROM self_evolution_runs e, json_each(e.payload, '$.samples') s
+            WHERE e.id=? AND json_extract(s.value, '$.id')=?
+            AND json_extract(s.value, '$.task_id')<>''
+            AND json_extract(s.value, '$.status') IN ('pending', 'running')
+            AND json_extract(e.payload, '$.status') IN ('running', 'recovering', 'stopping')""", source)
+        if not sample or not live_output.bind_writing_trace(body.trace_id, *source):
+            raise HTTPException(404, "Experiment sample not found")
+    for update in body.updates:
+        if isinstance(update, _ModelDelta):
+            live_output.publish_delta(body.trace_id, update.run_id, update.channel, update.text)
+        else:
+            live_output.finish_call(body.trace_id, update.run_id)
 
 
 @router.get("/ingestion/active-key")

@@ -58,8 +58,21 @@ export async function streamRequest(path: string, init: StreamRequestInit = {}):
   // 内部状态
   const queue: Uint8Array[] = [];
   let done = false;
+  let cancelled = false;
   let error: string | null = null;
-  let waiter: ((r: StreamReadResult) => void) | null = null;
+  let waiter: { resolve: (result: StreamReadResult) => void; reject: (error: Error) => void } | null = null;
+
+  const finish = (cause: string | null = null) => {
+    done = true;
+    error = cause;
+    if (!waiter) return;
+    const pending = waiter;
+    waiter = null;
+    if (cause) pending.reject(new Error(cause));
+    else pending.resolve({ done: true, value: undefined });
+  };
+
+  const cancelRust = () => void invoke("stream_cancel", { streamId }).catch(() => undefined);
 
   // 解析 body：兼容旧代码传字符串的情况。
   let bodyValue: unknown = init.body;
@@ -80,22 +93,13 @@ export async function streamRequest(path: string, init: StreamRequestInit = {}):
     if (waiter) {
       const w = waiter;
       waiter = null;
-      w({ done: false, value: queue.shift() });
+      w.resolve({ done: false, value: queue.shift() });
     }
   });
 
   const unlistenEnd = await listen<SseEndPayload>("sse_end", (event) => {
     if (event.payload.stream_id !== streamId) return;
-    if (!event.payload.ok) {
-      error = event.payload.error ?? "stream ended with error";
-    }
-    done = true;
-    // 唤醒等待中的 read()（返回 done:true）
-    if (waiter) {
-      const w = waiter;
-      waiter = null;
-      w({ done: true, value: undefined });
-    }
+    finish(event.payload.ok ? null : event.payload.error ?? "stream ended with error");
   });
 
   // 启动 Rust 流式拉取（后台运行，chunk 通过 event 推回）
@@ -107,15 +111,11 @@ export async function streamRequest(path: string, init: StreamRequestInit = {}):
       body: bodyValue ?? null,
       stream_id: streamId,
     },
-  }).catch((e) => {
-    // invoke 本身失败（连接失败已在 Rust 端 emit sse_end，这里兜底）
-    error = String(e);
-    done = true;
-    if (waiter) {
-      const w = waiter;
-      waiter = null;
-      w({ done: true, value: undefined });
-    }
+  }).then(() => {
+    // Rust 在响应头到达后才登记流。登记前已取消时，需要再次中止。
+    if (cancelled) cancelRust();
+  }, (cause) => {
+    if (!cancelled && !done) finish(String(cause));
   });
 
   // reader.read()：从队列取 chunk，空则阻塞等待 event。
@@ -128,24 +128,21 @@ export async function streamRequest(path: string, init: StreamRequestInit = {}):
       return Promise.resolve({ done: true, value: undefined });
     }
     // 队列空 + 未结束：阻塞，等 chunk/end event 唤醒
-    return new Promise<StreamReadResult>((resolve) => {
-      waiter = resolve;
+    return new Promise<StreamReadResult>((resolve, reject) => {
+      waiter = { resolve, reject };
     });
   };
 
   // cancel()：断线降级 / 组件卸载。取消监听，标记 done，
   // 并通知 Rust 中止后台流（review R4：防弃掉的连接靠服务端心跳存活）。
   const cancel = async (): Promise<void> => {
+    if (cancelled) return;
+    cancelled = true;
     unlistenChunk();
     unlistenEnd();
-    done = true;
     // fire-and-forget：流可能已自然结束（Rust 侧表项已摘），失败忽略。
-    invoke("stream_cancel", { streamId }).catch(() => undefined);
-    if (waiter) {
-      const w = waiter;
-      waiter = null;
-      w({ done: true, value: undefined });
-    }
+    cancelRust();
+    finish();
   };
 
   return { read, cancel };

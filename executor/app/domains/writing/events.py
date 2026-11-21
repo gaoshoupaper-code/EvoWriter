@@ -154,7 +154,7 @@ class WritingEventSink:
             output = data.get("output")
             tool_calls = _extract_tool_calls(output)
             text = _extract_model_text(output)
-            evt_data: dict[str, Any] = {"text": text}
+            evt_data: dict[str, Any] = {"text": text, "run_id": str(event.get("run_id") or "")}
             if tool_calls:
                 evt_data["tool_calls"] = tool_calls
             frames.append(_sse("model_output", evt_data))
@@ -180,6 +180,7 @@ class WritingEventSink:
 
         elif kind == "on_chat_model_stream":
             chunk = data.get("chunk")
+            run_id = str(event.get("run_id") or "")
             if hasattr(chunk, "content"):
                 content = chunk.content
             elif isinstance(chunk, dict):
@@ -187,7 +188,7 @@ class WritingEventSink:
             else:
                 content = ""
             if content:
-                frames.append(_sse("model_stream", {"content": content}))
+                frames.append(_sse("model_stream", {"content": content, "run_id": run_id}))
             # T20: 转发 reasoning token（DeepSeek thinking 模式的思考链）。
             # DeepSeekThinkingChatModel 已在流式 chunk 的 additional_kwargs["reasoning_content"]
             # 上携带逐 token reasoning delta（deepseek_thinking.py:112-114）。
@@ -201,7 +202,7 @@ class WritingEventSink:
                     ak = msg.get("additional_kwargs") or {}
                     reasoning = str(ak.get("reasoning_content", "") or "")
             if reasoning:
-                frames.append(_sse("reasoning_stream", {"content": reasoning}))
+                frames.append(_sse("reasoning_stream", {"content": reasoning, "run_id": run_id}))
             # 行事件（FR-001）：流式增量进行；子代理调用期间抑制（FR-005）。
             if not self._active_tasks and (content or reasoning):
                 frames.extend(self._row_model_stream(event, content, reasoning))

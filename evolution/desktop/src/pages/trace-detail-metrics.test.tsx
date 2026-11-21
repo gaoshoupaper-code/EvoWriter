@@ -12,7 +12,9 @@ vi.mock("@/hooks/useTraceStream", () => ({ useTracePolling: vi.fn() }));
 vi.mock("@/lib/api", () => ({
   getTraceEvents: vi.fn(), getTraceContext: vi.fn(), getTraceIntegrity: vi.fn(),
   getTraceModelIO: vi.fn(), stopActiveSession: vi.fn(), resolveTrace: vi.fn(),
+  evoStreamPath: (path: string) => `/evolution-api/text${path}`,
 }));
+vi.mock("@/lib/stream", () => ({ streamRequest: vi.fn() }));
 const { timeline, drawer } = vi.hoisted(() => ({ timeline: vi.fn(() => null), drawer: vi.fn(() => null) }));
 vi.mock("@/components/trace/TraceChainTimeline", () => ({ TraceChainTimeline: timeline }));
 vi.mock("@/components/trace/TraceChainDrawer", () => ({ TraceChainDrawer: drawer }));
@@ -21,6 +23,7 @@ vi.mock("@/components/trace/ArtifactsPanel", () => ({ ArtifactsPanel: () => null
 
 import { useTracePolling } from "@/hooks/useTraceStream";
 import { getTraceIntegrity, getTraceModelIO } from "@/lib/api";
+import { streamRequest } from "@/lib/stream";
 import TraceDetailPage from "@/pages/trace-detail";
 
 function detail(input = 12000, output = 3000, average = 10000): TraceDetailLite {
@@ -40,11 +43,11 @@ function detail(input = 12000, output = 3000, average = 10000): TraceDetailLite 
   };
 }
 
-function mockDetail(value: TraceDetailLite, isStale = false) {
+function mockDetail(value: TraceDetailLite | null, isStale = false) {
   vi.mocked(useTracePolling).mockReturnValue({
     detail: value, isLive: !isStale, isStale, lastSyncedAt: null,
     refresh: vi.fn(), refreshing: false, activeSession: null,
-    loading: false, error: isStale ? "同步失败" : null, availability: "available",
+    loading: value === null, error: isStale ? "同步失败" : null, availability: value ? "available" : "preparing",
   });
 }
 
@@ -52,7 +55,29 @@ function valueFor(label: string) {
   return screen.getByText(label, { selector: "label" }).parentElement!;
 }
 
-beforeEach(() => { vi.clearAllMocks(); vi.mocked(getTraceIntegrity).mockReset(); });
+function mockStream() {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const source = new ReadableStream<Uint8Array>({ start(value) { controller = value; } }).getReader();
+  return {
+    reader: {
+      read: async () => {
+        const result = await source.read();
+        return { done: result.done, value: result.value };
+      },
+      cancel: vi.fn(() => source.cancel()),
+    },
+    push: (chunk: string) => controller.enqueue(new TextEncoder().encode(chunk)),
+    close: () => controller.close(),
+  };
+}
+
+const sse = (event: string, data: unknown) => `event: ${event}\r\ndata: ${JSON.stringify(data)}\r\n\r\n`;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(getTraceIntegrity).mockReset();
+  vi.mocked(streamRequest).mockReset().mockImplementation(async () => mockStream().reader);
+});
 
 describe("评测运行的模型输入和输出", () => {
   it("优先展示首轮输入和逐条输出，保留可展开的运行详情", async () => {
@@ -121,6 +146,7 @@ describe("评测运行的模型输入和输出", () => {
     render(<TraceDetailPage prioritizeModelIO canReadContent={false} />);
     expect(screen.queryByRole("region", { name: "初始模型输入" })).not.toBeInTheDocument();
     expect(getTraceModelIO).not.toHaveBeenCalled();
+    expect(streamRequest).not.toHaveBeenCalled();
   });
 
   it("实时运行的新输出随已保存事件加载，即使运行计数没有变化", async () => {
@@ -135,12 +161,82 @@ describe("评测运行的模型输入和输出", () => {
     const snapshot = detail();
     mockDetail(snapshot);
     const page = render(<TraceDetailPage prioritizeModelIO />);
-    expect(await screen.findByText("暂无模型输出。")).toBeVisible();
+    expect(await screen.findByText("正在连接实时输出…")).toBeVisible();
     mockDetail({ ...snapshot, nodes: [{
       node_id: "llm:model-2", kind: "llm", label: "模型调用", depth: 0, status: "completed", raw_event_ids: ["model-2", "model-3"],
     }] });
     page.rerender(<TraceDetailPage prioritizeModelIO />);
     expect(await screen.findByText("模型刚返回的思考摘要")).toBeVisible();
+  });
+
+  it("实时追加未结束模型调用的思考和回复，归档后替换同一调用", async () => {
+    const stream = mockStream();
+    vi.mocked(streamRequest).mockResolvedValueOnce(stream.reader);
+    vi.mocked(getTraceModelIO).mockResolvedValueOnce({ initial_input: null, has_more: false, outputs: [] })
+      .mockResolvedValueOnce({ initial_input: null, has_more: false, outputs: [{
+        trace_id: "trace-metrics", event_id: "finished-call", run_id: "call-1", timestamp: "2026-11-21T00:00:00Z", sequence: 3,
+        type: "llm_end", status: "completed", source: "middleware", output: "已保存的回复",
+      }] });
+    const snapshot = detail();
+    mockDetail(null);
+    const page = render(<TraceDetailPage prioritizeModelIO modelLiveHint />);
+    expect(streamRequest).toHaveBeenCalledWith("/evolution-api/text/api/traces/trace-metrics/model-io/stream", { method: "GET" });
+
+    await act(async () => {
+      const frame = sse("snapshot", { calls: [{ run_id: "call-1", reasoning: "正在核对", text: "", finished: false }] });
+      stream.push(frame.slice(0, -1));
+      stream.push(frame.slice(-1));
+      stream.push(sse("delta", { run_id: "call-1", channel: "reasoning", text: "章纲" }));
+      stream.push(sse("delta", { run_id: "call-1", channel: "text", text: "继续写作" }));
+    });
+    const live = within(screen.getByRole("region", { name: "实时模型输出" }));
+    expect(live.getByText("正在核对章纲")).toBeVisible();
+    expect(live.getByText("继续写作")).toBeVisible();
+    expect(getTraceModelIO).not.toHaveBeenCalled();
+
+    mockDetail(snapshot);
+    await act(async () => page.rerender(<TraceDetailPage prioritizeModelIO modelLiveHint />));
+    expect(getTraceModelIO).toHaveBeenCalledTimes(1);
+    expect(streamRequest).toHaveBeenCalledTimes(1);
+
+    await act(async () => stream.push(sse("end", { run_id: "call-1" })));
+    expect(live.getByText("继续写作")).toBeVisible();
+    mockDetail({ ...snapshot, nodes: [{
+      node_id: "llm:model-2", kind: "llm", label: "模型调用", depth: 0, status: "completed", raw_event_ids: ["finished-call"],
+    }] });
+    page.rerender(<TraceDetailPage prioritizeModelIO modelLiveHint />);
+    expect(await screen.findByText("已保存的回复")).toBeVisible();
+    expect(live.queryByText("继续写作")).not.toBeInTheDocument();
+    await act(async () => stream.push(sse("done", {})));
+    expect(stream.reader.cancel).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("region", { name: "实时模型输出" })).not.toBeInTheDocument();
+  });
+
+  it("重连后用快照恢复同一调用，避免重复拼接已接收的片段", async () => {
+    vi.useFakeTimers();
+    try {
+      const first = mockStream();
+      const second = mockStream();
+      vi.mocked(streamRequest).mockResolvedValueOnce(first.reader).mockResolvedValueOnce(second.reader);
+      vi.mocked(getTraceModelIO).mockResolvedValue({ initial_input: null, has_more: false, outputs: [] });
+      mockDetail(detail());
+      render(<TraceDetailPage prioritizeModelIO />);
+      const data = { run_id: "call-1", reasoning: "接续思考", text: "", finished: false };
+      await act(async () => {
+        first.push(sse("snapshot", { calls: [data] }));
+        first.close();
+      });
+      expect(screen.getByText("实时输出重新连接中…")).toBeVisible();
+      await act(async () => vi.advanceTimersByTimeAsync(2_000));
+      await act(async () => {
+        second.push(sse("snapshot", { calls: [data] }));
+        second.push(sse("delta", { run_id: "call-1", channel: "reasoning", text: "中" }));
+      });
+      expect(screen.getByText("接续思考中")).toBeVisible();
+      expect(streamRequest).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

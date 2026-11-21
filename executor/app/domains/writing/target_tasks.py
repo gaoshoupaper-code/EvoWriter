@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -21,6 +21,7 @@ from contracts.target_tasks import (
     validate_scoped_input,
 )
 from contracts.trace.files import open_anchored_text
+from app.domains.writing.experiment_stream import experiment_identity, relay_model_frames, write_model_frame
 from app.platform.trace.recorder import observation_context
 from contracts.writing_artifacts import (
     is_final_status, load_writing_state, parse_relpath, parse_volume_chapter_range,
@@ -502,7 +503,7 @@ def _usage(recorder, trace_ids):
     return metrics.snapshot(terminal=True).model_dump()
 
 
-async def drive_task(request, workspace, service, thread, execution, store):
+async def drive_task(request, workspace, service, thread, execution, store, *, live_fd=None):
     from app.schemas.screenplay import ScreenplayGenerateRequest
     from app.domains.writing.pipeline import on_run_complete
     task_id = request.task_id
@@ -594,13 +595,10 @@ async def drive_task(request, workspace, service, thread, execution, store):
         store.journal(task_id, metadata={"phase": phase, "step_number": step_number, "thread": current_thread.model_dump(mode="json")})
         interrupted, final = None, False
         refs = {"task_id": request.task_id, "attempt_id": request.attempt_id}
-        reference = request.model_snapshot.api_key_ref if request.model_snapshot else None
-        match = re.fullmatch(r"experiment:([A-Za-z0-9_-]+):model", reference or "")
-        if match:
-            # A retry has a separate executor workspace but belongs to the original experiment sample.
-            retry = re.fullmatch(r"(sample-[0-9a-f]{32})-a(?:[2-9]|[1-9][0-9]+)", task_id)
-            sample_id = retry[1] if retry and task_id == request.attempt_id else task_id
-            refs.update(experiment_id=match[1], sample_id=sample_id)
+        identity = experiment_identity(request)
+        if identity:
+            refs.update(experiment_id=identity[0], sample_id=identity[1])
+        live_trace_id = resume_trace
         with execution, observation_context(refs):
             async for frame in service.generate_stream(
                 payload, current_thread, owner_id=current_thread.user_id,
@@ -613,12 +611,16 @@ async def drive_task(request, workspace, service, thread, execution, store):
                     if trace_id and trace_id not in trace_ids:
                         trace_ids.append(trace_id)
                         store.update(task_id, trace_ids=trace_ids)
+                    if trace_id:
+                        live_trace_id = trace_id
                     if data.get("status") in {"resume_rejected", "log_failed", "cancelled"}:
                         raise ValueError(str(data.get("reason") or data.get("error") or data["status"]))
                 elif kind == "interrupt":
                     interrupted = data
                 elif kind == "final":
                     final = True
+                elif live_fd is not None and identity:
+                    write_model_frame(live_fd, live_trace_id, kind, data)
                 if (store.directory(task_id) / "stop").exists():
                     raise asyncio.CancelledError
         store.journal(task_id, metadata={"evidence": execution.evidence})
@@ -655,7 +657,7 @@ async def drive_task(request, workspace, service, thread, execution, store):
             raise ValueError("连续3轮生成回复没有保存产物或取得实际审修进展，目标未完成")
 
 
-async def _run_worker(root: Path, task_id: str, stopped, parent_pid, *, prepared_model=None, isolated=False):
+async def _run_worker(root: Path, task_id: str, stopped, parent_pid, *, prepared_model=None, isolated=False, live_fd=None):
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
     from app.domains.writing.agent import MetaAgentService
     from app.domains.writing.target_execution import FrozenExecution
@@ -712,7 +714,8 @@ async def _run_worker(root: Path, task_id: str, stopped, parent_pid, *, prepared
                 return saver
             service._resolve_checkpointer = task_saver
             store.update(task_id, status="running", attempts=store.get(task_id).attempts + 1)
-            checks = await drive_task(request, workspace, service, thread, execution, store)
+            live_options = {"live_fd": live_fd} if live_fd is not None else {}
+            checks = await drive_task(request, workspace, service, thread, execution, store, **live_options)
             store.update(task_id, status="completed", completed=True, checks=checks, error=None,
                          artifacts=collect_artifacts(workspace), usage=_usage(recorder, store.get(task_id).trace_ids))
     except asyncio.CancelledError:
@@ -752,7 +755,7 @@ async def _run_worker(root: Path, task_id: str, stopped, parent_pid, *, prepared
         await recorder.aclose()
 
 
-def _prepare_candidate(store, task_id, lease_fd):
+def _prepare_candidate(store, task_id, lease_fd, *, live_fd=None):
     """Freeze the one allowed credential before executable candidate imports."""
     import socket
     from urllib.parse import urlparse
@@ -802,9 +805,10 @@ def _prepare_candidate(store, task_id, lease_fd):
     warm_runtime_identity()
     os.chdir(directory)
     writer_id = os.environ.get("WRITING_AGENT_ID")
+    keep_fds = [lease_fd] if live_fd is None else [lease_fd, live_fd]
     restrict_process(
         read_paths=[*runtime_read_paths(), store.package_directory(task_id)],
-        write_paths=[directory, workspace, Path("/dev/null")], connect_ports=[port], keep_fds=[lease_fd],
+        write_paths=[directory, workspace, Path("/dev/null")], connect_ports=[port], keep_fds=keep_fds,
     )
     # The sandbox scrubs every environment variable, including the nonsecret
     # scope that selects the four-agent target contract inside the worker.
@@ -815,7 +819,7 @@ def _prepare_candidate(store, task_id, lease_fd):
     return model
 
 
-def _target_worker(root: str, task_id: str, stopped, parent_pid: int):
+def _target_worker(root: str, task_id: str, stopped, parent_pid: int, live_pipe=None):
     if os.name != "nt":
         try:
             os.setsid()
@@ -829,8 +833,12 @@ def _target_worker(root: str, task_id: str, stopped, parent_pid: int):
             os.environ["OPENBLAS_NUM_THREADS"] = "1"
             os.environ["OMP_NUM_THREADS"] = "1"
             isolated = not store.record(task_id)["metadata"].get("owner_id")
-            model = _prepare_candidate(store, task_id, lease_fd) if isolated else None
-            asyncio.run(_run_worker(Path(root), task_id, stopped, parent_pid, prepared_model=model, isolated=isolated))
+            live_fd = live_pipe.fileno() if live_pipe is not None else None
+            if live_fd is not None:
+                os.set_blocking(live_fd, False)
+            model = _prepare_candidate(store, task_id, lease_fd, live_fd=live_fd) if isolated else None
+            asyncio.run(_run_worker(Path(root), task_id, stopped, parent_pid, prepared_model=model,
+                                    isolated=isolated, live_fd=live_fd))
     except OSError as exc:
         if acquired:
             store.update(task_id, status="failed", error=f"目标执行准备失败：{exc}", completed=False)
@@ -839,6 +847,9 @@ def _target_worker(root: str, task_id: str, stopped, parent_pid: int):
     except Exception as exc:
         logger.exception("目标执行准备失败 task=%s", task_id)
         store.update(task_id, status="failed", error=str(exc), completed=False)
+    finally:
+        if live_pipe is not None:
+            live_pipe.close()
 
 
 class TargetTaskManager:
@@ -1218,10 +1229,23 @@ class TargetTaskManager:
             return
         context = mp.get_context("spawn")
         stopped = context.Event()
-        process = context.Process(target=_target_worker, args=(str(self.store.root), task_id, stopped, os.getpid()))
+        live_read = live_write = relay = None
+        identity = experiment_identity(TargetTaskRequest.model_validate(trusted["request"]))
+        if identity and os.name != "nt":
+            from app.platform.core.settings import get_settings
+            settings = get_settings()
+            evolution_url, notify_token = settings.evolution_url.rstrip("/"), settings.evolution_notify_token
+            if evolution_url and notify_token:
+                with suppress(OSError):
+                    live_read, live_write = context.Pipe(duplex=False)
+        process = context.Process(target=_target_worker,
+                                  args=(str(self.store.root), task_id, stopped, os.getpid(), live_write))
         self.processes[task_id] = process, stopped
-        process.start()
         try:
+            process.start()
+            if live_read is not None:
+                live_write.close()
+                relay = asyncio.create_task(relay_model_frames(live_read, evolution_url, notify_token, identity))
             while process.is_alive():
                 await asyncio.to_thread(self._register_traces, task_id)
                 await asyncio.sleep(0.5)
@@ -1235,6 +1259,12 @@ class TargetTaskManager:
             self.verify_result(task_id, trusted)
             await asyncio.to_thread(self._register_traces, task_id)
         finally:
+            if relay is not None:
+                relay.cancel()
+                await asyncio.gather(relay, return_exceptions=True)
+            if live_read is not None:
+                live_read.close()
+                live_write.close()
             self.processes.pop(task_id, None)
             self._release_workspace(task_id, trusted)
 

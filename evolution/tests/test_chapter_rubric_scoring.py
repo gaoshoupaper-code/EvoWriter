@@ -1,9 +1,11 @@
 """Repeated chapter judging preserves completed evidence and gates comparisons."""
 from __future__ import annotations
 
+import asyncio
 import json
 import sqlite3
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 import httpx
@@ -14,7 +16,9 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core import db
-from app.experiments import api, evaluation, repo, rubrics, runner
+from app.core.notify_auth import NotifyTokenMiddleware
+from app.experiments import api, evaluation, live_output, repo, rubrics, runner
+from app.ingestion import ingestion
 from app.trace import recorder as trace_recorder
 from app.view import traces
 from test_experiments import run_record
@@ -84,6 +88,10 @@ def stub_judges(monkeypatch, *, invalid_at=(), reject_after=None, http_error_at=
                 "prompt_tokens": 3, "completion_tokens": 4, "provider_detail": "专用评语 与 她在门边停下",
             }})
 
+        @contextmanager
+        def stream(self, _method, url, **kwargs):
+            yield self.post(url, **kwargs)
+
     monkeypatch.setattr(evaluation.httpx, "Client", JudgeClient)
     monkeypatch.setattr(repo, "decrypt_credentials", lambda judge: {
         "base_url": "https://judge.invalid", "api_key": "test-secret", "model": judge["model"],
@@ -103,6 +111,95 @@ def record_traces(monkeypatch):
 
 def trace_record(trace_id):
     return db.query_one("SELECT status, error FROM runs WHERE trace_id=?", (trace_id,))
+
+
+def test_live_judge_publishes_provider_chunks_before_completion():
+    trace_id = "test-live-judge"
+    call_id = "judge-1"
+
+    class JudgeStream(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b'data: {"choices":[{"delta":{"reasoning_content":"live thought"}}]}\n\n'
+            _, packets = live_output.read(trace_id, None)
+            assert "live thought" in packets[0]
+            assert '"finished":false' in packets[0]
+            yield b'data: {"choices":[{"delta":{"content":"{\\"score\\":"}}]}\n\n'
+            yield b'data: {"choices":[{"delta":{"content":"4}"},"finish_reason":"stop"}]}\n\n'
+            yield b'data: {"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}\n\n'
+            yield b"data: [DONE]\n\n"
+
+    def on_request(request):
+        assert json.loads(request.content)["stream_options"] == {"include_usage": True}
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=JudgeStream())
+
+    try:
+        with httpx.Client(transport=httpx.MockTransport(on_request)) as client:
+            output, usage = evaluation._judge_chat(client, "https://judge.invalid", {}, {}, trace_id, call_id, lambda: False)
+        assert output == '{"score":4}'
+        assert usage == {"prompt_tokens": 7, "completion_tokens": 3}
+        assert '"finished":true' in live_output.read(trace_id, None)[1][0]
+    finally:
+        live_output.discard(trace_id)
+
+
+def test_judge_can_use_compatible_gateway_without_stream_support():
+    requests = []
+
+    def on_request(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        if body.get("stream"):
+            return httpx.Response(400, json={"error": "Unsupported parameter: stream_options"})
+        return httpx.Response(200, json=make_completion({"score": 4}))
+
+    with httpx.Client(transport=httpx.MockTransport(on_request)) as client:
+        output, _ = evaluation._judge_chat(client, "https://judge.invalid", {}, {}, "legacy-judge", "legacy-call", lambda: False)
+    assert json.loads(output) == {"score": 4}
+    assert len(requests) == 2 and "stream" not in requests[1]
+
+
+def test_model_stream_authorizes_early_writing_output_and_expires_at_terminal(chapter_run, monkeypatch):
+    run, sample = chapter_run
+    sample.update(status="running", task_id="original")
+    repo.put_run(run)
+    trace_id = "test-live-writing"
+    monkeypatch.setattr(ingestion.settings, "notify_token", "test-token")
+    app = FastAPI()
+    app.add_middleware(NotifyTokenMiddleware)
+    app.include_router(ingestion.router, prefix="/api")
+    app.include_router(traces.router, prefix="/api")
+    batch = {"trace_id": trace_id, "experiment_id": run["id"], "sample_id": sample["id"],
+             "updates": [{"op": "delta", "run_id": "call-1", "channel": "reasoning", "text": "正在推敲"}]}
+    with TestClient(app) as client:
+        assert client.post("/api/ingestion/model-stream", json=batch).status_code == 401
+        headers = {"x-notify-token": "test-token"}
+        assert client.post("/api/ingestion/model-stream", json={**batch, "sample_id": "other"}, headers=headers).status_code == 404
+        assert client.post("/api/ingestion/model-stream", json=batch, headers=headers).status_code == 204
+        assert client.get(f"/api/traces/{trace_id}/model-io/stream").status_code == 403
+
+    async def consume():
+        request = Request({"type": "http", "method": "GET", "path": "/"})
+        request.state.is_super_admin = True
+        stream = await traces.stream_trace_model_io(request, trace_id)
+        reader = stream.body_iterator
+        first = await anext(reader)
+        assert first.isascii()
+        assert json.loads(first.split("data: ", 1)[1])["calls"][0]["reasoning"] == "正在推敲"
+        live_output.publish_delta(trace_id, "call-1", "text", "初步答案")
+        assert "event: delta" in await anext(reader)
+        live_output.finish_call(trace_id, "call-1")
+        assert "event: end" in await anext(reader)
+        db.execute("""INSERT INTO runs(trace_id,workspace_id,status,ingested_at,run_purpose)
+                   VALUES(?, '', 'completed', '', 'optimization')""", (trace_id,))
+        assert "event: done" in await asyncio.wait_for(anext(reader), 3)
+        await reader.aclose()
+
+    try:
+        asyncio.run(consume())
+        assert db.query_one("SELECT 1 FROM event_payloads WHERE trace_id=?", (trace_id,)) is None
+        assert '"calls":[]' in live_output.read(trace_id, None)[1][0]
+    finally:
+        live_output.discard(trace_id)
 
 
 def test_repeats_retry_missing_entry_and_keep_frozen_rule_and_content_boundary(chapter_run, monkeypatch):

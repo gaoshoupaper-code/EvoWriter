@@ -36,9 +36,9 @@ import { formatTokensW } from "@/lib/tokenFormat";
  * - 点击 LLM 节点的"跳转图表"按钮 → 切到 Token 图表 tab + 高亮 loopIndex
  * - Token 图表点击数据点 → 切到调用链 tab + 高亮 nodeId + 滚动定位
  */
-export default function TraceDetailPage({ traceIdOverride, embedded = false, canReadContent, displayContextOverride, prioritizeModelIO, modelRationale }: {
+export default function TraceDetailPage({ traceIdOverride, embedded = false, canReadContent, displayContextOverride, prioritizeModelIO, modelRationale, modelLiveHint }: {
   traceIdOverride?: string; embedded?: boolean; canReadContent?: boolean; displayContextOverride?: TraceDisplayContext;
-  prioritizeModelIO?: boolean; modelRationale?: string;
+  prioritizeModelIO?: boolean; modelRationale?: string; modelLiveHint?: boolean;
 } = {}) {
   const { traceId: routeTraceId } = useParams<{ traceId: string }>();
   const traceId = traceIdOverride ?? routeTraceId;
@@ -300,6 +300,19 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
 
   // ── 渲染 ──
 
+  const runInProgress = activeRun ? ["running", "awaiting_input", "pending", "cancelling"].includes(activeRun.status) : !!modelLiveHint;
+  const pageClass = "trace-detail-page" + (embedded ? " experiment-embedded-trace" : "");
+  const modelEventCount = showModelIO ? nodes.reduce((count, node) =>
+    node.kind === "llm" || node.node_id.startsWith("llm:") ? count + node.raw_event_ids.length : count, 0) : 0;
+  const modelIO = showModelIO && traceId ? <TraceModelIO key={traceId} traceId={traceId} eventCount={modelEventCount}
+    modelRationale={modelRationale} live={runInProgress} archiveReady={!!activeRun} /> : null;
+  if (modelIO && !activeRun) {
+    return <div className={pageClass}>
+      {modelIO}
+      {!loading && error && <p className="trace-detail-error">{error}</p>}
+      {!loading && !error && availability === "unavailable" && <p className="trace-detail-empty">Trace 不可用，可重跑</p>}
+    </div>;
+  }
   if (loading) {
     return <div className="page-loading">加载 trace…</div>;
   }
@@ -347,7 +360,6 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
   }
 
   const run = activeRun;
-  const runInProgress = ["running", "awaiting_input", "pending", "cancelling"].includes(run.status);
   const cancellationTimedOut = run.status === "cancel_timeout";
   const failedRun = run.status === "failed" || cancellationTimedOut;
   const recordedErrors = failedRun ? nodes.filter((node) => node.kind !== "run" && node.kind !== "agent"
@@ -359,8 +371,6 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
     : (failedNode?.kind === "error" ? failedNode.error?.trim() : undefined)
       || recordedErrors.find((node) => node.kind === "error" && node.error?.trim())?.error?.trim();
   const failureReason = run.error?.trim() || nodeFailureReason;
-  const modelEventCount = showModelIO ? nodes.reduce((count, node) =>
-    node.kind === "llm" || node.node_id.startsWith("llm:") ? count + node.raw_event_ids.length : count, 0) : 0;
 
   const technicalDetails = (
     <>
@@ -643,14 +653,12 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
   );
 
   return (
-    <div className={"trace-detail-page" + (embedded ? " experiment-embedded-trace" : "")}>
-      {showModelIO && traceId ? <>
-        <TraceModelIO key={traceId} traceId={traceId} eventCount={modelEventCount} modelRationale={modelRationale} />
-        <details className="trace-technical-details" onToggle={event => setTechnicalOpen(event.currentTarget.open)}>
+    <div className={pageClass}>
+      {modelIO}
+      {modelIO ? <details className="trace-technical-details" onToggle={event => setTechnicalOpen(event.currentTarget.open)}>
           <summary>运行详情</summary>
           {technicalOpen && technicalDetails}
-        </details>
-      </> : technicalDetails}
+        </details> : technicalDetails}
     </div>
   );
 }

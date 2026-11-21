@@ -6,19 +6,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from contracts.cancel_state import is_terminal
 from contracts.trace.usage import TraceMetrics, metrics_from_nodes, usage_from_output
 
 import app.core.db as db
+from app.experiments import live_output
 from app.ingestion import projector
 from app.trace_payloads import delete_trace_payloads, hydrate_event, read_payload
 from app.trace.access import audit_content_access, require_full_content_access
-from app.view.observation_scope import ObservationScope, scope_sql, experiment_metadata
+from app.view.observation_scope import ObservationScope, scope_sql, experiment_metadata, source_scope
 from app.view.display_context import display_contexts
 from app.core.models import (
     CancelAudit,
@@ -621,6 +626,48 @@ def get_trace_model_io(
     outputs = [hydrate_event(TraceLogEvent.model_validate_json(row["payload_json"])) for row in rows[:limit]]
     _audit_content_access(request, "view", "trace_model_io", trace_id)
     return TraceModelIOResponse(initial_input=initial, outputs=outputs, has_more=len(rows) > limit)
+
+
+@router.get("/traces/{trace_id}/model-io/stream")
+async def stream_trace_model_io(request: Request, trace_id: str) -> StreamingResponse:
+    """Send in-progress experiment output over a content-authorized stream."""
+    from app.view.active import get_active_runs
+
+    _require_full_content_access(request)
+    row = db.query_one("SELECT status,run_purpose,external_refs_json FROM runs WHERE trace_id=?", (trace_id,))
+    scope = source_scope({**row, "external_refs": json.loads(row["external_refs_json"] or "{}")}) if row else None
+    if scope == "user" or (scope != "experiment" and not live_output.writing_sample(trace_id) and not any(
+        run.get("trace_id") == trace_id and source_scope(run) == "experiment" for run in get_active_runs()
+    )):
+        raise HTTPException(404, "Experiment trace not found")
+    _audit_content_access(request, "view", "trace_model_stream", trace_id)
+
+    async def generate():
+        cursor = None
+        status = row["status"] if row else None
+        next_status = time.monotonic() + 1
+        next_heartbeat = time.monotonic() + 10
+        while True:
+            if is_terminal(status):
+                live_output.discard(trace_id)
+                yield live_output.frame("done", {})
+                return
+            cursor, frames = live_output.read(trace_id, cursor)
+            for packet in frames:
+                yield packet
+            now = time.monotonic()
+            if now >= next_heartbeat:
+                yield ": ping\n\n"
+                next_heartbeat = now + 10
+            if now >= next_status:
+                current = db.query_one("SELECT status FROM runs WHERE trace_id=?", (trace_id,))
+                status = current["status"] if current else None
+                next_status = now + 1
+            await asyncio.sleep(0.125)
+
+    return StreamingResponse(generate(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-store", "X-Accel-Buffering": "no",
+    })
 
 
 @router.get("/traces/{trace_id}/context", response_model=TraceContextSegment)

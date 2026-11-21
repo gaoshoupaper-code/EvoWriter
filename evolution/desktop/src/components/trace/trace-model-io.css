@@ -52,6 +52,14 @@
   border-left: 2px solid var(--evo-accent);
 }
 
+.trace-model-stream {
+  padding: 8px 10px;
+  border-left: 2px solid var(--evo-accent);
+}
+
+.trace-model-stream-status { color: var(--evo-ink-secondary); font-size: var(--text-ui-caption); }
+.trace-model-stream pre { max-height: 14rem; overflow: auto; overscroll-behavior: contain; }
+
 .trace-model-tools {
   color: var(--evo-ink-secondary);
   font-size: var(--text-ui-caption);

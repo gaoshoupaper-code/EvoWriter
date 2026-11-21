@@ -8,6 +8,7 @@ import type { TraceDisplayContext } from "@/lib/trace-display";
 import { useTracePolling } from "@/hooks/useTraceStream";
 import { TraceChainTimeline } from "@/components/trace/TraceChainTimeline";
 import { TraceChainDrawer } from "@/components/trace/TraceChainDrawer";
+import { TraceModelIO } from "@/components/trace/TraceModelIO";
 import { TokenChartPanel } from "@/components/trace/TokenChartPanel";
 import { ArtifactsPanel } from "@/components/trace/ArtifactsPanel";
 import { Badge } from "@/components/ui/badge";
@@ -35,14 +36,18 @@ import { formatTokensW } from "@/lib/tokenFormat";
  * - 点击 LLM 节点的"跳转图表"按钮 → 切到 Token 图表 tab + 高亮 loopIndex
  * - Token 图表点击数据点 → 切到调用链 tab + 高亮 nodeId + 滚动定位
  */
-export default function TraceDetailPage({ traceIdOverride, embedded = false, canReadContent, displayContextOverride }: {
+export default function TraceDetailPage({ traceIdOverride, embedded = false, canReadContent, displayContextOverride, prioritizeModelIO }: {
   traceIdOverride?: string; embedded?: boolean; canReadContent?: boolean; displayContextOverride?: TraceDisplayContext;
+  prioritizeModelIO?: boolean;
 } = {}) {
   const { traceId: routeTraceId } = useParams<{ traceId: string }>();
   const traceId = traceIdOverride ?? routeTraceId;
   const navigate = useNavigate();
   const outletContext = useOutletContext<{ isSuperAdmin: boolean } | null>();
   const isSuperAdmin = canReadContent ?? outletContext?.isSuperAdmin ?? false;
+  const showModelIO = prioritizeModelIO && isSuperAdmin && !!traceId;
+  const [technicalOpen, setTechnicalOpen] = useState(false);
+  const showTechnical = !showModelIO || technicalOpen;
 
   const {
     detail, isLive, isStale, lastSyncedAt, refresh, refreshing,
@@ -144,7 +149,7 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
       ? !["running", "awaiting_input", "pending", "cancelling"].includes(activeRun.status)
       : false;
     // pending 不拉诊断（记录中/校验中，由 banner 显示中性态）。
-    if (!traceId || !status || status === "pending" || !isTerminal) {
+    if (!showTechnical || !traceId || !status || status === "pending" || !isTerminal) {
       setIntegrityDiagnosis(null);
       return;
     }
@@ -175,7 +180,7 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
     };
     fetchDiag();
     return () => { ignore = true; };
-  }, [traceId, activeRun?.integrity_status, activeRun?.status]);
+  }, [showTechnical, traceId, activeRun?.integrity_status, activeRun?.status]);
 
   // 抽屉内 LLM 输入消息（从懒加载的 events 找 start 事件的 input.messages）
   const drawerInputMessages = useMemo(() => {
@@ -354,9 +359,11 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
     : (failedNode?.kind === "error" ? failedNode.error?.trim() : undefined)
       || recordedErrors.find((node) => node.kind === "error" && node.error?.trim())?.error?.trim();
   const failureReason = run.error?.trim() || nodeFailureReason;
+  const modelEventCount = showModelIO ? nodes.reduce((count, node) =>
+    node.kind === "llm" || node.node_id.startsWith("llm:") ? count + node.raw_event_ids.length : count, 0) : 0;
 
-  return (
-    <div className={"trace-detail-page" + (embedded ? " experiment-embedded-trace" : "")}>
+  const technicalDetails = (
+    <>
       {/* 顶部 */}
       <header className="trace-detail-header">
         <div className="trace-detail-title-row">
@@ -632,6 +639,18 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
           <ArtifactsPanel traceId={traceId ?? ""} canReadContent={isSuperAdmin} />
         )}
       </div>
+    </>
+  );
+
+  return (
+    <div className={"trace-detail-page" + (embedded ? " experiment-embedded-trace" : "")}>
+      {showModelIO && traceId ? <>
+        <TraceModelIO key={traceId} traceId={traceId} eventCount={modelEventCount} />
+        <details className="trace-technical-details" onToggle={event => setTechnicalOpen(event.currentTarget.open)}>
+          <summary>运行详情</summary>
+          {technicalOpen && technicalDetails}
+        </details>
+      </> : technicalDetails}
     </div>
   );
 }

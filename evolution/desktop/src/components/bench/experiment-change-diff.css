@@ -1,0 +1,52 @@
+.experiment-change-diff {
+  max-height: min(520px, 55vh);
+  overflow: auto;
+  border: 1px solid var(--evo-line);
+  border-radius: var(--evo-radius-md);
+  background: var(--evo-surface-2);
+}
+.experiment-change-file + .experiment-change-file { border-top: 1px solid var(--evo-line); }
+.experiment-change-file-heading {
+  position: sticky;
+  top: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  padding: 10px 14px;
+  background: var(--evo-surface-2);
+  border-bottom: 1px solid var(--evo-line);
+}
+.experiment-change-file-heading h3 { margin: 0; font-size: inherit; overflow-wrap: anywhere; }
+.experiment-change-file-heading code { font-family: var(--evo-font-mono); }
+.experiment-change-counts { display: flex; gap: 10px; font-family: var(--evo-font-mono); }
+.experiment-change-diff .addition { color: var(--evo-success); }
+.experiment-change-diff .deletion { color: var(--evo-danger); }
+.experiment-change-lines {
+  font-family: var(--evo-font-mono);
+  font-size: var(--evo-text-sm);
+  line-height: 1.7;
+}
+.experiment-change-lines > div {
+  display: grid;
+  grid-template-columns: 1.5em minmax(0, 1fr);
+  padding: 1px 14px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.experiment-change-lines .range {
+  display: block;
+  padding-block: 3px;
+  color: var(--evo-ink-muted);
+  background: var(--evo-surface-3);
+}
+.experiment-change-lines .context { color: var(--evo-ink-secondary); }
+.experiment-change-lines .addition { background: var(--evo-success-soft); }
+.experiment-change-lines .deletion { background: var(--evo-danger-soft); }
+.experiment-change-lines :is(ins, del) { text-decoration: none; }
+.experiment-change-message { padding: 8px 14px; color: var(--evo-ink-muted); overflow-wrap: anywhere; }
+.experiment-improvement-disclosure > summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.experiment-improvement-disclosure[open] > summary { margin-bottom: 14px; }

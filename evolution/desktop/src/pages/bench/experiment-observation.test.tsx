@@ -161,6 +161,7 @@ describe("实验观测 / REQ-20261108-191146、REQ-20261119-203159", () => {
         artifacts: { "正文/第002章.md": "依据原稿全文" }, scores: { overall: 3, dimensions: { "章纲兑现": 3 }, reasons: { "章纲兑现": "缺少争吵场景" } } }),
         sample("holdout", { package_title: "独立复测正文", package_id: "holdout", phase: "regression" })] }) as never);
     openArchive("/bench/experiments/id/rounds/2");
+    fireEvent.click(await screen.findByText("改进依据"));
     fireEvent.click(await screen.findByText(/依据样本 · 山城样本/));
     expect(screen.getByText("依据原稿全文")).toBeVisible();
     expect(screen.getByText("缺少争吵场景")).toBeVisible();
@@ -302,7 +303,7 @@ describe("实验观测 / REQ-20261108-191146、REQ-20261119-203159", () => {
     expect(JSON.parse((await screen.findByTestId("embedded-trace")).getAttribute("data-display-context")!)).toMatchObject({
       experiment_name: "运行时实验", sample_name: "运行时样本", operation: "generation", repeat: 3,
     });
-    fireEvent.change(screen.getByLabelText("选择 Trace"), { target: { value: "generation-step-2" } });
+    fireEvent.change(screen.getByLabelText("选择运行记录"), { target: { value: "generation-step-2" } });
     expect(screen.getByTestId("embedded-trace")).toHaveAttribute("data-trace-id", "generation-step-2");
   });
 

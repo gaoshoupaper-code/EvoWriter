@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { TraceDetailLite } from "@/lib/types";
+import type { TraceDetailLite, TraceLogEvent } from "@/lib/types";
 
 vi.mock("react-router-dom", () => ({
   useParams: () => ({ traceId: "trace-metrics" }),
@@ -11,7 +11,7 @@ vi.mock("react-router-dom", () => ({
 vi.mock("@/hooks/useTraceStream", () => ({ useTracePolling: vi.fn() }));
 vi.mock("@/lib/api", () => ({
   getTraceEvents: vi.fn(), getTraceContext: vi.fn(), getTraceIntegrity: vi.fn(),
-  stopActiveSession: vi.fn(), resolveTrace: vi.fn(),
+  getTraceModelIO: vi.fn(), stopActiveSession: vi.fn(), resolveTrace: vi.fn(),
 }));
 const { timeline, drawer } = vi.hoisted(() => ({ timeline: vi.fn(() => null), drawer: vi.fn(() => null) }));
 vi.mock("@/components/trace/TraceChainTimeline", () => ({ TraceChainTimeline: timeline }));
@@ -20,7 +20,7 @@ vi.mock("@/components/trace/TokenChartPanel", () => ({ TokenChartPanel: () => nu
 vi.mock("@/components/trace/ArtifactsPanel", () => ({ ArtifactsPanel: () => null }));
 
 import { useTracePolling } from "@/hooks/useTraceStream";
-import { getTraceIntegrity } from "@/lib/api";
+import { getTraceIntegrity, getTraceModelIO } from "@/lib/api";
 import TraceDetailPage from "@/pages/trace-detail";
 
 function detail(input = 12000, output = 3000, average = 10000): TraceDetailLite {
@@ -53,6 +53,67 @@ function valueFor(label: string) {
 }
 
 beforeEach(() => { vi.clearAllMocks(); vi.mocked(getTraceIntegrity).mockReset(); });
+
+describe("评测运行的模型输入和输出", () => {
+  it("优先展示首轮输入和逐条输出，保留可展开的运行详情", async () => {
+    const event = (sequence: number, value: Partial<TraceLogEvent> = {}): TraceLogEvent => ({
+      trace_id: "trace-metrics", event_id: "event-" + sequence, sequence, type: "llm_end", status: "completed",
+      source: "middleware", timestamp: "2026-11-21T00:00:00Z", ...value,
+    });
+    vi.mocked(getTraceModelIO).mockResolvedValueOnce({
+      initial_input: event(2, { type: "llm_start", input: { messages: [
+        { type: "system", content: "遵循写作规则" }, { role: "user", content: "写出下一章" },
+      ] } }),
+      outputs: [event(3, { output: { messages: [{ type: "ai", content: "读取材料" }] } }),
+        event(8, { output: null, tool_calls: [{ name: "read_file" }] })], has_more: true,
+    }).mockResolvedValueOnce({ initial_input: null, outputs: [event(12, { output: "最终输出" })], has_more: false });
+    mockDetail(detail());
+    render(<TraceDetailPage prioritizeModelIO />);
+
+    const input = await screen.findByRole("region", { name: "初始模型输入" });
+    expect(await within(input).findByText("写出下一章")).toBeVisible();
+    expect(within(input).getByText("系统提示词")).toBeVisible();
+    const outputs = within(screen.getByRole("region", { name: "模型输出" }));
+    expect(outputs.getByText("读取材料")).toBeVisible();
+    expect(outputs.getByText("请求调用工具 · read_file")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "调用链" })).not.toBeInTheDocument();
+
+    fireEvent.click(outputs.getByRole("button", { name: "加载更多输出" }));
+    expect(await outputs.findByText("最终输出")).toBeVisible();
+    expect(getTraceModelIO).toHaveBeenLastCalledWith("trace-metrics", 8, false);
+    expect(outputs.getAllByRole("listitem").map(item => item.textContent)).toEqual([
+      "第 1 次调用读取材料", "第 2 次调用请求调用工具 · read_file", "第 3 次调用最终输出",
+    ]);
+
+    fireEvent.click(screen.getByText("运行详情"));
+    expect(await screen.findByRole("button", { name: "调用链" })).toBeVisible();
+  });
+
+  it("正文权限缺失时不加载模型输入和输出", () => {
+    mockDetail(detail());
+    render(<TraceDetailPage prioritizeModelIO canReadContent={false} />);
+    expect(screen.queryByRole("region", { name: "初始模型输入" })).not.toBeInTheDocument();
+    expect(getTraceModelIO).not.toHaveBeenCalled();
+  });
+
+  it("实时运行的新输出随已保存事件加载，即使运行计数没有变化", async () => {
+    vi.mocked(getTraceModelIO)
+      .mockResolvedValueOnce({ initial_input: null, outputs: [], has_more: false })
+      .mockResolvedValueOnce({ initial_input: null, has_more: false, outputs: [{
+        trace_id: "trace-metrics", event_id: "model-3", timestamp: "2026-11-21T00:00:00Z", sequence: 3,
+        type: "llm_end", status: "completed", source: "middleware", output: "模型刚完成的回复",
+      }] });
+    const snapshot = detail();
+    mockDetail(snapshot);
+    const page = render(<TraceDetailPage prioritizeModelIO />);
+    expect(await screen.findByText("暂无模型输出。")).toBeVisible();
+    mockDetail({ ...snapshot, nodes: [{
+      node_id: "llm:model-2", kind: "llm", label: "模型调用", depth: 0, status: "completed", raw_event_ids: ["model-2", "model-3"],
+    }] });
+    page.rerender(<TraceDetailPage prioritizeModelIO />);
+    expect(await screen.findByText("模型刚完成的回复")).toBeVisible();
+  });
+});
 
 describe("Trace 详情实时统计（REQ-20261029-104420）", () => {
   it.each(["incomplete", "conflict", "legacy"] as const)("运行中保留 %s 标记和采集异常，不提示重跑", (integrity) => {

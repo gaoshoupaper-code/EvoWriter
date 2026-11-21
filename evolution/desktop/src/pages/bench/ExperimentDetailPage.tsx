@@ -131,9 +131,9 @@ export function ExperimentDetailPage({ id, title, anchor, loading, error, retry,
   </div>;
 }
 
-export function ExperimentRecordTrace({ title, experiment, archived = [], live = [], waiting, unavailable, context }: {
+export function ExperimentRecordTrace({ title, experiment, archived = [], live = [], waiting, unavailable, context, prioritizeModelIO }: {
   title: string; experiment: Experiment; archived?: string[]; live?: ActiveRun[]; waiting?: boolean;
-  unavailable?: boolean; context: TraceDisplayContext;
+  unavailable?: boolean; context: TraceDisplayContext; prioritizeModelIO?: boolean;
 }) {
   const [selected, setSelected] = useState("");
   const traces = [...new Set([...archived, ...live.map(run => run.trace_id)])];
@@ -142,16 +142,16 @@ export function ExperimentRecordTrace({ title, experiment, archived = [], live =
   const active = live.find(run => run.trace_id === traceId);
   const trace = traceId ? mergeTraceDisplay(experiment.trace_runs?.[traceId] ?? { trace_id: traceId }, active) : {};
   return <section aria-label={title}>
-    <h2>{title}</h2>
+    {!prioritizeModelIO && <h2>{title}</h2>}
     {unavailable && <p role="status">运行中 Trace 暂时无法更新。</p>}
     {!experiment.can_read_content ? <p className="experiment-note">查看 Trace 详情需要正文读取权限。</p>
       : !traceId ? <p className="experiment-note" role={waiting ? "status" : undefined}>
         {waiting ? "等待 Trace 同步…" : "尚无关联 Trace。"}</p> : <>
-        {traces.length > 1 && <label className="record-trace-picker">选择 Trace
+        {traces.length > 1 && <label className="record-trace-picker">{prioritizeModelIO ? "选择运行记录" : "选择 Trace"}
           <select value={traceId} className="config-input" onChange={event => setSelected(event.target.value)}>
-            {traces.map((id, i) => <option key={id} value={id}>{i + 1} · {id}</option>)}
+            {traces.map((id, i) => <option key={id} value={id}>{prioritizeModelIO ? `第 ${i + 1} 段运行` : `${i + 1} · ${id}`}</option>)}
           </select></label>}
-        <TraceDetailPage key={traceId} traceIdOverride={traceId} embedded canReadContent
+        <TraceDetailPage key={traceId} traceIdOverride={traceId} embedded canReadContent prioritizeModelIO={prioritizeModelIO}
           displayContextOverride={traceDisplayContext(trace, context)} />
       </>}
   </section>;

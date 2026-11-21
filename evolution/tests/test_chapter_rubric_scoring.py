@@ -154,6 +154,23 @@ def test_repeats_retry_missing_entry_and_keep_frozen_rule_and_content_boundary(c
         assert "专用评语" not in usage_page.text
         assert usage_page.json()["items"][0]["usage"]["total_tokens"] == 7
         assert client.get(f"/traces/{trace_id}/events?event_ids=scoring-event").status_code == 403
+        recorder.flush_sync(trace_id)
+        model_io = f"/traces/{trace_id}/model-io"
+        assert client.get(model_io).status_code == 403
+        model_io_headers = {"x-test-role": "admin"}
+        batch = client.get(model_io, params={"limit": 2}, headers=model_io_headers).json()
+        assert batch["initial_input"]["input"] == calls[0]["messages"]
+        assert [event["type"] for event in batch["outputs"]] == ["llm_end", "llm_error"]
+        assert "专用评语" in batch["outputs"][0]["output"]
+        assert batch["has_more"]
+        cursor = batch["outputs"][-1]["sequence"]
+        remaining = client.get(model_io, params={"after_sequence": cursor, "include_initial": False},
+                               headers=model_io_headers).json()
+        assert remaining["initial_input"] is None
+        sequences = [event["sequence"] for event in remaining["outputs"]]
+        assert len(sequences) == 16 and all(sequence > cursor for sequence in sequences)
+        assert sequences == sorted(sequences)
+        assert not remaining["has_more"]
         saved = repo.get_run(run["id"])
         recovered = saved["samples"][0]
         runner.process_sample(saved, recovered)

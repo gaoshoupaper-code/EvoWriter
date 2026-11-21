@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { ImprovementSources } from "@/components/bench/ChapterComparison";
+import { ExperimentChangeDiff } from "@/components/bench/ExperimentChangeDiff";
 import { ExperimentVersionFiles } from "@/components/bench/ExperimentVersionFiles";
 import type { ActiveRun } from "@/lib/api";
 import { EXPERIMENT_STATUS } from "@/lib/experiment-types";
@@ -37,21 +38,33 @@ function ImprovementContent({ id, round }: { id: string; round: number }) {
     {experiment && (!entry ? <p role="alert">本实验中没有这轮进化记录。</p> : <>
       <header className="record-heading"><h2>候选第 {round} 轮</h2>
         <p>{experiment.name} · {EXPERIMENT_STATUS[entry.status] ?? entry.status}</p></header>
+      <section aria-labelledby="improvement-changes-heading">
+        <h2 id="improvement-changes-heading">实际改动</h2>
+        {experiment.can_read_content
+          ? entry.diff?.trim() ? <ExperimentChangeDiff diff={entry.diff} />
+            : <p className="experiment-note" role={waiting ? "status" : undefined}>
+              {waiting ? "进化中，等待保存文件改动。" : "本轮没有已保存的文件差异。"}
+            </p>
+          : <p className="experiment-note">查看文件改动需要正文读取权限。</p>}
+      </section>
       {entry.error && <p role="alert" className="experiment-error">{experiment.can_read_content
         ? entry.error : "本轮异常。查看完整原因需要正文读取权限。"}</p>}
-      <ExperimentRecordTrace title="进化 Trace" experiment={experiment} waiting={waiting} unavailable={liveError}
-        archived={entry.trace_ids} live={live} context={{ experiment_name: experiment.name, task_type: experiment.task_type,
-          operation: "improvement", phase: "improvement", round }} />
-      <section aria-label="Harness 改动">
-        <h2>Harness 改动</h2>
-        {experiment.can_read_content ? <>
-          <h3>问题与依据</h3><p className="experiment-prewrap">{entry.design || "尚无改进方案。"}</p>
+      <section aria-label="进化运行详情">
+        <details className="experiment-improvement-disclosure">
+          <summary>进化运行详情</summary>
+          <ExperimentRecordTrace title="进化记录" prioritizeModelIO experiment={experiment} waiting={waiting} unavailable={liveError}
+            archived={entry.trace_ids} live={live} context={{ experiment_name: experiment.name, task_type: experiment.task_type,
+              operation: "improvement", phase: "improvement", round }} />
+        </details>
+      </section>
+      {experiment.can_read_content && (entry.design || !!entry.evidence_samples?.length) && <section aria-label="改进依据">
+        <details className="experiment-improvement-disclosure">
+          <summary>改进依据</summary>
+          {entry.design && <p className="experiment-prewrap">{entry.design}</p>}
           {experiment.settings && <ImprovementSources experiment={experiment} references={entry.evidence_samples ?? []}
             onTrace={traceId => navigate(withAgent("/traces/" + encodeURIComponent(traceId) + search, pageAgent("evaluation", search)))} />}
-          <h3>实际改动</h3><p className="experiment-prewrap">{entry.summary || "尚无改动报告。"}</p>
-          {entry.diff && <details><summary>查看资产改动</summary><pre className="experiment-diff">{entry.diff}</pre></details>}
-        </> : <p className="experiment-note">查看改进依据与改动需要正文读取权限。</p>}
-      </section>
+        </details>
+      </section>}
       <section aria-label="Harness 版本">
         <h2>Harness 版本</h2>
         <dl className="record-facts">

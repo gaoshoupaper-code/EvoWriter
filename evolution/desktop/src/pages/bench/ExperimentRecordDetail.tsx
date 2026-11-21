@@ -33,7 +33,7 @@ function RecordContent({ experimentId, sampleId, section }: {
     : ["scoring", "evaluation_error"].includes(sample.status)));
   const { runs, error: liveError } = useExperimentActivity(waiting && !!experiment?.can_read_content);
   const live = waiting ? runs.filter(run => sampleActivitySection(run, experimentId, sampleId) === section) : [];
-  const trace = experiment && sample && <ExperimentRecordTrace title={writing ? "写作 Trace" : "评分 Trace"}
+  const trace = experiment && sample && <ExperimentRecordTrace title={writing ? "写作记录" : "评分记录"} prioritizeModelIO
     experiment={experiment} waiting={waiting} unavailable={liveError} live={live}
     archived={writing ? sample.trace_ids : sample.evaluation_trace_ids}
     context={{ experiment_name: experiment.name, sample_name: sample.package_title,
@@ -46,11 +46,11 @@ function RecordContent({ experimentId, sampleId, section }: {
         <p>{experiment.name} · {PHASE_LABELS[sample.phase] ?? sample.phase} · {sample.arm === "baseline" ? "原版" : "第 " + sample.round + " 轮"}
           {sample.repeat != null && " · 重复 " + sample.repeat}{sample.attempt != null && " / 尝试 " + sample.attempt}
           {" · " + (EXPERIMENT_STATUS[sample.status] ?? sample.status)}</p></header>
+      {trace}
       {awaitingScoreRetry ? <p role="status" className="experiment-note">等待自动重试评分。</p>
         : sample.error && (writing || sample.status !== "scoring") && <p role="alert" className="experiment-error">{experiment.can_read_content
           ? sample.error : "本次任务异常。查看完整原因需要正文读取权限。"}</p>}
       {writing ? <>
-        {trace}
         <RunArtifacts sample={sample} allowed={experiment.can_read_content} />
         <RunEvidence sample={sample} allowed={experiment.can_read_content} />
       </> : <>
@@ -67,7 +67,6 @@ function RecordContent({ experimentId, sampleId, section }: {
             <>已完成 {sample.score_progress.completed} / {sample.score_progress.total} 份评分 · </>}尚无汇总评分。</p>}
           {experiment.can_read_content && <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} />}
         </section>
-        {trace}
       </>}
     </>)}
   </ExperimentDetailPage>;

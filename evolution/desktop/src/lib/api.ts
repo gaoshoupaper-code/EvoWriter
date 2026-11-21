@@ -491,6 +491,17 @@ export async function getTraceEvents(
   });
 }
 
+export type TraceModelIOPage = {
+  initial_input: TraceLogEvent | null;
+  outputs: TraceLogEvent[];
+  has_more: boolean;
+};
+
+export function getTraceModelIO(traceId: string, afterSequence: number, includeInitial: boolean): Promise<TraceModelIOPage> {
+  const query = new URLSearchParams({ after_sequence: String(afterSequence), include_initial: String(includeInitial) });
+  return evoJson<TraceModelIOPage>(`/api/traces/${encodeURIComponent(traceId)}/model-io?${query}`, { method: "GET" });
+}
+
 /**
  * 按 anchor_id 拉取单个 context segment（抽屉懒加载，Phase 2）。
  */

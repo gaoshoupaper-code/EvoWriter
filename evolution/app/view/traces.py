@@ -583,6 +583,46 @@ def get_trace_events(
     return events
 
 
+class TraceModelIOResponse(BaseModel):
+    initial_input: TraceLogEvent | None = None
+    outputs: list[TraceLogEvent]
+    has_more: bool
+
+
+@router.get("/traces/{trace_id}/model-io", response_model=TraceModelIOResponse)
+def get_trace_model_io(
+    request: Request,
+    trace_id: str,
+    after_sequence: int = Query(0, ge=0),
+    include_initial: bool = True,
+    limit: int = Query(20, ge=1, le=50),
+) -> TraceModelIOResponse:
+    """Read the first model request and a page of model responses in recorded order."""
+    _require_full_content_access(request)
+    if db.query_one("SELECT 1 FROM runs WHERE trace_id=?", (trace_id,)) is None:
+        raise HTTPException(status_code=404, detail="Trace not found")
+
+    initial = None
+    if include_initial:
+        row = db.query_one(
+            """SELECT payload_json FROM event_payloads WHERE trace_id=? AND type='llm_start'
+               ORDER BY sequence LIMIT 1""",
+            (trace_id,),
+        )
+        if row:
+            initial = hydrate_event(TraceLogEvent.model_validate_json(row["payload_json"]))
+
+    rows = db.query_all(
+        """SELECT payload_json FROM event_payloads
+           WHERE trace_id=? AND type IN ('llm_end', 'llm_error') AND sequence>?
+           ORDER BY sequence LIMIT ?""",
+        (trace_id, after_sequence, limit + 1),
+    )
+    outputs = [hydrate_event(TraceLogEvent.model_validate_json(row["payload_json"])) for row in rows[:limit]]
+    _audit_content_access(request, "view", "trace_model_io", trace_id)
+    return TraceModelIOResponse(initial_input=initial, outputs=outputs, has_more=len(rows) > limit)
+
+
 @router.get("/traces/{trace_id}/context", response_model=TraceContextSegment)
 def get_trace_context(
     request: Request,

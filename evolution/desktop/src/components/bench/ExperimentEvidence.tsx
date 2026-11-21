@@ -1,4 +1,3 @@
-import { currentTask } from "@/lib/writing-agent";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
@@ -67,17 +66,19 @@ export function ExperimentProgress({ experiment, compact = false }: {
   </div>;
 }
 
-export function ExperimentScores({ report }: { report: Experiment["report"] }) {
-  return <div className="experiment-score-summary">{([
+export function ExperimentScores({ report, task }: { report: Experiment["report"]; task: Experiment["task_type"] }) {
+  const regression = report?.regressions?.[task];
+  if (!report?.exploration && !regression) return <p className="experiment-note">暂无汇总评分</p>;
+  return <div className="experiment-score-summary" role="group" aria-label="已有评分">{([
     ["优化", report.exploration, report.exploration_round],
-    ["回归", report.regressions?.[currentTask()], report.exploration_round],
-  ] as const).map(([label, comparison, round]) => <div key={label}>
+    ["回归", regression, report.regression_round],
+  ] as const).map(([label, comparison, round]) => comparison && <div key={label}>
     <span>{label}{round ? ` · 第${round}轮` : ""}</span>
-    {comparison ? <><strong>{number(comparison.baseline?.quality)} → {number(comparison.candidate?.quality)}</strong>
+    <strong>{number(comparison.baseline?.quality)} → {number(comparison.candidate?.quality)}</strong>
       <small className={comparison.passed ? "experiment-positive" : "experiment-note"}>
         {comparison.quality_delta == null ? "无有效分差" : `${comparison.quality_delta >= 0 ? "+" : ""}${comparison.quality_delta.toFixed(3)}`}
         {comparison.passed ? " · 通过" : " · 未达标"}
-      </small></> : <small>待开始</small>}
+      </small>
   </div>)}</div>;
 }
 

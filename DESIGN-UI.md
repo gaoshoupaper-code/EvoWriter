@@ -13,8 +13,8 @@
 
 - CSS 里禁止 `font-size: 13px` 之类数值写法,必须 `font-size: var(--text-ui-*)`。
 - TSX 里禁止 `style={{ fontSize: 14 }}` 数值写法,必须字符串 `"var(--text-ui-*)"`。
-- 唯一基准:`--ui-font-size`(默认 13px,对齐 ZCode 工作台基准)。全局缩放只改这一个变量,
-  禁止改 `html` 的 font-size。
+- 唯一基准为 `--ui-font-size`。公共样式基准为 13px。进化端登录后默认用中档 14px，并恢复本机手选的字号。
+- 全局缩放只改 `--ui-font-size`。`html` 的 font-size 沿用样式表。
 - 图标、间距、圆角等几何**不**随字号缩放。
 
 内容例外区(保留独立排版字号,不算违规):
@@ -25,7 +25,7 @@
 
 ## 字号 token 表
 
-| Token | 公式 | 默认值 | 语义角色 |
+| Token | 公式 | 13px 基准下 | 语义角色 |
 |---|---|---|---|
 | `--text-ui-display` | +8px | 21px | 页面级大标题、大统计数字(20~22px 场景) |
 | `--text-ui-xl` | +4px | 17px | 区块主标题、一级阅读标题 |
@@ -102,7 +102,7 @@ Token 四档:`--radius-sm: 6px` / `--radius-md: 8px` / `--radius-lg: 12px` / `--
 
 ## 深浅主题
 
-两端均为浅色默认 + `html[data-theme="dark"]` 深色:
+写作端默认浅色。进化端入口使用 `html[data-theme="dark"]` 深色。
 
 - 所有新增视觉 token **必须**在深色区块给出对应取值,不得只写浅色。
 - 浅色保留米黄纸感，不得改成冷灰白；深色沿用现有深色板。
@@ -116,7 +116,7 @@ Token 四档:`--radius-sm: 6px` / `--radius-md: 8px` / `--radius-lg: 12px` / `--
 
 两端 globals.css 各持有一份相同的设计 token 定义(头部「design tokens」区)。
 修改公共字号、字体、动效 token 时**必须**两端同步改，扫描脚本会校验一致。
-应用专属的表面颜色与布局可独立调整；本次仅写作端配色升级，不改变进化端页面。
+应用专属的表面颜色与布局可独立调整。
 
 ## 扫描脚本与豁免
 

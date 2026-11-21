@@ -14,6 +14,7 @@ import {
 import { ExperimentProgress } from "./ExperimentEvidence";
 import { useExperiments } from "@/hooks/useExperiments";
 import "./experiments.css";
+import "./evaluation-readability.css";
 
 function launchRules(rules: ExperimentRule[], kind: ExperimentTaskType) {
   const sameKind = rules.filter((rule) => rule.task_type === kind).sort((a, b) => b.version - a.version);
@@ -27,8 +28,8 @@ export function EvolutionExperiments() {
   const [packages, setPackages] = useState<ExperimentPackage[]>([]);
   const [rules, setRules] = useState<ExperimentRule[]>([]);
   const { runs, loading: listLoading, error: listError } = useExperiments(true);
-  const activeRuns = runs.filter((run) => run.flow_version === 3 && run.task_type === currentTask() && ["pending", "running", "recovering", "stopping", "publishing"].includes(run.status));
   const kind = currentTask();
+  const activeRuns = runs.filter((run) => run.flow_version === 3 && run.task_type === kind && ["pending", "running", "recovering", "stopping", "publishing"].includes(run.status));
   const [params] = useSearchParams();
   const candidate = kind === "chapter_text" ? null : params.get("candidate");
   const [baseline, setBaseline] = useState("");
@@ -99,12 +100,12 @@ export function EvolutionExperiments() {
     finally { setStarting(false); }
   }
 
-  return <section className="experiment-section experiment-console" aria-labelledby="evolution-experiments-title">
+  const launch = <section key="launch" className="evaluation-panel" aria-labelledby="evolution-experiments-title">
     <div className="experiment-heading"><div><h2 id="evolution-experiments-title">启动自动进化</h2>
       <p className="experiment-note">{kind === "chapter_text"
         ? "系统根据正文评测自动修改 Harness。原题和其他章节均达标后，可手动启用通过评测的版本。"
         : "选好目标与模型，自动完成评测、改版和复测。改进题与回归题均达标后，由你确认发布。"}</p></div>
-      <button className="config-button" type="button" disabled={loading || starting} onClick={() => setReload((value) => value + 1)}><RefreshCw size={14} />刷新配置</button>
+      <button className="config-button readable-button" type="button" disabled={loading || starting} onClick={() => setReload((value) => value + 1)}><RefreshCw size={14} />刷新配置</button>
     </div>
     {error && <p role="alert" className="experiment-error">{error}</p>}
     {loading ? <p role="status">正在加载实验设置…</p> : options && <form className="experiment-form" onSubmit={(event) => void start(event)}>
@@ -129,7 +130,7 @@ export function EvolutionExperiments() {
       </fieldset>
       {!!missing.length && <div role="alert" className="experiment-readiness"><strong>实验资料尚未就绪</strong>
         <ul>{missing.map((message) => <li key={message}>{message}</li>)}</ul>
-        <Link to="/bench/dataset" className="action-link">查看试验数据集</Link>
+        <Link to="/bench/dataset" className="action-link readable-link">查看试验数据集</Link>
       </div>}
       {!options.judge_groups.length && <p className="experiment-error">暂无评测模型，请先在模型配置中设置异源评委组。</p>}
       <div className="experiment-launch-summary" aria-label="启动前配置摘要">
@@ -141,7 +142,7 @@ export function EvolutionExperiments() {
           <small>{repeatedScoring ? "规则、输入、模型与评分次数在启动后固定" : "规则、输入与模型在启动后固定"}</small></div>
       </div>
       <details className="experiment-advanced" open={advanced}>
-        <summary aria-expanded={advanced} onClick={(event) => { event.preventDefault(); setAdvanced((current) => !current); }}><SlidersHorizontal size={15} />高级设置</summary>
+        <summary className="readable-button" aria-expanded={advanced} onClick={(event) => { event.preventDefault(); setAdvanced((current) => !current); }}><SlidersHorizontal size={15} />高级设置</summary>
         {advanced && <>
         <fieldset className="experiment-form-main" disabled={starting}><legend className="sr-only">固定门槛与规则</legend>
           <div className="experiment-fields">{[kind].map((type) => <label key={type}>{TASK_LABELS[type]}规则版本
@@ -152,20 +153,27 @@ export function EvolutionExperiments() {
         </fieldset>
         </>}
       </details>
-      <div className="experiment-launch-footer"><button className="config-button primary" type="submit" disabled={starting || missing.length > 0}>
+      <div className="experiment-launch-footer"><button className="config-button primary readable-button" type="submit" disabled={starting || missing.length > 0}>
         <Play size={15} />{starting ? "正在启动…" : "启动自进化实验"}</button><span className="experiment-note">自动命名，启动后即可查看实时进度。</span></div>
     </form>}
-    <div className="experiment-heading experiment-records-heading"><div><h2>正在运行的实验</h2>
+  </section>;
+
+  const activity = <section key="activity" className="evaluation-panel" aria-labelledby="active-experiments-title">
+    <div className="experiment-heading"><div><h2 id="active-experiments-title">正在运行的实验</h2>
       <p className="experiment-note">每 5 秒更新。点击实验查看运行过程、评分和文稿。</p></div>
-      <Link className="action-link" to="/bench/experiments">全部实验记录</Link></div>
+      <Link className="action-link readable-link" to="/bench/experiments">全部实验记录</Link></div>
     {listError && <p role="alert" className="experiment-error">更新失败：{listError}</p>}
     {listLoading ? <p role="status">正在读取运行概况…</p> : activeRuns.length ? <div className="experiment-active-list">
       {activeRuns.map((run) => <article className="experiment-active-run" key={run.id}>
-        <div><span className="experiment-type-label">{experimentTaskLabel(run.task_type, run.flow_version)}</span>
-          <Link className="experiment-run-name" to={"/bench/experiments/" + encodeURIComponent(run.id)}>{run.name}</Link>
+        <div className="evaluation-run-heading"><span className="experiment-type-label">{experimentTaskLabel(run.task_type, run.flow_version)}</span>
+          <Link className="experiment-run-name readable-link" to={"/bench/experiments/" + encodeURIComponent(run.id)}>{run.name}</Link>
           <span className={"experiment-state " + run.status}>{EXPERIMENT_STATUS[run.status] ?? run.status}</span></div>
         <ExperimentProgress experiment={run} compact />
       </article>)}
     </div> : !listError && <p className="experiment-empty">当前没有正在运行的实验。历史运行保存在实验记录中。</p>}
   </section>;
+
+  return <div className="experiment-section experiment-console evaluation-content">
+    {activeRuns.length ? [activity, launch] : [launch, activity]}
+  </div>;
 }

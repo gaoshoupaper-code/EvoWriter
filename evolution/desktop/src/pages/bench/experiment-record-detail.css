@@ -1,0 +1,14 @@
+.experiment-record-detail > nav:first-child { margin-bottom: 12px; }
+.experiment-record-detail .record-heading { margin: 24px 0; }
+.experiment-record-detail .record-heading h2 { margin-bottom: 5px; }
+.experiment-record-detail .record-heading p { color: var(--evo-ink-muted); }
+.experiment-record-detail > section { border-top: 1px solid var(--evo-line); padding: 18px 0; }
+.experiment-record-detail .record-manuscript { max-width: 76ch; overflow-wrap: anywhere; }
+.experiment-record-detail .record-trace-picker { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin: 12px 0; }
+.experiment-record-detail .record-trace-picker select { max-width: 100%; }
+.experiment-record-detail .record-judge-models { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px 16px; }
+.experiment-record-detail .record-facts { display: flex; flex-wrap: wrap; gap: 12px 28px; }
+.experiment-record-detail .record-facts dt { color: var(--evo-ink-muted); }
+.experiment-record-detail .record-facts dd { margin: 3px 0 0; overflow-wrap: anywhere; }
+.experiment-record-detail .record-version-files { margin-top: 12px; }
+.experiment-record-detail .experiment-actions { margin-top: 16px; }

@@ -3,13 +3,13 @@ import { useState } from "react";
 /**
  * 界面字号控制(规范见 DESIGN-UI.md):
  * 只改 --ui-font-size 单一变量,全界面文字联动;图标/间距/圆角等几何不随字号缩放。
- * 选择持久化到 localStorage;存储不可用时回落默认 13px（对齐 ZCode 基准）。
- * 注意:本文件与 evolution/desktop 同名文件保持同构(两端同步义务)。
+ * 进化端默认使用中档，手选字号按原值从本机恢复。
  */
 
 export type UiFontSize = "13" | "14" | "16";
 
 const STORAGE_KEY = "writer-ui-font-size";
+const DEFAULT_SIZE: UiFontSize = "14";
 
 const OPTIONS: ReadonlyArray<{ value: UiFontSize; label: string }> = [
   { value: "13", label: "小" },
@@ -24,9 +24,9 @@ export function applyUiFontSize(size: UiFontSize): void {
 export function loadUiFontSize(): UiFontSize {
   try {
     const v = window.localStorage.getItem(STORAGE_KEY);
-    return v === "14" || v === "16" ? v : "13";
+    return v === "13" || v === "14" || v === "16" ? v : DEFAULT_SIZE;
   } catch {
-    return "13";
+    return DEFAULT_SIZE;
   }
 }
 

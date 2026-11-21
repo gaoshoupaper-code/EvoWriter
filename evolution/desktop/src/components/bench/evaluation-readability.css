@@ -1,0 +1,199 @@
+.evaluation-content {
+  color: var(--evo-ink);
+  font-size: var(--text-ui-base);
+  line-height: 1.55;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.evaluation-content.experiment-console {
+  display: grid;
+  gap: 16px;
+}
+
+.evaluation-content .evaluation-panel {
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--evo-line);
+  border-radius: var(--radius-lg);
+  background: var(--evo-surface);
+}
+
+.evaluation-content .evaluation-panel:first-child {
+  border-color: var(--evo-line-strong);
+}
+
+.evaluation-content h2 { font-size: var(--text-ui-xl); }
+.evaluation-content h3,
+.evaluation-content .experiment-rule-dimension-heading h4 { font-size: var(--text-ui-lg); }
+
+.evaluation-content .experiment-note {
+  margin: 4px 0 0;
+  color: var(--evo-ink-secondary);
+  font-size: var(--text-ui-caption);
+  line-height: 1.55;
+}
+
+.evaluation-content .experiment-heading { gap: 12px; }
+.evaluation-content .experiment-heading > div { min-width: 0; }
+
+.evaluation-content .experiment-error,
+.evaluation-content .experiment-empty,
+.evaluation-content .experiment-readiness,
+.evaluation-content .experiment-launch-grid label,
+.evaluation-content .experiment-launch-summary strong,
+.evaluation-content .experiment-input-preview,
+.evaluation-content .experiment-field,
+.evaluation-content .experiment-fields label,
+.evaluation-content .experiment-rule-list label,
+.evaluation-content .experiment-rule-version,
+.evaluation-content .experiment-state,
+.evaluation-content .experiment-progress.compact .experiment-progress-label,
+.evaluation-content .experiment-progress.compact .experiment-progress-label > span,
+.evaluation-content .experiment-hard-checks h4,
+.evaluation-content .experiment-hard-checks li,
+.evaluation-content .experiment-rule-read-list article > p,
+.evaluation-content .experiment-anchor-list > div,
+.evaluation-content .experiment-discipline,
+.evaluation-content .experiment-dataset-table th,
+.evaluation-content .experiment-dataset-table td,
+.evaluation-content .config-label,
+.evaluation-content .config-input,
+.evaluation-content .readable-button,
+.evaluation-content .readable-link { font-size: var(--text-ui-base); }
+
+.evaluation-content .experiment-launch-summary small,
+.evaluation-content .experiment-launch-summary span,
+.evaluation-content .experiment-type-label,
+.evaluation-content .experiment-purpose,
+.evaluation-content .experiment-hard-checks h4 span,
+.evaluation-content .status-meta { font-size: var(--text-ui-caption); }
+
+.evaluation-content .experiment-upload:focus-within,
+.evaluation-content .experiment-table-scroll:focus-visible {
+  outline: 2px solid var(--evo-accent);
+  outline-offset: 2px;
+}
+
+.evaluation-content .experiment-progress.compact progress { height: 6px; }
+
+.evaluation-content .experiment-active-run {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 235px), 1fr));
+  gap: 12px 20px;
+  padding: 12px 0;
+}
+
+.evaluation-run-heading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  margin-bottom: 8px;
+}
+
+.evaluation-run-heading > * { min-width: 0; margin: 0; }
+
+.evaluation-dataset-tabs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+  gap: 10px;
+}
+
+.evaluation-content .evaluation-dataset-tabs button {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 12px;
+  text-align: left;
+  border: 1px solid var(--evo-line-strong);
+  border-bottom-width: 3px;
+  border-radius: var(--radius-md);
+  color: var(--evo-ink);
+  background: var(--evo-surface);
+}
+
+.evaluation-content .evaluation-dataset-tabs button[aria-selected="true"] {
+  border-bottom-color: var(--evo-accent);
+  background: var(--evo-accent-soft);
+}
+
+.evaluation-content .evaluation-dataset-tabs button:not(:disabled) { cursor: pointer; }
+.evaluation-dataset-ready { color: var(--evo-success); }
+.evaluation-dataset-missing { color: var(--evo-warning); }
+.evaluation-dataset-tools { margin: 12px 0; }
+
+.evaluation-content .experiment-rule-read-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.evaluation-content .experiment-rule-read-list article {
+  min-width: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--evo-line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--evo-surface);
+}
+
+.evaluation-content .experiment-rule-dimension-heading {
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.evaluation-content .experiment-rule-dimension-heading span {
+  color: var(--evo-accent);
+  font-size: var(--text-ui-base);
+  font-weight: 600;
+}
+
+.evaluation-content .experiment-rule-read-list summary,
+.evaluation-content .experiment-discipline summary {
+  width: fit-content;
+  max-width: 100%;
+  font-size: var(--text-ui-base);
+}
+
+.evaluation-content .experiment-hard-checks {
+  background: var(--evo-surface-2);
+  border-left-color: var(--evo-line-strong);
+}
+
+.evaluation-content .experiment-hard-checks h4 span { display: inline-block; margin: 0 0 0 6px; }
+.evaluation-content .experiment-table-scroll { margin-bottom: 4px; }
+.evaluation-content .experiment-dataset-table td { overflow-wrap: anywhere; }
+.evaluation-content .experiment-input-preview :is(input, textarea, select) { max-width: 100%; }
+
+.evaluation-content.evaluation-judge-groups { max-width: 960px; }
+
+.evaluation-content .evaluation-judge-header {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px 16px;
+}
+
+.evaluation-content .evaluation-judge-header > div { flex: 1 1 300px; min-width: 0; }
+.evaluation-content .config-card-head { flex-wrap: wrap; gap: 4px 10px; }
+.evaluation-content .config-card-name { margin: 0; min-width: 0; }
+
+.evaluation-content .config-card-meta {
+  display: grid;
+  gap: 6px;
+  padding-left: 18px;
+  margin: 0;
+  list-style: disc;
+  word-break: normal;
+}
+
+.evaluation-content .config-card-key {
+  color: var(--evo-ink);
+  font-family: var(--font-sans);
+  font-size: var(--text-ui-base);
+}
+
+.evaluation-content .bench-case-picker-item { flex-wrap: wrap; font-size: var(--text-ui-base); }
+.evaluation-content .bench-case-picker-item span { min-width: 0; }

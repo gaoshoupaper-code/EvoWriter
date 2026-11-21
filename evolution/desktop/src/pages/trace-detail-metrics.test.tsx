@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TraceDetailLite } from "@/lib/types";
 
@@ -13,8 +13,9 @@ vi.mock("@/lib/api", () => ({
   getTraceEvents: vi.fn(), getTraceContext: vi.fn(), getTraceIntegrity: vi.fn(),
   stopActiveSession: vi.fn(), resolveTrace: vi.fn(),
 }));
-vi.mock("@/components/trace/TraceChainTimeline", () => ({ TraceChainTimeline: () => null }));
-vi.mock("@/components/trace/TraceChainDrawer", () => ({ TraceChainDrawer: () => null }));
+const { timeline, drawer } = vi.hoisted(() => ({ timeline: vi.fn(() => null), drawer: vi.fn(() => null) }));
+vi.mock("@/components/trace/TraceChainTimeline", () => ({ TraceChainTimeline: timeline }));
+vi.mock("@/components/trace/TraceChainDrawer", () => ({ TraceChainDrawer: drawer }));
 vi.mock("@/components/trace/TokenChartPanel", () => ({ TokenChartPanel: () => null }));
 vi.mock("@/components/trace/ArtifactsPanel", () => ({ ArtifactsPanel: () => null }));
 
@@ -126,5 +127,93 @@ describe("Trace 详情实时统计（REQ-20261029-104420）", () => {
     page.rerender(<TraceDetailPage />);
     expect(valueFor("输入 Token")).toHaveTextContent("—");
     expect(valueFor("输出 Token")).toHaveTextContent("—");
+  });
+});
+
+describe("Trace 失败重点（REQ-20261121-161413）", () => {
+  it("在头部展示失败原因，优先定位具体步骤并打开已有权限的详情", () => {
+    const snapshot = detail();
+    snapshot.run.status = "failed";
+    snapshot.run.error = "本次运行停止";
+    snapshot.nodes = [
+      { node_id: "run-error", kind: "error", status: "failed", label: "Run 失败", depth: 0, raw_event_ids: [] },
+      { node_id: "failed-step", kind: "error", status: "failed", label: "检查卷纲", tool_name: "检查卷纲", depth: 1, raw_event_ids: [] },
+    ];
+    mockDetail(snapshot);
+    render(<TraceDetailPage />);
+
+    const failure = screen.getByRole("region", { name: "失败详情" });
+    expect(within(failure).getByText("本次运行停止")).toBeInTheDocument();
+    expect(within(failure).getByText("检查卷纲")).toBeInTheDocument();
+    expect(screen.getByText("运行指标").closest("details")).not.toHaveAttribute("open");
+
+    fireEvent.click(screen.getByRole("button", { name: "Token 图表" }));
+    fireEvent.click(within(failure).getByRole("button", { name: "定位出错记录" }));
+    expect(timeline).toHaveBeenLastCalledWith(expect.objectContaining({ highlightedNodeId: "failed-step" }), undefined);
+    expect(drawer).toHaveBeenLastCalledWith(expect.objectContaining({ node: snapshot.nodes[1] }), undefined);
+  });
+
+  it("失败的历史记录没有步骤和原因时保留失败状态，且无定位按钮", () => {
+    const snapshot = detail();
+    snapshot.run.status = "failed";
+    snapshot.nodes = [{ node_id: "run", kind: "run", status: "failed", label: "运行", depth: 0, raw_event_ids: [] }];
+    mockDetail(snapshot);
+    render(<TraceDetailPage />);
+
+    const failure = screen.getByRole("region", { name: "失败详情" });
+    expect(screen.getByText("失败", { exact: true })).toBeInTheDocument();
+    expect(within(failure).getByText("未记录出错步骤和失败原因。")).toBeInTheDocument();
+    expect(within(failure).queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("取消超时定位超时节点，跳过之前的取消请求和工具失败", () => {
+    const snapshot = detail();
+    snapshot.run.status = "cancel_timeout";
+    snapshot.nodes = [
+      { node_id: "run", kind: "run", status: "cancel_timeout", label: "运行", depth: 0, raw_event_ids: [] },
+      { node_id: "request", kind: "error", status: "cancelling", label: "用户请求取消", depth: 0, raw_event_ids: [] },
+      { node_id: "tool-error", kind: "error", status: "failed", label: "写入失败", tool_name: "写入文件", depth: 1, raw_event_ids: [] },
+      { node_id: "timeout", kind: "error", status: "cancel_timeout", label: "取消超时（未收敛）", depth: 0,
+        raw_event_ids: [], error: "取消请求尚未收敛" },
+    ];
+    mockDetail(snapshot);
+    render(<TraceDetailPage />);
+
+    const failure = screen.getByRole("region", { name: "失败详情" });
+    expect(within(failure).getByText("取消超时（未收敛）")).toBeInTheDocument();
+    expect(within(failure).getByText("取消请求尚未收敛")).toBeInTheDocument();
+    fireEvent.click(within(failure).getByRole("button", { name: "定位出错记录" }));
+    expect(timeline).toHaveBeenLastCalledWith(expect.objectContaining({ highlightedNodeId: "timeout" }), undefined);
+  });
+
+  it("取消超时记录缺失时，正常取消控制节点不能当成出错记录", () => {
+    const snapshot = detail();
+    snapshot.run.status = "cancel_timeout";
+    snapshot.nodes = [
+      { node_id: "request", kind: "error", status: "cancelling", label: "用户请求取消", depth: 0, raw_event_ids: [] },
+      { node_id: "cancelled", kind: "error", status: "cancelled", label: "已取消", depth: 0, raw_event_ids: [] },
+    ];
+    mockDetail(snapshot);
+    render(<TraceDetailPage />);
+
+    const failure = screen.getByRole("region", { name: "失败详情" });
+    expect(within(failure).getByText("未记录出错步骤和失败原因。")).toBeInTheDocument();
+    expect(within(failure).queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("可定位受限工具的结构节点，且保留原有详情权限", () => {
+    const snapshot = detail();
+    snapshot.run.status = "failed";
+    snapshot.nodes = [{ node_id: "tool", kind: "tool", status: "failed", label: "写入文件", depth: 0,
+      raw_event_ids: [], error: "受限工具详情" }];
+    mockDetail(snapshot);
+    render(<TraceDetailPage canReadContent={false} />);
+
+    const failure = screen.getByRole("region", { name: "失败详情" });
+    expect(within(failure).getByText("写入文件")).toBeInTheDocument();
+    expect(screen.queryByText("受限工具详情")).not.toBeInTheDocument();
+    fireEvent.click(within(failure).getByRole("button", { name: "定位出错记录" }));
+    expect(timeline).toHaveBeenLastCalledWith(expect.objectContaining({ highlightedNodeId: "tool" }), undefined);
+    expect(drawer).toHaveBeenLastCalledWith(expect.objectContaining({ node: null }), undefined);
   });
 });

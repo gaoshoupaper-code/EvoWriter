@@ -1,0 +1,75 @@
+:where(.bench-page, .trace-workbench, .trace-detail-page) button.action-link,
+.readable-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+  max-width: 100%;
+  padding: 5px 10px;
+  border: 1px solid color-mix(in srgb, var(--muted) 65%, var(--panel-solid));
+  border-radius: var(--radius-md);
+  background: var(--panel-solid);
+  color: var(--ink);
+  font-size: var(--text-ui-base);
+  line-height: 1.4;
+  text-align: center;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+:where(.bench-page, .trace-workbench, .trace-detail-page) button.action-link:not(:disabled):hover,
+.readable-button:not(:disabled):hover {
+  border-color: var(--teal);
+  background: var(--hover);
+  color: var(--ink);
+}
+
+:where(.bench-page, .trace-workbench, .trace-detail-page) button.action-link:disabled,
+.readable-button:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
+
+.bench-page .config-button.primary,
+.readable-button.primary,
+.readable-button.primary:not(:disabled):hover {
+  color: var(--evo-bg);
+}
+
+.readable-link {
+  color: var(--teal);
+  font-size: var(--text-ui-base);
+  text-decoration: underline;
+  text-underline-offset: 0.22em;
+  overflow-wrap: anywhere;
+}
+
+.evaluation-rules-tabs {
+  max-width: 100%;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-bottom: 0;
+}
+
+.evaluation-rules-tabs [role="tab"] {
+  min-height: 36px;
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  background: var(--panel-solid);
+  color: var(--ink);
+  font-size: var(--text-ui-base);
+  font-weight: 500;
+}
+
+.evaluation-rules-tabs [role="tab"][data-state="active"] {
+  border-color: var(--teal);
+  color: var(--teal);
+  font-weight: 600;
+}
+
+.evaluation-rules-tabs [role="tab"]:focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 2px;
+}

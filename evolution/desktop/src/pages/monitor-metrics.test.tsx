@@ -127,7 +127,7 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
     };
     await act(async () => { onFinished?.(finished, known.trace_id); });
     let row = screen.getByTitle("雾城 · 正文创作").closest("tr")!;
-    expect(within(row).getByText("completed")).toBeInTheDocument();
+    expect(within(row).getByText("完成")).toBeInTheDocument();
     expect(within(row).getByText("2.5w")).toBeInTheDocument();
     expect(within(row).getByTitle(/34:56/)).toBeInTheDocument();
 
@@ -190,7 +190,7 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
     });
     let row = screen.getByText("近期旧快照 · 创作").closest("tr")!;
     expect(within(row).getByText("2.5w")).toBeInTheDocument();
-    expect(within(row).getByText("running")).toBeInTheDocument();
+    expect(within(row).getByText("运行中")).toBeInTheDocument();
 
     await act(async () => { await vi.advanceTimersByTimeAsync(3100); });
     row = screen.getByText("近期旧快照 · 创作").closest("tr")!;
@@ -204,7 +204,7 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
     await settle();
     row = screen.getByText("近期旧快照 · 创作").closest("tr")!;
     expect(within(row).getByText("3.0w")).toBeInTheDocument();
-    expect(within(row).getByText("completed")).toBeInTheDocument();
+    expect(within(row).getByText("完成")).toBeInTheDocument();
   });
 
   it("null 兜底后权威完成摘要补齐已有行，不重复计入运行总数", async () => {
@@ -232,7 +232,7 @@ describe("全局 Trace Token（REQ-20261029-104420）", () => {
     await act(async () => { onFinished?.(final, final.trace_id); });
     const row = screen.getByText("完整摘要已到 · 创作").closest("tr")!;
     expect(within(row).getByText("2.5w")).toBeInTheDocument();
-    expect(within(row).getByText("completed")).toBeInTheDocument();
+    expect(within(row).getByText("完成")).toBeInTheDocument();
     expect(screen.getByText("1 条运行")).toBeInTheDocument();
   });
 

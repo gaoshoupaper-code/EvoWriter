@@ -1,10 +1,11 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { StagePackages } from "@/components/bench/StagePackages";
 import { StageRules } from "@/components/bench/StageRules";
 import { EvolutionExperiments } from "@/components/bench/EvolutionExperiments";
 import ExperimentDetail from "@/pages/bench/ExperimentDetail";
+import ExperimentReview from "@/pages/bench/ExperimentReview";
 import * as apiModule from "@/lib/api";
 
 vi.mock("@/lib/api", () => ({
@@ -50,6 +51,8 @@ const experiment = (overrides: Record<string, unknown> = {}) => ({
 beforeEach(() => {
   window.location.hash = "#/agents/volume/bench";
   vi.clearAllMocks();
+  sessionStorage.clear();
+  vi.spyOn(window, "scrollTo").mockImplementation(() => {});
   api.getActiveRuns.mockResolvedValue([]);
   api.listExperimentPackages.mockResolvedValue({ items: packages as never[], can_read_content: true });
   api.getExperimentPackageTemplates.mockResolvedValue({ items: [] });
@@ -61,6 +64,7 @@ beforeEach(() => {
     judge_groups: [{ id: 5, name: "异源评委", members: [{ config_id: 12, name: "评测模型", model: "judge-model" }] }],
   } as never);
 });
+afterEach(() => vi.mocked(window.scrollTo).mockRestore());
 
 describe("进化端实验交互 / AC-001、AC-012、AC-020、AC-022", () => {
   it("从旧的手工候选链接启动正文实验时只提交自动进化配置", async () => {
@@ -128,31 +132,51 @@ describe("进化端实验交互 / AC-001、AC-012、AC-020、AC-022", () => {
     })));
   });
 
-  it("过期候选展示原因并禁用发布", async () => {
-    api.getExperiment.mockResolvedValue(experiment({ status: "stale", can_publish: false, stale_reason: "生产版本已变化" }) as never);
+  it("达标候选过期后可在审核页查看原因，无法发版", async () => {
+    api.getExperiment.mockResolvedValue(experiment({ status: "stale", report: { passed: true },
+      can_publish: false, stale_reason: "生产版本已变化" }) as never);
     render(<MemoryRouter initialEntries={["/bench/experiments/experiment-1"]}><Routes>
       <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
+      <Route path="/bench/experiments/:experimentId/review" element={<ExperimentReview />} />
     </Routes></MemoryRouter>);
+    fireEvent.click(await screen.findByRole("link", { name: "进入审核" }));
     expect(await screen.findByText("生产版本已变化")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "批准并发布候选" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "批准并发布候选" })).not.toBeInTheDocument();
     expect(api.publishExperiment).not.toHaveBeenCalled();
   });
 
-  it("详情展示冻结双模型，进度条使用当前环节的任务总数", async () => {
+  it("保留冻结双模型和单条状态，去掉批次标题和重复计数", async () => {
+    const samples = ["completed", "completed", "scoring", "running", "pending", "pending"].map((status, index) => ({
+      id: "reg-" + index, task_id: "reg-" + index, package_id: "p", package_title: `回归样本 ${index} · 生成第一卷卷纲`,
+      task_type: "volume_outlines", source_commit: "candidate123", input_revision: "fixed-input",
+      phase: "regression", arm: "candidate", round: 1, repeat: index + 1, attempt: 1, status,
+      completed: index < 3, trace_ids: [], scores: index < 2 ? { overall: 4, dimensions: {}, reasons: {} } : null,
+      checks: {}, error: null, artifacts: {}, usage: {},
+    }));
     api.getExperiment.mockResolvedValue(experiment({ flow_version: 2, status: "running", phase: "regression",
       models: { executor: { id: 11, name: "冻结执行配置", model: "fixed-writer" },
         judges: [{ id: 12, name: "冻结评测配置", model: "fixed-judge" }], evolver: null },
+      can_publish: false, samples,
       progress: { total: 20, done: 14, completed: 14,
         phase: { name: "regression", round: 1, total: 6, done: 2, completed: 2, active: 1 } },
     }) as never);
     render(<MemoryRouter initialEntries={["/bench/experiments/experiment-1"]}><Routes>
       <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
     </Routes></MemoryRouter>);
-    expect(await screen.findByText("fixed-writer")).toBeInTheDocument();
-    expect(screen.getByText("fixed-judge")).toBeInTheDocument();
-    const progress = screen.getByRole("progressbar", { name: "当前环节进度" });
-    expect(progress).toHaveAttribute("max", "6");
-    expect(progress).toHaveAttribute("value", "2");
+    const overview = within(await screen.findByLabelText("实验概况"));
+    expect(overview.getByText("fixed-writer")).toBeInTheDocument();
+    expect(overview.getByText("fixed-judge")).toBeInTheDocument();
+    const timeline = within(screen.getByRole("region", { name: "实验流程" }));
+    const writing = within(timeline.getByRole("region", { name: /运行 · 第 \d+ 轮/ }));
+    const evaluation = within(timeline.getByRole("region", { name: /评测 · 第 \d+ 轮/ }));
+    expect(writing.getByRole("link", { name: "回归样本 0" })).toBeInTheDocument();
+    expect(writing.getByText(/运行中|生成中/)).toBeInTheDocument();
+    const scored = evaluation.getByRole("link", { name: /回归样本 0.*4\.00/ });
+    expect(scored.closest("li")).toHaveTextContent("fixed-judge");
+    expect(evaluation.getByText("评分中")).toBeInTheDocument();
+    expect(evaluation.queryByRole("link", { name: /回归样本 2/ })).not.toBeInTheDocument();
+    expect(timeline.queryByRole("heading", { name: "本套回归" })).not.toBeInTheDocument();
+    expect(timeline.queryAllByText(/生成第一卷卷纲|开始时间未记录|已生成|已结束 \d/)).toHaveLength(0);
   });
 
   it.each([
@@ -161,7 +185,7 @@ describe("进化端实验交互 / AC-001、AC-012、AC-020、AC-022", () => {
     ["volume:2", "生成第2卷卷纲"],
     ["theme:", "生成主题"],
     ["custom:4", "执行阶段：custom:4"],
-  ])("执行阶段 %s 在当前任务和逐题表中均显示为中文", async (executionPhase, expected) => {
+  ])("执行阶段 %s 在运行行显示一次", async (executionPhase, expected) => {
     api.getExperiment.mockResolvedValue(experiment({ flow_version: 2, status: "running", phase: "baseline", samples: [{
       id: "sample-active", task_id: "task-active", package_id: "package-active", package_title: "运行样本",
       task_type: "volume_outlines", phase: "baseline", arm: "baseline", round: 0, repeat: 1, attempt: 1,
@@ -171,7 +195,9 @@ describe("进化端实验交互 / AC-001、AC-012、AC-020、AC-022", () => {
     render(<MemoryRouter initialEntries={["/bench/experiments/experiment-1"]}><Routes>
       <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
     </Routes></MemoryRouter>);
-    expect(await screen.findAllByText(expected)).toHaveLength(2);
+    const writing = within(await screen.findByRole("region", { name: "运行 · 第 1 轮" }));
+    expect(writing.getByText(expected, { exact: false })).toBeInTheDocument();
+    expect(screen.getAllByText(expected, { exact: false })).toHaveLength(1);
   });
 
   it.each(["failed", "exhausted", "stopped"])("%s 且无候选时详情不再显示改版中", async (status) => {
@@ -187,15 +213,26 @@ describe("进化端实验交互 / AC-001、AC-012、AC-020、AC-022", () => {
   });
 
   it("发布后未确认加载，不展示已生效", async () => {
-    api.getExperiment.mockResolvedValue(experiment() as never);
-    api.publishExperiment.mockResolvedValue(experiment({ status: "publish_failed", can_publish: false,
-      publish_status: "unconfirmed", load_error: "执行端尚未确认加载", loaded_revision: null }) as never);
+    api.getExperiment.mockResolvedValue(experiment({ report: { passed: true } }) as never);
+    const unconfirmed = experiment({ status: "publish_failed", can_publish: false,
+      phase: "publish", report: { passed: true }, publish_status: "unconfirmed",
+      load_error: "执行端尚未确认加载", loaded_revision: null });
+    api.publishExperiment.mockImplementation(async () => {
+      api.getExperiment.mockResolvedValue(unconfirmed as never);
+      return unconfirmed as never;
+    });
     render(<MemoryRouter initialEntries={["/bench/experiments/experiment-1"]}><Routes>
       <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
+      <Route path="/bench/experiments/:experimentId/review" element={<ExperimentReview />} />
     </Routes></MemoryRouter>);
+    fireEvent.click(await screen.findByRole("link", { name: "进入审核" }));
+    expect(api.publishExperiment).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole("button", { name: "批准并发布候选" }));
     await waitFor(() => expect(api.publishExperiment).toHaveBeenCalledWith("experiment-1"));
     expect(await screen.findByText("执行端尚未确认加载")).toBeInTheDocument();
     expect(screen.queryByText("已生效")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /返回/ }));
+    const entry = await screen.findByRole("link", { name: "查看发布状态" });
+    await waitFor(() => expect(entry).toHaveFocus());
   });
 });

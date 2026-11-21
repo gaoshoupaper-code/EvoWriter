@@ -1,0 +1,313 @@
+.trace-workbench .workbench-toolbar {
+  flex-wrap: wrap;
+  justify-content: flex-start;
+}
+
+.trace-workbench :is(.workbench-toolbar select, .segmented-control button, .workbench-pager, .usage-back, .workbench-empty) {
+  font-size: var(--text-ui-base);
+}
+
+.trace-workbench .segmented-control button + button {
+  border-left: 1px solid var(--wb-line);
+}
+
+.trace-workbench .segmented-control button.active {
+  background: color-mix(in srgb, var(--wb-accent) 14%, var(--wb-panel));
+  font-weight: 700;
+}
+
+.trace-workbench .section-heading h2 {
+  font-size: var(--text-ui-lg);
+  font-weight: 700;
+}
+
+.trace-workbench .workbench-table {
+  font-size: var(--text-ui-base);
+}
+
+.trace-workbench .run-open-button:focus-visible {
+  outline: 2px solid var(--wb-accent);
+  outline-offset: -2px;
+}
+
+.trace-workbench :is(.workbench-table th, .run-secondary, .run-time-cell, .workload-badge, .integrity-badge, .coverage-summary, .mechanism-summary) {
+  font-size: var(--text-ui-caption);
+}
+
+.trace-workbench :is(.run-open-button, .usage-back) {
+  border: 1px solid var(--evo-line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--wb-panel);
+  color: var(--wb-text);
+  padding: 5px 10px;
+}
+
+.trace-workbench .run-open-button {
+  display: inline-flex;
+  max-width: 30ch;
+  text-align: start;
+  font: inherit;
+  cursor: pointer;
+}
+
+.trace-workbench :is(.run-open-button, .usage-back):hover {
+  border-color: var(--wb-accent);
+  background: var(--wb-panel-raised);
+}
+
+.trace-workbench :is(.usage-crumb, .run-primary) {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.trace-workbench .usage-crumb { flex-wrap: wrap; }
+
+.trace-workbench .run-primary {
+  font-size: var(--text-ui-base);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.trace-workbench .run-status {
+  font-size: var(--text-ui-base);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.trace-workbench .run-status.running { color: var(--wb-accent); }
+.trace-workbench .run-status.interrupted { color: var(--wb-warn); }
+.trace-workbench .run-status.awaiting_input { color: var(--wb-blue); }
+
+.trace-workbench .run-status:is(.failed, .cancel_timeout) {
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--evo-danger-soft);
+  color: var(--evo-danger);
+}
+
+.trace-workbench .workbench-empty[role="alert"] {
+  border-color: var(--evo-danger);
+  border-style: solid;
+  color: var(--evo-danger);
+  gap: 8px;
+  padding: 8px 12px;
+  overflow-wrap: anywhere;
+}
+
+.trace-detail-page {
+  min-width: 0;
+  height: auto;
+  overflow: visible;
+}
+
+.trace-detail-page .trace-detail-title-row {
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+.trace-detail-page .trace-detail-title-row h1 {
+  flex: 1 1 18ch;
+  min-width: 0;
+  font-weight: 700;
+}
+
+.trace-detail-page .trace-run-status {
+  color: var(--evo-ink);
+  font-size: var(--text-ui-base);
+  letter-spacing: normal;
+}
+
+.trace-detail-page .trace-run-status:is(.failed, .cancel_timeout) {
+  background: var(--evo-danger-soft);
+  border-color: var(--evo-danger);
+  color: var(--evo-danger);
+}
+
+.trace-detail-page .trace-detail-header :is(.streaming-badge, .stale-badge, .interrupted-hint, .action-error, .integrity-hint) {
+  font-size: var(--text-ui-base);
+  overflow-wrap: anywhere;
+}
+
+:is(.trace-workbench, .trace-detail-page) .trace-identity-title {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+:is(.trace-workbench, .trace-detail-page) .trace-identity-subtitle {
+  color: var(--evo-ink-secondary);
+  font-size: var(--text-ui-caption);
+}
+
+.trace-detail-page :is(.trace-identifier > div, .resolve-actions, .inspection-tabs) {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.trace-detail-page :is(.trace-identifier summary, .trace-identifier button, .trace-detail-metrics > summary, .trace-failed-step button,
+  .back-button, .refresh-button, .stop-button,
+  .resolve-button, .inspection-tab, .drawer-back-btn, .drawer-close-btn, .drawer-footer button,
+  .artifact-content-toggle, .artifact-history-toggle) {
+  border: 1px solid var(--evo-line-strong);
+  border-radius: var(--radius-sm);
+  font-size: var(--text-ui-base);
+}
+
+.trace-detail-page :is(.trace-identifier summary, .trace-identifier button, .trace-detail-metrics > summary, .trace-failed-step button,
+  .inspection-tab, .drawer-back-btn) {
+  padding: 5px 10px;
+}
+
+.trace-detail-page :is(.back-button, .refresh-button, .stop-button, .resolve-button) {
+  min-height: 32px;
+  max-width: 100%;
+  width: auto;
+}
+
+.trace-detail-page .inspection-tabs { padding-block: 8px; }
+.trace-detail-page .inspection-tab { margin-bottom: 0; }
+
+.trace-detail-page .inspection-tab.active {
+  border-color: var(--evo-accent);
+  background: var(--evo-accent-soft);
+  color: var(--evo-accent);
+  font-weight: 700;
+}
+
+.trace-detail-page .trace-detail-summary {
+  gap: 12px 20px;
+}
+
+.trace-detail-page .trace-detail-summary .summary-item label {
+  font-size: var(--text-ui-caption);
+  letter-spacing: normal;
+}
+
+.trace-detail-page .trace-failure {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  background: var(--evo-danger-soft);
+  border: 1px solid var(--evo-danger);
+  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  font-size: var(--text-ui-base);
+  overflow-wrap: anywhere;
+}
+
+.trace-detail-page .trace-failure :is(h2, p) { margin: 0; }
+
+.trace-detail-page .trace-failure h2 {
+  color: var(--evo-danger);
+  font-size: var(--text-ui-lg);
+  font-weight: 700;
+}
+
+.trace-detail-page .trace-failed-step {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.trace-detail-page .trace-failure-reason { white-space: pre-wrap; }
+
+.trace-detail-page .trace-detail-metrics > summary {
+  width: fit-content;
+  margin: 8px 24px;
+  color: var(--evo-ink);
+  cursor: pointer;
+}
+
+.trace-detail-page .trace-failed-step button {
+  background: var(--evo-surface);
+  color: var(--evo-ink);
+  cursor: pointer;
+}
+
+.trace-detail-page .trace-failed-step button:hover { border-color: var(--evo-accent); }
+
+.trace-detail-page .trace-detail-body {
+  overflow: auto;
+  min-width: 0;
+}
+
+.trace-detail-page .trace-detail-body .trace-chain-layout {
+  height: clamp(380px, 58vh, 680px);
+  min-height: 0;
+  margin-top: 12px;
+}
+
+.trace-detail-page .chain-status-metric.error {
+  order: -1;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--evo-danger-soft);
+}
+
+.trace-detail-page .chain-status-metric.error :is(.chain-status-label, strong) {
+  color: var(--evo-danger);
+  font-size: var(--text-ui-base);
+  font-weight: 700;
+}
+
+.trace-detail-page .chain-status-run-status {
+  font-size: var(--text-ui-base);
+}
+
+.trace-detail-page :is(.trace-chain-timeline, .trace-chain-drawer) {
+  min-height: 0;
+  min-width: 0;
+}
+
+.trace-detail-page .trace-chain-drawer {
+  max-width: 100%;
+}
+
+.trace-detail-page :is(.chain-node-label, .drawer-node-label) {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  font-size: var(--text-ui-base);
+}
+
+.trace-detail-page :is(.chain-node-summary, .drawer-error-stack, .drawer-error-copy, .checkpoint-msg-content, .status-copy) {
+  font-size: var(--text-ui-base);
+  overflow-wrap: anywhere;
+}
+
+.trace-detail-page .chain-node-row.expandable {
+  background: var(--evo-surface);
+  border-color: var(--evo-line-strong);
+}
+
+.trace-detail-page .chain-node-row.expandable:not(.failed):is(:hover, .active) {
+  border-color: var(--evo-accent);
+  background: var(--evo-accent-soft);
+}
+
+.trace-detail-page .trace-chain-nodes .chain-node-row.failed {
+  background: var(--evo-danger-soft);
+  border-color: var(--evo-danger);
+}
+
+.trace-detail-page .chain-node-row.failed .chain-node-label {
+  color: var(--evo-danger);
+  font-weight: 700;
+}
+
+.trace-detail-page .chain-node-row.failed .chain-node-summary {
+  display: block;
+  overflow: visible;
+  opacity: 1;
+  color: var(--evo-ink);
+}
+
+.trace-detail-page .chain-node-row-wrapper:has(> .chain-node-jump-chart-btn) > .chain-node-row {
+  padding-right: 40px;
+}
+
+.trace-detail-page .chain-node-jump-chart-btn {
+  opacity: 1;
+  border-color: var(--evo-line-strong);
+}

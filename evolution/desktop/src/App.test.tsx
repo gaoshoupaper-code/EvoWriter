@@ -35,6 +35,26 @@ afterEach(() => {
   window.history.replaceState(null, "", "/");
 });
 
+it.each([["writing", "写作详情"], ["evaluation", "评分详情"]])("opens a fresh record deep link for %s in the text suite", async (section, title) => {
+  const url = "#/bench/experiments/archive/records/record-one/" + section + "?agent=text";
+  window.history.replaceState(null, "", url);
+  render(<App />);
+  expect(await screen.findByRole("heading", { name: title })).toBeVisible();
+  await waitFor(() => expect(paths).toContain("/evolution-api/text/api/experiments/runs/archive"));
+  expect(window.location.hash).toBe(url);
+});
+
+it.each([["rounds/1", "进化详情"], ["review", "实验审核"], ["comparison", "对比详情"]])(
+  "opens the experiment %s page in its original suite", async (page, title) => {
+    const url = "#/bench/experiments/archive/" + page + "?agent=text";
+    window.history.replaceState(null, "", url);
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: title })).toBeVisible();
+    await waitFor(() => expect(paths).toContain("/evolution-api/text/api/experiments/runs/archive"));
+    expect(window.location.hash).toBe(url);
+  },
+);
+
 it("opens the original dashboard, with its account, navigation and update controls", async () => {
   render(<App />);
   expect(await screen.findByRole("heading", { name: "用户运行" })).toBeInTheDocument();

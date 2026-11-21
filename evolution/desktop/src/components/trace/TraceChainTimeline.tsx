@@ -44,6 +44,7 @@ type TraceChainTimelineProps = {
   activeRun: TraceRunSummary | null;
   activeNodeId: string;
   onSelectNode: (node: TraceNode) => void;
+  canReadToolDetails?: boolean;
   /** 从执行追踪跳转到图检测：传入 LLM 节点对应的 loopIndex */
   onJumpToChart?: (loopIndex: number) => void;
   /** 高亮指定的节点（从图检测跳转过来时使用） */
@@ -53,15 +54,16 @@ type TraceChainTimelineProps = {
 };
 
 /** 判断节点是否可打开抽屉 */
-function isExpandable(node: TraceNode): boolean {
-  return node.kind === "llm" || node.kind === "todo" || node.kind === "error" || node.kind === "skill";
+function isExpandable(node: TraceNode, canReadToolDetails: boolean): boolean {
+  return node.kind === "llm" || node.kind === "todo" || node.kind === "error" || node.kind === "skill"
+    || (node.kind === "tool" && canReadToolDetails);
 }
 
 type RenderItem =
   | { type: "single"; node: TraceNode }
   | { type: "parallel"; groupId: string; nodes: TraceNode[] };
 
-export function TraceChainTimeline({ nodes, activeRun, activeNodeId, onSelectNode, onJumpToChart, highlightedNodeId, onClearHighlight }: TraceChainTimelineProps) {
+export function TraceChainTimeline({ nodes, activeRun, activeNodeId, onSelectNode, canReadToolDetails = false, onJumpToChart, highlightedNodeId, onClearHighlight }: TraceChainTimelineProps) {
   const [collapsedAgents, setCollapsedAgents] = useState<Set<string>>(new Set());
   const nodeRowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -289,7 +291,7 @@ export function TraceChainTimeline({ nodes, activeRun, activeNodeId, onSelectNod
                       node={node}
                       active={node.node_id === activeNodeId}
                       highlighted={node.node_id === highlightedNodeId}
-                      expandable={isExpandable(node)}
+                      expandable={isExpandable(node, canReadToolDetails)}
                       isAgent={node.kind === "agent"}
                       isCollapsed={node.kind === "agent" && collapsedAgents.has(node.node_id)}
                       childCount={node.kind === "agent" ? (agentChildCounts.get(node.node_id) ?? 0) : 0}
@@ -311,7 +313,7 @@ export function TraceChainTimeline({ nodes, activeRun, activeNodeId, onSelectNod
               node={node}
               active={node.node_id === activeNodeId}
               highlighted={node.node_id === highlightedNodeId}
-              expandable={isExpandable(node)}
+              expandable={isExpandable(node, canReadToolDetails)}
               isAgent={node.kind === "agent"}
               isCollapsed={node.kind === "agent" && collapsedAgents.has(node.node_id)}
               childCount={node.kind === "agent" ? (agentChildCounts.get(node.node_id) ?? 0) : 0}

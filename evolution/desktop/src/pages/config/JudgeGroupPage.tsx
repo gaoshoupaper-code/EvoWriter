@@ -12,6 +12,7 @@ import {
 } from "@/lib/api";
 import { DEFAULT_JUDGE_REPEATS } from "@/lib/experiment-types";
 import { currentTask, pageAgent } from "@/lib/writing-agent";
+import "@/components/bench/evaluation-readability.css";
 
 /**
  * 评测组配置页（REQ-20260930-162207/FR-001/DEC-001、004、010、011）。
@@ -48,6 +49,7 @@ export function JudgeGroupPanel() {
   const [groups, setGroups] = useState<JudgeGroupInfo[]>([]);
   const [candidates, setCandidates] = useState<JudgeCandidate[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [form, setForm] = useState<GroupFormState | null>(null);
   const [saving, setSaving] = useState(false);
 
@@ -59,8 +61,9 @@ export function JudgeGroupPanel() {
       ]);
       setGroups(groupResp.groups);
       setCandidates(judgeResp.judges);
+      setLoadError("");
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "读取评测组失败");
+      setLoadError(err instanceof Error ? `读取评测组失败：${err.message}` : "读取评测组失败");
     } finally {
       setLoading(false);
     }
@@ -128,28 +131,24 @@ export function JudgeGroupPanel() {
     }
   }
 
-  if (loading) return <div className="page-loading">加载评测组…</div>;
+  if (loading) return <div className="page-loading" role="status">加载评测组…</div>;
 
   const byId = new Map(candidates.map((c) => [c.config_id, c]));
 
   return (
-    <section className="config-page">
-      <header className="page-header">
-        <h2>评测组</h2>
-        <p className="page-desc">
-          {chapterText ? "每组选择 1～5 个评测模型。各模型按相同次数评同一份成稿，评齐后汇总。" :
-            "由 1~5 个 judge 模型组成的评审团：每行评分按维度取成员均分（1 位小数），同维成功 ≥2 才出分。1 人组等价于旧的单 judge 评测。"}
-        </p>
-      </header>
-      <div className="config-toolbar">
-        <button
-          className="config-button primary"
-          onClick={() => setForm({ ...EMPTY_FORM })}
-          disabled={!!form}
-        >
+    <section className="config-page evaluation-content evaluation-judge-groups">
+      <header className="page-header evaluation-judge-header">
+        <div><h2>评测组</h2>
+          <p className="page-desc">
+            {chapterText ? "每组选择 1～5 个评测模型。各模型按相同次数评同一份成稿，评齐后汇总。" :
+              "由 1~5 个 judge 模型组成的评审团：每行评分按维度取成员均分（1 位小数），同维成功 ≥2 才出分。1 人组等价于旧的单 judge 评测。"}
+          </p>
+        </div>
+        <button type="button" className="config-button readable-button" onClick={() => setForm({ ...EMPTY_FORM })} disabled={!!form}>
           + 新建评测组
         </button>
-      </div>
+      </header>
+      {loadError && <p className="experiment-error" role="alert">{loadError}</p>}
 
       {form && (
         <section className="config-form">
@@ -204,10 +203,10 @@ export function JudgeGroupPanel() {
             </div>
           </div>
           <div className="config-actions">
-            <button className="config-button primary" onClick={handleSave} disabled={saving}>
+            <button className="config-button primary readable-button" onClick={handleSave} disabled={saving}>
               {saving ? "保存中…" : "保存"}
             </button>
-            <button className="config-button ghost" onClick={() => setForm(null)} disabled={saving}>
+            <button className="config-button readable-button" onClick={() => setForm(null)} disabled={saving}>
               取消
             </button>
           </div>
@@ -215,38 +214,38 @@ export function JudgeGroupPanel() {
       )}
 
       <section className="config-list">
-        {groups.length === 0 ? (
+        {groups.length === 0 ? !loadError && (
           <div className="config-empty">
             还没有评测组。点击「+ 新建评测组」，选 1~5 个 judge 模型组队。
           </div>
         ) : (
           groups.map((g) => (
-            <div key={g.id} className="config-card">
+            <article key={g.id} className="config-card">
               <div className="config-card-head">
-                <span className="config-card-name">{g.name}</span>
+                <h3 className="config-card-name">{g.name}</h3>
                 <span className="status-meta">{g.members.length} 人</span>
                 {chapterText && <span className="status-meta">每个模型评 {g.score_repeats ?? DEFAULT_JUDGE_REPEATS} 次</span>}
               </div>
-              <div className="config-card-meta">
+              <ul className="config-card-meta" aria-label="组内模型">
                 {g.members.map((m) => {
                   const info = byId.get(m.config_id);
                   const model = info?.model || m.model;
                   const sameFamily = info?.same_family_as_executor ?? false;
                   return (
-                    <span
+                    <li
                       key={m.config_id}
                       className="config-card-key"
                       title={sameFamily ? "与 executor 被测模型同家族，评测存在自我偏好风险（arXiv:2502.01534）" : undefined}
                     >
                       {m.name}（{model}）{m.stale && <span className="config-key-missing"> · 配置缺失</span>}
                       {sameFamily && <span className="config-key-missing"> · ⚠ 同家族</span>}
-                    </span>
+                    </li>
                   );
                 })}
-              </div>
+              </ul>
               <div className="config-card-actions">
                 <button
-                  className="config-button small"
+                  className="config-button readable-button"
                   onClick={() =>
                     setForm({ editingId: g.id, name: g.name, memberIds: g.members.map((m) => m.config_id),
                       scoreRepeats: g.score_repeats ?? DEFAULT_JUDGE_REPEATS })
@@ -254,11 +253,11 @@ export function JudgeGroupPanel() {
                 >
                   编辑
                 </button>
-                <button className="config-button small danger" onClick={() => handleDelete(g)}>
+                <button className="config-button readable-button danger" onClick={() => handleDelete(g)}>
                   删除
                 </button>
               </div>
-            </div>
+            </article>
           ))
         )}
       </section>

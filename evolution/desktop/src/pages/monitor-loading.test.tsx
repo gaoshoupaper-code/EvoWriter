@@ -2,7 +2,8 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TraceListItem, UserUsageRow, WorkspaceUsageRow } from "@/lib/api";
 
-vi.mock("react-router-dom", () => ({ useNavigate: () => vi.fn() }));
+const { navigate } = vi.hoisted(() => ({ navigate: vi.fn() }));
+vi.mock("react-router-dom", () => ({ useNavigate: () => navigate }));
 vi.mock("@/lib/api", () => ({ getTraces: vi.fn(), getUserUsage: vi.fn(), getWorkspaceUsage: vi.fn() }));
 vi.mock("@/hooks/useActiveRunsStream", () => ({ useActiveRunsStream: vi.fn() }));
 vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
@@ -153,5 +154,28 @@ describe("运行观测独立加载（REQ-20261108-223920 AC-004）", () => {
     await act(async () => old.resolve([{ workspace_id: "a-ws", owner_user_id: "a", title: "甲的迟到作品", status: "normal", last_created_at: null, total_tokens: 10 }]));
     expect(screen.queryByText("甲的迟到作品")).not.toBeInTheDocument();
     expect(screen.getByText("乙的作品")).toBeInTheDocument();
+  });
+});
+
+describe("用户运行重点和详情入口（REQ-20261121-161413）", () => {
+  it("先展示活跃运行和近期运行，再展示用量", async () => {
+    render(<MonitorPage />);
+    await settle();
+    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent))
+      .toEqual(["活跃运行", "近期运行", "用量观测"]);
+  });
+
+  it("近期失败有明确状态，点击运行名称或整行可进入同一 Trace", async () => {
+    vi.mocked(getTraces).mockResolvedValue(page({ ...recent, status: "failed" }));
+    render(<MonitorPage />);
+    await settle();
+    const row = screen.getByText("已加载历史 · 创作").closest("tr")!;
+    expect(within(row).getByText("失败")).toBeInTheDocument();
+    fireEvent.click(within(row).getByRole("button", { name: /已加载历史/ }));
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenLastCalledWith("/traces/recent");
+    fireEvent.click(within(row).getByText("失败"));
+    expect(navigate).toHaveBeenCalledTimes(2);
+    expect(navigate).toHaveBeenLastCalledWith("/traces/recent");
   });
 });

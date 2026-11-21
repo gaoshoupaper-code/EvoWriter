@@ -29,7 +29,7 @@ export function ExperimentArtifacts({ samples, canReadContent }: { samples: Expe
   </section>;
 }
 
-function ArtifactReader({ files }: { files: Record<string, string> }) {
+export function ArtifactReader({ files }: { files: Record<string, string> }) {
   const paths = Object.keys(files).sort((a, b) => a.localeCompare(b, "zh-CN", { numeric: true }));
   const [selectedPath, setSelectedPath] = useState("");
   const path = paths.includes(selectedPath) ? selectedPath : paths[0];

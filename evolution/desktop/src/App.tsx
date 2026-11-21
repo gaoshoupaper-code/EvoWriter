@@ -17,6 +17,10 @@ import BenchWorkbench from "@/pages/bench/Workbench";
 import BenchRules from "@/pages/bench/Rules";
 import BenchDataset from "@/pages/bench/Dataset";
 import ExperimentDetail from "@/pages/bench/ExperimentDetail";
+import ExperimentRecordDetail from "@/pages/bench/ExperimentRecordDetail";
+import ExperimentImprovementDetail from "@/pages/bench/ExperimentImprovementDetail";
+import ExperimentReview from "@/pages/bench/ExperimentReview";
+import ExperimentComparison from "@/pages/bench/ExperimentComparison";
 import ExperimentRecords from "@/pages/bench/ExperimentRecords";
 import TraceDetail from "@/pages/trace-detail";
 import AdminUsers from "@/pages/admin/users";
@@ -80,6 +84,10 @@ function App() {
             <Route path="/bench" element={<BenchWorkbench />} />
             <Route path="/bench/experiments" element={<ExperimentRecords />} />
             <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
+            <Route path="/bench/experiments/:experimentId/records/:sampleId/:section" element={<ExperimentRecordDetail />} />
+            <Route path="/bench/experiments/:experimentId/rounds/:round" element={<ExperimentImprovementDetail />} />
+            <Route path="/bench/experiments/:experimentId/review" element={<ExperimentReview />} />
+            <Route path="/bench/experiments/:experimentId/comparison" element={<ExperimentComparison />} />
             <Route path="/bench/rules" element={<BenchRules />} />
             <Route path="/bench/dataset" element={<BenchDataset />} />
             <Route path="/benchmark" element={<MovedPage to="/bench" />} />

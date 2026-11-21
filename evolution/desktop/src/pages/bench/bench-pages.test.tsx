@@ -241,6 +241,10 @@ describe("评测组页（AC-001）", () => {
       name: "评审团", member_config_ids: [11, 22],
     });
     expect(await screen.findByText("2 人")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "评审团" })).toBeInTheDocument();
+    const models = within(screen.getByRole("list", { name: "组内模型" })).getAllByRole("listitem");
+    expect(models[0]).toHaveTextContent("glm（glm-4.7）");
+    expect(models[1]).toHaveTextContent("kimi（kimi-k2）");
   });
 
   it("正文评测组默认三次并可改成一次，选项限于一至三次", async () => {

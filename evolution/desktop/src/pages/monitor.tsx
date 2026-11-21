@@ -32,6 +32,17 @@ const INTEGRITIES: Array<{ value: TraceIntegrityStatus | "all"; label: string }>
   { value: "conflict", label: "冲突" },
   { value: "legacy", label: "旧版" },
 ];
+const TRACE_STATUS_LABELS: Record<TraceStatus, string> = {
+  pending: "待运行",
+  running: "运行中",
+  awaiting_input: "等待输入",
+  cancelling: "取消中",
+  completed: "完成",
+  failed: "失败",
+  cancelled: "已取消",
+  cancel_timeout: "取消超时",
+  interrupted: "已中断",
+};
 type TimeRange = "24h" | "7d" | "30d" | "all";
 
 export default function MonitorPage() {
@@ -174,7 +185,7 @@ export default function MonitorPage() {
           <h1>用户运行</h1>
           <p>Trace V2 结构、完整性与运行时机制</p>
         </div>
-        <button className="icon-button" type="button" title="刷新" onClick={() => refresh()}>
+        <button className="icon-button" type="button" title="刷新" aria-label="刷新" onClick={() => refresh()}>
           <RefreshCw size={16} />
         </button>
       </header>
@@ -201,6 +212,7 @@ export default function MonitorPage() {
               key={range}
               type="button"
               className={timeRange === range ? "active" : ""}
+              aria-pressed={timeRange === range}
               onClick={() => resetFilters(() => setTimeRange(range))}
             >
               {range === "24h" ? "24 小时" : range === "7d" ? "7 天" : range === "30d" ? "30 天" : "全部"}
@@ -228,8 +240,6 @@ export default function MonitorPage() {
           </div>
         )}
       </RunSection>
-
-      <UsageDrilldown />
 
       <RunSection title="近期运行" count={recentRuns.length}>
         <SectionLoadState label="近期运行" loading={loading} hasData={loaded || recentRuns.length > 0} error={error}
@@ -260,6 +270,8 @@ export default function MonitorPage() {
           <button disabled={page >= totalPages - 1} onClick={() => setPage((value) => Math.min(totalPages - 1, value + 1))}>下一页</button>
         </div>
       )}
+
+      <UsageDrilldown />
     </div>
   );
 }
@@ -288,7 +300,7 @@ function RunSection({ title, count, children }: { title: string; count: number; 
 function RunTableHead({ active = false }: { active?: boolean }) {
   return (
     <thead><tr>
-      <th>运行</th><th>工作负载</th><th>状态</th><th>完整性</th><th>Coverage</th>
+      <th>运行</th><th>状态</th><th>工作负载</th><th>完整性</th><th>Coverage</th>
       <th>机制</th><th>{active ? "已运行" : "开始 / 耗时"}</th>
       <th>Token 总量</th>
     </tr></thead>
@@ -348,17 +360,20 @@ function finishedRunToListItem(run: FinishedRunInfo): TraceListItem {
 
 function RunRow({ run, onOpen }: { run: ObservableRun; onOpen: () => void }) {
   return (
-    <tr className="clickable-row" onClick={onOpen} tabIndex={0} onKeyDown={(event) => {
-      if (event.key === "Enter" || event.key === " ") onOpen();
-    }}>
+    <tr className="clickable-row" onClick={onOpen}>
       <td>
-        <TraceIdentity run={run} />
+        <button type="button" className="run-open-button" onClick={(event) => {
+          event.stopPropagation();
+          onOpen();
+        }}>
+          <TraceIdentity run={run} />
+        </button>
         <span className="run-secondary">
           {"service" in run ? run.service || "unknown" : "live"} · v{"schema_version" in run ? run.schema_version : 2}
         </span>
       </td>
-      <td><WorkloadBadge workload={run.workload} /></td>
       <td><StatusBadge status={run.status} /></td>
+      <td><WorkloadBadge workload={run.workload} /></td>
       <td><IntegrityBadge status={run.integrity_status} /></td>
       <td><CoverageSummary coverage={run.coverage} /></td>
       <td><MechanismSummary run={run} /></td>
@@ -394,8 +409,8 @@ function IntegrityBadge({ status }: { status: TraceIntegrityStatus }) {
   );
 }
 
-function StatusBadge({ status }: { status: string }) {
-  return <span className={`run-status ${status}`}><span className="status-dot" />{status}</span>;
+function StatusBadge({ status }: { status: TraceStatus }) {
+  return <span className={`run-status ${status}`}><span className="status-dot" />{TRACE_STATUS_LABELS[status] ?? status}</span>;
 }
 
 function CoverageSummary({ coverage }: { coverage: Record<string, string> }) {

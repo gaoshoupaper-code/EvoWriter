@@ -59,6 +59,10 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
   it("仅四项常用选择，自动带入套件、规则与默认门槛", async () => {
     render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
     await screen.findByLabelText("Harness 版本");
+    await screen.findByText(/当前没有正在运行的实验/);
+    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
+      "启动自动进化", "正在运行的实验",
+    ]);
     expect(screen.getAllByRole("combobox")).toHaveLength(3);
     expect(screen.queryByRole("textbox", { name: "实验名称" })).not.toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("评测模型"), { target: { value: "5" } });
@@ -96,10 +100,24 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
       { ...base, id: "old", name: "旧四卷实验", flow_version: undefined }] as never[] });
     render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
     const newRow = (await screen.findByRole("link", { name: "章纲进化·11/07-01" })).closest("article")!;
+    expect(screen.getAllByRole("heading", { level: 2 }).map((heading) => heading.textContent)).toEqual([
+      "正在运行的实验", "启动自动进化",
+    ]);
     expect(within(newRow).getByText("章纲")).toBeInTheDocument();
     expect(newRow).toHaveTextContent("本套回归");
     expect(newRow).toHaveTextContent("改版 2 / 3 轮");
     expect(screen.queryByRole("link", { name: "旧四卷实验" })).not.toBeInTheDocument();
+  });
+
+  it("运行概况读取失败时有错误提示，期间不报告没有活动实验", async () => {
+    let rejectRuns!: (error: Error) => void;
+    api.listExperiments.mockReturnValueOnce(new Promise((_, reject) => { rejectRuns = reject; }));
+    render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
+    expect(screen.getByText(/正在读取运行概况/)).toBeInTheDocument();
+    expect(screen.queryByText(/当前没有正在运行的实验/)).not.toBeInTheDocument();
+    await act(async () => { rejectRuns(new Error("实验服务不可用")); });
+    expect(screen.getByRole("alert")).toHaveTextContent("实验服务不可用");
+    expect(screen.queryByText(/当前没有正在运行的实验/)).not.toBeInTheDocument();
   });
 
   it("仅展示当前套改进题与回归题", async () => {
@@ -112,6 +130,20 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
     fireEvent.click(regression);
     expect(await screen.findByText("volume_outlines样本3")).toBeInTheDocument();
     expect(screen.queryByText("volume_outlines样本0")).not.toBeInTheDocument();
+  });
+
+  it("未切换到回归题也能看见缺项，不能把读取失败当成缺项", async () => {
+    api.listExperimentPackages.mockResolvedValueOnce({ items: [packages[0]] as never[], can_read_content: true });
+    const loaded = render(<StagePackages />);
+    expect(await screen.findByRole("tab", { name: /改进题.*已齐备/ })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tab", { name: /回归题.*缺少题目/ })).toBeInTheDocument();
+    loaded.unmount();
+
+    api.listExperimentPackages.mockRejectedValueOnce(new Error("无法连接数据集"));
+    render(<StagePackages />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("无法连接数据集");
+    expect(screen.queryByRole("tab", { name: /回归题/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/本组暂无题目/)).not.toBeInTheDocument();
   });
 
   it("正文题可导入 Markdown 技能并生成新版本", async () => {
@@ -217,6 +249,10 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
     api.saveExperimentRule.mockResolvedValue({ ...rules[0], id: "saved-rule", version: 3 } as never);
     render(<StageRules />);
     expect(await screen.findByText("当前阶段是否兑现固定要求？")).toBeInTheDocument();
+    const dimension = screen.getByRole("heading", { name: "需求兑现" });
+    expect(within(dimension.parentElement!).getByText("100% 权重")).toBeVisible();
+    const completionCheck = screen.getByRole("heading", { name: /完成检查/ });
+    expect(dimension.compareDocumentPosition(completionCheck) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "编辑规则" }));
     fireEvent.change(screen.getByLabelText("需求兑现评分问题"), { target: { value: "只检查当前阶段固定目标" } });

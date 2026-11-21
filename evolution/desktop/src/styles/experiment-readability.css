@@ -1,0 +1,278 @@
+:is(.experiment-records-page, .experiment-detail, .experiment-record-detail, .experiment-scoring-page) {
+  min-width: 0;
+  color: var(--evo-ink);
+  font-size: var(--text-ui-base);
+  line-height: 1.6;
+}
+
+.experiment-records-page .experiment-record {
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  gap: 18px 28px;
+  padding: 20px;
+  margin-bottom: 12px;
+  border: 1px solid var(--evo-line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--evo-surface);
+}
+
+.experiment-record-main h2 {
+  margin: 0 0 8px;
+  font-size: var(--text-ui-lg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.experiment-record-status, .experiment-record-results {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.experiment-record-results {
+  align-items: start;
+  flex-direction: column;
+}
+
+.experiment-record-status strong {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+:is(.experiment-records-page, .experiment-priority-summary) .experiment-score-summary {
+  flex-wrap: wrap;
+  gap: 14px 24px;
+  margin: 0;
+}
+
+:is(.experiment-records-page, .experiment-priority-summary) .experiment-score-summary strong {
+  font-size: var(--text-ui-lg);
+}
+
+:is(.experiment-records-page, .experiment-priority-summary) .experiment-score-summary small {
+  font-size: var(--text-ui-base);
+}
+
+:is(.experiment-records-page, .experiment-priority-summary) .experiment-score-summary span,
+.experiment-records-page .experiment-cell-note {
+  color: var(--evo-ink-secondary);
+  font-size: var(--text-ui-caption);
+  overflow-wrap: anywhere;
+}
+
+:is(.experiment-records-page, .experiment-detail, .experiment-record-detail, .experiment-scoring-page)
+  :is(.experiment-note, .experiment-error, .experiment-empty) {
+  font-size: var(--text-ui-base);
+}
+
+:is(.experiment-records-page, .experiment-detail, .experiment-record-detail, .experiment-scoring-page)
+  :is(.experiment-note, .experiment-empty) {
+  color: var(--evo-ink-secondary);
+}
+
+:is(.experiment-records-page, .experiment-detail) .experiment-state,
+.experiment-detail .timeline-record-status {
+  margin: 0;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-ui-base);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+:is(.experiment-records-page, .experiment-detail, .experiment-record-detail, .experiment-scoring-page)
+  :is(a.action-link, a.experiment-run-name, .timeline-stage a, .experiment-sample-records a) {
+  color: var(--evo-accent);
+  text-decoration: underline;
+  text-underline-offset: .2em;
+  overflow-wrap: anywhere;
+}
+
+:is(.experiment-records-page, .experiment-detail, .experiment-record-detail, .experiment-scoring-page) a.action-link {
+  padding: 0;
+  font-size: var(--text-ui-base);
+}
+
+:is(.experiment-records-page, .experiment-detail, .experiment-record-detail, .experiment-scoring-page)
+  .config-button:not(.primary, .secondary, .danger, .ghost, .small) {
+  border: 1px solid color-mix(in srgb, var(--evo-ink-secondary) 60%, var(--evo-surface));
+  background: var(--evo-surface-2);
+  color: var(--evo-ink);
+}
+
+:is(.experiment-records-page, .experiment-detail, .experiment-record-detail, .experiment-scoring-page) .config-button {
+  max-width: 100%;
+  font-size: var(--text-ui-base);
+  line-height: 1.4;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+:is(.experiment-records-page, .experiment-detail, .experiment-record-detail, .experiment-scoring-page) .config-button:not(.primary):hover:not(:disabled) {
+  border-color: var(--evo-accent);
+}
+
+:is(.experiment-records-page, .experiment-detail, .experiment-record-detail, .experiment-scoring-page)
+  :is(.config-button, a.action-link, a.experiment-run-name, .timeline-stage a):focus-visible {
+  outline: 2px solid var(--evo-accent);
+  outline-offset: 2px;
+}
+
+.experiment-detail .page-desc {
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.experiment-priority-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 32px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--evo-line);
+}
+
+.experiment-priority-summary .experiment-note {
+  margin: 0;
+}
+
+.experiment-current-phase {
+  color: var(--evo-ink);
+  font-size: var(--text-ui-base);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.experiment-detail .experiment-overview,
+.experiment-record-detail .record-heading {
+  padding: 16px;
+  border: 1px solid var(--evo-line);
+  border-radius: var(--radius-lg);
+  background: var(--evo-surface);
+}
+
+.experiment-detail .experiment-overview dd,
+.experiment-detail .experiment-overview .experiment-model strong,
+.experiment-detail .timeline-record-heading > :is(a, span:first-child),
+.experiment-detail .timeline-stage-heading,
+.experiment-detail .timeline-comparison,
+.experiment-record-detail .record-heading p {
+  margin-block-end: 0;
+  font-size: var(--text-ui-base);
+  overflow-wrap: anywhere;
+}
+
+.experiment-detail :is(.timeline-stage-heading > span, .timeline-stage-label > span, .timeline-run-meta, .timeline-record-status),
+.experiment-record-detail .record-heading p {
+  color: var(--evo-ink-secondary);
+  font-size: var(--text-ui-base);
+}
+
+.experiment-detail .timeline-stage-label {
+  min-width: 0;
+}
+
+.experiment-detail .timeline-stage-label h2 {
+  font-size: var(--text-ui-base);
+  font-weight: 600;
+}
+
+.experiment-detail .timeline-score {
+  margin-inline-start: 8px;
+  white-space: normal;
+}
+
+.experiment-detail .timeline-comparison > strong {
+  font-weight: 600;
+}
+
+.experiment-detail .experiment-review-entry {
+  margin-inline-start: 0;
+}
+
+.experiment-record-detail > h1 {
+  margin: 0 0 10px;
+  font-size: var(--text-ui-display);
+  font-weight: 600;
+}
+
+:is(.experiment-detail, .experiment-record-detail, .experiment-scoring-page)
+  :is(h1, h2, h3, .experiment-model, .record-facts, .experiment-error) {
+  overflow-wrap: anywhere;
+}
+
+.experiment-record-detail > nav button.action-link,
+.experiment-record-detail > nav a.action-link {
+  margin-block-end: 4px;
+}
+
+.experiment-record-detail > section > h2,
+.experiment-record-detail .record-heading h2,
+.experiment-scoring-page .chapter-scores caption {
+  font-size: var(--text-ui-xl);
+  font-weight: 600;
+}
+
+:is(.experiment-record-detail, .experiment-scoring-page) :is(.experiment-badge, .data-table) {
+  font-size: var(--text-ui-base);
+}
+
+.experiment-record-detail .experiment-comparison > h3 {
+  font-size: var(--text-ui-lg);
+  font-weight: 600;
+}
+
+.experiment-record-detail :is(.record-judge-models .experiment-model strong, .experiment-score-details h4) {
+  font-size: var(--text-ui-base);
+}
+
+.experiment-record-detail .experiment-score-details h4 {
+  flex-wrap: wrap;
+  gap: 4px 16px;
+}
+
+.experiment-record-detail .experiment-comparison {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+:is(.experiment-record-detail, .experiment-scoring-page)
+  :is(.chapter-pair-controls label, .chapter-side label, .experiment-file-nav button, .experiment-file-document > header) {
+  min-width: 0;
+  max-width: 100%;
+  flex-wrap: wrap;
+}
+
+:is(.experiment-record-detail, .experiment-scoring-page) :is(.chapter-side select, .chapter-pair-controls select) {
+  width: 100%;
+  min-width: 0;
+}
+
+:is(.experiment-record-detail, .experiment-scoring-page) :is(.chapter-side details, .experiment-files details, section > details) > summary {
+  width: fit-content;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--evo-line-strong);
+  border-radius: var(--radius-md);
+  background: var(--evo-surface-2);
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 1100px) {
+  .experiment-records-page .experiment-record {
+    gap: 12px 16px;
+    padding: 16px;
+  }
+
+  :is(.experiment-record-detail, .experiment-scoring-page) .experiment-file-reader {
+    grid-template-columns: minmax(140px, 25%) minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .experiment-records-page .experiment-record,
+  :is(.experiment-record-detail, .experiment-scoring-page) .experiment-file-reader {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -16,6 +16,8 @@ type TraceChainDrawerProps = {
   todos: { anchor_id: string; items: TraceTodoItem[]; active_item?: string | null }[];
   inputMessages: unknown[] | null;
   nodeOutput: unknown[] | unknown | null;
+  toolArgs?: unknown;
+  loading?: boolean;
   onClose: () => void;
 };
 
@@ -28,7 +30,7 @@ const SEGMENT_KIND_CONFIG: Record<string, { label: string; className: string }> 
   todo: { label: "Todo", className: "todo" },
 };
 
-export function TraceChainDrawer({ node, context, todos, inputMessages, nodeOutput, onClose }: TraceChainDrawerProps) {
+export function TraceChainDrawer({ node, context, todos, inputMessages, nodeOutput, toolArgs, loading, onClose }: TraceChainDrawerProps) {
   const [drawerView, setDrawerView] = useState<"detail" | "all">("detail");
 
   useEffect(() => {
@@ -42,7 +44,7 @@ export function TraceChainDrawer({ node, context, todos, inputMessages, nodeOutp
 
   if (!node) return null;
 
-  const canShowContext = node.kind === "llm" || node.kind === "tool";
+  const canShowContext = node.kind === "llm";
   const eventNum = eventNumberLabel(node.raw_event_ids);
 
   return (
@@ -72,6 +74,13 @@ export function TraceChainDrawer({ node, context, todos, inputMessages, nodeOutp
         {drawerView === "detail" ? (
           <>
             {node.kind === "llm" ? <DrawerLLMContent node={node} context={filteredContext} /> : null}
+            {node.kind === "tool" && (loading ? <p role="status">正在读取工具调用…</p> : <>
+              <div className="checkpoint-section-label">工具参数</div>
+              <pre className="checkpoint-msg-content">{toolArgs == null ? "暂无可读取的参数。" : JSON.stringify(toolArgs, null, 2)}</pre>
+              <div className="checkpoint-section-label">工具结果</div>
+              <pre className="checkpoint-msg-content">{nodeOutput == null ? "暂无可读取的结果。" :
+                typeof nodeOutput === "string" ? nodeOutput : JSON.stringify(nodeOutput, null, 2)}</pre>
+            </>)}
             {node.kind === "todo" ? <DrawerTodoContent node={node} todos={todos} /> : null}
             {node.kind === "error" ? <DrawerErrorContent node={node} context={filteredContext} /> : null}
           </>

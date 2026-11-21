@@ -1,6 +1,6 @@
 import PageAgentSelector from "@/components/PageAgentSelector";
 import { RunMiddleware } from "@/components/harness/RunMiddleware";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import { useParams, useNavigate, useOutletContext, useSearchParams } from "react-router-dom";
 import { RefreshCw } from "lucide-react";
 import { TraceIdentity, TraceIdentifier } from "@/components/trace/TraceIdentity";
@@ -59,6 +59,7 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
   const [drawerNodeId, setDrawerNodeId] = useState<string | null>(null);
   const [highlightedNodeId, setHighlightedNodeId] = useState<string | null>(null);
   const [highlightedLoopIndex, setHighlightedLoopIndex] = useState<number | null>(null);
+  const failureHeadingId = useId();
 
   // ── trace 稳定性重构：停止 / interrupted 收敛状态 ──
   // activeSession 由 useTracePolling 每次轮询顺便反查（保证 self_trace_id 写入后立即可见）。
@@ -184,6 +185,7 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
     if (!startId) return null;
     const startEvent = drawerEvents.find((e) => e.event_id === startId);
     if (!startEvent?.input || typeof startEvent.input !== "object") return null;
+    if (Array.isArray(startEvent.input)) return startEvent.input;
     const input = startEvent.input as { messages?: unknown[] };
     return Array.isArray(input.messages) ? input.messages : null;
   }, [drawerNode, drawerEvents]);
@@ -197,12 +199,11 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
     if (!endEvent) return null;
 
     if (drawerNode.kind === "llm") {
-      if (!endEvent.output || typeof endEvent.output !== "object") return null;
-      const output = endEvent.output as { messages?: unknown[] };
-      return Array.isArray(output.messages) ? output.messages : null;
+      const output = endEvent.output as { messages?: unknown[] } | null;
+      return Array.isArray(output?.messages) ? output.messages : endEvent.output ?? null;
     }
     if (drawerNode.kind === "tool") {
-      return endEvent.tool_output ?? null;
+      return endEvent.tool_output ?? endEvent.error ?? null;
     }
     return null;
   }, [drawerNode, drawerEvents]);
@@ -213,7 +214,8 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
   // ── 交互回调 ──
 
   function selectNode(node: TraceNode) {
-    if (node.kind === "llm" || node.kind === "todo" || node.kind === "error" || node.kind === "skill") {
+    if (node.kind === "llm" || node.kind === "todo" || node.kind === "error" || node.kind === "skill"
+        || (node.kind === "tool" && isSuperAdmin)) {
       setDrawerNodeId(node.node_id);
     }
   }
@@ -341,6 +343,17 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
 
   const run = activeRun;
   const runInProgress = ["running", "awaiting_input", "pending", "cancelling"].includes(run.status);
+  const cancellationTimedOut = run.status === "cancel_timeout";
+  const failedRun = run.status === "failed" || cancellationTimedOut;
+  const recordedErrors = failedRun ? nodes.filter((node) => node.kind !== "run" && node.kind !== "agent"
+    && (node.status === "failed" || node.status === "cancel_timeout")) : [];
+  const timeoutNode = cancellationTimedOut ? recordedErrors.find((node) => node.status === "cancel_timeout") : undefined;
+  const failedNode = timeoutNode ?? recordedErrors.find((node) => node.kind === "error" && (node.tool_name || node.model_name))
+    ?? recordedErrors.find((node) => node.tool_name || node.model_name) ?? recordedErrors[0];
+  const nodeFailureReason = cancellationTimedOut ? timeoutNode?.error?.trim()
+    : (failedNode?.kind === "error" ? failedNode.error?.trim() : undefined)
+      || recordedErrors.find((node) => node.kind === "error" && node.error?.trim())?.error?.trim();
+  const failureReason = run.error?.trim() || nodeFailureReason;
 
   return (
     <div className={"trace-detail-page" + (embedded ? " experiment-embedded-trace" : "")}>
@@ -407,6 +420,24 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
             </div>
           )}
         </div>
+        {(failedRun || failureReason) && (
+          <section className="trace-failure" aria-labelledby={failureHeadingId}>
+            <h2 id={failureHeadingId}>{failedRun ? "失败详情" : "运行错误"}</h2>
+            {failedNode && (
+              <div className="trace-failed-step">
+                <p><strong>出错记录</strong> <span>{failedNode.tool_name || failedNode.model_name || failedNode.label}</span></p>
+                <button type="button" onClick={() => {
+                  handleJumpToTrace(failedNode.node_id);
+                  selectNode(failedNode);
+                }}>定位出错记录</button>
+              </div>
+            )}
+            {failureReason ? <p className="trace-failure-reason">{failureReason}</p> : (
+              <p>{failedNode ? "未记录失败原因。" : "未记录出错步骤和失败原因。"}</p>
+            )}
+            {failedRun && failureReason && !failedNode && <p>未记录出错步骤。</p>}
+          </section>
+        )}
         {traceId && <TraceIdentifier key={traceId} traceId={traceId} />}
         {traceId && <RunMiddleware key={"middleware:" + traceId} traceId={traceId} eventCount={run.event_count} />}
         {actionError && (
@@ -484,60 +515,57 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
 
       {!embedded && <PageAgentSelector />}
       {/* run 概要条 */}
-      <section className="trace-detail-summary">
-        <div className="summary-item">
-          <label>耗时</label>
-          <span>{run.duration_ms != null ? formatDuration(run.duration_ms) : "—"}</span>
-        </div>
-        <div className="summary-item">
-          <label>事件数</label>
-          <span>{run.event_count}</span>
-        </div>
-        <div className="summary-item">
-          <label>开始</label>
-          <span>{run.started_at?.replace("T", " ").slice(0, 19) || "—"}</span>
-        </div>
-        <div className="summary-item">
-          <label>节点数</label>
-          <span>{nodes.filter((n) => n.kind !== "run").length}</span>
-        </div>
-        <div className="summary-item">
-          <label>平均耗时</label>
-          <span>
-            {metrics?.average_duration_ms != null
-              ? formatDuration(metrics.average_duration_ms)
-              : "—"}
-          </span>
-        </div>
-        <div className="summary-item">
-          <label>输入 Token</label>
-          <span>{formatTokensW(metrics?.input_tokens)}</span>
-          {metrics?.input_partial && <small className="run-secondary">部分用量缺失</small>}
-        </div>
-        <div className="summary-item">
-          <label>输出 Token</label>
-          <span>{formatTokensW(metrics?.output_tokens)}</span>
-          {metrics?.output_partial && <small className="run-secondary">部分用量缺失</small>}
-        </div>
-        <div className="summary-item">
-          <label>工作负载</label>
-          <span>{workloadLabel(run.workload)}</span>
-        </div>
-        <div className="summary-item">
-          <label>完整性</label>
-          <StatusBadge status={run.integrity_status || "legacy"} />
-        </div>
-        <div className="summary-item">
-          <label>Coverage</label>
-          <span>{coverageLabel(run.coverage || {})}</span>
-        </div>
-        {run.error && (
-          <div className="summary-item error">
-            <label>错误</label>
-            <span>{run.error}</span>
+      <details className="trace-detail-metrics" open={!failedRun}>
+        <summary>运行指标</summary>
+        <section className="trace-detail-summary">
+          <div className="summary-item">
+            <label>耗时</label>
+            <span>{run.duration_ms != null ? formatDuration(run.duration_ms) : "—"}</span>
           </div>
-        )}
-      </section>
+          <div className="summary-item">
+            <label>事件数</label>
+            <span>{run.event_count}</span>
+          </div>
+          <div className="summary-item">
+            <label>开始</label>
+            <span>{run.started_at?.replace("T", " ").slice(0, 19) || "—"}</span>
+          </div>
+          <div className="summary-item">
+            <label>节点数</label>
+            <span>{nodes.filter((n) => n.kind !== "run").length}</span>
+          </div>
+          <div className="summary-item">
+            <label>平均耗时</label>
+            <span>
+              {metrics?.average_duration_ms != null
+                ? formatDuration(metrics.average_duration_ms)
+                : "—"}
+            </span>
+          </div>
+          <div className="summary-item">
+            <label>输入 Token</label>
+            <span>{formatTokensW(metrics?.input_tokens)}</span>
+            {metrics?.input_partial && <small className="run-secondary">部分用量缺失</small>}
+          </div>
+          <div className="summary-item">
+            <label>输出 Token</label>
+            <span>{formatTokensW(metrics?.output_tokens)}</span>
+            {metrics?.output_partial && <small className="run-secondary">部分用量缺失</small>}
+          </div>
+          <div className="summary-item">
+            <label>工作负载</label>
+            <span>{workloadLabel(run.workload)}</span>
+          </div>
+          <div className="summary-item">
+            <label>完整性</label>
+            <span>{integrityLabel(run.integrity_status || "legacy")}</span>
+          </div>
+          <div className="summary-item">
+            <label>Coverage</label>
+            <span>{coverageLabel(run.coverage || {})}</span>
+          </div>
+        </section>
+      </details>
 
       {/* tab 栏 */}
       <nav className="inspection-tabs">
@@ -573,6 +601,7 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
               activeRun={activeRun}
               activeNodeId={drawerNodeId ?? ""}
               onSelectNode={selectNode}
+              canReadToolDetails={isSuperAdmin}
               onJumpToChart={handleJumpToChart}
               highlightedNodeId={highlightedNodeId}
               onClearHighlight={clearHighlight}
@@ -582,6 +611,8 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
               context={context}
               todos={todos}
               inputMessages={drawerInputMessages}
+              toolArgs={drawerEvents.find(event => event.event_id === drawerNode?.raw_event_ids[0])?.tool_args}
+              loading={drawerLoading}
               nodeOutput={drawerNodeOutput}
               onClose={closeDrawer}
             />
@@ -607,7 +638,7 @@ export default function TraceDetailPage({ traceIdOverride, embedded = false, can
 
 // ── 辅助组件 ──
 
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status }: { status: TraceRunSummary["status"] }) {
   const variant =
     status === "completed" ? "completed"
     : status === "failed" ? "failed"
@@ -624,8 +655,9 @@ function StatusBadge({ status }: { status: string }) {
     : status === "cancelling" ? "取消中"
     : status === "cancel_timeout" ? "取消超时"
     : status === "awaiting_input" ? "等待输入"
+    : status === "pending" ? "待运行"
     : "运行中";
-  return <Badge variant={variant as any}>{label}</Badge>;
+  return <Badge className={`trace-run-status ${status}`} variant={variant}>{label}</Badge>;
 }
 
 /** interrupted_reason 中文标签（trace 稳定性重构）。 */

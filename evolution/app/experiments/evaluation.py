@@ -79,13 +79,13 @@ def _evidence_in(citation: str, sources: dict[str, str]) -> bool:
 
 def _judgement(raw: str, dimension: str, *, material: dict | None = None) -> dict:
     from app.benchmark.scorer import _parse_response, _validate_dim_judgement
+    try:
+        value = _parse_response(raw)
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("评委回复不是评分 JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError("评委回复必须是评分对象")
     if material is not None:
-        try:
-            value = _parse_response(raw)
-        except (AttributeError, ValueError) as exc:
-            raise ValueError("评委回复不是评分 JSON") from exc
-        if not isinstance(value, dict):
-            raise ValueError("评委回复必须是评分对象")
         score, reason, evidence = (value.get(field) for field in ("score", "reason", "evidence"))
         if type(score) is not int or not 1 <= score <= 5:
             raise ValueError("分数须为 1～5 的整数")
@@ -99,7 +99,6 @@ def _judgement(raw: str, dimension: str, *, material: dict | None = None) -> dic
             raise ValueError("评分依据须对应正文原句或有效位置")
         return {"score": score, "reason": " ".join(reason.splitlines()).strip(),
                 "evidence": [line.strip() for line in evidence]}
-    value = _parse_response(raw)
     _validate_dim_judgement(value, dimension)
     if value["score"] == 0:
         raise ValueError("评委证据不足，不能作为有效质量评分")
@@ -111,22 +110,29 @@ def _score_key(judge: dict, dimension: str, repeat: int | None) -> str:
 
 
 def score_progress(run: dict, sample: dict) -> dict:
-    repeats = run["judge_repeats"]
+    repeats = run.get("judge_repeats")
+    repeat_numbers = range(1, repeats + 1) if repeats is not None else (None,)
     judges = run["private"]["judges"]
     keys = [dimension["key"] for dimension in run["private"]["rules"][sample["task_type"]]["dimensions"]]
     progress = sample.get("judge_results", {})
+    errors = sample.get("judge_errors", {})
     reasons: dict[str, list[dict]] = {key: [] for key in keys}
     completed = 0
-    for judge, repeat in product(judges, range(1, repeats + 1)):
+    for judge, repeat in product(judges, repeat_numbers):
+        identity = {"judge_id": judge["id"]}
+        if repeat is not None:
+            identity["repeat"] = repeat
         complete = True
         for dimension in keys:
-            result = progress.get(_score_key(judge, dimension, repeat))
-            if result is None:
-                complete = False
+            key = _score_key(judge, dimension, repeat)
+            if key in progress:
+                reasons[dimension].append({**identity, **progress[key]})
             else:
-                reasons[dimension].append({"judge_id": judge["id"], "repeat": repeat, **result})
+                complete = False
+                if key in errors:
+                    reasons[dimension].append({**identity, "score": None, "error": errors[key]})
         completed += complete
-    return {"completed": completed, "total": len(judges) * repeats, "reasons": reasons}
+    return {"completed": completed, "total": len(judges) * len(repeat_numbers), "reasons": reasons}
 
 
 def _chapter_score_material(package: dict, sample: dict) -> dict:
@@ -163,10 +169,14 @@ def score_sample(run: dict, sample: dict) -> dict:
     recorder = runner.recorder()
     trace_id = None
     if recorder is not None:
-        handle = recorder.create_run(sample["id"], "evolution_eval", endpoint="experiments/score", external_refs={"experiment_id": run["id"], "sample_id": sample["id"], "purpose": sample["phase"]})
-        trace_id = handle.trace_id
-        sample.setdefault("evaluation_trace_ids", []).append(trace_id)
-        repo.put_run(run)
+        trace_ids = sample.setdefault("evaluation_trace_ids", [])
+        if trace_ids and not recorder.is_terminal(trace_ids[-1]):
+            trace_id = trace_ids[-1]
+        else:
+            handle = recorder.create_run(sample["id"], "evolution_eval", endpoint="experiments/score", external_refs={"experiment_id": run["id"], "sample_id": sample["id"], "purpose": sample["phase"]})
+            trace_id = handle.trace_id
+            trace_ids.append(trace_id)
+            repo.put_run(run)
     try:
         repeat_numbers = range(1, repeats + 1) if repeats is not None else (None,)
         for judge, repeat in product(judges, repeat_numbers):
@@ -176,72 +186,64 @@ def score_sample(run: dict, sample: dict) -> dict:
                     continue
                 if runner.is_stopped(run["id"]):
                     raise asyncio.CancelledError()
-                credentials = repo.decrypt_credentials(judge)
+                try:
+                    credentials = repo.decrypt_credentials(judge)
+                except Exception as exc:
+                    errors[key] = f"{dimension['key']}评测异常：{type(exc).__name__}：无法读取评委配置"
+                    repo.put_run(run)
+                    continue
                 messages = [
                     {"role": "system", "content": "你是独立质量评委。只评当前维度，只依据资料与产物中的具体证据。\n" +
                      "\n".join(rule["discipline_rules"]) + "\n" + json.dumps(dimension, ensure_ascii=False) + "\n" + output_format},
                     user_message,
                 ]
                 node_name = dimension["key"] if repeat is None else f"第 {repeat} 次 · {dimension['key']}"
-                last_error = None
-                for attempt in range(2):
-                    if attempt and runner.wait_for_stop(run["id"], 2):
-                        raise asyncio.CancelledError()
-                    if runner.is_stopped(run["id"]):
-                        raise asyncio.CancelledError()
-                    call_id = "judge-" + uuid4().hex
-                    started = time.monotonic()
-                    sample.setdefault("usage", {}).setdefault("judge_calls", 0)
-                    sample["usage"]["judge_calls"] += 1
-                    call_record = {"judge_id": judge["id"], "dimension": dimension["key"], "usage": None, "status": "failed"}
-                    if repeat is not None:
-                        call_record["repeat"] = repeat
-                    sample["usage"].setdefault("judge_attempts", []).append(call_record)
-                    received = False
-                    if trace_id:
-                        recorder.append_event(trace_id, {"type": "llm_start", "status": "running", "source": "runtime",
-                            "run_id": call_id, "agent_name": "experiment-judge", "node_name": node_name, "model_name": judge["model"], "input": messages})
-                    try:
-                        # Non-streaming judges read the frozen brief and full manuscripts.
-                        # Use the same generation window as the benchmark scorer.
-                        with httpx.Client(timeout=httpx.Timeout(300, connect=15)) as client:
-                            response = client.post(credentials["base_url"].rstrip("/") + "/chat/completions",
-                                headers={"Authorization": "Bearer " + credentials["api_key"]},
-                                json={"model": credentials["model"].split(":", 1)[-1], "temperature": 0, "messages": messages})
-                        if not response.is_success:
-                            raise RuntimeError(f"评委调用失败：HTTP {response.status_code}")
-                        data = response.json()
-                        raw = data["choices"][0]["message"]["content"]
-                        tokens = data.get("usage")
-                        if repeat is not None and tokens is not None:
-                            tokens = normalize_usage(tokens)
-                        call_record["usage"] = tokens
-                        received = True
-                        if trace_id:
-                            recorder.append_event(trace_id, {"type": "llm_end", "status": "completed", "source": "runtime",
-                                "run_id": call_id, "agent_name": "experiment-judge", "node_name": node_name, "model_name": judge["model"],
-                                "output": raw, "usage": normalize_usage(tokens), "duration_ms": int((time.monotonic() - started) * 1000)})
-                        progress[key] = _judgement(raw, dimension["key"], material=material if repeat is not None else None)
-                        call_record["status"] = "completed"
-                        errors.pop(key, None)
-                        repo.put_run(run)
-                        last_error = None
-                        break
-                    except Exception as exc:
-                        last_error = f"{dimension['key']}评测异常：{type(exc).__name__}：{str(exc)[:200]}"
-                        if trace_id and not received:
-                            recorder.append_event(trace_id, {"type": "llm_error", "status": "failed", "source": "runtime",
-                                "run_id": call_id, "agent_name": "experiment-judge", "model_name": judge["model"], "error": last_error})
-                        repo.put_run(run)
-                if last_error:
-                    errors[key] = last_error
+                call = {"source": "runtime", "run_id": "judge-" + uuid4().hex, "agent_name": "experiment-judge",
+                        "node_name": node_name, "model_name": judge["model"]}
+                started = time.monotonic()
+                call_record = {"judge_id": judge["id"], "dimension": dimension["key"], "usage": None, "status": "failed"}
+                if repeat is not None:
+                    call_record["repeat"] = repeat
+                sample.setdefault("usage", {}).setdefault("judge_calls", 0)
+                sample["usage"]["judge_calls"] += 1
+                sample["usage"].setdefault("judge_attempts", []).append(call_record)
+                if trace_id:
+                    recorder.append_event(trace_id, {**call, "type": "llm_start", "status": "running", "input": messages})
+                raw = None
+                try:
+                    # Use the same generation window as the benchmark scorer for full manuscripts.
+                    with httpx.Client(timeout=httpx.Timeout(300, connect=15)) as client:
+                        response = client.post(credentials["base_url"].rstrip("/") + "/chat/completions",
+                            headers={"Authorization": "Bearer " + credentials["api_key"]},
+                            json={"model": credentials["model"].split(":", 1)[-1], "temperature": 0, "messages": messages})
+                    if not response.is_success:
+                        raise RuntimeError(f"评委调用失败：HTTP {response.status_code}")
+                    data = response.json()
+                    tokens = data.get("usage")
+                    call_record["usage"] = normalize_usage(tokens) if repeat is not None and tokens is not None else tokens
+                    raw = data["choices"][0]["message"]["content"]
+                    progress[key] = _judgement(raw, dimension["key"], material=material if repeat is not None else None)
+                except Exception as exc:
+                    errors[key] = f"{dimension['key']}评测异常：{type(exc).__name__}：{str(exc)[:200]}"
+                    event = {"type": "llm_error", "status": "failed", "error": errors[key]}
+                else:
+                    call_record["status"] = "completed"
+                    errors.pop(key, None)
+                    event = {"type": "llm_end", "status": "completed"}
+                repo.put_run(run)
+                if trace_id:
+                    recorder.append_event(trace_id, {**call, **event, "output": raw, "usage": normalize_usage(call_record["usage"]),
+                        "duration_ms": int((time.monotonic() - started) * 1000)})
         if repeats is not None:
             grading = score_progress(run, sample)
             if grading["completed"] != grading["total"]:
-                raise RuntimeError(f"有效评分 {grading['completed']}/{grading['total']} 份；保留成稿和已有评分")
+                detail = next(iter(errors.values()), "缺少有效评分")
+                raise RuntimeError(f"有效评分 {grading['completed']}/{grading['total']} 份。{detail}")
             reasons = grading["reasons"]
             dimensions = {key: sum(value["score"] for value in values) / len(values) for key, values in reasons.items()}
         else:
+            if errors and sample.get("scoring_attempts", 0) + 1 < runner._SCORING_FAILURE_LIMIT:
+                raise RuntimeError(next(iter(errors.values())))
             dimensions = {}
             reasons = {}
             quorum = 2 if len(judges) >= 2 else 1
@@ -265,8 +267,4 @@ def score_sample(run: dict, sample: dict) -> dict:
     except asyncio.CancelledError:
         if trace_id:
             recorder.cancel_run(trace_id, reason="user_stop")
-        raise
-    except Exception:
-        if trace_id:
-            recorder.fail_run(trace_id, "评委调用或评分校验失败")
         raise

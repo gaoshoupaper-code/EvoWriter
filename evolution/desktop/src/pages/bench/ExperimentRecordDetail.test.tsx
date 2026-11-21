@@ -72,15 +72,48 @@ it("保留每名评委的分数、评语和所有评分 Trace，返回来源历�
     expect(screen.getByText(reason)).toBeVisible();
   expect(screen.getByText(/第一评委.*4.000/)).toBeVisible();
   expect(screen.getByText(/第二评委.*3.000/)).toBeVisible();
-  expect(useTracePolling).toHaveBeenCalledWith("judge-a");
-  fireEvent.change(screen.getByRole("combobox", { name: "选择 Trace" }), { target: { value: "judge-b" } });
   expect(useTracePolling).toHaveBeenCalledWith("judge-b");
+  fireEvent.change(screen.getByRole("combobox", { name: "选择 Trace" }), { target: { value: "judge-a" } });
+  expect(useTracePolling).toHaveBeenCalledWith("judge-a");
   fireEvent.click(screen.getByRole("button", { name: /返回运行记录/ }));
   expect(await screen.findByText("来源地址 ?agent=text&filter=mine")).toBeVisible();
 });
 
+it("评分用尽重试后同时保留已通过的评语和最终失败原因", async () => {
+  vi.mocked(getExperiment).mockResolvedValue({ ...experiment, samples: [{ ...sample,
+    status: "failed", scores: null, error: "第 3 次尝试后仍有评分失败。",
+    score_progress: { completed: 1, total: 2, reasons: { 因果: [
+      { judge_id: 1, repeat: 1, score: 4, reason: "动机清楚", evidence: ["她把船票叠成四折。"] },
+      { judge_id: 2, repeat: 1, score: null, error: "评分缺少正文依据" },
+    ] } },
+  }] });
+  open("evaluation");
+  expect(await screen.findByRole("alert")).toHaveTextContent("第 3 次尝试后仍有评分失败。");
+  expect(screen.getByText(/已完成 1 \/ 2 份评分.*尚无汇总评分/)).toBeVisible();
+  expect(screen.getByText(/第一评委.*4.000/)).toBeVisible();
+  expect(screen.getByText("动机清楚")).toBeVisible();
+  expect(screen.getByText(/第二评委.*评分失败/)).toBeVisible();
+  expect(screen.getByText("评分缺少正文依据")).toBeVisible();
+});
+
+it("等待自动重试评分时显示进度和已有评分，沿用评语读取权限", async () => {
+  vi.mocked(getExperiment).mockResolvedValue({ ...experiment, status: "running", can_read_content: false,
+    samples: [{ ...sample, status: "evaluation_error", scores: null, score_retry_at: 1,
+      error: "上次失败原文", score_progress: { completed: 1, total: 2, reasons: {
+        因果: [{ judge_id: 1, score: 4, reason: "受限的评语", evidence: [] }],
+      } },
+    }],
+  });
+  open("evaluation");
+  expect(await screen.findByText("等待自动重试评分。")).toBeVisible();
+  expect(screen.getByText(/已完成 1 \/ 2 份评分/)).toBeVisible();
+  expect(screen.queryByText("受限的评语")).not.toBeInTheDocument();
+  expect(screen.queryByText("上次失败原文")).not.toBeInTheDocument();
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
 it("评分 Trace 可以读取评委实际调用的消息数组和原始回复", async () => {
-  const snapshot = vi.mocked(useTracePolling).getMockImplementation()!("judge-a");
+  const snapshot = vi.mocked(useTracePolling).getMockImplementation()!("judge-b");
   vi.mocked(useTracePolling).mockReturnValue({ ...snapshot, detail: { ...snapshot.detail!,
     nodes: [{ node_id: "llm", label: "因果", kind: "llm", model_name: "judge-model", depth: 0,
       status: "completed", raw_event_ids: ["judge-start", "judge-end"] }] } });
@@ -90,7 +123,7 @@ it("评分 Trace 可以读取评委实际调用的消息数组和原始回复", 
   ] as Awaited<ReturnType<typeof getTraceEvents>>);
   open("evaluation");
   fireEvent.click(await screen.findByRole("button", { name: /judge-model/ }));
-  await waitFor(() => expect(getTraceEvents).toHaveBeenCalledWith("judge-a", ["judge-start", "judge-end"]));
+  await waitFor(() => expect(getTraceEvents).toHaveBeenCalledWith("judge-b", ["judge-start", "judge-end"]));
   fireEvent.click(screen.getByRole("button", { name: "查看全部上下文" }));
   expect(await screen.findByText("请评价稿件中的因果关系。")).toBeVisible();
   expect(screen.getByText(/"score":4/)).toBeVisible();
@@ -127,7 +160,7 @@ it("读未归档的本样本评分 Trace，始终显示评测模型", async () =
   expect(screen.getByText("model-a")).toBeVisible();
   expect(screen.getByText("model-b")).toBeVisible();
   expect(Array.from((chooser as HTMLSelectElement).options, option => option.value)).toEqual(["archived", "incoming"]);
-  fireEvent.change(chooser, { target: { value: "incoming" } });
+  expect(chooser).toHaveValue("incoming");
   expect(useTracePolling).toHaveBeenCalledWith("incoming");
 });
 

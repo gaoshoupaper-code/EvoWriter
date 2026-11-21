@@ -34,6 +34,17 @@ it("两类记录分行展示，左侧无操作且评分逐条开放", () => {
   expect(screen.queryByRole("button")).not.toBeInTheDocument();
 });
 
+it("评分中或等待重试时可查看已记录的评委结果", () => {
+  open(experiment([
+    sample("已评分项", { status: "scoring", scores: null, score_progress: { completed: 0, total: 2,
+      reasons: { 因果: [{ judge_id: 1, repeat: 1, score: 4, reason: "动机清楚", evidence: [] }] } } }),
+    sample("已留 Trace", { status: "evaluation_error", scores: null, score_retry_at: 1, evaluation_trace_ids: ["trace"] }),
+  ]));
+  const scoring = within(screen.getByRole("region", { name: "评测 · 第 1 轮" }));
+  expect(scoring.getByRole("link", { name: /已评分项.*评分中/ })).toBeVisible();
+  expect(scoring.getByRole("link", { name: /已留 Trace.*等待重试评分/ })).toBeVisible();
+});
+
 it("生成失败不伪造评分，等待运行无Trace仍保留状态", () => {
   open(experiment([sample("failed", { status: "failed", completed: false, scores: null }),
     sample("pending", { status: "pending", completed: false, scores: null }),

@@ -86,7 +86,8 @@ export function SampleScoreDetails({ sample, judges }: { sample: ExperimentSampl
   const scores = sample.scores;
   const reasonsByDimension = scores?.reasons ?? sample.score_progress?.reasons;
   if (!reasonsByDimension) return null;
-  const dimensions = Object.keys(scores?.dimensions ?? reasonsByDimension);
+  const dimensions = scores ? Object.keys(scores.dimensions) : Object.entries(sample.score_progress?.reasons ?? {})
+    .filter(([, reasons]) => reasons.length > 0).map(([dimension]) => dimension);
   return <div className="experiment-score-details">{dimensions.map((dimension) => {
     const reasons = reasonsByDimension[dimension];
     return <article key={dimension}><h4>{dimension}{scores && <span>{number(scores.dimensions[dimension])} / 5</span>}</h4>
@@ -96,7 +97,7 @@ export function SampleScoreDetails({ sample, judges }: { sample: ExperimentSampl
         const judge = judges.find((item) => item.id === reason.judge_id);
         return <div className="experiment-judge-reason" key={index}>
           <p className="experiment-note">{judge?.name || judge?.model || `评委 ${index + 1}`}
-            {typeof reason.repeat === "number" && ` · 第 ${reason.repeat} 次`} · {number(typeof reason.score === "number" ? reason.score : null)}</p>
+            {typeof reason.repeat === "number" && ` · 第 ${reason.repeat} 次`} · {reason.error ? "评分失败" : number(typeof reason.score === "number" ? reason.score : null)}</p>
           {reason.error ? <p className="experiment-error">{String(reason.error)}</p> : typeof reason.reason === "string" ? <>
             <p className="experiment-prewrap">{reason.reason}</p>
             <div><strong>评分依据</strong><EvidenceValues value={reason.evidence} /></div>

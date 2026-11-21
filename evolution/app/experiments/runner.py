@@ -14,7 +14,7 @@ from contracts.target_tasks import configured_task_type
 
 ACTIVE = {"pending", "running", "recovering", "stopping"}
 _GENERATION_RETRY_LIMIT = 3
-_SCORING_FAILURE_LIMIT = 3
+_SCORING_FAILURE_LIMIT = 4  # The initial attempt plus three retries.
 _workers: dict[str, threading.Thread] = {}
 _stops: dict[str, threading.Event] = {}
 _guard = threading.Lock()
@@ -30,12 +30,6 @@ def is_stopped(run_id: str) -> bool:
     with _guard:
         event = _stops.get(run_id)
     return _shutdown.is_set() or bool(event and event.is_set())
-
-
-def wait_for_stop(run_id: str, seconds: float) -> bool:
-    with _guard:
-        stop = _stops.setdefault(run_id, threading.Event())
-    return stop.wait(seconds) or _shutdown.is_set()
 
 
 def create_run(request: RunCreate, actor: str) -> dict:
@@ -157,12 +151,15 @@ def _add_samples(run: dict, package_ids: list[str], *, arm: str, phase: str, rou
 def _stop_scoring_retries(run: dict, sample: dict, cause: Exception | None = None) -> None:
     if sample.get("status") == "failed" and "score_retry_at" not in sample:
         return
-    message = f"评分失败已达{_SCORING_FAILURE_LIMIT}轮上限，停止自动重试；原产物和已保存的部分评分保留。"
-    detail = f"评测异常：{type(cause).__name__}：{str(cause)[:240]}；" if cause else ""
-    sample.update(status="failed", error=detail + message)
+    message = f"评分失败，已用完 {_SCORING_FAILURE_LIMIT - 1} 次重试。原稿和已有评分已保留。"
+    detail = str(cause)[:240] if cause else sample.get("error")
+    sample.update(status="failed", error=f"{message} {detail}" if detail else message)
     sample.pop("score_retry_at", None)
     repo.event(run, "evaluation_error", f"样本 {sample['id']}：{message}")
     repo.put_run(run)
+    trace_ids = sample.get("evaluation_trace_ids")
+    if _recorder is not None and trace_ids:
+        _recorder.fail_run(trace_ids[-1], sample["error"])
 
 
 def process_sample(run: dict, sample: dict) -> None:
@@ -247,7 +244,7 @@ def process_sample(run: dict, sample: dict) -> None:
         delay = min(60, 5 * attempts)
         sample.update(status="evaluation_error", score_retry_at=time.time() + delay,
                       error=f"评测异常：{type(exc).__name__}：{str(exc)[:240]}；保留原产物，{delay} 秒后重试评分。")
-        repo.event(run, "evaluation_error", f"样本 {sample['id']} 评测异常：{type(exc).__name__}；保留原产物，{delay} 秒后重试评分。")
+        repo.event(run, "score_retry", f"{sample['package_title']}：{delay} 秒后进行第 {attempts} 次评分重试。")
     repo.put_run(run)
 
 
@@ -399,6 +396,9 @@ def advance_one(run_id: str) -> None:
                     if field in stopped:
                         sample[field] = stopped[field]
             if sample["status"] not in {"completed", "failed"}:
+                trace_ids = sample.get("evaluation_trace_ids")
+                if _recorder is not None and trace_ids:
+                    _recorder.cancel_run(trace_ids[-1], reason="user_stop")
                 sample["status"] = "stopped"
         if waiting:
             run["status"] = "stopping"

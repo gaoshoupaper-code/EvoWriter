@@ -106,7 +106,8 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
                     *(trace_id for retry in reversed(sample["generation_retries"]) for trace_id in retry["trace_ids"]),
                 ]))
             public["usage"] = {key: item for key, item in sample.get("usage", {}).items() if key != "judge_attempts"}
-            if "judge_repeats" in run and sample.get("completed") and sample.get("scores") is None:
+            has_partial_scores = sample.get("judge_results") or sample.get("judge_errors")
+            if sample.get("completed") and sample.get("scores") is None and ("judge_repeats" in run or has_partial_scores):
                 progress = evaluation.score_progress(run, sample)
                 if not can_read_content:
                     progress.pop("reasons")

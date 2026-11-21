@@ -125,10 +125,15 @@ export type ExperimentEvaluationCall = {
     prompt_tokens?: number | null; completion_tokens?: number | null } | null;
 };
 export type ExperimentEvaluationUsagePage = { items: ExperimentEvaluationCall[]; total: number; offset: number; limit: number };
+type ExperimentJudgeProgress = { judge_id: number; repeat?: number } & (
+  { score: number; reason: string; evidence: string[] }
+  | { score: number; 达标: string[]; 不足: string[] }
+  | { score: null; error: string }
+);
 type ExperimentScoreProgress = {
   completed: number;
   total: number;
-  reasons?: Record<string, { judge_id: number; repeat: number; score: number; reason: string; evidence: string[] }[]>;
+  reasons?: Record<string, ExperimentJudgeProgress[]>;
 };
 export type ExperimentSample = {
   id: string; phase: string; round: number; arm: "baseline" | "candidate"; package_id: string;

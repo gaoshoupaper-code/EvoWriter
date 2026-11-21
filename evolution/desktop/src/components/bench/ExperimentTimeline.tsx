@@ -51,7 +51,10 @@ export function ExperimentTimeline({ experiment, liveRuns, onOpenRecord }: Props
     const time = date && !Number.isNaN(date.getTime()) ? date : null;
     const version = sample.arm === "baseline" ? "固定原版" : `候选改版 ${sample.round}`;
     const started = sample.status !== "pending" || sample.trace_ids.length > 0 || !!live;
-    const available = kind === "writing" ? started : evaluationFinished(sample);
+    const progress = sample.score_progress;
+    const available = kind === "writing" ? started : evaluationFinished(sample) || !!sample.evaluation_trace_ids?.length
+      || !!progress?.completed || Object.values(progress?.reasons ?? {}).some(reasons => reasons.length > 0)
+      || liveRuns.some(run => sampleActivitySection(run, experiment.id, sample.id) === "evaluation");
     const score = sample.scores?.overall;
     const content = kind === "writing" ? title : <>{title} · 评分
       <strong className="timeline-score">{score == null ? scoringState(sample) : `${score.toFixed(2)} / 5`}</strong></>;

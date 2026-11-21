@@ -31,7 +31,7 @@ def running_record(samples):
 
 
 class ExperimentRetryLimitTest(DatabaseTest):
-    def test_first_two_failures_back_off_and_third_stops_with_evidence_intact(self):
+    def test_first_three_failures_back_off_and_fourth_stops_with_evidence_intact(self):
         sample = generated_sample()
         run = running_record([sample])
         evidence = {key: copy.deepcopy(sample[key]) for key in
@@ -39,35 +39,36 @@ class ExperimentRetryLimitTest(DatabaseTest):
         repo.put_run(run)
         with patch.object(evaluation, "score_sample", side_effect=RuntimeError("评分不可用")) as score, \
              patch.object(runner.time, "time", return_value=100):
-            for count in (1, 2):
+            for count in (1, 2, 3):
                 runner.process_sample(run, sample)
                 self.assertEqual(sample["scoring_attempts"], count)
                 self.assertEqual(sample["status"], "evaluation_error")
                 self.assertEqual(sample["score_retry_at"], 100 + 5 * count)
             runner.process_sample(run, sample)
             self.assertEqual(sample["status"], "failed")
-            self.assertEqual(sample["scoring_attempts"], 3)
+            self.assertEqual(sample["scoring_attempts"], 4)
             self.assertNotIn("score_retry_at", sample)
-            self.assertRegex(sample["error"], r"3\s*轮上限")
+            self.assertRegex(sample["error"], r"3\s*次重试")
             self.assertIn("保留", sample["error"])
             self.assertTrue(sample["completed"])
             self.assertEqual(sample["generation_status"], "completed")
             self.assertIsNone(sample["scores"])
             self.assertFalse(runner._run_pending(run, run["samples"]))
             runner.process_sample(run, sample)
-            self.assertEqual(score.call_count, 3)
+            self.assertEqual(score.call_count, 4)
         for key, value in evidence.items():
             self.assertEqual(sample[key], value)
         self.assertEqual(repo.get_run(run["id"])["samples"][0]["status"], "failed")
 
-    def test_third_round_success_is_normal_completion(self):
+    def test_last_retry_success_is_normal_completion(self):
         sample = generated_sample()
         run = running_record([sample])
         score_value = {"overall": 4.0, "dimensions": {"quality": 4.0}, "reasons": {}}
-        with patch.object(evaluation, "score_sample", side_effect=[RuntimeError("一次"), RuntimeError("二次"), score_value]) as score:
-            for _ in range(3):
+        failures = [RuntimeError("评分不可用")] * 3
+        with patch.object(evaluation, "score_sample", side_effect=[*failures, score_value]) as score:
+            for _ in range(4):
                 runner.process_sample(run, sample)
-        self.assertEqual(score.call_count, 3)
+        self.assertEqual(score.call_count, 4)
         self.assertEqual(sample["status"], "completed")
         self.assertEqual(sample["scores"], score_value)
         self.assertIsNone(sample["error"])
@@ -75,7 +76,7 @@ class ExperimentRetryLimitTest(DatabaseTest):
         self.assertFalse(runner._run_pending(run, run["samples"]))
 
     def test_recovered_exhausted_samples_clear_future_retry_without_scoring(self):
-        for failures in (3, 12):
+        for failures in (4, 12):
             with self.subTest(failures=failures):
                 sample = generated_sample(failures=failures)
                 sample["score_retry_at"] = 9999
@@ -100,16 +101,24 @@ class ExperimentRetryLimitTest(DatabaseTest):
         self.assertEqual(run["events"], events)
         self.assertEqual(repo.get_run(run["id"]), persisted)
 
-    def test_exhausted_sample_does_not_block_sibling_or_pass_quality_gate(self):
+    def test_waiting_and_exhausted_sample_do_not_block_sibling_or_pass_quality_gate(self):
         failed = generated_sample(failures=2)
         sibling = generated_sample("sample-two")
         run = running_record([failed, sibling])
-        with patch.object(evaluation, "score_sample", side_effect=RuntimeError("第三次失败")):
+        with patch.object(runner.time, "time", return_value=100), \
+             patch.object(evaluation, "score_sample", side_effect=[RuntimeError("评委暂不可用"), {"overall": 5.0}]) as score:
             runner.process_sample(run, failed)
-        with patch.object(evaluation, "score_sample", return_value={"overall": 5.0}) as score:
+            self.assertEqual(failed["status"], "evaluation_error")
             self.assertTrue(runner._run_pending(run, run["samples"]))
             self.assertEqual(score.call_args.args[1]["id"], "sample-two")
-        self.assertEqual(sibling["status"], "completed")
+            self.assertTrue(runner._run_pending(run, run["samples"]))
+            self.assertEqual(score.call_count, 2)
+        with patch.object(runner.time, "time", return_value=120), \
+             patch.object(evaluation, "score_sample", side_effect=RuntimeError("最后一次重试失败")) as score:
+            self.assertTrue(runner._run_pending(run, run["samples"]))
+            self.assertEqual(score.call_args.args[1]["id"], "sample-one")
+        self.assertEqual(failed["status"], "failed")
+        self.assertEqual(sibling["scores"], {"overall": 5.0})
         self.assertFalse(runner._run_pending(run, run["samples"]))
         baseline = [{"package_id": item["package_id"], "repeat": 1, "completed": True, "scores": {"overall": 3.0}}
                     for item in run["samples"]]

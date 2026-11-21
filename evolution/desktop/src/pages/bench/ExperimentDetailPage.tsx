@@ -137,7 +137,8 @@ export function ExperimentRecordTrace({ title, experiment, archived = [], live =
 }) {
   const [selected, setSelected] = useState("");
   const traces = [...new Set([...archived, ...live.map(run => run.trace_id)])];
-  const traceId = traces.includes(selected) ? selected : live[0]?.trace_id ?? traces[0];
+  const defaultArchived = context.operation === "evaluation" ? archived.at(-1) : archived[0];
+  const traceId = traces.includes(selected) ? selected : live[0]?.trace_id ?? defaultArchived;
   const active = live.find(run => run.trace_id === traceId);
   const trace = traceId ? mergeTraceDisplay(experiment.trace_runs?.[traceId] ?? { trace_id: traceId }, active) : {};
   return <section aria-label={title}>

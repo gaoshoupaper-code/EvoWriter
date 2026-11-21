@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core import db
 from app.experiments import api, evaluation, repo, rubrics, runner
+from app.trace import recorder as trace_recorder
 from app.view import traces
 from test_experiments import run_record
 
@@ -23,11 +24,12 @@ from test_experiments import run_record
 def chapter_run(monkeypatch, tmp_path):
     monkeypatch.setenv("WRITING_AGENT_ID", "text")
     monkeypatch.setattr(db.settings, "evolution_db", str(tmp_path / "evolution.db"))
+    monkeypatch.setattr(db.settings, "trace_payload_dir", str(tmp_path / "payloads"))
+    monkeypatch.setattr(trace_recorder, "_WAL_ROOT", tmp_path / "wal")
     connection = sqlite3.connect(":memory:", check_same_thread=False)
     connection.row_factory = sqlite3.Row
     monkeypatch.setattr(db, "_conn", connection)
     monkeypatch.setattr(runner, "_recorder", None)
-    monkeypatch.setattr(runner, "wait_for_stop", lambda *_: False)
     db.init_db()
     repo.init_schema()
     rule = rubrics.list_rules("chapter_text")[0]
@@ -54,7 +56,7 @@ def chapter_run(monkeypatch, tmp_path):
         connection.close()
 
 
-def stub_judges(monkeypatch, *, invalid_at=(), reject_after=None, offline_at=()):
+def stub_judges(monkeypatch, *, invalid_at=(), reject_after=None, http_error_at=()):
     calls = []
 
     class JudgeClient:
@@ -70,8 +72,10 @@ def stub_judges(monkeypatch, *, invalid_at=(), reject_after=None, offline_at=())
         def post(self, _url, *, headers, json):
             calls.append(json)
             index = len(calls)
-            if index in offline_at or (reject_after is not None and index > reject_after):
+            if reject_after is not None and index > reject_after:
                 raise httpx.ReadTimeout("评委连接超时")
+            if index in http_error_at:
+                return httpx.Response(503)
             judgement = {"score": 4, "reason": "专用评语，说明原文何以进入该档。",
                          "evidence": ["她在门边停下"], "达标": ["她在门边停下"], "不足": ["局部交代偏少"]}
             if index in invalid_at:
@@ -91,6 +95,16 @@ def make_completion(value):
     return {"choices": [{"message": {"content": json.dumps(value, ensure_ascii=False)}}]}
 
 
+def record_traces(monkeypatch):
+    recorder = trace_recorder.EvolutionTraceRecorder()
+    monkeypatch.setattr(runner, "_recorder", recorder)
+    return recorder
+
+
+def trace_record(trace_id):
+    return db.query_one("SELECT status, error FROM runs WHERE trace_id=?", (trace_id,))
+
+
 def test_repeats_retry_missing_entry_and_keep_frozen_rule_and_content_boundary(chapter_run, monkeypatch):
     run, sample = chapter_run
     app = FastAPI()
@@ -102,19 +116,20 @@ def test_repeats_retry_missing_entry_and_keep_frozen_rule_and_content_boundary(c
 
     app.include_router(api.router)
     app.include_router(traces.router)
-    calls = stub_judges(monkeypatch, invalid_at={18}, offline_at={19})
-    with pytest.raises(RuntimeError):
-        evaluation.score_sample(run, sample)
-    assert len(calls) == 19
+    calls = stub_judges(monkeypatch, invalid_at={2}, http_error_at={19})
+    recorder = record_traces(monkeypatch)
+    runner.process_sample(run, sample)
+    trace_id, = sample["evaluation_trace_ids"]
+    assert len(calls) == 18
     assert len(sample["judge_results"]) == 17
+    assert sample["status"] == "evaluation_error"
+    assert trace_record(trace_id)["status"] == "running"
     assert {call["model"] for call in calls} == {"judge-a", "judge-b"}
     assert "定档理由" in calls[0]["messages"][0]["content"]
     assert "谜底" in calls[0]["messages"][0]["content"]
     assert "本次生成的人物卡" not in calls[0]["messages"][1]["content"]
     sample["error"] = "评测异常附私有正文：她在门边停下"
     repo.put_run(run)
-    db.execute("""INSERT INTO runs(trace_id,workspace_id,status,started_at,ingested_at,run_purpose,schema_version,service,workload)
-        VALUES ('evaluation-trace','book','completed','2026-11-20','2026-11-20','evolution_eval',2,'evolution','evaluation')""")
     with TestClient(app) as client:
         endpoint = "/experiments/runs/" + run["id"]
         privileged = client.get(endpoint, headers={"x-test-role": "admin"}).json()
@@ -125,6 +140,12 @@ def test_repeats_retry_missing_entry_and_keep_frozen_rule_and_content_boundary(c
         assert partial["score_progress"]["completed"] == 5
         assert partial["score_progress"]["total"] == 6
         assert "专用评语" in json.dumps(partial["score_progress"], ensure_ascii=False)
+        failures = [entry for entries in partial["score_progress"]["reasons"].values()
+                    for entry in entries if entry.get("error")]
+        assert len(failures) == 1
+        assert failures[0]["judge_id"] == 1
+        assert failures[0]["repeat"] == 1
+        assert "缺少定档理由" in failures[0]["error"]
         restricted = client.get(endpoint).json()["samples"][0]
         assert restricted["score_progress"] == {"completed": 5, "total": 6}
         assert "她在门边停下" not in json.dumps(restricted, ensure_ascii=False)
@@ -132,11 +153,25 @@ def test_repeats_retry_missing_entry_and_keep_frozen_rule_and_content_boundary(c
         usage_page = client.get(endpoint + "/usage/evaluation")
         assert "专用评语" not in usage_page.text
         assert usage_page.json()["items"][0]["usage"]["total_tokens"] == 7
-        assert client.get("/traces/evaluation-trace/events?event_ids=scoring-event").status_code == 403
+        assert client.get(f"/traces/{trace_id}/events?event_ids=scoring-event").status_code == 403
         saved = repo.get_run(run["id"])
         recovered = saved["samples"][0]
         runner.process_sample(saved, recovered)
+        assert len(calls) == 19
+        assert recovered["status"] == "evaluation_error"
+        assert trace_record(trace_id)["status"] == "running"
+        runner.process_sample(saved, recovered)
         assert len(calls) == 20
+        assert calls[1] == calls[18] == calls[19]
+        assert recovered["evaluation_trace_ids"] == [trace_id]
+        assert trace_record(trace_id)["status"] == "completed"
+        assert recorder.is_terminal(trace_id)
+        rows = db.query_all("SELECT payload_json FROM event_payloads WHERE trace_id=? ORDER BY sequence", (trace_id,))
+        failed_calls = [event for event in (json.loads(row["payload_json"]) for row in rows)
+                        if event["type"] == "llm_error"]
+        assert len(failed_calls) == 2
+        assert "缺少定档理由" in failed_calls[0]["error"]
+        assert "HTTP 503" in failed_calls[1]["error"]
         assert recovered["scores"]["overall"] == 4
         for entries in recovered["scores"]["reasons"].values():
             assert {(entry["judge_id"], entry["repeat"]) for entry in entries} == {
@@ -174,11 +209,21 @@ def test_reason_requires_a_verifiable_manuscript_quote_or_line():
 def test_exhausted_incomplete_score_does_not_evolve_or_compare(chapter_run, monkeypatch):
     run, sample = chapter_run
     calls = stub_judges(monkeypatch, reject_after=17)
-    for _ in range(runner._SCORING_FAILURE_LIMIT):
+    record_traces(monkeypatch)
+    for _ in range(3):
         runner.process_sample(run, sample)
-    assert len(calls) == 17 + 2 * runner._SCORING_FAILURE_LIMIT
+        assert sample["status"] == "evaluation_error"
+        trace_id, = sample["evaluation_trace_ids"]
+        assert trace_record(trace_id)["status"] == "running"
+    runner.process_sample(run, sample)
+    assert len(calls) == 17 + 4
+    assert sample["evaluation_trace_ids"] == [trace_id]
+    trace = trace_record(trace_id)
+    assert trace["status"] == "failed"
+    assert "评委连接超时" in trace["error"]
     assert sample["status"] == "failed"
     assert sample["scores"] is None
+    assert "评委连接超时" in sample["error"]
     assert len(sample["judge_results"]) == 17
     runner.advance_one(run["id"])
     saved = repo.get_run(run["id"])
@@ -187,6 +232,7 @@ def test_exhausted_incomplete_score_does_not_evolve_or_compare(chapter_run, monk
     assert saved["report"] == {}
     assert saved["rounds"] == []
     assert saved["samples"][0]["artifacts"] == sample["artifacts"]
+    assert saved["samples"][0]["judge_results"] == sample["judge_results"]
 
 
 @pytest.mark.parametrize("phase", ["exploration", "regression"])

@@ -27,6 +27,7 @@ function RecordContent({ experimentId, sampleId, section }: {
   const { experiment, error, retry } = useExperimentPage(experimentId);
   const sample = experiment?.samples.find(item => item.id === sampleId);
   const writing = section === "writing";
+  const awaitingScoreRetry = !writing && sample?.status === "evaluation_error" && !!sample.score_retry_at;
   const waiting = !!(experiment && experimentRunning(experiment) && sample && (writing
     ? ["pending", "running", "recovering", "interrupted", "stopping"].includes(sample.status)
     : ["scoring", "evaluation_error"].includes(sample.status)));
@@ -45,8 +46,9 @@ function RecordContent({ experimentId, sampleId, section }: {
         <p>{experiment.name} · {PHASE_LABELS[sample.phase] ?? sample.phase} · {sample.arm === "baseline" ? "原版" : "第 " + sample.round + " 轮"}
           {sample.repeat != null && " · 重复 " + sample.repeat}{sample.attempt != null && " / 尝试 " + sample.attempt}
           {" · " + (EXPERIMENT_STATUS[sample.status] ?? sample.status)}</p></header>
-      {sample.error && <p role="alert" className="experiment-error">{experiment.can_read_content
-        ? sample.error : "本次任务异常。查看完整原因需要正文读取权限。"}</p>}
+      {awaitingScoreRetry ? <p role="status" className="experiment-note">等待自动重试评分。</p>
+        : sample.error && (writing || sample.status !== "scoring") && <p role="alert" className="experiment-error">{experiment.can_read_content
+          ? sample.error : "本次任务异常。查看完整原因需要正文读取权限。"}</p>}
       {writing ? <>
         {trace}
         <RunArtifacts sample={sample} allowed={experiment.can_read_content} />
@@ -58,11 +60,12 @@ function RecordContent({ experimentId, sampleId, section }: {
             : <p className="experiment-note">评测模型未记录。</p>}
           {sample.scores ? <>
             <p>综合分 <strong>{sample.scores.overall?.toFixed(2) ?? "未知"} / 5</strong></p>
-            {experiment.can_read_content ? <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} />
-              : <><dl>{Object.entries(sample.scores.dimensions).map(([key, score]) =>
+            {!experiment.can_read_content && <><dl>{Object.entries(sample.scores.dimensions).map(([key, score]) =>
                 <div key={key}><dt>{key}</dt><dd>{score ?? "未知"} / 5</dd></div>)}</dl>
                 <p className="experiment-note">查看评语需要正文读取权限。</p></>}
-          </> : <p className="experiment-note">尚无汇总评分。</p>}
+          </> : <p className="experiment-note">{sample.score_progress &&
+            <>已完成 {sample.score_progress.completed} / {sample.score_progress.total} 份评分 · </>}尚无汇总评分。</p>}
+          {experiment.can_read_content && <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} />}
         </section>
         {trace}
       </>}

@@ -138,10 +138,11 @@ class SeedDatabaseTest(unittest.TestCase):
         self.assertEqual(current["profile"], "chapter-text-outline-v3")
         self.assertEqual(current["version"], 4)
         dimensions = current["dimensions"]
-        self.assertEqual([d["key"] for d in dimensions], ["剧情逻辑", "章纲兑现", "语言清晰度"])
+        self.assertEqual([d["key"] for d in dimensions], ["事件因果逻辑", "人物行为逻辑", "章纲兑现", "语言清晰度"])
         self.assertEqual({d["weight"] for d in dimensions}, {1})
         self.assertTrue(all(set(d["anchors"]) == {"1", "2", "3", "4", "5"} for d in dimensions))
         self.assertTrue(all(anchor.count("。") >= 3 for d in dimensions for anchor in d["anchors"].values()))
+        self.assertTrue(all(len(anchor) >= 100 for d in dimensions[:2] for anchor in d["anchors"].values()))
         self.assertIn("谜底可以留到后文", dimensions[0]["question"])
 
         payload = {key: current[key] for key in ("task_type", "name", "dimensions", "discipline_rules")}

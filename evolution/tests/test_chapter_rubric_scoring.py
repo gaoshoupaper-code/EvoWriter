@@ -215,12 +215,12 @@ def test_repeats_retry_missing_entry_and_keep_frozen_rule_and_content_boundary(c
 
     app.include_router(api.router)
     app.include_router(traces.router)
-    calls = stub_judges(monkeypatch, invalid_at={2}, http_error_at={19})
+    calls = stub_judges(monkeypatch, invalid_at={2}, http_error_at={25})
     recorder = record_traces(monkeypatch)
     runner.process_sample(run, sample)
     trace_id, = sample["evaluation_trace_ids"]
-    assert len(calls) == 18
-    assert len(sample["judge_results"]) == 17
+    assert len(calls) == 24
+    assert len(sample["judge_results"]) == 23
     assert sample["status"] == "evaluation_error"
     assert trace_record(trace_id)["status"] == "running"
     assert {call["model"] for call in calls} == {"judge-a", "judge-b"}
@@ -263,22 +263,22 @@ def test_repeats_retry_missing_entry_and_keep_frozen_rule_and_content_boundary(c
         assert "专用评语" in batch["outputs"][0]["output"]
         assert batch["has_more"]
         cursor = batch["outputs"][-1]["sequence"]
-        remaining = client.get(model_io, params={"after_sequence": cursor, "include_initial": False},
+        remaining = client.get(model_io, params={"after_sequence": cursor, "include_initial": False, "limit": 50},
                                headers=model_io_headers).json()
         assert remaining["initial_input"] is None
         sequences = [event["sequence"] for event in remaining["outputs"]]
-        assert len(sequences) == 16 and all(sequence > cursor for sequence in sequences)
+        assert len(sequences) == 22 and all(sequence > cursor for sequence in sequences)
         assert sequences == sorted(sequences)
         assert not remaining["has_more"]
         saved = repo.get_run(run["id"])
         recovered = saved["samples"][0]
         runner.process_sample(saved, recovered)
-        assert len(calls) == 19
+        assert len(calls) == 25
         assert recovered["status"] == "evaluation_error"
         assert trace_record(trace_id)["status"] == "running"
         runner.process_sample(saved, recovered)
-        assert len(calls) == 20
-        assert calls[1] == calls[18] == calls[19]
+        assert len(calls) == 26
+        assert calls[1] == calls[24] == calls[25]
         assert recovered["evaluation_trace_ids"] == [trace_id]
         assert trace_record(trace_id)["status"] == "completed"
         assert recorder.is_terminal(trace_id)
@@ -336,10 +336,10 @@ def test_quote_equivalence_preserves_meaning_and_requires_every_citation(citatio
     evidence = ["收起3号钥匙", citation]
     raw = json.dumps({"score": 4, "reason": "原文有清楚的动机。", "evidence": evidence})
     if accepted:
-        assert evaluation._judgement(raw, "剧情逻辑", material=material)["evidence"] == evidence
+        assert evaluation._judgement(raw, "事件因果逻辑", material=material)["evidence"] == evidence
     else:
         with pytest.raises(ValueError, match="评分依据"):
-            evaluation._judgement(raw, "剧情逻辑", material=material)
+            evaluation._judgement(raw, "事件因果逻辑", material=material)
 
 
 @pytest.mark.parametrize(("citation", "accepted"), [
@@ -398,8 +398,8 @@ def test_retry_uses_saved_evidence_feedback_only_for_the_failed_scoring_item(cha
     })
 
     runner.process_sample(run, sample)
-    assert len(calls) == 18
-    assert len(sample["judge_results"]) == 15
+    assert len(calls) == 24
+    assert len(sample["judge_results"]) == 21
     assert sample["status"] == "evaluation_error"
     instructions, scoring_input = calls[0]["messages"]
     assert "行号: 正文原句" in instructions["content"]
@@ -417,11 +417,11 @@ def test_retry_uses_saved_evidence_feedback_only_for_the_failed_scoring_item(cha
         assert invalid_quote not in serialized and invalid_line not in serialized
 
     runner.process_sample(saved, recovered)
-    assert len(calls) == 21
-    assert calls[19] == calls[5]
+    assert len(calls) == 27
+    assert calls[25] == calls[5]
     for original, retry, index, citation, reason in (
-        (calls[1], calls[18], 2, invalid_quote, "找不到连续原文"),
-        (calls[12], calls[20], 1, invalid_line, "行号超出文件范围"),
+        (calls[1], calls[24], 2, invalid_quote, "找不到连续原文"),
+        (calls[12], calls[26], 1, invalid_line, "行号超出文件范围"),
     ):
         assert retry["model"] == original["model"]
         assert retry["messages"][:2] == original["messages"]
@@ -438,7 +438,7 @@ def test_retry_uses_saved_evidence_feedback_only_for_the_failed_scoring_item(cha
 
 def test_exhausted_incomplete_score_does_not_evolve_or_compare(chapter_run, monkeypatch):
     run, sample = chapter_run
-    calls = stub_judges(monkeypatch, reject_after=17)
+    calls = stub_judges(monkeypatch, reject_after=23)
     record_traces(monkeypatch)
     for _ in range(3):
         runner.process_sample(run, sample)
@@ -446,7 +446,7 @@ def test_exhausted_incomplete_score_does_not_evolve_or_compare(chapter_run, monk
         trace_id, = sample["evaluation_trace_ids"]
         assert trace_record(trace_id)["status"] == "running"
     runner.process_sample(run, sample)
-    assert len(calls) == 17 + 4
+    assert len(calls) == 23 + 4
     assert sample["evaluation_trace_ids"] == [trace_id]
     trace = trace_record(trace_id)
     assert trace["status"] == "failed"
@@ -454,7 +454,7 @@ def test_exhausted_incomplete_score_does_not_evolve_or_compare(chapter_run, monk
     assert sample["status"] == "failed"
     assert sample["scores"] is None
     assert "评委连接超时" in sample["error"]
-    assert len(sample["judge_results"]) == 17
+    assert len(sample["judge_results"]) == 23
     runner.advance_one(run["id"])
     saved = repo.get_run(run["id"])
     assert saved["status"] == "failed"

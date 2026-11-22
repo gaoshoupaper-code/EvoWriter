@@ -25,9 +25,12 @@ from __future__ import annotations
 import functools
 import importlib
 import logging
+import re
 from os import getenv
 from pathlib import Path
 from typing import Any
+
+import yaml
 from langchain_core.tools import tool
 
 from contracts.architecture_manifest import (
@@ -98,6 +101,10 @@ class AgentBuildCtx:
                 raise ManifestError(f"[{self.agent.name}] 技能不在本包的固定目录: {name}")
             files[f"/_skills_{index}/SKILL.md"] = path
         return files
+
+    @functools.cached_property
+    def scoped_skill_catalog(self) -> list[tuple[str, str, str]]:
+        return [(key, *_skill_metadata(path)) for key, path in self.scoped_skill_files.items()]
 
     @functools.cached_property
     def intervention_callback(self):
@@ -215,9 +222,9 @@ def _build_tools(abc: AgentBuildCtx) -> list:
     if files:
         if any(item.name == "read_writing_skill" for item in tools):
             raise ManifestError("read_writing_skill 是本套注册技能的只读工具")
-        catalog = "\n".join(f"{path.parent.name}: {key}" for key, path in files.items())
+        entries = "\n".join(f"{name}: {key}" for key, name, _ in abc.scoped_skill_catalog)
 
-        @tool(description="读取下列技能入口，或在入口所在目录下按文档引用读取配套文本：\n" + catalog)
+        @tool(description="传入下列入口的 file_path 读取技能，或在同一目录下读取技能引用的配套文本。\n" + entries)
         def read_writing_skill(file_path: str) -> str:
             mount, _, relative = file_path.removeprefix("/").partition("/")
             entry = files.get(f"/{mount}/SKILL.md")
@@ -243,6 +250,26 @@ def _build_tools(abc: AgentBuildCtx) -> list:
     return tools
 
 
+def _skill_metadata(path: Path) -> tuple[str, str]:
+    try:
+        content = path.read_text(encoding="utf-8-sig")
+    except UnicodeDecodeError:
+        return path.parent.name, ""  # The reader reports the invalid file if it is requested.
+    header = re.match(r"---[ \t]*\n(.*?)\n---[ \t]*(?:\n|$)", content, re.DOTALL)
+    fields = {}
+    if header:
+        try:
+            parsed = yaml.safe_load(header[1])
+            if isinstance(parsed, dict):
+                fields = parsed
+        except yaml.YAMLError:
+            pass  # Older packages also support plain Markdown skills without metadata.
+    name, description = fields.get("name"), fields.get("description")
+    name = name.strip() if isinstance(name, str) and name.strip() else path.parent.name
+    summary = " ".join(description.split()) if isinstance(description, str) else ""
+    return name, summary
+
+
 def _system_prompt(abc: AgentBuildCtx) -> str:
     # 主 prompt 全文替换（REQ-20261028-110538 FR-001）：ctx.prompt_overrides
     # 有值时清单 prompt 文件被整体替换；styles suffix 照常追加在后。
@@ -252,7 +279,15 @@ def _system_prompt(abc: AgentBuildCtx) -> str:
     else:
         text = (abc.pkg_dir / abc.agent.prompt).read_text(encoding="utf-8").strip()
     suffix = (abc.ctx.styles or {}).get(abc.agent.name)
-    return f"{text}\n\n{suffix}" if suffix else text
+    if suffix:
+        text = f"{text}\n\n{suffix}"
+    if catalog := getattr(abc, "scoped_skill_catalog", ()):
+        entries = [f"- {name}（{key}）" + (f"：{summary}" if summary else "")
+                   for key, name, summary in catalog]
+        text += ("\n\n## 本角色可用的 Skills\n"
+                 "任务与技能用途匹配时，先调用 read_writing_skill，"
+                 "将该条目的路径作为 file_path，读完后按技能要求完成任务。\n" + "\n".join(entries))
+    return text
 
 
 def _build_permissions(agent: AgentSpec) -> list[FilesystemPermission]:
@@ -306,7 +341,8 @@ def _build_compiled(abc: AgentBuildCtx) -> CompiledSubAgent:
 
     # Skills 后端组合（SKILL.md 目录路由）
     effective_backend = abc.ctx.backend
-    skill_sources: list[str] = []
+    # DeepAgents treats [] as an empty native catalog and still tells the model to use read_file.
+    skill_sources: list[str] | None = None if getenv("WRITING_AGENT_ID") in AGENT_TASK_TYPES else []
     if agent.skills and not abc.scoped_skill_files:
         base = abc.pkg_dir / "skills"
         skill_paths = [str(base / s) for s in agent.skills]

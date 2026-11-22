@@ -593,7 +593,8 @@ async def drive_task(request, workspace, service, thread, execution, store, *, l
                 chapter = request.target.chapter
                 has_draft = bool(execution.read_text().strip())
                 prompt += (
-                    f"\n题内文件：{'、'.join(sorted(request.input.files))}。只读取已提供的资料。"
+                    f"\n题内文件：{'、'.join(sorted(request.input.files))}。故事资料只取自题内文件。"
+                    "如有挂载技能，按系统技能目录读取匹配的写作技能。"
                     f"本章{'已有正文，先读稿再续写或修订' if has_draft else '尚无正文，直接从首批起草'}。\n"
                     "用 save_artifact 保存正文。普通单元用 unit_kind=ordinary，"
                     "用空行分隔自然段，每批约 300–400 字，含标点最多 450 字。只在实际匹配已启用技能场景时，"

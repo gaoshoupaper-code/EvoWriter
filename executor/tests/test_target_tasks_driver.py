@@ -226,6 +226,8 @@ def test_first_model_prompt_only_omits_attempt_identifiers_for_experiments(tmp_p
         assert first[0] == second[0]
         assert "当前 session：" not in first[0] and "message_id:" not in first[0]
         assert "题内文件：章纲/第001章.md" in first[0]
+        assert "故事资料只取自题内文件" in first[0]
+        assert "按系统技能目录读取匹配的写作技能" in first[0]
         assert "# 第001章 · <章名>\n> 状态：起草中｜<日期>" in first[0]
         assert all(value in first[0] for value in (
             "unit_kind=ordinary", "300–400", "450", "unit_kind=skill_scene", "skill_name",

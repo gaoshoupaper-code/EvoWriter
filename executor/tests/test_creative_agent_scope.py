@@ -41,7 +41,7 @@ def test_each_package_contains_only_its_agent_and_helpers(tmp_path, monkeypatch,
     ("text", "review", "sub"),
 ])
 def test_private_skill_reader_is_scoped_to_the_mounted_files(tmp_path, monkeypatch, suite, role_name, role):
-    from app.platform.agent.architecture import AgentBuildCtx, _build_tools
+    from app.platform.agent.architecture import AgentBuildCtx, _build_tools, _system_prompt
     from contracts.architecture_manifest import AgentSpec
     from contracts.creative_harness import write_denial
     from types import SimpleNamespace
@@ -57,9 +57,14 @@ def test_private_skill_reader_is_scoped_to_the_mounted_files(tmp_path, monkeypat
     other.parent.mkdir()
     other.write_text("another role's skill", encoding="utf-8")
     agent = AgentSpec(name=role_name, role=role, prompt="review.md", skills=["quiet"])
-    ctx = SimpleNamespace(workspace_path=tmp_path / "book")
+    ctx = SimpleNamespace(workspace_path=tmp_path / "book", prompt_overrides={role_name: "Base"}, styles=None)
     monkeypatch.setenv("WRITING_AGENT_ID", suite)
-    [reader] = _build_tools(AgentBuildCtx(ctx, None, agent, suite, tmp_path))
+    build_ctx = AgentBuildCtx(ctx, None, agent, suite, tmp_path)
+    prompt = _system_prompt(build_ctx)
+    assert "quiet" in prompt and "/_skills_0/SKILL.md" in prompt
+    assert "quiet style" not in prompt
+    [reader] = _build_tools(build_ctx)
+    assert "/_skills_0/SKILL.md" in reader.description and "quiet" in reader.description
     assert reader.invoke({"file_path": "/_skills_0/SKILL.md"}) == skill.read_text(encoding="utf-8")
     assert reader.invoke({"file_path": "/_skills_0/references/examples.md"}) == "A clock ticks."
     assert "examples.md" not in reader.description
@@ -70,6 +75,10 @@ def test_private_skill_reader_is_scoped_to_the_mounted_files(tmp_path, monkeypat
         with pytest.raises(ValueError, match="未挂载"):
             reader.invoke({"file_path": unmounted})
     assert write_denial(suite, "read_file", {"file_path": "/book.md"}, 1, 1)
+    skill.write_bytes(b"\xff\xfe")
+    assert "/_skills_0/SKILL.md" in _system_prompt(AgentBuildCtx(ctx, None, agent, suite, tmp_path))
+    with pytest.raises(ValueError, match="UTF-8"):
+        reader.invoke({"file_path": "/_skills_0/SKILL.md"})
     monkeypatch.delenv("WRITING_AGENT_ID")
     assert _build_tools(AgentBuildCtx(ctx, None, agent, "package", tmp_path)) == []
 
@@ -154,19 +163,31 @@ def test_private_assistant_runs_and_reads_its_draft_within_parent_trace(
         main["skills"] = ["quiet"]
         skill = task.package_root / "skills/quiet/SKILL.md"
         skill.parent.mkdir(parents=True)
-        skill.write_text("---\nname: quiet\ndescription: voice\n---\nShow the silence with a clock.", encoding="utf-8")
-        manifest["agents"].append({**review, "name": assistant})
+        skill.write_text("---\nname: Quiet voice\ndescription: >-\n  Set a hushed tone\n  for pauses.\n---\n"
+                         "Show the silence with a clock.", encoding="utf-8")
+        audit = task.package_root / "skills/audit/SKILL.md"
+        audit.parent.mkdir()
+        audit.write_text("---\nname: audit\ndescription: Check continuity\n---\nCount the exits.", encoding="utf-8")
+        manifest["agents"].append({**review, "name": assistant, "skills": ["audit"]})
         path.write_text(json.dumps(manifest), encoding="utf-8")
     package = load_package(task.package_root, "test_private_delegate_" + assistant)
+    system_prompts = []
+    reader_descriptions = []
     class Model(FakeMessagesListChatModel):
         def bind_tools(self, tools, **kwargs):
+            reader_descriptions.extend(t.description for t in tools if getattr(t, "name", None) == "read_writing_skill")
             return self
+        def _generate(self, messages, *args, **kwargs):
+            system_prompts.append("\n".join(str(m.content) for m in messages if m.type == "system"))
+            return super()._generate(messages, *args, **kwargs)
     skill_calls = [AIMessage(content="", tool_calls=[{
         "name": "read_writing_skill", "id": "read-skill", "args": {"file_path": "/_skills_0/SKILL.md"},
     }])] if assistant == "continuity" else []
     model = Model(responses=[*skill_calls,
         AIMessage(content="", tool_calls=[{"name": "task", "id": "delegation", "args": {
             "description": "审第1章与卷稿的相应部分", "subagent_type": assistant}}]),
+        *([AIMessage(content="", tool_calls=[{"name": "read_writing_skill", "id": "read-audit",
+            "args": {"file_path": "/_skills_0/SKILL.md"}}])] if skill_calls else []),
         AIMessage(content="", tool_calls=[{"name": "read_artifact", "id": "read-approved",
                                           "args": {"kind": kind, **coordinate}}]),
         AIMessage(content="已审，渡口开闸的因果完整。"), AIMessage(content="已收到质检结果。"),
@@ -202,12 +223,26 @@ def test_private_assistant_runs_and_reads_its_draft_within_parent_trace(
             helper = assistant.replace("_", "-") + "-subagent"
             model_agents = {e.agent_name for e in events if e.type == "llm_start"}
             assert model_agents == {agent + "-subagent", helper}
+            assert all("Use `read_file` on the path shown in the skill list" not in p for p in system_prompts)
             assert any(e.type == "tool_start" and e.agent_name == helper and e.tool_name == "read_artifact" for e in events)
             if skill_calls:
+                main_prompt, helper_prompt = system_prompts[0], system_prompts[2]
+                for prompt in (main_prompt, helper_prompt):
+                    assert "read_writing_skill" in prompt and "/_skills_0/SKILL.md" in prompt
+                    assert str(task.package_root) not in prompt
+                    assert "Count the exits." not in prompt and "Show the silence with a clock." not in prompt
+                assert "Quiet voice" in main_prompt and "Set a hushed tone for pauses." in main_prompt
+                assert "Check continuity" in helper_prompt
+                assert "Check continuity" not in main_prompt and "Quiet voice" not in helper_prompt
+                assert any("Quiet voice" in desc and "/_skills_0/SKILL.md" in desc for desc in reader_descriptions)
+                assert any("audit" in desc and "/_skills_0/SKILL.md" in desc for desc in reader_descriptions)
                 loaded = [e for e in events if e.type == "skill_activation" and e.status == "completed"]
-                assert [(e.agent_name, e.skill_name) for e in loaded] == [("text-subagent", "quiet")]
+                assert [(e.agent_name, e.skill_name) for e in loaded] == [
+                    ("text-subagent", "Quiet voice"), ("continuity-subagent", "audit")]
                 assert any(isinstance(m, ToolMessage) and m.tool_call_id == "read-skill"
                            and "Show the silence with a clock." in str(m.content) for m in result["messages"])
+            else:
+                assert system_prompts and all("read_writing_skill" not in prompt for prompt in system_prompts)
         finally:
             ACTIVE.reset(token)
             await recorder.aclose()

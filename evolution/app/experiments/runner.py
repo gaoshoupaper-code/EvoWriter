@@ -442,26 +442,47 @@ def advance_one(run_id: str) -> None:
                                 "source_commit": None, "summary": "", "error": None, "report": {}, "diff": ""}
                 run["rounds"].append(round_record)
                 repo.put_run(run)
+            supplied = run["settings"].get("candidate_commit") if round_record["round"] == 1 else None
+            chapter_improvement = not supplied and run.get("assessment_version") and run["task_type"] == "chapter_text"
             try:
-                supplied = run["settings"].get("candidate_commit")
-                if supplied and round_record["round"] == 1:
+                if supplied:
                     result = agent.asset_candidate(run, supplied)
                 else:
                     evidence = [] if run.get("assessment_version") else optimization_evidence(run)
                     result = agent.improve_candidate(run, round_record, evidence)
                 if is_stopped(run_id):
                     return
-                round_record.update(status="exploration", source_commit=result["commit"], digest=result["digest"],
-                                    summary=result["summary"], diff=result["diff"], usage=result.get("usage", {}))
-                run["phase"] = "exploration"
-                repo.event(run, "exploration", f"第 {run['current_round']} 轮候选已固定，开始优化复测。")
-                _add_samples(run, run["settings"]["optimization_ids"], arm="candidate", phase="exploration",
-                             round_=run["current_round"], repeats=1, commit=result["commit"], digest=result["digest"])
+                no_change = chapter_improvement and result.get("outcome") == "no_change"
+                if not no_change:
+                    round_record.update(status="exploration", source_commit=result["commit"], digest=result["digest"],
+                                        summary=result["summary"], diff=result["diff"], usage=result.get("usage", {}))
+                    run["phase"] = "exploration"
+                    repo.event(run, "exploration", f"第 {run['current_round']} 轮候选已固定，开始优化复测。")
+                    _add_samples(run, run["settings"]["optimization_ids"], arm="candidate", phase="exploration",
+                                 round_=run["current_round"], repeats=1, commit=result["commit"], digest=result["digest"])
             except clients.ServiceUnavailable:
                 raise
             except Exception as exc:
+                if chapter_improvement:
+                    if is_stopped(run_id):
+                        return
+                    incomplete = isinstance(exc, agent.IncompleteImprovement)
+                    detail = str(exc)[:240] if incomplete else f"{type(exc).__name__}：{str(exc)[:240]}"
+                    message = "候选改进未完成" if incomplete else "候选改进失败"
+                    round_record.update(status="failed", error=f"{message}：{detail}")
+                    reason = f"{message}。完整原因见轮次报告。"
+                    repo.event(run, "round_failed", reason)
+                    _finish(run, "failed", reason)
+                    return
                 round_record.update(status="failed", error=f"候选改进失败：{type(exc).__name__}：{str(exc)[:240]}")
                 repo.event(run, "round_failed", f"第 {run['current_round']} 轮候选改进失败：{type(exc).__name__}；完整原因见轮次报告。")
+            else:
+                if no_change:
+                    round_record.update(status="completed", outcome="no_change", summary=result["summary"],
+                                        evidence_samples=result["evidence_samples"])
+                    run["outcome"] = "no_change"
+                    _finish(run, "completed", "已核查原版，未找到有证据支持的改动。")
+                    return
         elif run["phase"] == "exploration":
             candidate = [sample for sample in run["samples"] if sample["phase"] == "exploration" and sample["round"] == run["current_round"]]
             if _run_pending(run, candidate):

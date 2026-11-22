@@ -24,7 +24,7 @@ COMMON_TOOLS = {
 }
 ASSESSMENT_TOOLS = {
     "list_assessment_history", "search_assessment_history", "read_assessment_round", "read_improvement_sample",
-    "list_writing_events", "read_writing_event",
+    "list_writing_events", "read_writing_event", "finish_without_changes",
 }
 
 
@@ -62,7 +62,7 @@ def test_evolver_assets_follow_the_authenticated_suite(client, monkeypatch, suit
     assert set(data) == {"system_prompt", "tools"}
     assert data["system_prompt"].startswith("你是Writer Harness进化工程师。")
     is_text = suite == "text"
-    assert ("先调用 list_assessment_history" in data["system_prompt"]) == is_text
+    assert ("先查第 0 轮原版" in data["system_prompt"]) == is_text
     names = {tool["name"] for tool in data["tools"]}
     expected = COMMON_TOOLS | ASSESSMENT_TOOLS if is_text else COMMON_TOOLS
     assert names == expected

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from collections.abc import Callable
 from typing import Literal
 
 from langchain_core.tools import tool
@@ -94,17 +95,30 @@ def _event_label(event: TraceLogEvent) -> dict:
     }.items() if value is not None}
 
 
-def make_history_tools(run: dict) -> list:
+def _samples_at(run: dict, round_number: int) -> list[dict]:
     allowed = set(run["settings"]["optimization_ids"])
+    phase = "exploration" if round_number else "baseline"
+    return [sample for sample in run.get("samples", []) if sample["round"] == round_number
+            and sample["phase"] == phase and sample["package_id"] in allowed]
 
-    def samples_at(round_number):
-        phase = "exploration" if round_number else "baseline"
-        return [s for s in run.get("samples", []) if s["round"] == round_number
-                and s["phase"] == phase and s["package_id"] in allowed]
 
+def _sample_entry(number: int, sample: dict) -> dict:
+    return {"sample_number": number, "evidence_ref": sample["id"], "status": sample["status"],
+            "trace_count": len(sample.get("trace_ids", []))}
+
+
+def baseline_evidence_entries(run: dict) -> list[dict]:
+    return [_sample_entry(number, sample) for number, sample in enumerate(_samples_at(run, 0), 1)]
+
+
+def make_history_tools(run: dict, *, on_baseline_evidence: Callable[[str], None] | None = None) -> list:
     def sample_at(round_number, sample_number):
-        samples = samples_at(round_number)
+        samples = _samples_at(run, round_number)
         return samples[sample_number - 1] if sample_number <= len(samples) else None
+
+    def note_baseline_read(round_number, sample_id):
+        if round_number == 0 and on_baseline_evidence is not None:
+            on_baseline_evidence(sample_id)
 
     def sample_content(sample, section):
         if section == "assignment":
@@ -128,7 +142,7 @@ def make_history_tools(run: dict) -> list:
                     yield {**location, "section": key}, record[key]
             if record.get("status") == "regression_failed":
                 yield {**location, "section": "regression"}, _regression_drops(run, number)
-            for index, sample in enumerate(samples_at(number), 1):
+            for index, sample in enumerate(_samples_at(run, number), 1):
                 location_sample = {**location, "sample_number": index, "evidence_ref": sample["id"]}
                 for section in ("assignment", "manuscript", "scores", "checks", "error"):
                     content = sample_content(sample, section)
@@ -158,7 +172,7 @@ def make_history_tools(run: dict) -> list:
             if any(recorded[k] != sample[k] for k in ("source_commit", "input_revision", "artifact_digest", "target")
                    if k in recorded and k in sample):
                 return None
-            return trace_id, {}
+            return trace_id, sample["id"], {}
 
         # Completed generation is published only after the executor parent verified every trace
         # in the task's fixed workspace and the runner checked the input and artifact versions.
@@ -181,14 +195,17 @@ def make_history_tools(run: dict) -> list:
         )
         if not archived:
             return None
-        return trace_id, {"warning": "运行身份快照缺失。以下事件依据父进程核验的本题记录提供，仅供诊断。",
-                          "integrity_status": row["integrity_status"]}
+        return trace_id, sample["id"], {
+            "warning": "运行身份快照缺失。以下事件依据父进程核验的本题记录提供，仅供诊断。",
+            "integrity_status": row["integrity_status"],
+        }
 
     @tool(args_schema=_Strict)
     def list_assessment_history() -> list:
-        """列出本次评测的轮次和状态。第 0 轮是原版。"""
-        return [{"round": 0, "status": "baseline"}, *[
-            {"round": item["round"], "status": item["status"]} for item in run.get("rounds", [])]]
+        """列出轮次、状态和样本数量。先查第 0 轮的原版样本。"""
+        rounds = [{"round": 0, "status": "baseline"}, *run.get("rounds", [])]
+        return [{"round": item["round"], "status": item["status"],
+                 "sample_count": len(_samples_at(run, item["round"]))} for item in rounds]
 
     @tool(args_schema=_Search)
     def search_assessment_history(query: str, offset: int = 0, limit: int = 12) -> dict:
@@ -217,13 +234,15 @@ def make_history_tools(run: dict) -> list:
         if round_number and record is None:
             return {"error": _UNAVAILABLE}
         if section == "samples":
-            samples = samples_at(round_number)
+            samples = _samples_at(run, round_number)
             end = offset + 40
-            return {"items": [{"sample_number": index, "evidence_ref": sample["id"], "title": sample["package_title"],
-                               "repeat": sample["repeat"], "status": sample["status"],
-                               "trace_count": len(sample.get("trace_ids", []))}
-                              for index, sample in enumerate(samples[offset:end], offset + 1)],
-                    "next_offset": end if end < len(samples) else None}
+            result = {"items": [{**_sample_entry(index, sample), "title": sample["package_title"],
+                                 "repeat": sample["repeat"]}
+                                for index, sample in enumerate(samples[offset:end], offset + 1)],
+                      "next_offset": end if end < len(samples) else None}
+            if round_number and not samples:
+                result.update(reason="本轮尚无改进题样本。请先查看第 0 轮的原版样本。", baseline_round=0)
+            return result
         if section == "regression":
             if record and record["status"] == "regression_failed":
                 return _regression_drops(run, round_number)
@@ -236,7 +255,11 @@ def make_history_tools(run: dict) -> list:
         sample = sample_at(round_number, sample_number)
         if sample is None:
             return {"error": _UNAVAILABLE}
-        return _page(sample_content(sample, section), offset)
+        content = sample_content(sample, section)
+        page = _page(content, offset)
+        if section in {"manuscript", "scores", "checks"} and content and page.get("content"):
+            note_baseline_read(round_number, sample["id"])
+        return page
 
     @tool(args_schema=_Timeline)
     def list_writing_events(round_number: int, sample_number: int, trace_number: int,
@@ -245,7 +268,7 @@ def make_history_tools(run: dict) -> list:
         binding = trace_at(round_number, sample_number, trace_number)
         if not binding:
             return {"error": _UNAVAILABLE}
-        trace_id, notice = binding
+        trace_id, sample_id, notice = binding
         placeholders = ",".join("?" for _ in _EVENT_TYPES)
         rows = db.query_all(
             f"""SELECT payload_json FROM event_payloads WHERE trace_id=? AND sequence>?
@@ -255,6 +278,8 @@ def make_history_tools(run: dict) -> list:
         events = [TraceLogEvent.model_validate_json(row["payload_json"]) for row in rows[:limit]]
         if any(event.trace_id != trace_id for event in events):
             return {"error": _UNAVAILABLE}
+        if events:
+            note_baseline_read(round_number, sample_id)
         return {"items": [_event_label(event) for event in events],
                 "next_sequence": events[-1].sequence if len(rows) > limit else None, **notice}
 
@@ -265,7 +290,7 @@ def make_history_tools(run: dict) -> list:
         binding = trace_at(round_number, sample_number, trace_number)
         if not binding:
             return {"error": _UNAVAILABLE}
-        trace_id, notice = binding
+        trace_id, sample_id, notice = binding
         row = db.query_one("SELECT payload_json FROM event_payloads WHERE trace_id=? AND sequence=?",
                            (trace_id, sequence))
         if not row:
@@ -297,6 +322,8 @@ def make_history_tools(run: dict) -> list:
         if event.type == "middleware_assembly":
             details["middleware"] = [item.name for item in event.middleware_stack]
         page = _page({**_event_label(event), **{k: v for k, v in details.items() if v is not None}}, offset)
+        if not unavailable and page["content"]:
+            note_baseline_read(round_number, sample_id)
         return {**page, **notice}
 
     return [list_assessment_history, search_assessment_history, read_assessment_round, read_improvement_sample,

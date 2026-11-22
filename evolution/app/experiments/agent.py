@@ -13,6 +13,13 @@ from app.core.settings import settings
 from app.experiments import clients, repo
 
 
+class IncompleteImprovement(ValueError):
+    """The chapter evolver ended without a valid decision or candidate."""
+
+
+_MAX_COMPLETION_NUDGES = 3
+
+
 def _git(root: Path, *arguments: str) -> str:
     result = subprocess.run(["git", *arguments], cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=60)
     if result.returncode:
@@ -106,6 +113,8 @@ def improve_candidate(run: dict, round_record: dict, evidence: list[dict]) -> di
         if private_version:
             _save_assessment_version(run, round_record, root)
         raise
+    if result.get("outcome") == "no_change":
+        return result
     if private_version:
         round_record["summary"] = result.get("summary", "")
         commit = _save_assessment_version(run, round_record, root)
@@ -169,8 +178,10 @@ def _system_prompt(assessment: bool) -> str:
     )
     if assessment:
         prompt += (
-            "你负责正文 Agent 从题目到单章交稿的整体效果。先调用 list_assessment_history，按需读取改进题的"
-            "终稿、评分和真实 Trace；可以核对初稿、review 意见和实际修订。根据证据决定改哪里。"
+            "你负责正文 Agent 从题目到单章交稿的整体效果。先查第 0 轮原版："
+            "用 read_assessment_round（round_number=0, section=samples）列出样本，"
+            "再读取原版评分、终稿或写作 Trace。已复测的候选轮只用于补充证据。"
+            "当前候选轮样本为空时，回到第 0 轮。"
             "读取 architecture.json 核对实际装配的提示词、技能、工具、中间件与子 Agent。"
             "可以调整这些资产及其装配关系。设计文档须注明问题、证据编号、拟改资产和预期效果。"
             "涉及改进题时，将样本列表返回的 evidence_ref 原样写入设计条目的 evidence_ref。"
@@ -183,13 +194,14 @@ def _system_prompt(assessment: bool) -> str:
             "改法只适用于原样本或说不清边界时，先重新提炼。仍不成立就跳过。"
             "\n证据不足时先核查本次档案里的相关证据，仍无法查实就跳过该问题。"
             "只有查实通用缺口的修正才进入设计、修改、校验和改动记录流程。"
-            "若整轮没有符合条件的修正，说明证据缺口，保留原有资产。"
+            "若查阅原版证据后仍没有符合条件的修正，保留原有资产，"
+            "调用 finish_without_changes 提交理由和实际查阅的原版 evidence_ref。"
             "即使流程提示缺少产出，也禁止制造占位改动或虚构报告。"
         )
     return prompt
 
 
-def _evolver_tools(backend, run: dict, ctx=None):
+def _evolver_tools(backend, run: dict, ctx=None, *, on_baseline_evidence=None, finish_no_change=None):
     from langchain_core.tools import tool
 
     from app.evolve.agent.tools.flow import make_flow_tools
@@ -210,7 +222,16 @@ def _evolver_tools(backend, run: dict, ctx=None):
     tools += [item for item in make_flow_tools() if item.name != "validate_changes"] + [validate_changes]
     if run.get("assessment_version"):
         from app.experiments.history import make_history_tools
-        tools.extend(make_history_tools(run))
+
+        @tool
+        def finish_without_changes(reason: str, evidence_refs: list[str]) -> str:
+            """核查原版后确无合格改动时提交理由及实际读过的原版 evidence_ref。工作区须无改动。"""
+            if finish_no_change is None:
+                raise RuntimeError("Finishing requires an experiment checkout")
+            return finish_no_change(reason, evidence_refs)
+
+        tools.extend(make_history_tools(run, on_baseline_evidence=on_baseline_evidence))
+        tools.append(finish_without_changes)
     return tools, validate_changes
 
 
@@ -228,8 +249,9 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     from deepagents import create_deep_agent
     from deepagents.backends.filesystem import FilesystemBackend
     from langchain_openai import ChatOpenAI
+    from langchain.agents.middleware import hook_config
     from langchain.agents.middleware.types import AgentMiddleware
-    from langchain_core.messages import ToolMessage
+    from langchain_core.messages import SystemMessage, ToolMessage
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
     from app.common.middleware.no_fs import NoFilesystemToolsMiddleware
     from app.common.model_factory import _ensure_gp_disabled
@@ -294,6 +316,10 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
             denied = self._check(request)
             return denied if denied is not None else await handler(request)
 
+    assessment = bool(run.get("assessment_version"))
+    if assessment and round_record.get("outcome") == "no_change":
+        return {key: round_record[key] for key in ("outcome", "summary", "evidence_samples")}
+
     session_id = round_record["session_id"]
     old_session = sessions.get_session(session_id)
     if old_session and old_session.get("case_id") != "experiment:" + run["id"]:
@@ -323,19 +349,80 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
         round_record.setdefault("trace_ids", []).append(ctx.trace_id_self)
         repo.put_run(run)
 
+    baseline_reads = set(round_record.get("baseline_evidence_read", []))
+    no_change = None
+
+    def unchanged_checkout():
+        return (not _git(root, "status", "--porcelain", "--untracked-files=all")
+                and _git(root, "rev-parse", "HEAD") == round_record["base_commit"])
+
+    def finish_no_change(reason, evidence_refs):
+        nonlocal no_change
+        reason = reason.strip()
+        refs = list(dict.fromkeys(evidence_refs))
+        if not reason or len(reason) > 1000:
+            return "请提交 1 到 1000 字的无改动理由。"
+        if not refs or not baseline_reads.issuperset(refs):
+            return "请先读取第 0 轮原版评分、终稿、检查结果或写作记录，再引用实际读过的样本。"
+        if not unchanged_checkout():
+            return "工作区已有改动，请补齐候选校验和改动报告。"
+        no_change = {"outcome": "no_change", "summary": reason, "evidence_samples": refs}
+        return "已记录无改动结论，可以结束本轮。"
+
+    def completion_problem():
+        if not baseline_reads:
+            return "请先读取第 0 轮原版样本的评分、终稿、检查结果或写作记录。"
+        if no_change and unchanged_checkout():
+            return None
+        if not ctx.design_doc_path:
+            return "请提交设计文档。若没有可复用的改法，请调用 finish_without_changes。"
+        if ctx.code_mutations_since_validate or (ctx.validation_result is None and not ctx.change_log_path):
+            return "请用 validate_changes 校验最终改动。"
+        if not ctx.change_log_path:
+            return "请用 write_change_log 提交改动报告。"
+        return None
+
+    class AssessmentCompletionGuard(FlowGuardMiddleware):
+        def _check_completion(self):
+            if runner.is_stopped(run["id"]):
+                raise asyncio.CancelledError()
+            problem = completion_problem()
+            if not problem:
+                return None
+            count = round_record.get("completion_nudges", 0)
+            if count >= _MAX_COMPLETION_NUDGES:
+                raise IncompleteImprovement(problem)
+            round_record["completion_nudges"] = count + 1
+            round_record["baseline_evidence_read"] = sorted(baseline_reads)
+            repo.put_run(run)
+            ctx.emit_step("completion_check", "running", reminder=problem, attempt=count + 1)
+            return {"messages": [SystemMessage(content=problem)], "jump_to": "model"}
+
+        @hook_config(can_jump_to=["model"])
+        def after_agent(self, state, runtime):
+            return self._check_completion()
+
+        @hook_config(can_jump_to=["model"])
+        async def aafter_agent(self, state, runtime):
+            return self._check_completion()
+
     backend = FilesystemBackend(root_dir=str(root), virtual_mode=True)
-    tools, validate_changes = _evolver_tools(backend, run, ctx)
+    tools, validate_changes = _evolver_tools(
+        backend, run, ctx, on_baseline_evidence=baseline_reads.add, finish_no_change=finish_no_change)
     allowed_tools = {item.name for item in tools}
     _ensure_gp_disabled()
     credentials = repo.decrypt_credentials(run["private"]["evolver"])
-    middleware = [NoFilesystemToolsMiddleware(), ExperimentSourceGuard(), FlowGuardMiddleware()]
+    completion_guard = AssessmentCompletionGuard() if assessment else FlowGuardMiddleware()
+    middleware = [NoFilesystemToolsMiddleware(), ExperimentSourceGuard(), completion_guard]
     if ctx.recorder and ctx.trace_id_self:
         middleware.append(TraceMiddleware(recorder=ctx.recorder, trace_id=ctx.trace_id_self, agent_name="experiment-evolver"))
     checkpoint_path = root.parent / f"round-{round_record['round']}.sqlite"
-    assessment = bool(run.get("assessment_version"))
     prompt = _system_prompt(assessment)
     if assessment:
-        task = "使用本次档案的历史工具定位正文问题。查实通用缺口后，再改进正文 Agent 并完成校验。"
+        from app.experiments.history import baseline_evidence_entries
+
+        entries = json.dumps(baseline_evidence_entries(run), ensure_ascii=False)
+        task = "先核查第 0 轮原版样本的实际证据，再决定是否改进。原版样本入口：" + entries
     else:
         task = "请依据给定的改进题证据修改候选并完成校验：\n" + json.dumps(evidence, ensure_ascii=False)
     config = {"configurable": {"thread_id": session_id}, "recursion_limit": 200}
@@ -354,6 +441,18 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
             agent = create_deep_agent(model=model, tools=tools, system_prompt=prompt, middleware=middleware,
                                       subagents=None, backend=backend, checkpointer=checkpointer)
             await _run_agent_streamed(agent, task, config, ctx, input_message_id=session_id + "-optimization")
+        if assessment:
+            if runner.is_stopped(run["id"]):
+                raise asyncio.CancelledError()
+            if no_change and unchanged_checkout():
+                round_record.update(no_change)
+                repo.put_run(run)
+                sessions.update_session(session_id, status="done")
+                if ctx.recorder and ctx.trace_id_self:
+                    ctx.recorder.complete_run(ctx.trace_id_self)
+                return no_change
+            if problem := completion_problem():
+                raise IncompleteImprovement(problem)
         if ctx.validation_result is None:
             # A recovered checkpoint can already contain the final change log.
             validate_changes.invoke({})
@@ -364,14 +463,20 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
             ctx.recorder.complete_run(ctx.trace_id_self)
         return {"validated": bool(ctx.validation_result.get("passed")) and ctx.code_mutations_since_validate == 0,
                 "summary": Path(ctx.change_log_path).read_text(encoding="utf-8"), "usage": {"known": False}}
-    except BaseException:
+    except BaseException as exc:
+        if isinstance(exc, IncompleteImprovement):
+            sessions.update_session(session_id, status="failed")
         if ctx.recorder and ctx.trace_id_self:
-            ctx.recorder.fail_run(ctx.trace_id_self, "自动改进中断或失败")
+            error = str(exc) if isinstance(exc, IncompleteImprovement) else "自动改进中断或失败"
+            ctx.recorder.fail_run(ctx.trace_id_self, error)
         raise
     finally:
-        if run.get("assessment_version") and (ctx.design_doc_path or ctx.change_log_path):
-            if ctx.design_doc_path:
-                _record_design(run, round_record, ctx.design_doc_path)
-            if ctx.change_log_path:
-                round_record["summary"] = Path(ctx.change_log_path).read_text(encoding="utf-8")
+        if assessment and (ctx.design_doc_path or ctx.change_log_path
+                           or baseline_reads != set(round_record.get("baseline_evidence_read", []))):
+            round_record["baseline_evidence_read"] = sorted(baseline_reads)
+            if round_record.get("outcome") != "no_change":
+                if ctx.design_doc_path:
+                    _record_design(run, round_record, ctx.design_doc_path)
+                if ctx.change_log_path:
+                    round_record["summary"] = Path(ctx.change_log_path).read_text(encoding="utf-8")
             repo.put_run(run)

@@ -11,7 +11,7 @@ from pydantic import ValidationError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core import db
-from app.experiments.history import make_history_tools
+from app.experiments.history import baseline_evidence_entries, make_history_tools
 
 
 def sample(package, arm, phase, round_number, grade):
@@ -45,18 +45,22 @@ def archive():
     }
 
 
-def calls(run):
-    return {t.name: t.invoke for t in make_history_tools(run)}
+def calls(run, **kwargs):
+    return {t.name: t.invoke for t in make_history_tools(run, **kwargs)}
 
 
 def test_history_and_holdout_are_disjoint(archive):
     tools = calls(archive)
     history = tools["list_assessment_history"]({})
-    assert [item["round"] for item in history] == [0, 1, 2]
+    assert [(item["round"], item["sample_count"]) for item in history] == [(0, 1), (1, 1), (2, 0)]
     read_round = tools["read_assessment_round"]
     samples = read_round({"round_number": 1, "section": "samples"})["items"]
     assert len(samples) == 1 and samples[0]["sample_number"] == 1
     assert samples[0]["evidence_ref"] == archive["samples"][1]["id"]
+    empty = read_round({"round_number": 2, "section": "samples"})
+    assert empty["items"] == [] and empty["next_offset"] is None and empty["baseline_round"] == 0
+    assert "第 0 轮" in empty["reason"]
+    assert "baseline_round" not in read_round({"round_number": 1, "section": "samples", "offset": 40})
     summary = read_round({"round_number": 1, "section": "regression"})
     assert summary == {"round": 1, "drops": {"文风": -0.5}}
     for section in ("design", "diff", "samples", "summary", "error", "regression"):
@@ -71,6 +75,46 @@ def test_history_and_holdout_are_disjoint(archive):
     assert "error" in read_sample({"round_number": 1, "sample_number": 2, "section": "scores"})
     with pytest.raises(ValidationError):
         read_round({"run_id": "other-run", "round_number": 1, "section": "samples"})
+
+
+def test_baseline_entries_and_reads_use_only_authorized_evidence(archive, history_db):
+    archive["samples"].insert(0, sample("保密复测", "baseline", "baseline", 0, 4))
+    baseline = archive["samples"][1]
+    evidence = baseline["id"]
+    assert baseline_evidence_entries(archive) == [{
+        "sample_number": 1, "evidence_ref": evidence, "status": "completed", "trace_count": 1,
+    }]
+    reads = []
+    tools = calls(archive, on_baseline_evidence=reads.append)
+    read_sample = tools["read_improvement_sample"]
+    query = {"round_number": 0, "sample_number": 1, "section": "scores"}
+    tools["list_assessment_history"]({})
+    tools["read_assessment_round"]({"round_number": 0, "section": "samples"})
+    assert tools["search_assessment_history"]({"query": "公开练习评语"})["items"]
+    assert read_sample({**query, "section": "assignment"})["content"]
+    assert read_sample({**query, "round_number": 1})["content"]
+    assert "error" in read_sample({**query, "sample_number": 2})
+    assert "error" in read_sample({**query, "section": "checks"})
+    assert read_sample({**query, "offset": 6000})["content"] == ""
+    assert reads == []
+    assert read_sample(query)["content"]
+    assert reads == [evidence]
+
+    trace = baseline["trace_ids"][0]
+    trace_query = {"round_number": 0, "sample_number": 1, "trace_number": 1}
+    timeline = tools["list_writing_events"]
+    read_event = tools["read_writing_event"]
+    history_db.execute("INSERT INTO runs(trace_id,service,run_snapshot_json) VALUES(?, 'executor', ?)",
+                       (trace, json.dumps({"target_task": {"task_id": baseline["task_id"]}})))
+    assert timeline(trace_query)["items"] == []
+    assert "error" in read_event({**trace_query, "sequence": 1})
+    assert reads == [evidence]
+    event = {"trace_id": trace, "event_id": "one", "sequence": 1, "type": "skill_activation", "status": "completed",
+             "source": "runtime", "timestamp": "2026-11-19T00:00:00Z", "skill_name": "文风"}
+    history_db.execute("INSERT INTO event_payloads VALUES(?, 1,'skill_activation',?)", (trace, json.dumps(event)))
+    assert timeline(trace_query)["items"][0]["skill"] == "文风"
+    assert "文风" in read_event({**trace_query, "sequence": 1})["content"]
+    assert reads == [evidence, evidence, evidence]
 
 
 def test_assessment_assignment_uses_the_bound_case_revision(archive, monkeypatch):

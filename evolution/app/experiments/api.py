@@ -111,7 +111,8 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
                     dimension["key"]: dimension["weight"] for dimension in rule["dimensions"]}
     if not summary:
         value["rounds"] = [copy.deepcopy({key: item for key, item in round_.items()
-            if key not in {"work_root", "frozen_candidate"}}) for round_ in run.get("rounds", [])]
+            if key not in {"work_root", "frozen_candidate", "completion_nudges", "baseline_evidence_read"}})
+            for round_ in run.get("rounds", [])]
         value["samples"] = []
         for sample in run.get("samples", []):
             public = {key: item for key, item in sample.items() if key not in {
@@ -167,7 +168,7 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
             safe_samples.append(safe)
         value["samples"] = safe_samples
         value["rounds"] = [{**{key: item[key] for key in (
-            "round", "status", "source_commit", "base_commit", "digest", "report", "regressions", "trace_ids", "usage",
+            "round", "status", "outcome", "source_commit", "base_commit", "digest", "report", "regressions", "trace_ids", "usage",
         ) if key in item}, **({"startup_check": {"status": item["startup_check"]["status"]}} if item.get("startup_check") else {}),
         "summary": "", "diff": "", "error": "本轮异常，完整原因需正文读取权限。" if item.get("error") else None}
             for item in value.get("rounds", [])]
@@ -179,6 +180,8 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
         models=repo.public_models(run),
         stale_reason=run.get("stale_reason"))
     current = next((item for item in run.get("rounds", []) if item.get("round") == run.get("current_round")), None)
+    if can_read_content and not summary and run.get("outcome") == "no_change" and current and current.get("summary"):
+        value["end_reason"] = f"{run['end_reason']} {current['summary']}"
     value["current_candidate"] = ({"commit": current["source_commit"], "round": current["round"], "digest": current.get("digest")}
                                   if current and current.get("source_commit") else None)
     value["progress"] = {"total": len(run.get("samples", [])),

@@ -673,6 +673,44 @@ def test_retry_preserves_first_request_and_keeps_evidence_errors_private(chapter
     assert not recovered.get("judge_evidence_feedback")
 
 
+def test_new_judges_can_copy_original_locations_across_repeats_and_recovery(chapter_run, monkeypatch):
+    run, sample = chapter_run
+    run.update(judge_input_version=2, runtime_scoring_version=1, judge_repeats=2)
+    run["private"]["judges"] = run["private"]["judges"][:1]
+    rule = run["private"]["rules"]["chapter_text"]
+    rule["dimensions"] = rule["dimensions"][:1]
+    manuscript = next(path for path in sample["artifacts"] if path.startswith("正文/"))
+    sample["artifacts"][manuscript] = "第一段。\r\n\r\n她在门边停下。"
+    raw = evaluation._chapter_score_material(repo.run_package(run, sample["package_id"], for_scoring=True), sample)
+    calls = stub_judges(monkeypatch, http_error_at={1}, runtime_ref="trace-body:8")
+    monkeypatch.setattr(evaluation, "_collect_runtime", lambda _: _runtime_input())
+    repo.put_run(run)
+    runner.process_sample(run, sample)
+    assert sample["status"] == "evaluation_error"
+    restored = repo.get_run(run["id"])
+    runner.process_sample(restored, restored["samples"][0])
+    assert restored["samples"][0]["status"] == "completed"
+    # The judge stub submits a valid verbatim quote, also supported in new runs.
+    assert len(calls) == 5
+    assert calls[0]["messages"] == calls[2]["messages"] == calls[4]["messages"]
+    for call in calls:
+        system, user = call["messages"]
+        material = json.loads(user["content"])
+        for original, rendered in ((raw["input"]["files"], material["input"]["files"]),
+                                   (raw["artifacts"], material["artifacts"])):
+            assert rendered.keys() == original.keys()
+            for path, source in original.items():
+                assert rendered[path].splitlines(keepends=True) == [
+                    f"{path}:{n} {line}" if line.strip() else line
+                    for n, line in enumerate(source.splitlines(keepends=True), 1)
+                ]
+        if "runtime_trace" in material:
+            assert material["runtime_trace"]["evidence"][0]["ref"] == "trace-body:8"
+            assert "ref 原值" in system["content"]
+        else:
+            assert "只复制" in system["content"] and "文件路径:行号" in system["content"]
+
+
 def test_exhausted_incomplete_score_does_not_evolve_or_compare(chapter_run, monkeypatch):
     run, sample = chapter_run
     accepted_calls = len(run["private"]["judges"]) * run["judge_repeats"] * _quality_dimension_count(run) - 1

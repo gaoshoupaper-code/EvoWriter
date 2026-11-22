@@ -195,6 +195,7 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         run = runner.create_run(settings, "author")
         assert run["assessment_version"] == 2
         assert run["runtime_scoring_version"] == 1
+        assert run["judge_input_version"] == 2
         assert run["judge_repeats"] == 3
         assert run["regression_repeats"] == 1
         first_rule = run["private"]["rules"][kind]

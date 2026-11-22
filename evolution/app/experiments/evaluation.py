@@ -253,6 +253,12 @@ def _chapter_score_material(package: dict, sample: dict) -> dict:
             "artifacts": {manuscript: sample["artifacts"][manuscript]}}
 
 
+def _with_line_locations(files: dict[str, str]) -> dict[str, str]:
+    return {path: "".join(f"{path}:{n} {line}" if line.strip() else line
+                          for n, line in enumerate(text.splitlines(keepends=True), 1))
+            for path, text in files.items()}
+
+
 def _collect_runtime(sample: dict) -> dict:
     from app.experiments import runtime_evidence
 
@@ -390,19 +396,27 @@ def score_sample(run: dict, sample: dict) -> dict:
     material = (_chapter_score_material(package, sample) if repeats is not None else
                 {"target": package["target"], "input": package["input"], "artifacts": sample["artifacts"], "checks": sample.get("checks", {})})
     judge_material = material
-    if repeats is not None:
+    runtime_format = _RUNTIME_OUTPUT_FORMAT
+    chapter_output = ('只输出 JSON：{"score": 1到5的整数, "reason": "一段定档理由，说明为何符合本档和相邻档差异", '
+                      '"evidence": ["文件路径:行号"]}。')
+    if run.get("judge_input_version") == 2:
+        judge_material = {**material, "input": {"files": _with_line_locations(material["input"]["files"])},
+                          "artifacts": _with_line_locations(material["artifacts"])}
+        location_instruction = ('引用资料或正文时，evidence 只复制对应行开头的“文件路径:行号”。'
+                                '多处依据分成多个数组条目。引文或分析写在 reason 中。')
+        output_format = chapter_output + '每项至少给一条本章最终正文的依据。' + location_instruction
+        runtime_format += location_instruction
+    elif repeats is not None:
         judge_material = {**material, "artifacts": {
             path: "\n".join(f"{number}: {line}" for number, line in enumerate(text.splitlines(), 1))
             for path, text in material["artifacts"].items()
         }}
+        output_format = (chapter_output + '评分依据优先填写文件路径:行号或文件路径:起始行-结束行。带路径的条目到行号为止。'
+                         '引文可写在定档理由里，也可单独占一条评分依据，格式为正文原句或行号: 正文原句。'
+                         '每项至少给一条正文依据。判定漏写时可另逐字引用章纲要求。')
+    else:
+        output_format = '只输出JSON：{"score":1到5的整数,"达标":["引用原文的证据"],"不足":["引用原文的缺陷"]}。'
     user_message = {"role": "user", "content": json.dumps(judge_material, ensure_ascii=False)}
-    output_format = ('只输出 JSON：{"score": 1到5的整数, "reason": "一段定档理由，说明为何符合本档和相邻档差异", '
-                     '"evidence": ["文件路径:行号"]}。'
-                     '评分依据优先填写文件路径:行号或文件路径:起始行-结束行。带路径的条目到行号为止。'
-                     '引文可写在定档理由里，也可单独占一条评分依据，格式为正文原句或行号: 正文原句。'
-                     '每项至少给一条正文依据。判定漏写时可另逐字引用章纲要求。'
-                     if repeats is not None else
-                     '只输出JSON：{"score":1到5的整数,"达标":["引用原文的证据"],"不足":["引用原文的缺陷"]}。')
     progress = sample.setdefault("judge_results", {})
     errors = sample.setdefault("judge_errors", {})
     feedback = sample.get("judge_evidence_feedback", {})
@@ -496,7 +510,7 @@ def score_sample(run: dict, sample: dict) -> dict:
                             "先按 focus_points（关注点）逐项核对适用的正文和固定资料，找出可核对的证据。"
                             "再用 anchors（1–5 分标准）选择最符合证据的档位。关注点用于取证，不单独计分。\n")
                     messages = [{"role": "system", "content": instructions + json.dumps(dimension, ensure_ascii=False)
-                                 + "\n" + (_RUNTIME_OUTPUT_FORMAT if is_runtime else output_format)},
+                                 + "\n" + (runtime_format if is_runtime else output_format)},
                                 runtime_message if is_runtime else user_message]
                     node_name = dimension["key"] if repeat is None else f"第 {repeat} 次 · {dimension['key']}"
                     call = {"source": "runtime", "run_id": "judge-" + uuid4().hex, "agent_name": "experiment-judge",

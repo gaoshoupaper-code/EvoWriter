@@ -24,6 +24,7 @@ export function ArtifactFiles({ files }: { files: Record<string, string> }) {
 
 const number = (value: number | null | undefined) => value == null ? "未知" : value.toFixed(3);
 const percent = (value: number) => value.toLocaleString("zh-CN", { style: "percent", maximumFractionDigits: 2 });
+export const RUNTIME_DIMENSION = "运行时";
 
 export function RuntimeScoringWeights({ rule, version, weights }: {
   rule?: Experiment["scoring_rule"]; version?: number; weights?: Score["weights"];
@@ -45,17 +46,18 @@ export function RuntimeScoreDetails({ sample, showQuality = true }: { sample: Ex
   if (!tools && !tokens && !final) return null;
   return <dl className="record-facts" aria-label="运行时评分依据">
     {showQuality && sample.scores?.quality != null && <div><dt>正文质量分</dt><dd>{number(sample.scores.quality)} / 5</dd></div>}
-    {tools && <>
-      <div><dt>工具调用成功率</dt><dd>{tools.successes} / {tools.total}（{percent(tools.rate)}）</dd></div>
-      <div><dt>工具分</dt><dd>{number(tools.score)} / 5</dd></div>
+    {tools && <div><dt>工具分</dt><dd>{number(tools.score)} / 5</dd></div>}
+    {tokens?.score != null && <div><dt>Token 分</dt><dd>{number(tokens.score)} / 5</dd></div>}
+    {final && <>
+      <div><dt>Skill 分</dt><dd>{number(final.skill.score)} / 5</dd></div>
+      <div><dt>运行时综合分</dt><dd>{number(final.score)} / 5</dd></div>
     </>}
+    {tools && <div><dt>工具调用成功率</dt><dd>{tools.successes} / {tools.total}（{percent(tools.rate)}）</dd></div>}
     {tokens && <>
       <div><dt>本次 Token</dt><dd>{tokens.value.toLocaleString("zh-CN")}</dd></div>
       <div><dt>同题同次原版 Token</dt><dd>{tokens.baseline?.toLocaleString("zh-CN") ?? "未知"}</dd></div>
       {tokens.saving != null && <div><dt>Token 节省比例</dt><dd>{percent(tokens.saving)}</dd></div>}
-      {tokens.score != null && <div><dt>Token 分</dt><dd>{number(tokens.score)} / 5</dd></div>}
     </>}
-    {final && <div><dt>Skill 分</dt><dd>{number(final.skill.score)} / 5</dd></div>}
   </dl>;
 }
 
@@ -118,8 +120,8 @@ export function ExperimentScores({ report, task }: { report: Experiment["report"
   </div>)}</div>;
 }
 
-export function SampleScoreDetails({ sample, judges, canReadEvidence = true }: {
-  sample: ExperimentSample; judges: ExperimentModel[]; canReadEvidence?: boolean;
+export function SampleScoreDetails({ sample, judges, canReadEvidence = true, runtimeScoringVersion }: {
+  sample: ExperimentSample; judges: ExperimentModel[]; canReadEvidence?: boolean; runtimeScoringVersion?: number;
 }) {
   const scores = sample.scores;
   const reasonsByDimension = scores?.reasons ?? sample.score_progress?.reasons;
@@ -128,7 +130,10 @@ export function SampleScoreDetails({ sample, judges, canReadEvidence = true }: {
     .filter(([, reasons]) => reasons.length > 0).map(([dimension]) => dimension);
   return <div className="experiment-score-details">{dimensions.map((dimension) => {
     const reasons = reasonsByDimension[dimension];
-    return <article key={dimension}><h4>{dimension}{scores && <span>{number(scores.dimensions[dimension])} / 5</span>}</h4>
+    const skill = dimension === RUNTIME_DIMENSION && (runtimeScoringVersion || scores?.runtime);
+    const score = skill ? scores?.runtime?.skill.score : scores?.dimensions[dimension];
+    return <article key={dimension}><h4>{skill ? "Skill 评委评分" : dimension}
+      {scores && <span>{number(score)} / 5</span>}</h4>
       {Array.isArray(reasons) ? reasons.map((entry, index) => {
         if (!entry || typeof entry !== "object") return canReadEvidence ? <EvidenceValues key={index} value={entry} /> : null;
         const reason = entry as Record<string, unknown>;

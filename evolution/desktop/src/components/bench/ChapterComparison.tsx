@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { EXPERIMENT_STATUS, PHASE_LABELS, type Experiment, type ExperimentSample } from "@/lib/experiment-types";
-import { RuntimeScoringWeights, RuntimeScoreDetails, SampleScoreDetails } from "./ExperimentEvidence";
+import { RUNTIME_DIMENSION, RuntimeScoringWeights, RuntimeScoreDetails, SampleScoreDetails } from "./ExperimentEvidence";
 
 const versionLabel = (round: number) => round ? "第 " + round + " 轮" : "原版";
 const purpose = (sample: ExperimentSample) => ["exploration", "baseline"].includes(sample.phase) ? "optimization" : sample.phase;
@@ -97,7 +97,13 @@ export function ChapterComparison({ experiment, onTrace, initialRound }: {
     [experiment.can_read_content, left, right]);
   const compareText = paragraphs.every((lines) => lines.length > 0) && rounds[0] !== rounds[1];
   const unchanged = useMemo(() => unchangedParagraphs(paragraphs[0], paragraphs[1]), [paragraphs]);
-  const dimensions = [...new Set(samples.flatMap((sample) => Object.keys(sample?.scores?.dimensions ?? {})))];
+  const leftRuntime = left?.scores?.runtime;
+  const rightRuntime = right?.scores?.runtime;
+  const leftMetrics = leftRuntime ?? left?.runtime_metrics;
+  const rightMetrics = rightRuntime ?? right?.runtime_metrics;
+  const runtimeScoring = Boolean(experiment.runtime_scoring_version || leftRuntime || rightRuntime);
+  const dimensions = [...new Set(samples.flatMap((sample) => Object.keys(sample?.scores?.dimensions ?? {})))]
+    .filter((name) => !runtimeScoring || name !== RUNTIME_DIMENSION);
   function scoreRow(name: string, a?: number | null, b?: number | null) {
     const delta = a == null || b == null ? null : b - a;
     return <tr key={name}><th scope="row">{name}</th><td>{a?.toFixed(3) ?? "未评分"}</td><td>{b?.toFixed(3) ?? "未评分"}</td>
@@ -128,7 +134,13 @@ export function ChapterComparison({ experiment, onTrace, initialRound }: {
     <table className="data-table chapter-scores"><caption>{experiment.runtime_scoring_version ? "评分变化" : "质量变化"}</caption><thead><tr><th>评分项</th><th>源版本</th><th>对照版本</th><th>对照减源</th></tr></thead>
       <tbody>{scoreRow("综合分", left?.scores?.overall, right?.scores?.overall)}
         {experiment.runtime_scoring_version && scoreRow("正文质量分", left?.scores?.quality, right?.scores?.quality)}
-        {dimensions.map((name) => scoreRow(name, left?.scores?.dimensions[name], right?.scores?.dimensions[name]))}</tbody></table>
+        {dimensions.map((name) => scoreRow(name, left?.scores?.dimensions[name], right?.scores?.dimensions[name]))}
+        {runtimeScoring && <>
+          {scoreRow("工具分", leftMetrics?.tools?.score, rightMetrics?.tools?.score)}
+          {scoreRow("Token 分", leftMetrics?.tokens?.score, rightMetrics?.tokens?.score)}
+          {scoreRow("Skill 分", leftRuntime?.skill.score, rightRuntime?.skill.score)}
+          {scoreRow("运行时综合分", leftRuntime?.score, rightRuntime?.score)}
+        </>}</tbody></table>
     {!experiment.can_read_content && <p className="experiment-note">当前账号没有正文读取权限。</p>}
     {versions.length === 1 && <p className="experiment-note">尚无改进轮次，可先查看原版。</p>}
     <div className="chapter-columns">{rounds.slice(0, versions.length === 1 ? 1 : 2).map((version, side) => {
@@ -160,10 +172,12 @@ export function ChapterComparison({ experiment, onTrace, initialRound }: {
           </p>}
           <RuntimeScoreDetails sample={sample} showQuality={false} />
           {!experiment.can_read_content && !!experiment.runtime_scoring_version && !sample.scores && sample.score_progress?.reasons &&
-            <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} canReadEvidence={false} />}
+            <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} canReadEvidence={false}
+              runtimeScoringVersion={experiment.runtime_scoring_version} />}
           {experiment.can_read_content && <>
             {(sample.scores || sample.score_progress?.reasons) && <details><summary>逐项评语与依据</summary>
-              <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} /></details>}
+              <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []}
+                runtimeScoringVersion={experiment.runtime_scoring_version} /></details>}
             <h4>{sample.completed ? "最终正文" : "已保存正文（未完成）"}</h4>
             {paragraphs[side].length ? paragraphs[side].map((line, n) => <p key={n}>{!compareText || unchanged[side].has(n) ? line
               : side ? <ins>{line}</ins> : <del>{line}</del>}</p>) : <p className="experiment-note">尚无目标章正文。</p>}

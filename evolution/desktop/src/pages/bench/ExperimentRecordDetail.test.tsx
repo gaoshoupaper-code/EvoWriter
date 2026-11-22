@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 import ExperimentRecordDetail from "./ExperimentRecordDetail";
@@ -155,7 +155,15 @@ it.each([true, false])("评分详情核对运行数据并保护 Skill 证据，�
   expect(screen.getByText(/72,000/)).toBeVisible();
   expect(screen.getByText(/80,000/)).toBeVisible();
   expect(screen.getByText(/正文规则.*v2/)).toBeVisible();
+  const runtime = within(screen.getByLabelText("运行时评分依据"));
+  for (const [label, score] of [
+    ["工具分", "4.200 / 5"], ["Token 分", "4.000 / 5"], ["Skill 分", "3.800 / 5"], ["运行时综合分", "4.000 / 5"],
+  ]) {
+    expect(runtime.getByText(label).nextElementSibling).toHaveTextContent(score);
+  }
+  expect(screen.queryByText("运行时")).not.toBeInTheDocument();
   if (canRead) {
+    expect(screen.getByRole("heading", { name: /^Skill 评委评分/ })).toHaveTextContent("3.800 / 5");
     expect(screen.getByText("Skill 确实用于修订")).toBeVisible();
     expect(screen.getByText(/writing-1:45/)).toBeVisible();
     expect(screen.getByText(/受限证据摘要/)).toBeVisible();
@@ -173,9 +181,11 @@ it("缺原版用量时保留候选 Token 与已评结果，不显示汇总分", 
   open("evaluation");
   expect(await screen.findByText("72,000")).toBeVisible();
   expect(screen.getByText("同题同次原版 Token").nextElementSibling).toHaveTextContent("未知");
+  expect(screen.getByRole("heading", { name: "Skill 评委评分" })).toBeVisible();
   expect(screen.getByText(/第一评委 · 4\.000/)).toBeVisible();
   expect(screen.getByText(/尚无汇总评分/)).toBeVisible();
   expect(screen.queryByText("Token 分")).not.toBeInTheDocument();
+  expect(screen.queryByText("运行时综合分")).not.toBeInTheDocument();
 });
 
 it("读未归档的本样本评分 Trace，始终显示评测模型", async () => {

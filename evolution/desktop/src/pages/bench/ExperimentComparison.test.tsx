@@ -1,7 +1,8 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { expect, it, vi } from "vitest";
 import { getExperiment, type Experiment } from "@/lib/api";
+import type { ExperimentScores } from "@/lib/experiment-types";
 import ExperimentComparison from "./ExperimentComparison";
 
 vi.mock("@/lib/api", () => ({ getExperiment: vi.fn() }));
@@ -57,28 +58,46 @@ it("对比链接省略 Agent 时，打开 Trace 仍保留评测记住的写作�
   }
 });
 
-it("正文对比只显示所选同题同次的运行依据", async () => {
+it("正文对比列出所选同题同次的四项运行时分数和依据", async () => {
   const sample = { package_id: "same-case", package_title: "回归题", input_revision: "same-input", phase: "regression",
     task_type: "chapter_text", round: 1, attempt: 1, completed: true, trace_ids: [], artifacts: {} };
-  const scores = (value: number, baseline: number) => ({ overall: 4, quality: 4, dimensions: { 运行时: 4 }, reasons: {},
-    runtime: { score: 4, tools: { successes: 8, total: 10, rate: .8, score: 4.2 },
-      tokens: { value, baseline, saving: (baseline - value) / baseline, score: 4 }, skill: { score: 4 } } });
+  const scores = (runtime: NonNullable<ExperimentScores["runtime"]>): ExperimentScores =>
+    ({ overall: 4, quality: 4, dimensions: { 运行时: runtime.score }, reasons: {}, runtime });
+  const baseline = { score: 3.1878787878787875, tools: { successes: 49, total: 55, rate: 49 / 55, score: 4.5636363636363635 },
+    tokens: { value: 947584, baseline: 947584, saving: 0, score: 3 }, skill: { score: 2 } };
+  const candidate = { score: 3.948717948717949, tools: { successes: 25, total: 26, rate: 25 / 26, score: 4.846153846153847 },
+    tokens: { value: 259318, baseline: 947584, saving: .7263377178171012, score: 5 }, skill: { score: 2 } };
   vi.mocked(getExperiment).mockResolvedValue({ id: "run", name: "正文实验", task_type: "chapter_text", can_read_content: false,
     report: {}, baseline: { commit: "base" }, rounds: [{ round: 1 }], runtime_scoring_version: 1, samples: [
-      { ...sample, id: "original-1", arm: "baseline", repeat: 1, scores: scores(70000, 70000) },
-      { ...sample, id: "candidate-1", arm: "candidate", repeat: 1, scores: scores(60000, 70000) },
-      { ...sample, id: "original-2", arm: "baseline", repeat: 2, scores: scores(80000, 80000) },
-      { ...sample, id: "candidate-2", arm: "candidate", repeat: 2, scores: scores(72000, 80000) },
+      { ...sample, id: "original-1", arm: "baseline", repeat: 1, scores: scores(baseline) },
+      { ...sample, id: "candidate-1", arm: "candidate", repeat: 1, scores: scores(candidate) },
+      { ...sample, id: "original-2", arm: "baseline", repeat: 2, scores: scores({
+        ...baseline, tokens: { ...baseline.tokens, value: 80000, baseline: 80000 },
+      }) },
+      { ...sample, id: "candidate-2", arm: "candidate", repeat: 2, scores: null, runtime_metrics: {
+        tools: candidate.tools, tokens: { value: 72000, baseline: 80000, saving: .1, score: 4 },
+      } },
     ] } as unknown as Experiment);
   render(<MemoryRouter initialEntries={["/bench/experiments/run/comparison?agent=text&round=1&phase=regression"]}><Routes>
     <Route path="/bench/experiments/:experimentId/comparison" element={<ExperimentComparison />} />
   </Routes></MemoryRouter>);
-  expect(await screen.findByText("60,000")).toBeVisible();
+  expect(await screen.findByText("259,318")).toBeVisible();
+  const table = within(screen.getByRole("table", { name: "评分变化" }));
+  const scoreCells = (label: string) =>
+    within(table.getByRole("row", { name: new RegExp(`^${label} `) })).getAllByRole("cell").map(cell => cell.textContent);
+  expect(scoreCells("工具分")).toEqual(["4.564", "4.846", "+0.283"]);
+  expect(scoreCells("Token 分")).toEqual(["3.000", "5.000", "+2.000"]);
+  expect(scoreCells("Skill 分")).toEqual(["2.000", "2.000", "0.000"]);
+  expect(scoreCells("运行时综合分")).toEqual(["3.188", "3.949", "+0.761"]);
+  expect(table.queryByRole("rowheader", { name: "运行时" })).not.toBeInTheDocument();
   const choice = screen.getByRole<HTMLOptionElement>("option", { name: /重复 2/ });
   fireEvent.change(screen.getByLabelText("题目与重复"), { target: { value: choice.value } });
   expect(screen.getByText("72,000")).toBeVisible();
   expect(screen.getAllByText("80,000")).toHaveLength(3);
-  expect(screen.queryByText("60,000")).not.toBeInTheDocument();
+  expect(screen.queryByText("259,318")).not.toBeInTheDocument();
+  expect(scoreCells("Token 分")).toEqual(["3.000", "4.000", "+1.000"]);
+  expect(scoreCells("Skill 分")).toEqual(["2.000", "未评分", "—"]);
+  expect(scoreCells("运行时综合分")).toEqual(["3.188", "未评分", "—"]);
 });
 
 it.each([["exploration", "优化复测"], ["validation", "独立终验"]])(

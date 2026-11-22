@@ -3,7 +3,7 @@ import { useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { ArtifactFiles, EvidenceValues, ModelIdentity, RuntimeScoringWeights, RuntimeScoreDetails, SampleScoreDetails } from "@/components/bench/ExperimentEvidence";
+import { ArtifactFiles, EvidenceValues, ModelIdentity, RUNTIME_DIMENSION, RuntimeScoringWeights, RuntimeScoreDetails, SampleScoreDetails } from "@/components/bench/ExperimentEvidence";
 import { ArtifactReader } from "@/components/bench/ExperimentArtifacts";
 import { getExperimentPackage } from "@/lib/api";
 import { sampleActivitySection } from "@/lib/experiment-record-traces";
@@ -61,14 +61,16 @@ function RecordContent({ experimentId, sampleId, section }: {
             : <p className="experiment-note">评测模型未记录。</p>}
           {sample.scores ? <>
             <p>综合分 <strong>{sample.scores.overall?.toFixed(2) ?? "未知"} / 5</strong></p>
-            {!experiment.can_read_content && <><dl>{Object.entries(sample.scores.dimensions).map(([key, score]) =>
+            {!experiment.can_read_content && <><dl>{Object.entries(sample.scores.dimensions)
+              .filter(([key]) => key !== RUNTIME_DIMENSION || !sample.scores?.runtime).map(([key, score]) =>
                 <div key={key}><dt>{key}</dt><dd>{score ?? "未知"} / 5</dd></div>)}</dl>
                 <p className="experiment-note">查看评语需要正文读取权限。</p></>}
           </> : <p className="experiment-note">{sample.score_progress &&
             <>已完成 {sample.score_progress.completed} / {sample.score_progress.total} 份评分 · </>}尚无汇总评分。</p>}
           <RuntimeScoreDetails sample={sample} />
           {(experiment.can_read_content || experiment.runtime_scoring_version && !sample.scores && sample.score_progress?.reasons) &&
-            <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} canReadEvidence={experiment.can_read_content} />}
+            <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} canReadEvidence={experiment.can_read_content}
+              runtimeScoringVersion={experiment.runtime_scoring_version} />}
         </section>
       </>}
     </>)}

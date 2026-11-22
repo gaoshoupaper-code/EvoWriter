@@ -669,6 +669,23 @@ def test_first_text_save_accepts_blank_spacing_between_explicit_header_lines(tmp
     assert (tmp_path / "正文/第002章.md").read_bytes() == (title + "> " + status + "> 进度：已落 1 批\r\n" + body).encode()
 
 
+@pytest.mark.parametrize(("name", "status", "lengths"), [
+    ("翻看日历", "> 状态：起草中 · 2026-10-25", [22, 48, 80, 30]),
+    ("查日历", "> 状态：起草中｜日期：2026-10-25", [21, 84, 23, 46, 127, 19]),
+])
+@pytest.mark.parametrize("gap", ["", "\n"])
+def test_first_ordinary_save_recognizes_explicit_status_and_date(tmp_path, name, status, lengths, gap):
+    tool = build_save_artifact_tool(tmp_path, {}, {}, agent_name="text-subagent", writing_context=CONTEXT)
+    title = f"# 第001章 · {name}\n"
+    body = "\n\n".join("字" * (n - 1) + "。" for n in lengths)
+    params = {"kind": "chapter_text", "chapter": 1, "mode": "full", "unit_kind": "ordinary",
+              "content": title + gap + status + "\n\n" + body}
+    reply = tool.invoke({"type": "tool_call", "id": "save", "name": "save_artifact", "args": params})
+    assert "已落盘" in reply.content
+    assert reply.artifact["writer_text"]["status"] == "起草中"
+    assert (tmp_path / REL).read_bytes() == (title + "> 状态：起草中｜2026-10-25\n> 进度：已落 1 批\n\n" + body).encode()
+
+
 @pytest.mark.parametrize(("role", "title", "after_blank"), [
     ("text-subagent", "# 第001章 · 临时约定", "> 状态：起草中｜2026-10-25"),
     ("text-subagent", "# 第002章 · ", "> 状态：起草中｜2026-10-25"),

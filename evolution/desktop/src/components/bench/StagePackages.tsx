@@ -186,7 +186,7 @@ export function StagePackages() {
   }
   return <section className="experiment-section evaluation-content" aria-labelledby="stage-packages-title">
     <div className="experiment-heading"><div><h2 id="stage-packages-title">试验数据集</h2>
-      <p className="experiment-note">新评测使用本套全部在用的改进题和回归题。每组至少需要一道题。</p></div>
+      <p className="experiment-note">工作台默认使用本套全部在用题，也可自选。改进题和回归题各至少需要一道。</p></div>
     </div>
     {loading ? <p role="status">正在加载数据集…</p> : loadError ? <p role="alert" className="experiment-error">{loadError}</p> :
       <div className="evaluation-dataset-tabs" role="tablist" aria-label="试验数据集">

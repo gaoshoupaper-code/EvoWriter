@@ -100,6 +100,7 @@ class RunCreate(StrictModel):
     model_config_id: int = Field(ge=1)
     judge_group_id: int = Field(ge=1)
     rule_versions: dict[TaskType, str]
+    case_selection: Literal["all", "custom"] = "all"
     optimization_ids: list[str] = Field(min_length=1)
     validation_ids: list[str] = Field(default_factory=list)
     regression_ids: dict[TaskType, list[str]]
@@ -125,6 +126,8 @@ class RunCreate(StrictModel):
             if len(set(all_ids)) != len(all_ids):
                 raise ValueError("改进与回归样本不能重复或交叉")
             return self
+        if self.case_selection == "custom":
+            raise ValueError("自选题目仅支持当前 Agent 的评测")
         other_types = set(TASK_TYPES) - {self.task_type}
         if not self.thresholds.regression_tolerance:
             self.thresholds.regression_tolerance = {kind: 0 for kind in other_types}

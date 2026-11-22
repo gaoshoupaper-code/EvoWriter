@@ -94,6 +94,7 @@ export type ExperimentOptions = {
 export type ExperimentStart = {
   name?: string; task_type: ExperimentTaskType; baseline_version: number; model_config_id: number;
   judge_group_id: number; rule_versions: Partial<Record<ExperimentTaskType, string>>;
+  case_selection?: "all" | "custom";
   optimization_ids: string[]; candidate_commit?: string;
   regression_ids: Partial<Record<ExperimentTaskType, string[]>>;
   thresholds: ExperimentThresholds;
@@ -155,6 +156,7 @@ export type ExperimentSample = {
   input_revision: string; package_revision?: string; source_commit: string; artifact_digest?: string;
   execution_phase?: string | null; target?: ExperimentTarget; score_retry_at?: number;
 };
+export type ExperimentCaseCoverage = Record<"optimization" | "regression", { selected: number; total: number }>;
 export type Experiment = {
   id: string; name: string; task_type: ExperimentTaskType; status: string; phase: string; flow_version?: number;
   assessment_version?: number;
@@ -162,6 +164,7 @@ export type Experiment = {
   judge_repeats?: number;
   scoring_rule?: { id: string; name: string; version: number; dimension_weights?: Record<string, number> };
   current_round: number; max_rounds: number; end_reason: string | null; settings: ExperimentStart;
+  case_coverage?: ExperimentCaseCoverage;
   models?: ExperimentModels;
   progress?: {
     total: number; done: number; completed: number;

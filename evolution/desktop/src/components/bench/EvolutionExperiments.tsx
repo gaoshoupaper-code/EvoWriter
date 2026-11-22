@@ -9,7 +9,7 @@ import {
 } from "@/lib/api";
 import {
   DEFAULT_JUDGE_REPEATS, RULE_PROFILE, ruleProfile, EXPERIMENT_STATUS, TASK_LABELS,
-  experimentTaskLabel, type ExperimentTaskType,
+  experimentTargetLabel, experimentTaskLabel, type ExperimentTaskType,
 } from "@/lib/experiment-types";
 import { ExperimentProgress } from "./ExperimentEvidence";
 import { useExperiments } from "@/hooks/useExperiments";
@@ -36,6 +36,7 @@ export function EvolutionExperiments() {
   const [baseline, setBaseline] = useState("");
   const [model, setModel] = useState("");
   const [judges, setJudges] = useState("");
+  const [selectedCaseIds, setSelectedCaseIds] = useState<string[] | null>(null);
   const [ruleIds, setRuleIds] = useState<Partial<Record<ExperimentTaskType, string>>>({});
   const [rounds, setRounds] = useState("3");
   const [advanced, setAdvanced] = useState(false);
@@ -47,14 +48,18 @@ export function EvolutionExperiments() {
   const selectedGroup = options?.judge_groups.find((group) => String(group.id) === judges);
   const judgeRepeats = selectedGroup?.score_repeats ?? DEFAULT_JUDGE_REPEATS;
   const repeatedScoring = kind === "chapter_text" && rules.some((rule) => rule.id === ruleIds[kind] && rule.profile === ruleProfile(kind));
-  const selectedSamples = packages.filter((item) => item.task_type === kind);
-  const selectedIds = (type: ExperimentTaskType, purpose: ExperimentPackage["purpose"]) =>
-    selectedSamples.filter((item) => item.task_type === type && item.purpose === purpose).map((item) => item.id);
-  const optimization = selectedIds(kind, "optimization");
-  const regression = selectedIds(kind, "regression");
+  const available = packages.filter((item) => item.task_type === kind);
+  const optimizationCases = available.filter((item) => item.purpose === "optimization");
+  const regressionCases = available.filter((item) => item.purpose === "regression");
+  const isSelected = (item: ExperimentPackage) => selectedCaseIds === null || selectedCaseIds.includes(item.id);
+  const optimization = optimizationCases.filter(isSelected).map((item) => item.id);
+  const regression = regressionCases.filter(isSelected).map((item) => item.id);
+  const isCustom = selectedCaseIds !== null;
+  const staleSelection = isCustom && selectedCaseIds.length !== optimization.length + regression.length;
+  const missingSelection = isCustom && (!optimization.length || !regression.length);
   const missing = !loading ? [
-    ...(!optimization.length ? ["请选择本套改进题"] : []),
-    ...(!regression.length ? ["请选择本套回归题"] : []),
+    ...(!optimizationCases.length ? ["本套没有在用的改进题"] : []),
+    ...(!regressionCases.length ? ["本套没有在用的回归题"] : []),
     ...(!ruleIds[kind] ? ["请选择本套评分规则"] : []),
     ...(candidate && !options?.versions.some((v) => v.commit === params.get("base") && v.version === Number(baseline)) ? ["候选与所选基线不匹配"] : []),
     ...(!options?.versions.length ? ["没有可用的 Harness 版本"] : []),
@@ -81,10 +86,18 @@ export function EvolutionExperiments() {
     return () => { alive = false; };
   }, [reload, kind]);
 
+  function selectCase(id: string, checked: boolean) {
+    setSelectedCaseIds((current) => {
+      if (current === null) return current;
+      return checked ? [...current, id] : current.filter((selected) => selected !== id);
+    });
+  }
+
   async function start(event: React.FormEvent) {
     event.preventDefault(); if (starting) return;
     setError("");
     if (missing.length) { setError(missing.join("；")); return; }
+    if (staleSelection || missingSelection) return;
     if (!baseline || !model || !judges) { setError("请选择 Harness、执行模型和评测模型。"); return; }
     if (!Number.isInteger(Number(rounds)) || Number(rounds) < 1 || Number(rounds) > 3) {
       setError("同一次实验可运行一至三轮。"); return;
@@ -92,6 +105,7 @@ export function EvolutionExperiments() {
     const payload: ExperimentStart = {
       task_type: kind, baseline_version: Number(baseline), model_config_id: Number(model), judge_group_id: Number(judges),
       rule_versions: {[kind]: ruleIds[kind]!}, optimization_ids: optimization, regression_ids: {[kind]: regression},
+      ...(isCustom ? {case_selection: "custom"} : {}),
       thresholds: {completion_rate: 1, quality_gain: .1, regression_tolerance: {[kind]: 0}},
       max_rounds: Number(rounds), ...(candidate ? {candidate_commit: candidate} : {}),
     };
@@ -129,13 +143,38 @@ export function EvolutionExperiments() {
             </option>)}</select></label>
         </div>
       </fieldset>
+      <fieldset className="experiment-picker" disabled={starting}>
+        <legend>评测范围</legend>
+        <label><input type="radio" name="case-selection" checked={!isCustom} onChange={() => setSelectedCaseIds(null)} />全量评测</label>
+        <label><input type="radio" name="case-selection" checked={isCustom} onChange={() => setSelectedCaseIds([])} />自选题目</label>
+      </fieldset>
+      {isCustom && <>
+        <p className="experiment-note">改进题和回归题各至少勾选一道。</p>
+        {([["改进题", optimizationCases], ["回归题", regressionCases]] as const).map(([label, cases]) => {
+          const titleCounts = new Map<string, number>();
+          for (const item of cases) titleCounts.set(item.title, (titleCounts.get(item.title) ?? 0) + 1);
+          return <fieldset key={label} className="experiment-picker" disabled={starting}>
+            <legend>{label}</legend>
+            {cases.map((item) => <label key={item.id}>
+              <input type="checkbox" checked={isSelected(item)} onChange={(event) => selectCase(item.id, event.target.checked)} />
+              <span>{item.title}{(titleCounts.get(item.title) ?? 0) > 1 && <small>
+                {" · "}{experimentTargetLabel(item.target)} · 输入版本 {item.input_revision.slice(0, 12)}
+              </small>}</span>
+            </label>)}
+          </fieldset>;
+        })}
+        {staleSelection && <div className="experiment-readiness" role="alert">
+          <p>所选题目已变更，请重新选题。</p>
+          <button type="button" className="config-button readable-button" onClick={() => setSelectedCaseIds([])}>重新选题</button>
+        </div>}
+      </>}
       {!!missing.length && <div role="alert" className="experiment-readiness"><strong>实验资料尚未就绪</strong>
         <ul>{missing.map((message) => <li key={message}>{message}</li>)}</ul>
         <Link to="/bench/dataset" className="action-link readable-link">查看试验数据集</Link>
       </div>}
       {!options.judge_groups.length && <p className="experiment-error">暂无评测模型，请先在模型配置中设置异源评委组。</p>}
       <div className="experiment-launch-summary" aria-label="启动前配置摘要">
-        <div><span>本次数据</span><strong>{TASK_LABELS[kind]} · {optimization.length} 道改进题 / {regression.length} 道回归题</strong></div>
+        <div><span>本次数据</span><strong>改进题 {optimization.length}/{optimizationCases.length} 道 · 回归题 {regression.length}/{regressionCases.length} 道</strong></div>
         <div><span>过关门槛</span><strong>全部完成 · 改进题均分提高至少 0.1 分</strong>
           <small>回归均分不降 · 最多 {rounds} 轮</small></div>
         <div><span>评测模型</span><strong>{selectedGroup?.members.map((member) => member.model).join(" + ") || "等待选择"}</strong>
@@ -154,7 +193,8 @@ export function EvolutionExperiments() {
         </fieldset>
         </>}
       </details>
-      <div className="experiment-launch-footer"><button className="config-button primary readable-button" type="submit" disabled={starting || missing.length > 0}>
+      <div className="experiment-launch-footer"><button className="config-button primary readable-button" type="submit"
+        disabled={starting || missing.length > 0 || staleSelection || missingSelection}>
         <Play size={15} />{starting ? "正在启动…" : "启动自进化实验"}</button><span className="experiment-note">自动命名，启动后即可查看实时进度。</span></div>
     </form>}
   </section>;

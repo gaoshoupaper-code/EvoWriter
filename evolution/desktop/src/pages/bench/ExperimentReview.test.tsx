@@ -15,16 +15,22 @@ function open() {
 }
 beforeEach(() => { vi.resetAllMocks(); });
 
-it("打开仅核对候选，主动发版只能请求一次，未确认加载保持可恢复", async () => {
-  const pending = { ...ready, status: "publish_failed", publish_status: "unconfirmed", can_restore: true,
+it("局部覆盖范围随人工发布操作展示，主动发版只能请求一次", async () => {
+  const local = { ...ready, case_coverage: {
+    optimization: { selected: 1, total: 4 }, regression: { selected: 1, total: 3 },
+  } };
+  const pending = { ...local, status: "publish_failed", publish_status: "unconfirmed", can_restore: true,
     load_error: "执行端还未反馈" };
-  vi.mocked(getExperiment).mockResolvedValueOnce(ready).mockResolvedValue(pending);
+  vi.mocked(getExperiment).mockResolvedValueOnce(local).mockResolvedValue(pending);
   let finish!: (data: Experiment) => void;
   vi.mocked(publishExperiment).mockReturnValue(new Promise(resolve => { finish = resolve; }));
   open();
   expect(await screen.findByText("candidate-abc")).toBeVisible();
   expect(publishExperiment).not.toHaveBeenCalled();
   const approve = screen.getByRole("button", { name: "批准并发布候选" });
+  const coverage = "局部评测 · 改进 1/4 道，回归 1/3 道";
+  expect(screen.getByText(coverage)).toBeVisible();
+  expect(approve).toHaveAccessibleDescription(coverage);
   fireEvent.click(approve);
   fireEvent.click(approve);
   expect(publishExperiment).toHaveBeenCalledTimes(1);
@@ -78,5 +84,6 @@ it("过期候选可核对原因，服务端允许恢复时才出现入口", asyn
     stale_reason: "生产基线已变化" });
   open();
   expect(await screen.findByText("生产基线已变化")).toBeVisible();
+  expect(screen.queryByText(/改进 .*，回归/)).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /发布候选|恢复旧版/ })).not.toBeInTheDocument();
 });

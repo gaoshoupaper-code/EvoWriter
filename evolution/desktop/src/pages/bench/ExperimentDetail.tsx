@@ -3,7 +3,7 @@ import { Link, useLocation, useParams } from "react-router-dom";
 import PageAgentSelector from "@/components/PageAgentSelector";
 import { getExperiment, getActiveRuns, stopExperiment, type ActiveRun, type Experiment } from "@/lib/api";
 import { EXPERIMENT_STATUS, PHASE_LABELS, candidatePlaceholder, experimentTaskLabel } from "@/lib/experiment-types";
-import { ExperimentScores, ModelIdentity } from "@/components/bench/ExperimentEvidence";
+import { ExperimentScores, ModelIdentity, formatCaseCoverage } from "@/components/bench/ExperimentEvidence";
 import { ExperimentTimeline } from "@/components/bench/ExperimentTimeline";
 import { hasExperimentReview } from "@/lib/experiment-timeline";
 import { downloadTextFile } from "@/lib/download";
@@ -156,6 +156,7 @@ export default function ExperimentDetail() {
     <PageAgentSelector />
     {error && <p role="alert" className="experiment-error">{error}</p>}
     <dl className="experiment-overview" aria-label="实验概况">
+      {experiment.case_coverage && <div><dt>评测范围</dt><dd>{formatCaseCoverage(experiment.case_coverage)}</dd></div>}
       <div><dt>Harness 原版 → 当前候选</dt><dd>v{experiment.baseline.version} → {current ? `候选改版 ${current.round}`
         : candidatePlaceholder(experiment.phase, experiment.status, experiment.current_round)}</dd></div>
       <div><dt>执行模型</dt><dd><ModelIdentity model={experiment.models?.executor} /></dd></div>

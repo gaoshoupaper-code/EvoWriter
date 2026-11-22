@@ -19,7 +19,7 @@ vi.mock("@/lib/api", () => ({
 vi.mock("@/lib/download", () => ({ downloadTextFile: vi.fn() }));
 
 const api = vi.mocked(apiModule);
-const kinds = ["volume_outlines", "chapter_outlines", "chapter_text"] as const;
+const kinds = ["volume_outlines", "chapter_outlines", "chapter_text", "master_outline"] as const;
 const rules = kinds.map((task_type, index) => ({
   id: `rule-${index}`, task_type, profile: task_type === "chapter_text" ? "chapter-text-outline-v3" : "isolated-writing-v1",
   name: `${task_type}新规则`, version: 2,
@@ -29,8 +29,8 @@ const rules = kinds.map((task_type, index) => ({
 }));
 const packages = kinds.flatMap((task_type, index) => ["optimization", "optimization", "regression", "regression"].map((purpose, n) => ({
   id: `${task_type}-${n}`, title: `${task_type}样本${n}`, task_type, purpose, suite: "isolated-writing-v1",
-  target: { task_type, volume_ids: task_type === "volume_outlines" ? [1, 2, 3] : [1],
-    ...(task_type !== "volume_outlines" ? { chapter: n + 1 } : { chapters_per_volume: 20 }) },
+  target: { task_type, volume_ids: task_type === "volume_outlines" ? [1, 2, 3] : task_type === "master_outline" ? [] : [1],
+    ...(task_type === "volume_outlines" ? { chapters_per_volume: 20 } : task_type === "master_outline" ? {} : { chapter: n + 1 }) },
   input_revision: `revision-${index}-${n}`, created_at: "2026-11-07T01:00:00Z",
 })));
 const metrics = (quality: number) => ({ total: 2, completed: 2, completion_rate: 1, quality, evaluation_errors: 0 });
@@ -50,7 +50,7 @@ beforeEach(() => {
     judge_groups: [{ id: 5, name: "异源评委", members: [{ config_id: 12, name: "评测配置", model: "judge-frozen" }] }],
     defaults: { max_rounds: 3, rule_versions: Object.fromEntries(kinds.map((kind, n) => [kind, `rule-${n}`])),
       thresholds: { completion_rate: 1, quality_gain: 0.1, regression_tolerance: Object.fromEntries(kinds.map((kind) => [kind, 0])) } },
-    builtin_suite: { id: "isolated-writing-v1", total: 12 },
+    builtin_suite: { id: "isolated-writing-v1", total: packages.length },
   } as never);
   api.startExperiment.mockResolvedValue({ id: "new-experiment" } as never);
 });
@@ -86,6 +86,103 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
     await waitFor(() => expect(api.startExperiment).toHaveBeenCalledWith(expect.objectContaining({
       task_type: "chapter_outlines", optimization_ids: ["chapter_outlines-0", "chapter_outlines-1", "custom-opt"],
       regression_ids: {chapter_outlines: ["chapter_outlines-2", "chapter_outlines-3"]},
+    })));
+  });
+
+  it.each([
+    ["outline", "master_outline"], ["volume", "volume_outlines"],
+    ["chapter", "chapter_outlines"], ["text", "chapter_text"],
+  ])("%s 工作台默认提交全量，自选从空白开始", async (agent, kind) => {
+    window.location.hash = `#/agents/${agent}/bench`;
+    render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
+    const all = await screen.findByRole("radio", { name: "全量评测" });
+    const custom = screen.getByRole("radio", { name: "自选题目" });
+    const summary = screen.getByLabelText("启动前配置摘要");
+    expect(all).toBeChecked();
+    expect(summary).toHaveTextContent("改进题 2/2 道 · 回归题 2/2 道");
+
+    fireEvent.click(custom);
+    expect(summary).toHaveTextContent("改进题 0/2 道 · 回归题 0/2 道");
+    expect(screen.getAllByRole("checkbox")).toHaveLength(4);
+    expect(screen.queryByRole("checkbox", { checked: true })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: `${kind}样本0` }));
+    expect(screen.getByRole("button", { name: "启动自进化实验" })).toBeDisabled();
+
+    fireEvent.click(all);
+    fireEvent.click(custom);
+    expect(screen.queryByRole("checkbox", { checked: true })).not.toBeInTheDocument();
+    fireEvent.click(all);
+    fireEvent.change(screen.getByLabelText("评测模型"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("button", { name: "启动自进化实验" }));
+    await waitFor(() => expect(api.startExperiment).toHaveBeenCalledOnce());
+    const payload = api.startExperiment.mock.calls[0][0];
+    expect(payload).toMatchObject({ task_type: kind,
+      optimization_ids: [`${kind}-0`, `${kind}-1`], regression_ids: { [kind]: [`${kind}-2`, `${kind}-3`] },
+    });
+    expect(payload).not.toHaveProperty("case_selection");
+  });
+
+  it("自选模式提交两组所选题和原有指定候选", async () => {
+    render(<MemoryRouter initialEntries={["/bench?candidate=known-candidate&base=fixed-baseline"]}>
+      <EvolutionExperiments />
+    </MemoryRouter>);
+    fireEvent.change(await screen.findByLabelText("评测模型"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("radio", { name: "自选题目" }));
+    const start = screen.getByRole("button", { name: "启动自进化实验" });
+    fireEvent.click(screen.getByRole("checkbox", { name: "volume_outlines样本3" }));
+    expect(start).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: "volume_outlines样本1" }));
+    expect(screen.getByLabelText("启动前配置摘要")).toHaveTextContent("改进题 1/2 道 · 回归题 1/2 道");
+    fireEvent.click(start);
+    await waitFor(() => expect(api.startExperiment).toHaveBeenCalledWith(expect.objectContaining({
+      case_selection: "custom", candidate_commit: "known-candidate", optimization_ids: ["volume_outlines-1"],
+      regression_ids: { volume_outlines: ["volume_outlines-3"] },
+    })));
+  });
+
+  it("同名改进题显示各自的目标和输入版本", async () => {
+    const first = { ...packages[0], title: "同名改进题", input_revision: "first-case-a-full" };
+    const second = { ...packages[1], title: first.title, input_revision: "other-case-b-full",
+      target: { ...packages[1].target, volume_ids: [1, 2, 3, 4] } };
+    api.listExperimentPackages.mockResolvedValueOnce({
+      items: [first, second, ...packages.slice(2)] as never[], can_read_content: true,
+    });
+    render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
+    fireEvent.change(await screen.findByLabelText("评测模型"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("radio", { name: "自选题目" }));
+    expect(screen.getByRole("checkbox", { name: /同名改进题.*整本 3 卷.*输入版本 first-case-a/ })).not.toBeChecked();
+    fireEvent.click(screen.getByRole("checkbox", { name: /同名改进题.*整本 4 卷.*输入版本 other-case-b/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "volume_outlines样本2" }));
+    fireEvent.click(screen.getByRole("button", { name: "启动自进化实验" }));
+    await waitFor(() => expect(api.startExperiment).toHaveBeenCalledWith(expect.objectContaining({
+      case_selection: "custom", optimization_ids: [second.id], regression_ids: { volume_outlines: ["volume_outlines-2"] },
+    })));
+  });
+
+  it("刷新发现所选题已替换时，须主动重新选择", async () => {
+    api.startExperiment.mockRejectedValueOnce(new Error("所选题目已不在对应题组，请刷新题库后核对"));
+    render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
+    fireEvent.change(await screen.findByLabelText("评测模型"), { target: { value: "5" } });
+    fireEvent.click(screen.getByRole("radio", { name: "自选题目" }));
+    for (const suffix of [0, 1, 2]) fireEvent.click(screen.getByRole("checkbox", { name: `volume_outlines样本${suffix}` }));
+    fireEvent.click(screen.getByRole("button", { name: "启动自进化实验" }));
+    expect(await screen.findByText(/请刷新题库后核对/)).toBeInTheDocument();
+
+    api.listExperimentPackages.mockResolvedValueOnce({
+      items: [{ ...packages[0], id: "replacement", title: "替换后的改进题" }, ...packages.slice(1)] as never[],
+      can_read_content: true,
+    });
+    fireEvent.click(screen.getByRole("button", { name: "刷新配置" }));
+    expect(await screen.findByRole("checkbox", { name: "替换后的改进题" })).not.toBeChecked();
+    expect(screen.getByRole("button", { name: "启动自进化实验" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "重新选题" }));
+    expect(screen.queryByRole("checkbox", { checked: true })).not.toBeInTheDocument();
+    for (const name of ["替换后的改进题", "volume_outlines样本2"]) {
+      fireEvent.click(screen.getByRole("checkbox", { name }));
+    }
+    fireEvent.click(screen.getByRole("button", { name: "启动自进化实验" }));
+    await waitFor(() => expect(api.startExperiment).toHaveBeenLastCalledWith(expect.objectContaining({
+      case_selection: "custom", optimization_ids: ["replacement"], regression_ids: { volume_outlines: ["volume_outlines-2"] },
     })));
   });
 

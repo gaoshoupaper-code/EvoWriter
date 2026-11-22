@@ -15,6 +15,7 @@ it("每条实验优先显示状态、当前阶段和已有评分", async () => {
   vi.mocked(listExperiments).mockResolvedValue({ items: [
     { ...record, id: "running", name: "尚未出分", status: "running", phase: "baseline", current_round: 0, report: {} },
     { ...record, id: "partial", name: "已有优化评分", status: "running", phase: "regression", current_round: 2,
+      case_coverage: { optimization: { selected: 1, total: 4 }, regression: { selected: 1, total: 3 } },
       report: { exploration_round: 2, exploration: { baseline: { ...metrics, quality: 3 },
         candidate: { ...metrics, quality: 4 }, quality_delta: 1, passed: true } } },
   ] as ExperimentSummary[] });
@@ -25,10 +26,12 @@ it("每条实验优先显示状态、当前阶段和已有评分", async () => {
   expect(running.getByText("运行中")).toBeVisible();
   expect(running.getByText("原版评测")).toBeVisible();
   expect(running.getByText("暂无汇总评分")).toBeVisible();
+  expect(running.queryByText(/改进 .*，回归/)).not.toBeInTheDocument();
   expect(running.queryByRole("group", { name: "已有评分" })).not.toBeInTheDocument();
 
   const partial = within(screen.getByRole("link", { name: "已有优化评分" }).closest("article")!);
   expect(partial.getByText("本套回归")).toBeVisible();
+  expect(partial.getByText("局部评测 · 改进 1/4 道，回归 1/3 道")).toBeVisible();
   expect(within(partial.getByRole("group", { name: "已有评分" })).getByText("3.000 → 4.000")).toBeVisible();
   expect(partial.queryByText("待开始")).not.toBeInTheDocument();
   expect(partial.getByRole("link", { name: "查看评分明细" })).toHaveAttribute("href",

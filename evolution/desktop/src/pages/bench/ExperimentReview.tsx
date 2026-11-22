@@ -1,5 +1,5 @@
 import { useParams } from "react-router-dom";
-import { ComparisonReport } from "@/components/bench/ExperimentEvidence";
+import { ComparisonReport, formatCaseCoverage } from "@/components/bench/ExperimentEvidence";
 import { publishExperiment, restoreExperiment, type Experiment } from "@/lib/api";
 import { EXPERIMENT_STATUS, experimentTaskLabel } from "@/lib/experiment-types";
 import { hasExperimentReview } from "@/lib/experiment-timeline";
@@ -60,12 +60,14 @@ function ReviewResult({ experiment, busy, publish, restore }: {
     </section>
     <section aria-label="发布与加载"><h2>发布与加载</h2>
       <p><strong>{publishInProgress ? "发布中" : publishLabels[status] ?? status ?? "尚未发布"}</strong></p>
+      {experiment.case_coverage && <p id="publish-case-coverage" className="experiment-note">{formatCaseCoverage(experiment.case_coverage)}</p>}
       {experiment.loaded_revision && <p>执行端已确认版本 <code>{experiment.loaded_revision}</code></p>}
       {experiment.stale_reason && <p role="status">{experiment.stale_reason}</p>}
       {experiment.load_error && <p role="alert" className="experiment-error">{experiment.load_error}</p>}
       {experiment.rollback_status && <p>恢复旧版 · {restoreLabels[experiment.rollback_status] ?? experiment.rollback_status}</p>}
       <div className="experiment-actions">
         {experiment.can_publish && <button type="button" className="config-button primary"
+          aria-describedby={experiment.case_coverage ? "publish-case-coverage" : undefined}
           disabled={busy || publishInProgress || restoring} onClick={publish}>{publishText}</button>}
         {experiment.can_restore && <button type="button" className="config-button"
           disabled={busy || publishInProgress || restoring} onClick={restore}>恢复旧版</button>}

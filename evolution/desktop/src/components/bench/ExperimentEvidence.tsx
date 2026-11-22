@@ -2,7 +2,12 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import { downloadTextFile } from "@/lib/download";
-import { EXPERIMENT_STATUS, PHASE_LABELS, type Experiment, type ExperimentComparison, type ExperimentModel, type ExperimentSample, type ExperimentScores as Score } from "@/lib/experiment-types";
+import { EXPERIMENT_STATUS, PHASE_LABELS, type Experiment, type ExperimentCaseCoverage, type ExperimentComparison, type ExperimentModel, type ExperimentSample, type ExperimentScores as Score } from "@/lib/experiment-types";
+
+export function formatCaseCoverage({ optimization, regression }: ExperimentCaseCoverage) {
+  const partial = optimization.selected < optimization.total || regression.selected < regression.total;
+  return `${partial ? "局部评测" : "全量评测"} · 改进 ${optimization.selected}/${optimization.total} 道，回归 ${regression.selected}/${regression.total} 道`;
+}
 
 export function EvidenceValues({ value }: { value: unknown }) {
   if (value == null) return <span>未知</span>;

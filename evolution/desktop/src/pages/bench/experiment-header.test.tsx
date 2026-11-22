@@ -78,9 +78,17 @@ it.each(["running", "validation_failed", "exhausted", "stopped"])("%s 时不展�
 
 it.each(["chapter_text", "volume_outlines", "chapter_outlines"] as const)("历史 %s 详情移除设置和调用用量", async (task_type) => {
   await openArchive({ task_type, assessment_version: undefined });
-  for (const label of [/固定版本与实验设置/, /调用用量/, /未知值单独标记/]) {
+  for (const label of [/固定版本与实验设置/, /调用用量/, /未知值单独标记/, /评测范围/]) {
     expect(screen.queryByText(label)).not.toBeInTheDocument();
   }
+});
+
+it("在实验详情展示启动时的全量覆盖", async () => {
+  await openArchive({ case_coverage: {
+    optimization: { selected: 4, total: 4 }, regression: { selected: 3, total: 3 },
+  } });
+  const overview = within(screen.getByLabelText("实验概况"));
+  expect(overview.getByText("全量评测 · 改进 4/4 道，回归 3/3 道")).toBeVisible();
 });
 
 it.each([

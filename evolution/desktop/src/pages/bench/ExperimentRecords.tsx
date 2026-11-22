@@ -7,7 +7,7 @@ import { useExperiments } from "@/hooks/useExperiments";
 import { getExperiment } from "@/lib/api";
 import { EXPERIMENT_STATUS, PHASE_LABELS, experimentTaskLabel, type Experiment, type ExperimentSummary } from "@/lib/experiment-types";
 import { ChapterComparison } from "@/components/bench/ChapterComparison";
-import { ExperimentScores } from "@/components/bench/ExperimentEvidence";
+import { ExperimentScores, formatCaseCoverage } from "@/components/bench/ExperimentEvidence";
 import "@/components/bench/experiments.css";
 
 function scoringDetailsPath(run: ExperimentSummary) {
@@ -88,6 +88,7 @@ function ExperimentRecordList() {
             {run.phase && <strong>{PHASE_LABELS[run.phase] ?? run.phase}</strong>}
           </div>
           <span className="experiment-cell-note">{experimentTaskLabel(run.task_type, run.flow_version)} · 原版 v{run.baseline.version} · 第 {run.current_round} / {run.max_rounds} 轮</span>
+          {run.case_coverage && <span className="experiment-cell-note">{formatCaseCoverage(run.case_coverage)}</span>}
           <time className="experiment-cell-note" dateTime={run.created_at}>创建于 {new Date(run.created_at).toLocaleString("zh-CN", { hour12: false })}</time>
         </div>
         <div className="experiment-record-results">

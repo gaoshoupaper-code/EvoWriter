@@ -71,6 +71,8 @@ def test_rejected_inputs_and_grade_rules(monkeypatch):
                    regression_ids={kind: ["c", "d"]}, model_config_id=1, judge_group_id=1, baseline_version=1)
     for invalid in ({"task_type": "chapter_outlines"}, {"validation_ids": ["x"]}, {"max_rounds": 4},
                     {"regression_ids": {kind: ["a"]}}, {"regression_ids": {"volume_outlines": ["x"]}},
+                    {"case_selection": "custom", "optimization_ids": []},
+                    {"case_selection": "custom", "regression_ids": {kind: []}},
                     {"thresholds": {"quality_gain": 0}}, {"thresholds": {"completion_rate": .5}}):
         with pytest.raises(ValueError):
             RunCreate.model_validate({**options, **invalid})
@@ -143,7 +145,8 @@ def test_http_suite_boundaries_and_frozen_rubric(monkeypatch):
 
 
 @pytest.mark.parametrize("pass_round", [2, None])
-def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tmp_path, pass_round):
+@pytest.mark.parametrize("case_selection", ["all", "custom"])
+def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tmp_path, pass_round, case_selection):
     import sqlite3
     from app.core import db
     from app.core.security import encrypt_secret
@@ -187,12 +190,29 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
             runner.create_run(settings.model_copy(update={"baseline_version": previous["version"]}), "author")
         with pytest.raises(ValueError, match="全部在用"):
             runner.create_run(settings.model_copy(update={"optimization_ids": opt[:1]}), "author")
+        all_settings = settings
+        if case_selection == "custom":
+            settings = RunCreate.model_validate({**settings.model_dump(), "case_selection": case_selection,
+                "optimization_ids": opt[:1], "regression_ids": {kind: reg[:1]}})
+            with pytest.raises(ValueError, match="刷新题库"):
+                runner.create_run(settings.model_copy(update={"optimization_ids": reg[1:]}), "author")
         with pytest.raises(ValueError, match="自动"):
             runner.create_run(settings.model_copy(update={"candidate_commit": "b" * 40}), "author")
         from app.experiments import snapshots
         monkeypatch.setattr(snapshots, "ensure_baseline", lambda commit: None)
         monkeypatch.setattr(snapshots, "retain", lambda archive, commit: None)
         run = runner.create_run(settings, "author")
+        selected_opt, selected_reg = settings.optimization_ids, settings.regression_ids[kind]
+        coverage = {"optimization": {"selected": len(selected_opt), "total": len(opt)},
+                    "regression": {"selected": len(selected_reg), "total": len(reg)}}
+        assert run["case_coverage"] == coverage
+        created_ids = {run["id"]}
+        if case_selection == "custom":
+            custom_all = RunCreate.model_validate({**all_settings.model_dump(), "case_selection": "custom"})
+            custom_all_run = runner.create_run(custom_all, "author")
+            created_ids.add(custom_all_run["id"])
+            assert custom_all_run["case_coverage"] == {purpose: {"selected": group["total"], "total": group["total"]}
+                                                      for purpose, group in coverage.items()}
         assert run["assessment_version"] == 2
         assert run["runtime_scoring_version"] == 1
         assert run["judge_input_version"] == 2
@@ -204,19 +224,35 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         db.JudgeGroupsRepository.update(1, name="改过的评委组", member_config_ids=[3], score_repeats=1)
         db.execute("UPDATE llm_configs SET model = 'gemini-test' WHERE id = 3")
         updated = runner.create_run(settings.model_copy(update={"rule_versions": {kind: next_rule["id"]}}), "author")
+        created_ids.add(updated["id"])
         assert updated["judge_repeats"] == 1
         assert updated["models"]["judges"][0]["id"] == 3
         assert updated["private"]["rules"][kind]["id"] == next_rule["id"]
-        db.JudgeGroupsRepository.delete(1)
+        repo.insert("self_evolution_packages", {**repo.get_package(opt[1]), "id": "added-question"})
+        with pytest.raises(ValueError, match="刷新题库"):
+            runner.create_run(all_settings, "author")
         changed = repo.get_package(opt[0])
         changed["id"] = "new-question"
         changed["input"]["demand_md"] = "实验启动后维护的内容"
         repo.replace_package(opt[0], changed)
+        if case_selection == "custom":
+            with pytest.raises(ValueError, match="刷新题库"):
+                runner.create_run(settings, "author")
         removed = repo.get_package(reg[0])
         repo.delete_package(reg[0])
+        if case_selection == "custom":
+            replacement_settings = settings.model_copy(update={"optimization_ids": opt[1:]})
+            with pytest.raises(ValueError, match="刷新题库"):
+                runner.create_run(replacement_settings, "author")
+        db.JudgeGroupsRepository.delete(1)
         repo.init_schema()
         assert reg[0] not in {sample["id"] for sample in repo.list_packages()}
         saved = repo.get_run(run["id"])
+        assert saved["case_coverage"] == coverage
+        for summary in (True, False):
+            assert api.public_run(saved, can_read_content=False, summary=summary)["case_coverage"] == coverage
+            old = {key: value for key, value in saved.items() if key != "case_coverage"}
+            assert "case_coverage" not in api.public_run(old, can_read_content=False, summary=summary)
         assert "packages" not in saved["private"]
         assert saved["runtime_scoring_version"] == 1
         assert saved["judge_repeats"] == 3
@@ -231,7 +267,7 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         for hidden in (archived, foreign):
             repo.insert("self_evolution_runs", hidden)
             assert repo.get_run(hidden["id"]) is None
-        assert {row["id"] for row in repo.list_runs()} == {run["id"], updated["id"]}
+        assert {row["id"] for row in repo.list_runs()} == created_ids
         def completed(payload):
             return {"task_id": payload["task_id"], "status": "completed", "completed": True, "trace_ids": [],
                     "artifacts": {"正文/第001章.md": "测试文稿"}, "checks": {"complete": True},
@@ -261,17 +297,18 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         assert end["status"] == ("awaiting_review" if pass_round else "exhausted")
         assert end["current_round"] == (pass_round or 3)
         assert end["publish_status"] == "not_started"
-        assert {sample["package_id"] for sample in end["samples"]} == set(opt + reg)
+        assert {sample["package_id"] for sample in end["samples"]} == set(selected_opt + selected_reg)
         assert "validation" not in {sample["phase"] for sample in end["samples"]}
         regression_samples = [sample for sample in end["samples"] if sample["phase"] == "regression"]
-        assert len(regression_samples) == 2 * len(reg) * end["current_round"]
+        assert len(regression_samples) == 2 * len(selected_reg) * end["current_round"]
         assert {(sample["round"], sample["arm"], sample["package_id"], sample["repeat"]) for sample in regression_samples} == {
             (round_number, arm, package_id, 1)
             for round_number in range(1, end["current_round"] + 1)
             for arm in ("baseline", "candidate")
-            for package_id in reg
+            for package_id in selected_reg
         }
-        assert all(record["regressions"][kind]["paired_count"] == len(reg) for record in end["rounds"])
+        assert all(record["regressions"][kind]["paired_count"] == len(selected_reg) for record in end["rounds"])
+        assert api.public_run(end, can_read_content=False)["can_publish"] == bool(pass_round)
         if pass_round:
             candidate = end["best_candidate"]
             published = {"version": 3, "commit": candidate["commit"], "artifact_digest": candidate["digest"]}
@@ -291,5 +328,8 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
             assert len(calls) == 1
             assert calls[0]["expected_production_version"] == release["version"]
             assert calls[0]["expected_production_commit"] == release["commit"]
+        else:
+            with pytest.raises(ValueError, match="仅评测达标"):
+                publishing.publish_run(end["id"], "author")
     finally:
         connection.close()

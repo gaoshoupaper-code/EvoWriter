@@ -81,7 +81,8 @@ def create_run(request: RunCreate, actor: str) -> dict:
     inventory = None
     if scope:
         inventory = {pkg["id"]: pkg for pkg in repo.list_packages()}
-        if set(request.optimization_ids + request.regression_ids[scope]) != set(inventory):
+        if (request.case_selection == "all"
+                and set(request.optimization_ids + request.regression_ids[scope]) != set(inventory)):
             raise ValueError("必须使用本套全部在用的改进题和回归题，请刷新题库")
     selections = [(identifier, request.task_type, "optimization") for identifier in request.optimization_ids]
     selections += [(identifier, request.task_type, "validation") for identifier in request.validation_ids]
@@ -89,6 +90,8 @@ def create_run(request: RunCreate, actor: str) -> dict:
     for identifier, kind, purpose in selections:
         package = inventory.get(identifier) if inventory is not None else repo.get_package(identifier)
         if package is None or package["task_type"] != kind or package["purpose"] != purpose:
+            if inventory is not None:
+                raise ValueError(f"所选题目 {identifier} 已不在对应题组，请刷新题库后核对")
             raise ValueError(f"样本 {identifier} 不存在或类型、用途不匹配")
         packages.validate_package(PackageCreate.model_validate({key: package[key] for key in ("title", "purpose", "target", "input")}))
         fixed = repo.chapter_case(package) if chapter_assessment else package
@@ -111,6 +114,13 @@ def create_run(request: RunCreate, actor: str) -> dict:
            "rollback_status": None, "created_at": now, "updated_at": now,
            "private": {"model": model, "judges": judges, "evolver": evolver, "rules": frozen_rules,
                        "packages": frozen_packages, "actor": actor}}
+    if inventory is not None:
+        run["case_coverage"] = {
+            purpose: {"selected": len(identifiers),
+                      "total": sum(package["purpose"] == purpose for package in inventory.values())}
+            for purpose, identifiers in (("optimization", request.optimization_ids),
+                                         ("regression", request.regression_ids[request.task_type]))
+        }
     if chapter_assessment:
         from app.experiments import snapshots
         snapshots.ensure_baseline(selected["commit"])

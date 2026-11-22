@@ -99,6 +99,7 @@ class _Instruction:
 
 async def _run(data, frames, changes, models):
     from app.domains.writing.agent import MetaAgentService
+    from app.domains.writing.package_skill_reads import PackageSkillReads
     from app.domains.writing.creative_scope import ACTIVE
     from app.domains.writing.creative_worker_model import make_worker_model
     from app.platform.agent.loader import load_package
@@ -161,9 +162,11 @@ async def _run(data, frames, changes, models):
 
     token = ACTIVE.set(task)
     try:
-        async with AsyncSqliteSaver.from_conn_string(str(session / "checkpoint.sqlite3")) as saver:
+        checkpoint = session / "checkpoint.sqlite3"
+        async with AsyncSqliteSaver.from_conn_string(str(checkpoint)) as saver:
             await saver.setup()
             service = Service(get_settings(), task.view, recorder, None, saver)
+            service.package_skill_reads = PackageSkillReads(checkpoint, task.id, task.row["rev"])
             async for frame in service.generate_stream(payload, thread, owner_id=data["owner"], traceparent=data["traceparent"]):
                 await _send(frames_out, _json({"frame": frame}))
     finally:

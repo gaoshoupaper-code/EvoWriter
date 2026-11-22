@@ -23,6 +23,7 @@ build 内——解释器对领域参数零知识。
 from __future__ import annotations
 
 import functools
+import hashlib
 import importlib
 import logging
 import re
@@ -88,6 +89,14 @@ class AgentBuildCtx:
         self.pkg_dir = pkg_dir
         self.trace_name = f"{agent.name.replace('_', '-')}-subagent"
         self.workspace_path = Path(ctx.workspace_path)
+        # Tool builders retain this live set; only successful reads of this role's entries populate it.
+        self.read_package_skill_names: set[str] = set()
+        restore = getattr(ctx, "restore_package_skill_reads", None)
+        if restore and self.scoped_skill_files and (receipts := restore(self.trace_name)):
+            for key, name, _ in self.scoped_skill_catalog:
+                digest = hashlib.sha256(self.scoped_skill_files[key].read_bytes()).hexdigest()
+                if (name, digest) in receipts:
+                    self.read_package_skill_names.add(name)
 
     @functools.cached_property
     def scoped_skill_files(self) -> dict[str, Path]:
@@ -222,7 +231,8 @@ def _build_tools(abc: AgentBuildCtx) -> list:
     if files:
         if any(item.name == "read_writing_skill" for item in tools):
             raise ManifestError("read_writing_skill 是本套注册技能的只读工具")
-        entries = "\n".join(f"{name}: {key}" for key, name, _ in abc.scoped_skill_catalog)
+        entry_names = {key: name for key, name, _ in abc.scoped_skill_catalog}
+        entries = "\n".join(f"{name}: {key}" for key, name in entry_names.items())
 
         @tool(description="传入下列入口的 file_path 读取技能，或在同一目录下读取技能引用的配套文本。\n" + entries)
         def read_writing_skill(file_path: str) -> str:
@@ -238,12 +248,18 @@ def _build_tools(abc: AgentBuildCtx) -> list:
             # A nested SKILL.md starts a different skill, with its own role assignment.
             if any((entry.parent / parent / "SKILL.md").is_file() for parent in Path(relative).parents[:-1]):
                 raise ValueError("该技能未挂载到当前角色")
+            data = path.read_bytes()
             try:
-                content = path.read_text(encoding="utf-8")
+                content = data.decode("utf-8").replace("\r\n", "\n").replace("\r", "\n")
             except UnicodeDecodeError as exc:
                 raise ValueError("技能资料须为 UTF-8 文本") from exc
             if "\x00" in content:
                 raise ValueError("技能资料须为 UTF-8 文本")
+            if file_path in entry_names and content.strip():
+                name = entry_names[file_path]
+                if record := getattr(abc.ctx, "record_package_skill_read", None):
+                    record(abc.trace_name, name, hashlib.sha256(data).hexdigest())
+                abc.read_package_skill_names.add(name)
             return content
 
         tools.append(read_writing_skill)

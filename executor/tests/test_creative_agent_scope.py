@@ -64,8 +64,9 @@ def test_private_skill_reader_is_scoped_to_the_mounted_files(tmp_path, monkeypat
     assert "quiet" in prompt and "/_skills_0/SKILL.md" in prompt
     assert "quiet style" not in prompt
     [reader] = _build_tools(build_ctx)
+    read_names = build_ctx.read_package_skill_names
+    assert not read_names
     assert "/_skills_0/SKILL.md" in reader.description and "quiet" in reader.description
-    assert reader.invoke({"file_path": "/_skills_0/SKILL.md"}) == skill.read_text(encoding="utf-8")
     assert reader.invoke({"file_path": "/_skills_0/references/examples.md"}) == "A clock ticks."
     assert "examples.md" not in reader.description
     with pytest.raises(ValueError, match="文本"):
@@ -74,13 +75,59 @@ def test_private_skill_reader_is_scoped_to_the_mounted_files(tmp_path, monkeypat
                       "/_skills_0/../separate/SKILL.md"):
         with pytest.raises(ValueError, match="未挂载"):
             reader.invoke({"file_path": unmounted})
+    assert not read_names
+    assert reader.invoke({"file_path": "/_skills_0/SKILL.md"}) == skill.read_text(encoding="utf-8")
+    assert read_names == {"quiet"}
     assert write_denial(suite, "read_file", {"file_path": "/book.md"}, 1, 1)
     skill.write_bytes(b"\xff\xfe")
-    assert "/_skills_0/SKILL.md" in _system_prompt(AgentBuildCtx(ctx, None, agent, suite, tmp_path))
+    next_build = AgentBuildCtx(ctx, None, agent, suite, tmp_path)
+    assert "/_skills_0/SKILL.md" in _system_prompt(next_build)
+    [new_reader] = _build_tools(next_build)
     with pytest.raises(ValueError, match="UTF-8"):
-        reader.invoke({"file_path": "/_skills_0/SKILL.md"})
+        new_reader.invoke({"file_path": "/_skills_0/SKILL.md"})
+    assert not next_build.read_package_skill_names
     monkeypatch.delenv("WRITING_AGENT_ID")
     assert _build_tools(AgentBuildCtx(ctx, None, agent, "package", tmp_path)) == []
+
+
+def test_skill_receipt_restores_only_a_matching_role_entry_and_exact_bytes(tmp_path, monkeypatch):
+    import hashlib
+    from types import SimpleNamespace
+    from app.domains.writing.package_skill_reads import PackageSkillReads
+    from app.platform.agent.architecture import AgentBuildCtx, _build_tools
+    from contracts.architecture_manifest import AgentSpec
+
+    monkeypatch.setenv("WRITING_AGENT_ID", "text")
+    source = b"---\r\nname: Quiet voice\r\n---\r\nHear the clock.\r\n"
+    skill = tmp_path / "skills/quiet/SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_bytes(source)
+    checkpoint = tmp_path / "checkpoints.db"
+
+    def role(name, skills=("quiet",)):
+        receipts = PackageSkillReads(checkpoint, "task-1", "a" * 40)
+        ctx = SimpleNamespace(workspace_path=tmp_path, restore_package_skill_reads=receipts.restore,
+                              record_package_skill_read=receipts.record)
+        spec = AgentSpec(name=name, role="main", prompt="base.md", skills=list(skills))
+        return AgentBuildCtx(ctx, None, spec, "package", tmp_path)
+
+    writer = role("text")
+    [reader] = _build_tools(writer)
+    assert reader.invoke({"file_path": "/_skills_0/SKILL.md"}) == source.decode().replace("\r\n", "\n")
+    persisted = PackageSkillReads(checkpoint, "task-1", "a" * 40)
+    assert persisted.restore("text-subagent") == {("Quiet voice", hashlib.sha256(source).hexdigest())}
+    assert role("text").read_package_skill_names == {"Quiet voice"}
+    assert not role("review").read_package_skill_names
+    assert not role("text", ()).read_package_skill_names
+
+    skill.write_bytes(source.replace(b"\r\n", b"\n"))
+    assert not role("text").read_package_skill_names
+    skill.write_bytes(b"  \n")
+    blank = role("text")
+    [reader] = _build_tools(blank)
+    reader.invoke({"file_path": "/_skills_0/SKILL.md"})
+    assert not blank.read_package_skill_names
+    assert len(persisted.restore("text-subagent")) == 1
 
 
 def test_gates_accept_drafts_and_first_chapter_needs_no_prior_text(tmp_path):
@@ -171,6 +218,15 @@ def test_private_assistant_runs_and_reads_its_draft_within_parent_trace(
         manifest["agents"].append({**review, "name": assistant, "skills": ["audit"]})
         path.write_text(json.dumps(manifest), encoding="utf-8")
     package = load_package(task.package_root, "test_private_delegate_" + assistant)
+    from app.platform.agent import architecture
+    role_reads = {}
+    build_tools = architecture._build_tools
+
+    def observe_tools(abc):
+        role_reads[abc.agent.name] = abc.read_package_skill_names
+        return build_tools(abc)
+
+    monkeypatch.setattr(architecture, "_build_tools", observe_tools)
     system_prompts = []
     reader_descriptions = []
     class Model(FakeMessagesListChatModel):
@@ -226,6 +282,7 @@ def test_private_assistant_runs_and_reads_its_draft_within_parent_trace(
             assert all("Use `read_file` on the path shown in the skill list" not in p for p in system_prompts)
             assert any(e.type == "tool_start" and e.agent_name == helper and e.tool_name == "read_artifact" for e in events)
             if skill_calls:
+                assert role_reads == {"text": {"Quiet voice"}, "continuity": {"audit"}, "review": set()}
                 main_prompt, helper_prompt = system_prompts[0], system_prompts[2]
                 for prompt in (main_prompt, helper_prompt):
                     assert "read_writing_skill" in prompt and "/_skills_0/SKILL.md" in prompt
@@ -242,6 +299,7 @@ def test_private_assistant_runs_and_reads_its_draft_within_parent_trace(
                 assert any(isinstance(m, ToolMessage) and m.tool_call_id == "read-skill"
                            and "Show the silence with a clock." in str(m.content) for m in result["messages"])
             else:
+                assert all(not names for names in role_reads.values())
                 assert system_prompts and all("read_writing_skill" not in prompt for prompt in system_prompts)
         finally:
             ACTIVE.reset(token)

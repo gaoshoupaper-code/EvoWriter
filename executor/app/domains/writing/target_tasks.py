@@ -679,6 +679,7 @@ async def drive_task(request, workspace, service, thread, execution, store, *, l
 async def _run_worker(root: Path, task_id: str, stopped, parent_pid, *, prepared_model=None, isolated=False, live_fd=None):
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
     from app.domains.writing.agent import MetaAgentService
+    from app.domains.writing.package_skill_reads import PackageSkillReads
     from app.domains.writing.target_execution import FrozenExecution
     from app.platform.agent.loader import load_package
     from app.platform.core.settings import get_settings
@@ -726,9 +727,11 @@ async def _run_worker(root: Path, task_id: str, stopped, parent_pid, *, prepared
         execution.isolated = isolated
         execution.persist = lambda evidence: store.journal(task_id, metadata={"evidence": evidence})
         thread = ThreadSummary.model_validate(metadata.get("base_thread", metadata["thread"]))
-        async with AsyncSqliteSaver.from_conn_string(str(directory / "checkpoints.db")) as saver:
+        checkpoint = directory / "checkpoints.db"
+        async with AsyncSqliteSaver.from_conn_string(str(checkpoint)) as saver:
             await saver.setup()
             service = MetaAgentService(settings, workspace, recorder, None, saver)
+            service.package_skill_reads = PackageSkillReads(checkpoint, task_id, request.source_commit)
             async def task_saver(owner_id):
                 return saver
             service._resolve_checkpointer = task_saver

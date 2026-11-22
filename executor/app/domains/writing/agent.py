@@ -22,6 +22,7 @@ from app.platform.streaming import ExtraTask, run_agent_stream
 from app.domains.writing.events import WritingEventSink
 from app.domains.writing.conversation_log import ConversationLog, ConversationLogError
 from app.domains.writing.experiment_stream import experiment_identity
+from app.domains.writing.package_skill_reads import PackageSkillReads
 from app.domains.writing.run_gate import get_conversation_gate, get_workspace_mutation_lock
 from app.domains.writing.style_assets import WritingStyleError
 from app.domains.writing.expert_agent.services.storyline_graph import generate_storyline_graph
@@ -415,6 +416,8 @@ def build_llm_snapshot():
 
 
 class MetaAgentService(BaseAgentService):
+    package_skill_reads: PackageSkillReads | None = None
+
     def __init__(self, settings: Settings, workspace_root: Path, trace_recorder: TraceRecorder, style_store: CreateTypeStore, checkpointer: BaseCheckpointSaver) -> None:
         # 复用 BaseAgentService 的通用初始化（settings/workspace_root/trace_recorder/checkpointer）
         super().__init__(settings, workspace_root, trace_recorder, checkpointer)
@@ -914,6 +917,8 @@ class MetaAgentService(BaseAgentService):
             # 替换清单主 prompt；None = 按清单文件读（legacy 现状行为）。
             prompt_overrides=prompt_overrides,
             character_repair=character_repair,
+            restore_package_skill_reads=self.package_skill_reads.restore if self.package_skill_reads else None,
+            record_package_skill_read=self.package_skill_reads.record if self.package_skill_reads else None,
             trace_recorder=self.trace_recorder,
             trace_middleware_cls=TraceMiddleware,  # T2：类由执行端注入，包内实例化
             # CON-005/FR-003：注入平台级 task 防重放边界。harness 的 ErrorRecovery

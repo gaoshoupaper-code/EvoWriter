@@ -25,6 +25,7 @@ trace_recorder + trace_middleware_cls 的组合语义（T2 设计）：
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -121,6 +122,9 @@ class RuntimeContext:
     confirm_gate_state: object | None = None
     # REQ-20261102-135406：人物卡原地重建只放行人物产物，不改变写作阶段。
     character_repair: bool = False
+    # Isolated instructions and frozen targets bind these to their own checkpoint.
+    restore_package_skill_reads: Callable[[str], set[tuple[str, str]]] | None = None
+    record_package_skill_read: Callable[[str, str, str], None] | None = None
 
 
 __all__ = ["RuntimeContext"]

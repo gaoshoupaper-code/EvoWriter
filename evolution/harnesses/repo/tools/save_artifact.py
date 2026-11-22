@@ -81,7 +81,7 @@ kind 取值：theme / outline / style / volume_outline(+volume) / chapter_outlin
   正文新建按实际保存的批数建立进度；已有标准进度由工具维护，修订不增加总数。
   append 不做锚点匹配，避免短段重复导致整章重写。
   正文新建和追加必须注明 unit_kind：ordinary（普通单元）或 skill_scene（匹配的完整技能场景）。
-  skill_scene 同时填写作者已启用且当前剧情匹配的 skill_name 原名；普通单元在自然停顿处收束，不硬切句。
+  skill_scene 填与当前剧情匹配的技能原名；普通单元在自然停顿处收束，不硬切句。
   已有正文的 full 全量修订与 edit 沿用原规则，不按普通单元限长。
 - mode="edit"（默认，推荐）：anchor + replacement——anchor 是文件里的原文片段
   （须逐字一致且在文件中唯一，建议带上标题行等上下文）；replacement 是替换后
@@ -110,7 +110,7 @@ class SaveArtifactInput(BaseModel):
     unit_kind: Literal["ordinary", "skill_scene"] | None = Field(
         default=None, description="正文新建/追加：ordinary普通单元；skill_scene当前剧情匹配的完整技能场景。修订与其他产物无需填写。",
     )
-    skill_name: str | None = Field(default=None, description="skill_scene时填写已启用技能的原名；普通单元留空。")
+    skill_name: str | None = Field(default=None, description="skill_scene 填匹配场景的技能原名；普通单元留空。")
 
 
 class CharacterOwnerSaveInput(SaveArtifactInput):
@@ -331,6 +331,7 @@ def build_save_artifact_tool(
     append_batches: dict | None = None,
     writing_context: str | None = None,
     enabled_skill_names: set[str] | None = None,
+    read_package_skill_names: set[str] | None = None,
 ) -> StructuredTool:
     """构建落盘工具。
 
@@ -344,10 +345,11 @@ def build_save_artifact_tool(
         append_batches:  追加批次计数（正文分段生长回执用；None = 工具自持）。
         writing_context: 当前 author 规程与启用技能；None 保持旧调用兼容。
         enabled_skill_names: 同轮启用技能原名；None 兼容旧执行端的标题核验。
+        read_package_skill_names: 当前正文角色成功读取的包内技能，与读取工具共用同一集合。
     """
     append_batches = append_batches if append_batches is not None else {}
     skill_names_hint = (
-        "本轮已启用的 skill_name 原名："
+        "作者已启用的 skill_name 原名："
         + json.dumps(sorted(enabled_skill_names), ensure_ascii=False)
         + "。只填原名，不附带标题中的描述。"
         if enabled_skill_names is not None else ""
@@ -487,17 +489,22 @@ def build_save_artifact_tool(
                     return f"[save_artifact 拒绝·文件未变] {exc}"
                 batch_count = len(sizes)
                 batch_info = f"本次按完整自然段保存 {batch_count} 批，各批字数：{'、'.join(map(str, sizes))}。"
-            if unit_kind == "skill_scene" and (
-                not (skill_name or "").strip()
-                or (enabled_skill_names is not None and skill_name not in enabled_skill_names)
-                or (enabled_skill_names is None and writing_context is not None
-                    and f"### {skill_name}——" not in writing_context)
-            ):
-                return (
-                    "[save_artifact 拒绝·文件未变] skill_scene 需要填写当前已启用技能的原名；不能用未启用的技能绕过普通批长。"
-                    + skill_names_hint
-                    + "若剧情已匹配场景，请改正名称后整场重试，不得改为 ordinary 拆批保存。"
-                )
+            if unit_kind == "skill_scene":
+                if enabled_skill_names is not None:
+                    enabled = skill_name in enabled_skill_names
+                elif writing_context is not None:
+                    enabled = f"### {skill_name}——" in writing_context
+                else:
+                    enabled = read_package_skill_names is None  # 旧调用未提供任何技能名单。
+                package_read = text_entry and read_package_skill_names is not None and skill_name in read_package_skill_names
+                if not (skill_name or "").strip() or not (enabled or package_read):
+                    return (
+                        "[save_artifact 拒绝·文件未变] 请填写适用于当前场景的技能原名。"
+                        + skill_names_hint
+                        + ("包内技能请先用 read_writing_skill 读取本角色目录里的 SKILL.md。"
+                           if text_entry and read_package_skill_names is not None else "")
+                        + "若剧情已匹配场景，请改正名称后整场重试，不得改为 ordinary 拆批保存。"
+                    )
 
         if track_progress and mode == "append" and uninitialized:
             return "[save_artifact 拒绝·文件未变] 正文尚未初始化，请先用 mode=full 建立标题、状态和首批进度，再追加正文单元。"
@@ -622,6 +629,9 @@ def build_save_artifact_tool(
         description=SAVE_ARTIFACT_TOOL_DESCRIPTION
         + ("\n普通正文超过 450 字时按完整自然段自动分批并一次落盘；单个自然段仍不可超过 450 字。"
            if agent_name == "text-subagent" else "")
+        + ("\n匹配当前场景时，作者已启用的技能，或本角色已用 read_writing_skill 读过入口的包内技能，"
+           "均可按原名整场保存。仅规定文风的技能仍按普通正文保存。"
+           if agent_name == "text-subagent" and read_package_skill_names is not None else "")
         + ("\n" + skill_names_hint if skill_names_hint else ""),
         func=_native_save,
         args_schema=CharacterOwnerSaveInput if agent_name in ("outline-subagent", "volume-subagent") else SaveArtifactInput,
@@ -668,6 +678,8 @@ def build(abc):
         append_batches=append_batches,
         writing_context=styles.get("author"),
         enabled_skill_names=set(json.loads(skill_names)) if skill_names is not None else None,
+        read_package_skill_names=getattr(abc, "read_package_skill_names", None)
+        if getattr(abc, "trace_name", None) == "text-subagent" else None,
     )
 
 

@@ -140,6 +140,32 @@ def test_wrong_heading_name_can_be_corrected_without_splitting_the_scene(tmp_pat
 
 
 @pytest.mark.parametrize("mode", ["full", "append"])
+def test_package_scene_uses_the_live_role_read_record(tmp_path, mode):
+    from types import SimpleNamespace
+
+    if mode == "append":
+        (tmp_path / REL).parent.mkdir()
+        (tmp_path / REL).write_text(_progress_text(2, "已有正文。\n"), encoding="utf-8")
+    path = tmp_path / REL
+    before = path.read_bytes() if path.exists() else None
+    abc = SimpleNamespace(ctx=SimpleNamespace(styles={"author": "", "_writing_skill_names": "[]"},
+                                              artifact_read_registry={REL: True}),
+                          workspace_path=tmp_path, trace_name="text-subagent", read_package_skill_names=set())
+    tool = save_artifact_module.build(abc)
+    name = "场景技能"
+    rejected = _save(tool, mode=mode, content=SCENE, unit_kind="skill_scene", skill_name=name)
+    assert "拒绝" in rejected
+    assert (path.read_bytes() if path.exists() else None) == before
+    abc.read_package_skill_names.add(name)
+    assert "拒绝" in _save(tool, mode=mode, content=SCENE, unit_kind="skill_scene", skill_name="其他技能")
+    receipt = _save(tool, mode=mode, content=SCENE, unit_kind="skill_scene", skill_name=name)
+    assert "已落盘" in receipt or "已追加落盘" in receipt
+    assert "本次按完整自然段保存" not in receipt
+    assert f"本章已保存 {3 if mode == 'append' else 1} 个正文单元" in receipt
+    assert SCENE in path.read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("mode", ["full", "append"])
 def test_empty_trusted_skill_set_cannot_claim_a_skill_from_prompt_text(tmp_path, mode):
     previous = HEADER + "已保存前文。\n" if mode == "append" else None
     tool = _tool(tmp_path, previous=previous, enabled_skill_names=set())

@@ -491,6 +491,10 @@ def score_sample(run: dict, sample: dict) -> dict:
                     instructions = ("你是独立运行评委。只评当前成稿的运行时维度。\n" if is_runtime else
                                     "你是独立质量评委。只评当前维度，只依据资料与产物中的具体证据。\n"
                                     + "\n".join(rule["discipline_rules"]) + "\n")
+                    if not is_runtime and dimension.get("focus_points"):
+                        instructions += (
+                            "先按 focus_points（关注点）逐项核对适用的正文和固定资料，找出可核对的证据。"
+                            "再用 anchors（1–5 分标准）选择最符合证据的档位。关注点用于取证，不单独计分。\n")
                     messages = [{"role": "system", "content": instructions + json.dumps(dimension, ensure_ascii=False)
                                  + "\n" + (_RUNTIME_OUTPUT_FORMAT if is_runtime else output_format)},
                                 runtime_message if is_runtime else user_message]

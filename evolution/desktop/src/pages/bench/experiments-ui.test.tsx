@@ -114,6 +114,34 @@ describe("进化端实验交互 / AC-001、AC-012、AC-020、AC-022", () => {
     })));
   });
 
+  it("在各维度档位前展示并编辑多行关注点", async () => {
+    window.location.hash = "#/agents/text/bench";
+    const original = "对照章纲要求。\n核对正文证据。";
+    const updated = "逐项核对必须兑现的事件。\n引用对应的正文原句。";
+    const dimension = rules[2].dimensions[0];
+    const rule = { ...rules[2], profile: "chapter-text-outline-v3" as const,
+      dimensions: [{ ...dimension, focus_points: original }, { ...dimension, key: "情节逻辑" }] };
+    api.listExperimentRules.mockResolvedValue({ items: [rule] });
+    api.saveExperimentRule.mockImplementation(async (payload) => ({ ...rule, ...payload, id: "rule-new", version: 2 }));
+    render(<StageRules />);
+
+    const focus = await screen.findByRole("heading", { name: "评分关注点" });
+    expect(focus.nextElementSibling?.textContent).toBe(original);
+    const firstAnchors = screen.getAllByText("查看 1–5 分判定标准")[0];
+    expect(focus.compareDocumentPosition(firstAnchors) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑规则" }));
+    const field = screen.getByLabelText("需求兑现评分关注点");
+    expect(field).toHaveValue(original);
+    expect(screen.getByLabelText("情节逻辑评分关注点")).toHaveValue("");
+    fireEvent.change(field, { target: { value: updated } });
+    fireEvent.click(screen.getByRole("button", { name: "保存为新版本" }));
+    await waitFor(() => expect(api.saveExperimentRule).toHaveBeenCalledWith(expect.objectContaining({
+      dimensions: [{ ...dimension, focus_points: updated }, { ...dimension, key: "情节逻辑" }],
+    })));
+    expect((await screen.findByRole("heading", { name: "评分关注点" })).nextElementSibling?.textContent).toBe(updated);
+  });
+
   it("本套两个题组全部运行，并冻结本套规则和门槛", async () => {
     api.startExperiment.mockResolvedValue(experiment({ status: "pending" }) as never);
     render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);

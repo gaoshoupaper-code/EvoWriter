@@ -108,6 +108,7 @@ class SeedDatabaseTest(unittest.TestCase):
         self.assertEqual(len(current), 3)
         dimensions = [dimension for rule in current for dimension in rule["dimensions"]]
         self.assertEqual(len(dimensions), 13)
+        self.assertTrue(all("focus_points" not in dimension for dimension in dimensions))
         self.assertEqual(len({tuple(dimension["anchors"].values()) for dimension in dimensions}), 13)
         self.assertTrue(all(set(dimension["anchors"]) == {"1", "2", "3", "4", "5"} for dimension in dimensions))
         chapter = next(rule for rule in current if rule["task_type"] == "chapter_outlines")
@@ -122,7 +123,7 @@ class SeedDatabaseTest(unittest.TestCase):
     def test_chapter_rule_seeds_current_revision_without_changing_old_rule(self):
         from pydantic import ValidationError
 
-        from app.experiments import repo, rubrics
+        from app.experiments import chapter_rubric, repo, rubrics
         from app.experiments.schemas import RuleCreate
 
         old = {"id": "old-text-rule", "task_type": "chapter_text", "version": 3, "created_at": repo.now(),
@@ -139,6 +140,8 @@ class SeedDatabaseTest(unittest.TestCase):
         self.assertEqual(current["version"], 4)
         dimensions = current["dimensions"]
         self.assertEqual([d["key"] for d in dimensions], ["事件因果逻辑", "人物行为逻辑", "章纲兑现", "语言清晰度"])
+        self.assertEqual({dimension["key"]: dimension["focus_points"] for dimension in dimensions},
+                         chapter_rubric.FOCUS_POINTS)
         self.assertEqual({d["weight"] for d in dimensions}, {1})
         self.assertTrue(all(set(d["anchors"]) == {"1", "2", "3", "4", "5"} for d in dimensions))
         self.assertTrue(all(anchor.count("。") >= 3 for d in dimensions for anchor in d["anchors"].values()))
@@ -151,6 +154,49 @@ class SeedDatabaseTest(unittest.TestCase):
         self.assertEqual(repo.get_rule(current["id"]), current)
         with self.assertRaises(ValidationError):
             RuleCreate.model_validate({**payload, "dimensions": dimensions[:-1]})
+
+    @patch.dict("os.environ", {"WRITING_AGENT_ID": "text"})
+    def test_focus_upgrade_copies_latest_revision_once_and_preserves_explicit_edits(self):
+        from app.experiments import chapter_rubric, repo, rubrics
+        from app.experiments.schemas import RuleCreate
+
+        dimensions = [{"key": key, "question": question, "weight": 2,
+                       "anchors": {str(level): anchor for level, anchor in enumerate(anchors, 1)}}
+                      for key, question, anchors in chapter_rubric.DIMENSIONS]
+        first = rubrics.save_rule(RuleCreate.model_validate({
+            "task_type": "chapter_text", "name": "旧规则", "discipline_rules": ["遵守旧纪律。"],
+            "dimensions": dimensions,
+        }))
+        dimensions[0].update(question="定制判定问题", focus_points="先查条件。\n再查结果。")
+        dimensions[0]["anchors"]["4"] = "定制 4 分档位。"
+        dimensions[1]["focus_points"] = ""
+        before = rubrics.save_rule(RuleCreate.model_validate({
+            "task_type": "chapter_text", "name": "自定义评分规则", "discipline_rules": ["定制纪律。"],
+            "dimensions": dimensions,
+        }))
+
+        rubrics.seed_rules()
+        rubrics.seed_rules()
+        current, previous, oldest = rubrics.list_rules("chapter_text")
+        self.assertEqual((previous, oldest), (before, first))
+        self.assertNotEqual(current["id"], before["id"])
+        self.assertEqual(current["version"], before["version"] + 1)
+        for key in ("name", "profile", "discipline_rules"):
+            self.assertEqual(current[key], before[key])
+        self.assertEqual(before["dimensions"][0], current["dimensions"][0])
+        self.assertEqual(before["dimensions"][1], current["dimensions"][1])
+        for previous_dimension, current_dimension in zip(before["dimensions"][2:], current["dimensions"][2:]):
+            self.assertEqual(current_dimension, {**previous_dimension,
+                "focus_points": chapter_rubric.FOCUS_POINTS[previous_dimension["key"]]})
+
+        payload = {key: current[key] for key in ("task_type", "profile", "name", "dimensions", "discipline_rules")}
+        payload["dimensions"] = [{**dimension, "focus_points": "  \n "} for dimension in current["dimensions"]]
+        edited = rubrics.save_rule(RuleCreate.model_validate(payload))
+        rubrics.seed_rules()
+        self.assertEqual([item["id"] for item in rubrics.list_rules("chapter_text")],
+                         [edited["id"], current["id"], before["id"], first["id"]])
+        self.assertTrue(all(dimension["focus_points"] == "" for dimension in edited["dimensions"]))
+        self.assertEqual(repo.get_rule(current["id"]), current)
 
 
 if __name__ == "__main__":

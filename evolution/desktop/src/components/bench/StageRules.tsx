@@ -85,6 +85,10 @@ export function StageRules() {
         <div className="experiment-rule-read-list">{selected.dimensions.map((dimension) => <article key={dimension.key}>
           <div className="experiment-rule-dimension-heading"><h4>{dimension.key}</h4><span>{(dimension.weight / totalWeight * 100).toFixed(0)}% 权重</span></div>
           <p>{dimension.question}</p>
+          {dimension.focus_points?.trim() && <div className="experiment-rule-focus">
+            <h5>评分关注点</h5>
+            <p className="experiment-prewrap">{dimension.focus_points}</p>
+          </div>}
           <details><summary className="readable-button">查看 1–5 分判定标准</summary><dl className="experiment-anchor-list">
             {["5", "4", "3", "2", "1"].map((level) => <div key={level}><dt>{level} 分</dt><dd>{dimension.anchors[level]}</dd></div>)}
           </dl></details>
@@ -102,6 +106,9 @@ export function StageRules() {
           <label>判定问题<textarea className="config-input" required aria-label={dimension.key + "评分问题"} value={dimension.question} onChange={(event) => editDimension(index, { question: event.target.value })} /></label>
           <label className="experiment-weight-edit">权重<input className="config-input" type="number" min="0.001" step="any" required aria-label={dimension.key + "权重"} value={dimension.weight}
             onChange={(event) => editDimension(index, { weight: Number(event.target.value) })} /></label>
+          <label className="experiment-rule-focus">评分关注点<textarea className="config-input" rows={8}
+            aria-label={dimension.key + "评分关注点"} value={dimension.focus_points ?? ""}
+            onChange={(event) => editDimension(index, { focus_points: event.target.value })} /></label>
           <div className="experiment-rule-anchors">{["5", "4", "3", "2", "1"].map((level) => <label key={level}>{level} 分<textarea className="config-input" required aria-label={dimension.key + level + "分标准"} value={dimension.anchors[level] ?? ""}
             onChange={(event) => editDimension(index, { anchors: { ...dimension.anchors, [level]: event.target.value } })} /></label>)}</div>
         </fieldset>)}</div>

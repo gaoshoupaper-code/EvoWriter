@@ -121,13 +121,17 @@ def test_runtime_is_a_fifth_independent_dimension(chapter_run, monkeypatch):
     assert len(calls) == 30
     runtime_calls = 0
     for call in calls:
+        instructions = call["messages"][0]["content"]
         material = json.loads(call["messages"][1]["content"])
         if "runtime_trace" in material:
             runtime_calls += 1
-            assert "运行时" in call["messages"][0]["content"]
+            assert "运行时" in instructions
+            assert "focus_points" not in instructions
             assert material["runtime_trace"]["evidence"][0]["ref"] == "trace-body:8"
         else:
-            assert '"key": "运行时"' not in call["messages"][0]["content"]
+            assert '"key": "运行时"' not in instructions
+            assert "先按 focus_points（关注点）逐项核对" in instructions
+            assert instructions.index('"focus_points"') < instructions.index('"anchors"')
     assert runtime_calls == 6
     assert result["quality"] == 4
     assert result["runtime"]["tools"]["score"] == pytest.approx(4.2)
@@ -137,6 +141,21 @@ def test_runtime_is_a_fifth_independent_dimension(chapter_run, monkeypatch):
     assert result["overall"] == pytest.approx(3.92)
     assert result["reasons"]["运行时"][0]["evidence_details"] == [
         {"ref": "trace-body:8", "text": "已按 Skill 检查叙事视角"}]
+
+
+def test_earlier_rule_without_focus_points_still_uses_its_frozen_anchors(chapter_run, monkeypatch):
+    run, sample = chapter_run
+    run["judge_repeats"] = 1
+    run["private"]["judges"] = run["private"]["judges"][:1]
+    dimension = run["private"]["rules"]["chapter_text"]["dimensions"][0]
+    dimension.pop("focus_points")
+    calls = stub_judges(monkeypatch)
+
+    evaluation.score_sample(run, sample)
+
+    instructions = calls[0]["messages"][0]["content"]
+    assert "focus_points" not in instructions
+    assert json.dumps(dimension["anchors"], ensure_ascii=False) in instructions
 
 
 def test_runtime_missing_evidence_retries_without_rescoring_content(chapter_run, monkeypatch):

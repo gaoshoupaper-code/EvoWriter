@@ -144,7 +144,7 @@ def is_current_text_rule(rule: dict) -> bool:
 def save_rule(request: RuleCreate) -> dict:
     with _lock:
         old = list_rules(request.task_type)
-        value = request.model_dump(mode="json")
+        value = request.model_dump(mode="json", exclude_none=True)
         scope = configured_task_type()
         value["profile"] = request.profile or (TEXT_PROFILE if scope == "chapter_text" else "isolated-writing-v1" if scope else PROFILE)
         if configured_task_type():
@@ -162,17 +162,32 @@ def seed_rules() -> None:
                 continue
             profile = TEXT_PROFILE if scope == "chapter_text" else "isolated-writing-v1" if scope else PROFILE
             matches = is_current_text_rule if profile == TEXT_PROFILE else lambda rule: rule.get("profile") == profile
-            if any(matches(rule) for rule in list_rules(kind)):
+            existing = [rule for rule in list_rules(kind) if matches(rule)]
+            if existing:
+                if profile == TEXT_PROFILE and not any(
+                        all(dimension.get("focus_points") is not None for dimension in rule["dimensions"])
+                        for rule in existing):
+                    latest = existing[0]
+                    save_rule(RuleCreate.model_validate({
+                        **{key: latest[key] for key in ("task_type", "profile", "name", "discipline_rules")},
+                        "dimensions": [
+                            {**dimension, "focus_points": chapter_rubric.FOCUS_POINTS[dimension["key"]]}
+                            if dimension.get("focus_points") is None else dimension
+                            for dimension in latest["dimensions"]
+                        ],
+                    }))
                 continue
             discipline_rules = DISCIPLINE_RULES
+            focus_points = {}
             if profile == TEXT_PROFILE:
                 dimensions = chapter_rubric.DIMENSIONS
                 discipline_rules = chapter_rubric.DISCIPLINE_RULES
+                focus_points = chapter_rubric.FOCUS_POINTS
             save_rule(RuleCreate.model_validate({
                 "task_type": kind, "profile": profile,
                 "name": {"master_outline": "总纲", "volume_outlines": "卷纲", "chapter_outlines": "单章章纲", "chapter_text": "单章正文"}[kind] + "试验规则",
                 "discipline_rules": discipline_rules,
-                "dimensions": [{"key": key, "question": question, "weight": 1,
+                "dimensions": [{"key": key, "question": question, "weight": 1, "focus_points": focus_points.get(key),
                                 "anchors": {str(level): text for level, text in enumerate(anchors, 1)}}
                                for key, question, anchors in dimensions],
             }))

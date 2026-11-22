@@ -31,8 +31,14 @@ class PackageCreate(StrictModel):
 class Dimension(StrictModel):
     key: str = Field(min_length=1, max_length=100)
     question: str = Field(min_length=1)
+    focus_points: str | None = None
     anchors: dict[str, str]
     weight: float = Field(default=1, gt=0, allow_inf_nan=False)
+
+    @field_validator("focus_points")
+    @classmethod
+    def trim_focus_points(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
 
     @field_validator("anchors")
     @classmethod

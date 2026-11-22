@@ -149,6 +149,10 @@
   font-weight: 600;
 }
 
+.evaluation-content .experiment-rule-focus { margin: 12px 0; }
+.evaluation-content .experiment-rule-focus h5 { margin: 0 0 6px; font-size: var(--text-ui-base); font-weight: 600; }
+.evaluation-content .experiment-rule-focus p { margin: 0; }
+
 .evaluation-content .experiment-rule-read-list summary,
 .evaluation-content .experiment-discipline summary {
   width: fit-content;

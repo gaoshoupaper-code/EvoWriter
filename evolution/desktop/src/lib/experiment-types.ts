@@ -71,7 +71,7 @@ export type ExperimentPackage = Omit<ExperimentPackageInput, "input"> & {
 export type ExperimentRuleInput = {
   task_type: ExperimentTaskType; name: string;
   profile?: ReturnType<typeof ruleProfile> | null;
-  dimensions: { key: string; question: string; anchors: Record<string, string>; weight: number }[];
+  dimensions: { key: string; question: string; focus_points?: string; anchors: Record<string, string>; weight: number }[];
   discipline_rules: string[];
 };
 export type ExperimentRule = ExperimentRuleInput & {

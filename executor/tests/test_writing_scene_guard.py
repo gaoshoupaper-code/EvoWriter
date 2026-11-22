@@ -626,3 +626,34 @@ def test_read_then_edit_keeps_newlines_outside_selection(tmp_path, anchor, repla
                            "anchor": anchor, "replacement": replacement})
     assert "已落盘" in receipt
     assert path.read_bytes() == original.replace(old_bytes, new_bytes).encode()
+
+
+@pytest.mark.parametrize(("unit_kind", "marker"), [("ordinary", "> "), ("ordinary", ""), ("skill_scene", "> ")])
+def test_first_text_save_accepts_blank_spacing_between_explicit_header_lines(tmp_path, unit_kind, marker):
+    tool = build_save_artifact_tool(tmp_path, {}, {}, agent_name="text-subagent",
+                                    writing_context=CONTEXT, enabled_skill_names={SKILL})
+    title = "# 第002章 · 临时约定  \r\n"
+    status = "状态：起草中｜2026-10-25\r\n"
+    # The unquoted status line must not count against the prose unit's allowance.
+    body = "\r\n\r\n" + "雨" * 444 + "。\r\n \t\r\n> 门上有字。\r\n"
+    receipt = tool.invoke({"kind": "chapter_text", "chapter": 2, "mode": "full", "unit_kind": unit_kind,
+                           "skill_name": SKILL if unit_kind == "skill_scene" else None,
+                           "content": title + " \t\r\n\r\n" + marker + status + body})
+    assert "已落盘" in receipt
+    assert (tmp_path / "正文/第002章.md").read_bytes() == (title + "> " + status + "> 进度：已落 1 批\r\n" + body).encode()
+
+
+@pytest.mark.parametrize(("role", "title", "after_blank"), [
+    ("text-subagent", "# 第001章 · 临时约定", "> 状态：起草中｜2026-10-25"),
+    ("text-subagent", "# 第002章 · ", "> 状态：起草中｜2026-10-25"),
+    ("text-subagent", "# 第002章 · 临时约定", "正文里的引语：\n> 状态：起草中｜2026-10-25"),
+    ("text-subagent", "# 第002章 · 临时约定", "> 状态：起草中｜"),
+    ("text-subagent", "# 第002章 · 临时约定", "状态：起草中｜2026-02-31"),
+    ("text-subagent", "# 第002章 · 临时约定", "状态：人修定稿｜2026-10-25"),
+    ("author-subagent", "# 第002章 · 临时约定", "> 状态：起草中｜2026-10-25"),
+])
+def test_header_spacing_repair_requires_two_matching_header_lines(tmp_path, role, title, after_blank):
+    tool = build_save_artifact_tool(tmp_path, {}, {}, agent_name=role, writing_context=CONTEXT)
+    receipt = tool.invoke({"kind": "chapter_text", "chapter": 2, "mode": "full", "unit_kind": "ordinary",
+                           "content": f"{title}\n\n{after_blank}\n\n雨止。"})
+    assert "拒绝" in receipt and not (tmp_path / "正文/第002章.md").exists()

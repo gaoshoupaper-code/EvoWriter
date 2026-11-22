@@ -34,6 +34,7 @@ import hashlib
 import json
 import logging
 import re
+from datetime import date
 from itertools import groupby
 from pathlib import Path
 from typing import Literal
@@ -252,6 +253,26 @@ def _header_metadata(text: str) -> tuple[list[str], int]:
     return lines, end
 
 
+def _initial_text_header(lines: list[str], chapter: int) -> str | None:
+    """Repair Markdown spacing only when both original header fields identify this draft."""
+    title = re.fullmatch(r"# 第([0-9]+)章(.*)", lines[0].rstrip("\r\n")) if lines else None
+    if not title or title[1].lstrip("0") != str(chapter) or not title[2].strip(" \t·：:—-"):
+        return None
+    index = next((i for i, line in enumerate(lines[1:], 1) if line.strip()), None)
+    if index is None:
+        return None
+    status = lines[index].removeprefix("> ")
+    match = re.fullmatch(r"状态：[ \t]*起草中[ \t]*[｜|][ \t]*([0-9]{4}-[0-9]{2}-[0-9]{2})[ \t]*",
+                         status.rstrip("\r\n"))
+    if not match:
+        return None
+    try:
+        date.fromisoformat(match[1])
+    except ValueError:
+        return None
+    return lines[0] + "> " + status + "".join(lines[index + 1:])
+
+
 def _progress_count(text: str) -> int | None:
     lines, end = _header_metadata(text)
     for line in lines[:end]:
@@ -444,6 +465,10 @@ def build_save_artifact_tool(
 
         track_progress = kind == KIND_TEXT and writing_context is not None
         uninitialized = not exists or (track_progress and not current.strip())
+        if text_entry and track_progress and uninitialized and mode == "full" and content:
+            header, end = _header_metadata(content)
+            if end < 2:
+                content = _initial_text_header(header, chapter) or content
         is_draft_unit = kind == KIND_TEXT and (mode == "append" or (mode == "full" and uninitialized))
         batch_count = 1
         batch_info = ""

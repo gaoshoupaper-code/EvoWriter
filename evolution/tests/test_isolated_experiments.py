@@ -176,12 +176,12 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         monkeypatch.setattr(clients, "versions", lambda: {"items": [release, previous], "production_version": 2})
         monkeypatch.setattr(clients, "prepare_artifact", lambda _: {"digest": "1" * 64})
         current_rule = rubrics.get_rule(settings.rule_versions[kind])
-        repo.insert("self_evolution_rules", {**current_rule, "id": "old-three-dimensions", "version": 99,
-            "dimensions": current_rule["dimensions"][1:]})
+        repo.insert("self_evolution_rules", {**current_rule, "id": "old-four-dimensions", "version": 99,
+            "dimensions": current_rule["dimensions"][:4]})
         assert api.experiment_options()["versions"] == [release]
         assert api.experiment_options()["launch_rule_ids"] == [current_rule["id"]]
-        with pytest.raises(ValueError, match="四个现行正文维度"):
-            runner.create_run(settings.model_copy(update={"rule_versions": {kind: "old-three-dimensions"}}), "author")
+        with pytest.raises(ValueError, match="全部现行正文维度"):
+            runner.create_run(settings.model_copy(update={"rule_versions": {kind: "old-four-dimensions"}}), "author")
         assert previous in clients.versions()["items"]
         with pytest.raises(ValueError, match="当前生产版本"):
             runner.create_run(settings.model_copy(update={"baseline_version": previous["version"]}), "author")

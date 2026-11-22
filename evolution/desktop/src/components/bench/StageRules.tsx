@@ -44,7 +44,12 @@ export function StageRules() {
     return () => { alive = false; };
   }, []);
   const selected = rules.find((rule) => rule.id === selectedId);
-  const currentProfile = selected?.profile === ruleProfile(kind);
+  const latestTextRule = kind === "chapter_text" ? latestRule(rules, kind) : undefined;
+  const currentDimensionKeys = latestTextRule && new Set(latestTextRule.dimensions.map((dimension) => dimension.key));
+  const isCurrentRule = (rule: ExperimentRule) => rule.profile === ruleProfile(kind) && (!currentDimensionKeys || (
+    rule.dimensions.length === currentDimensionKeys.size && rule.dimensions.every(({ key }) => currentDimensionKeys.has(key))
+  ));
+  const currentRule = selected && isCurrentRule(selected);
   const totalWeight = selected?.dimensions.reduce((sum, dimension) => sum + dimension.weight, 0) || 1;
 
   function select(rule: ExperimentRule | undefined) {
@@ -56,7 +61,7 @@ export function StageRules() {
     setDraft((value) => value && ({ ...value, dimensions: value.dimensions.map((dimension, i) => i === index ? { ...dimension, ...update } : dimension) }));
   }
   async function save(event: React.FormEvent) {
-    event.preventDefault(); if (!draft || saving || !currentProfile) return;
+    event.preventDefault(); if (!draft || saving || !currentRule) return;
     setSaving(true); setError(""); setNotice("");
     try {
       const result = await saveExperimentRule(draft);
@@ -72,15 +77,15 @@ export function StageRules() {
     {error && <p role="alert" className="experiment-error">{error}</p>}{notice && <p role="status" className="experiment-positive">{notice}</p>}
     {loading ? <p role="status">正在加载规则…</p> : selected && draft ? <div>
       <div className="experiment-rule-heading"><div><h3>{selected.name}</h3>
-        <p className="experiment-note">{currentProfile ? "本套规则" : kind === "chapter_outlines" ? "4 卷章纲历史规则" : "历史规则，保留原始评测含义"} · v{selected.version} · {selected.dimensions.length} 个维度</p></div>
+        <p className="experiment-note">{currentRule ? "本套规则" : kind === "chapter_outlines" ? "4 卷章纲历史规则" : "历史规则，保留原始评测含义"} · v{selected.version} · {selected.dimensions.length} 个维度</p></div>
         <div className="experiment-actions"><label className="experiment-rule-version">规则版本<select className="config-input" value={selectedId} disabled={saving} onChange={(event) => select(rules.find((rule) => rule.id === event.target.value))}>
           {rules.filter((rule) => rule.task_type === kind).sort((a, b) => b.version - a.version).map((rule) => <option key={rule.id} value={rule.id}>
-            {rule.profile === ruleProfile(kind) ? "" : "历史 · "}v{rule.version} · {rule.name}
+            {isCurrentRule(rule) ? "" : "历史 · "}v{rule.version} · {rule.name}
           </option>)}</select></label>
-          {currentProfile && !editing && <button type="button" className="config-button readable-button" onClick={() => setEditing(true)}><Pencil size={14} />编辑规则</button>}
+          {currentRule && !editing && <button type="button" className="config-button readable-button" onClick={() => setEditing(true)}><Pencil size={14} />编辑规则</button>}
         </div>
       </div>
-      {!currentProfile && <p className="experiment-note">历史规则只读，不会自动匹配到新的单章实验。</p>}
+      {!currentRule && <p className="experiment-note">历史规则只读，不会自动匹配到新的单章实验。</p>}
       {!editing ? <>
         <div className="experiment-rule-read-list">{selected.dimensions.map((dimension) => <article key={dimension.key}>
           <div className="experiment-rule-dimension-heading"><h4>{dimension.key}</h4><span>{(dimension.weight / totalWeight * 100).toFixed(0)}% 权重</span></div>
@@ -94,7 +99,7 @@ export function StageRules() {
           </dl></details>
         </article>)}</div>
         <div className="experiment-hard-checks"><h4>完成检查 <span>程序判定，单独计算完成率</span></h4>
-          {currentProfile ? <ul>{HARD_CHECKS[kind].map((check) => <li key={check}><Check size={14} />{check}</li>)}</ul> :
+          {currentRule ? <ul>{HARD_CHECKS[kind].map((check) => <li key={check}><Check size={14} />{check}</li>)}</ul> :
             <p>按历史实验启动时固定的目标范围与完成标准判定。</p>}</div>
         <details className="experiment-discipline"><summary className="readable-button">评分纪律 · {selected.discipline_rules.length} 条</summary>
           <ol>{selected.discipline_rules.map((rule, index) => <li key={index}>{rule}</li>)}</ol></details>

@@ -74,7 +74,7 @@ def create_run(request: RunCreate, actor: str) -> dict:
         if rule is None or rule["task_type"] != kind:
             raise ValueError(f"{kind}评分规则版本不存在或类型不匹配")
         if chapter_assessment and not rubrics.is_current_text_rule(rule):
-            raise ValueError("请使用包含四个现行正文维度的评分规则")
+            raise ValueError("请使用包含全部现行正文维度的评分规则")
         frozen_rules[kind] = rule
     frozen_packages = {}
     input_purposes = {}

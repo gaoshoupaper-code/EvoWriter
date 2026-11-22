@@ -5,7 +5,7 @@ import asyncio
 import json
 import sqlite3
 import sys
-from threading import Event, Lock
+from threading import Event
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -110,7 +110,11 @@ def _runtime_input():
                 {"ref": "trace-body:8", "kind": "review", "text": "已按 Skill 检查叙事视角"}]}}
 
 
-def test_runtime_is_a_fifth_independent_dimension(chapter_run, monkeypatch):
+def _quality_dimension_count(run):
+    return len(run["private"]["rules"]["chapter_text"]["dimensions"])
+
+
+def test_runtime_is_independent_of_six_quality_dimensions(chapter_run, monkeypatch):
     run, sample = chapter_run
     run["runtime_scoring_version"] = 1
     calls = stub_judges(monkeypatch, runtime_ref="trace-body:8")
@@ -118,7 +122,7 @@ def test_runtime_is_a_fifth_independent_dimension(chapter_run, monkeypatch):
 
     result = evaluation.score_sample(run, sample)
 
-    assert len(calls) == 30
+    assert len(calls) == 42
     runtime_calls = 0
     for call in calls:
         instructions = call["messages"][0]["content"]
@@ -133,6 +137,9 @@ def test_runtime_is_a_fifth_independent_dimension(chapter_run, monkeypatch):
             assert "先按 focus_points（关注点）逐项核对" in instructions
             assert instructions.index('"focus_points"') < instructions.index('"anchors"')
     assert runtime_calls == 6
+    assert set(result["dimensions"]) == {
+        "事件因果逻辑", "人物行为逻辑", "章纲兑现", "语言清晰度", "人物语言", "场景空间", "运行时",
+    }
     assert result["quality"] == 4
     assert result["runtime"]["tools"]["score"] == pytest.approx(4.2)
     assert result["runtime"]["tokens"]["score"] == 3
@@ -147,7 +154,9 @@ def test_earlier_rule_without_focus_points_still_uses_its_frozen_anchors(chapter
     run, sample = chapter_run
     run["judge_repeats"] = 1
     run["private"]["judges"] = run["private"]["judges"][:1]
-    dimension = run["private"]["rules"]["chapter_text"]["dimensions"][0]
+    frozen = run["private"]["rules"]["chapter_text"]
+    frozen["dimensions"] = frozen["dimensions"][:4]
+    dimension = frozen["dimensions"][0]
     dimension.pop("focus_points")
     calls = stub_judges(monkeypatch)
 
@@ -160,6 +169,7 @@ def test_earlier_rule_without_focus_points_still_uses_its_frozen_anchors(chapter
 
 def test_runtime_missing_evidence_retries_without_rescoring_content(chapter_run, monkeypatch):
     run, sample = chapter_run
+    quality_count = _quality_dimension_count(run)
     run["runtime_scoring_version"] = 1
     run["judge_repeats"] = 1
     run["private"]["judges"] = run["private"]["judges"][:1]
@@ -175,13 +185,13 @@ def test_runtime_missing_evidence_retries_without_rescoring_content(chapter_run,
     runner.process_sample(run, sample)
     assert sample["status"] == "evaluation_error"
     assert sample["generation_status"] == "completed"
-    assert len(sample["judge_results"]) == len(calls) == 4
+    assert len(sample["judge_results"]) == len(calls) == quality_count
     assert sample.get("scores") is None
 
     runtime_ready = True
     runner.process_sample(run, sample)
     assert sample["status"] == "completed"
-    assert len(sample["judge_results"]) == len(calls) == 5
+    assert len(sample["judge_results"]) == len(calls) == quality_count + 1
     assert sample["scores"]["overall"] == pytest.approx(3.92)
 
 
@@ -250,7 +260,7 @@ def test_scoring_trace_preserves_each_dimension_input_with_the_same_long_prefix(
     trace_id, = sample["evaluation_trace_ids"]
     events = traces._reconstruct_incremental_inputs([traces.hydrate_event(event) for event in traces._load_events(trace_id)])
     recorded = [event.input for event in events if event.type == "llm_start"]
-    assert len(calls) == 8
+    assert len(calls) == run["judge_repeats"] * _quality_dimension_count(run)
     assert recorded == [call["messages"] for call in calls]
 
 
@@ -307,18 +317,17 @@ def test_runtime_returns_independently_and_receives_pair_stats(chapter_run, monk
     run["samples"].append(sample)
     stub_judges(monkeypatch)
     monkeypatch.setattr(evaluation, "_collect_runtime", lambda _: {**_runtime_input(), "tokens": 90_000})
-    lock, ready = Lock(), Event()
+    ready = Event()
     returns = []
 
     def send(_credentials, messages, *_):
         material = json.loads(messages[1]["content"])
         runtime = "runtime_trace" in material
-        if runtime != runtime_first:
-            assert ready.wait(5)
-        with lock:
+        if runtime or '"key": "语言清晰度"' in messages[0]["content"]:
+            if runtime != runtime_first:
+                assert ready.wait(5)
             returns.append(runtime)
-            if len(returns) == (1 if runtime_first else 4):
-                ready.set()
+            ready.set()
         if runtime:
             assert material["runtime_statistics"] == {
                 "baseline": {"tools": {"successes": 3, "total": 4}, "tokens": 100_000},
@@ -329,7 +338,7 @@ def test_runtime_returns_independently_and_receives_pair_stats(chapter_run, monk
 
     monkeypatch.setattr(evaluation, "_send_judge", send)
     result = evaluation.score_sample(run, sample)
-    assert returns == ([True, False, False, False, False] if runtime_first else [False, False, False, False, True])
+    assert returns == [runtime_first, not runtime_first]
     assert result["overall"] == pytest.approx(4.02)
 
 
@@ -438,6 +447,7 @@ def test_model_stream_authorizes_early_writing_output_and_expires_at_terminal(ch
 
 def test_repeats_retry_missing_entry_and_keep_frozen_rule_and_content_boundary(chapter_run, monkeypatch):
     run, sample = chapter_run
+    expected_calls = len(run["private"]["judges"]) * run["judge_repeats"] * _quality_dimension_count(run)
     app = FastAPI()
 
     @app.middleware("http")
@@ -447,12 +457,12 @@ def test_repeats_retry_missing_entry_and_keep_frozen_rule_and_content_boundary(c
 
     app.include_router(api.router)
     app.include_router(traces.router)
-    calls = stub_judges(monkeypatch, invalid_at={2}, http_error_at={25})
+    calls = stub_judges(monkeypatch, invalid_at={2}, http_error_at={expected_calls + 1})
     recorder = record_traces(monkeypatch)
     runner.process_sample(run, sample)
     trace_id, = sample["evaluation_trace_ids"]
-    assert len(calls) == 24
-    assert len(sample["judge_results"]) == 23
+    assert len(calls) == expected_calls
+    assert len(sample["judge_results"]) == expected_calls - 1
     assert sample["status"] == "evaluation_error"
     assert trace_record(trace_id)["status"] == "running"
     assert {call["model"] for call in calls} == {"judge-a", "judge-b"}
@@ -499,18 +509,18 @@ def test_repeats_retry_missing_entry_and_keep_frozen_rule_and_content_boundary(c
                                headers=model_io_headers).json()
         assert remaining["initial_input"] is None
         sequences = [event["sequence"] for event in remaining["outputs"]]
-        assert len(sequences) == 22 and all(sequence > cursor for sequence in sequences)
+        assert len(sequences) == expected_calls - 2 and all(sequence > cursor for sequence in sequences)
         assert sequences == sorted(sequences)
         assert not remaining["has_more"]
         saved = repo.get_run(run["id"])
         recovered = saved["samples"][0]
         runner.process_sample(saved, recovered)
-        assert len(calls) == 25
+        assert len(calls) == expected_calls + 1
         assert recovered["status"] == "evaluation_error"
         assert trace_record(trace_id)["status"] == "running"
         runner.process_sample(saved, recovered)
-        assert len(calls) == 26
-        assert calls[1] == calls[24] == calls[25]
+        assert len(calls) == expected_calls + 2
+        assert calls[expected_calls:] == [calls[1], calls[1]]
         assert recovered["evaluation_trace_ids"] == [trace_id]
         assert trace_record(trace_id)["status"] == "completed"
         assert recorder.is_terminal(trace_id)
@@ -617,21 +627,26 @@ def test_numbered_quote_and_line_range_require_the_declared_source(citation, acc
 
 def test_retry_preserves_first_request_and_keeps_evidence_errors_private(chapter_run, monkeypatch):
     run, sample = chapter_run
+    quality_count = _quality_dimension_count(run)
+    calls_per_judge = run["judge_repeats"] * quality_count
+    expected_calls = len(run["private"]["judges"]) * calls_per_judge
+    http_failure_call = quality_count + 2
+    invalid_line_call = calls_per_judge + 1
     manuscript = next(path for path in sample["artifacts"] if path.startswith("正文/"))
     sample["artifacts"][manuscript] = "门开了。\n\n她在门边停下，听清脚步后才出门。"
     repo.put_run(run)
     invalid_quote = "她在门边……才出门"
     invalid_line = f"{manuscript}:99"
     valid_quote = "她在门边停下"
-    calls = stub_judges(monkeypatch, http_error_at={6}, evidence_at={
+    calls = stub_judges(monkeypatch, http_error_at={http_failure_call}, evidence_at={
         1: [f"3: {valid_quote}", f"{manuscript}:1-3"],
         2: [valid_quote, invalid_quote],
-        13: [invalid_line],
+        invalid_line_call: [invalid_line],
     })
 
     runner.process_sample(run, sample)
-    assert len(calls) == 24
-    assert len(sample["judge_results"]) == 21
+    assert len(calls) == expected_calls
+    assert len(sample["judge_results"]) == expected_calls - 3
     assert sample["status"] == "evaluation_error"
     instructions, scoring_input = calls[0]["messages"]
     assert "行号: 正文原句" in instructions["content"]
@@ -652,7 +667,7 @@ def test_retry_preserves_first_request_and_keeps_evidence_errors_private(chapter
     assert issues == [{"index": 2, "citation": invalid_quote, "reason": "找不到连续原文"},
                       {"index": 1, "citation": invalid_line, "reason": "行号超出文件范围"}]
     runner.process_sample(saved, recovered)
-    assert calls[24:] == [calls[1], calls[5], calls[12]]
+    assert calls[expected_calls:] == [calls[1], calls[http_failure_call - 1], calls[invalid_line_call - 1]]
     assert recovered["status"] == "completed"
     assert recovered["scores"]["overall"] == 4
     assert not recovered.get("judge_evidence_feedback")
@@ -660,7 +675,8 @@ def test_retry_preserves_first_request_and_keeps_evidence_errors_private(chapter
 
 def test_exhausted_incomplete_score_does_not_evolve_or_compare(chapter_run, monkeypatch):
     run, sample = chapter_run
-    calls = stub_judges(monkeypatch, reject_after=23)
+    accepted_calls = len(run["private"]["judges"]) * run["judge_repeats"] * _quality_dimension_count(run) - 1
+    calls = stub_judges(monkeypatch, reject_after=accepted_calls)
     record_traces(monkeypatch)
     for _ in range(3):
         runner.process_sample(run, sample)
@@ -668,7 +684,7 @@ def test_exhausted_incomplete_score_does_not_evolve_or_compare(chapter_run, monk
         trace_id, = sample["evaluation_trace_ids"]
         assert trace_record(trace_id)["status"] == "running"
     runner.process_sample(run, sample)
-    assert len(calls) == 23 + 4
+    assert len(calls) == accepted_calls + 4
     assert sample["evaluation_trace_ids"] == [trace_id]
     trace = trace_record(trace_id)
     assert trace["status"] == "failed"
@@ -676,7 +692,7 @@ def test_exhausted_incomplete_score_does_not_evolve_or_compare(chapter_run, monk
     assert sample["status"] == "failed"
     assert sample["scores"] is None
     assert "评委连接超时" in sample["error"]
-    assert len(sample["judge_results"]) == 23
+    assert len(sample["judge_results"]) == accepted_calls
     runner.advance_one(run["id"])
     saved = repo.get_run(run["id"])
     assert saved["status"] == "failed"
@@ -720,6 +736,7 @@ def test_archived_run_without_repeat_snapshot_uses_original_single_judgement(cha
     run.pop("judge_repeats")
     frozen = run["private"]["rules"]["chapter_text"]
     frozen["profile"] = "chapter-text-outline-v2"
+    frozen["dimensions"] = frozen["dimensions"][:4]
     calls = stub_judges(monkeypatch)
     result = evaluation.score_sample(run, sample)
     assert len(calls) == len(run["private"]["judges"]) * len(frozen["dimensions"])

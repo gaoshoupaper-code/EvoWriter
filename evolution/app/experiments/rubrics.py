@@ -11,6 +11,7 @@ from contracts.target_tasks import configured_task_type
 _lock = threading.RLock()
 PROFILE = "stage-eval-v2"
 TEXT_PROFILE = "chapter-text-outline-v3"
+_LEGACY_TEXT_KEYS = {"事件因果逻辑", "人物行为逻辑", "章纲兑现", "语言清晰度"}
 _DIMENSIONS = {
     "master_outline": [
         ("主题清晰度", "总纲是否将用户意图落实为能贯穿全书的主题？",
@@ -135,10 +136,13 @@ def get_rule(rule_id: str) -> dict | None:
     return repo.get_rule(rule_id)
 
 
-def is_current_text_rule(rule: dict) -> bool:
-    expected = {entry[0] for entry in chapter_rubric.DIMENSIONS}
+def _matches_text_dimensions(rule: dict, expected: set[str]) -> bool:
     keys = [dimension["key"] for dimension in rule.get("dimensions", [])]
     return rule.get("profile") == TEXT_PROFILE and len(keys) == len(expected) and set(keys) == expected
+
+
+def is_current_text_rule(rule: dict) -> bool:
+    return _matches_text_dimensions(rule, {entry[0] for entry in chapter_rubric.DIMENSIONS})
 
 
 def save_rule(request: RuleCreate) -> dict:
@@ -162,7 +166,8 @@ def seed_rules() -> None:
                 continue
             profile = TEXT_PROFILE if scope == "chapter_text" else "isolated-writing-v1" if scope else PROFILE
             matches = is_current_text_rule if profile == TEXT_PROFILE else lambda rule: rule.get("profile") == profile
-            existing = [rule for rule in list_rules(kind) if matches(rule)]
+            rules = list_rules(kind)
+            existing = [rule for rule in rules if matches(rule)]
             if existing:
                 if profile == TEXT_PROFILE and not any(
                         all(dimension.get("focus_points") is not None for dimension in rule["dimensions"])
@@ -183,11 +188,21 @@ def seed_rules() -> None:
                 dimensions = chapter_rubric.DIMENSIONS
                 discipline_rules = chapter_rubric.DISCIPLINE_RULES
                 focus_points = chapter_rubric.FOCUS_POINTS
-            save_rule(RuleCreate.model_validate({
+            payload = {
                 "task_type": kind, "profile": profile,
                 "name": {"master_outline": "总纲", "volume_outlines": "卷纲", "chapter_outlines": "单章章纲", "chapter_text": "单章正文"}[kind] + "试验规则",
                 "discipline_rules": discipline_rules,
                 "dimensions": [{"key": key, "question": question, "weight": 1, "focus_points": focus_points.get(key),
                                 "anchors": {str(level): text for level, text in enumerate(anchors, 1)}}
                                for key, question, anchors in dimensions],
-            }))
+            }
+            if profile == TEXT_PROFILE:
+                previous = next((rule for rule in rules if _matches_text_dimensions(rule, _LEGACY_TEXT_KEYS)), None)
+                if previous:
+                    payload.update(name=previous["name"], discipline_rules=previous["discipline_rules"])
+                    payload["dimensions"] = [
+                        {**dimension, "focus_points": focus_points[dimension["key"]]}
+                        if dimension.get("focus_points") is None else dimension
+                        for dimension in previous["dimensions"]
+                    ] + [dimension for dimension in payload["dimensions"] if dimension["key"] not in _LEGACY_TEXT_KEYS]
+            save_rule(RuleCreate.model_validate(payload))

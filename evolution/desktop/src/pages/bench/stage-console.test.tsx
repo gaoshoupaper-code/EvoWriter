@@ -270,16 +270,26 @@ describe("正文三项评测 / REQ-20261120-161028", () => {
     phase: "baseline", round: 0, arm: "baseline", repeat: 1, attempt: 1, artifacts: {}, trace_ids: [],
     completed: true, status: "failed", scores: null, task_id: "task", checks: {}, error: null, usage: {}, source_commit: "frozen" };
 
-  it("规则页默认打开新版，并能查看旧版五档", async () => {
+  it("规则页默认打开六维新版，旧维度规则保留五档只读", async () => {
     window.location.hash = "#/bench/rules?agent=text";
-    const current = rules[2];
+    const template = rules[2];
+    const previous = { ...template, id: "chapter-v6", version: 6,
+      dimensions: ["事件因果逻辑", "人物行为逻辑", "章纲兑现", "语言清晰度"].map((key) => ({ ...template.dimensions[0], key })) };
+    const current = { ...previous, id: "chapter-v7", version: 7,
+      dimensions: [...previous.dimensions, ...["人物语言", "场景空间"].map((key) => ({ ...template.dimensions[0], key }))] };
     api.listExperimentRules.mockResolvedValue({ items: [
-      { ...current, id: "chapter-v2", profile: "chapter-text-outline-v2", name: "正文历史规则", version: 1 }, current,
+      { ...template, id: "chapter-v2", profile: "chapter-text-outline-v2", name: "正文历史规则", version: 1 }, previous, current,
     ] as never[] });
     render(<StageRules />);
     const versions = await screen.findByLabelText("规则版本");
     expect(versions).toHaveValue(current.id);
+    expect(screen.getByRole("heading", { name: "场景空间" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "编辑规则" })).toBeInTheDocument();
+    expect(within(versions).getByRole("option", { name: /历史 · v6/ })).toBeInTheDocument();
+    fireEvent.change(versions, { target: { value: previous.id } });
+    expect(screen.getByText(/历史规则只读/)).toBeInTheDocument();
+    expect(screen.getAllByText("全部落实")).toHaveLength(4);
+    expect(screen.queryByRole("button", { name: "编辑规则" })).not.toBeInTheDocument();
     fireEvent.change(versions, { target: { value: "chapter-v2" } });
     expect(screen.getByText(/历史规则只读/)).toBeInTheDocument();
     expect(screen.getByText("全部落实")).toBeInTheDocument();

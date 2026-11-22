@@ -1,6 +1,7 @@
 """Task-local execution facts; ordinary conversations keep their existing defaults."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -11,6 +12,7 @@ import os
 from typing import Any
 
 from contracts.target_tasks import TargetTaskRequest
+from app.domains.writing.run_gate import get_workspace_mutation_lock
 from app.platform.agent.runtime.types import AgentMiddleware
 from langchain_core.messages import ToolMessage
 
@@ -101,11 +103,27 @@ class TargetScopeMiddleware(AgentMiddleware):
 
     def wrap_tool_call(self, request, handler):
         blocked = self._block(request)
-        return blocked if blocked is not None else handler(request)
+        if blocked is not None:
+            return blocked
+        if self._is_chapter_save(request):
+            with get_workspace_mutation_lock(self.execution.workspace):
+                return handler(request)
+        return handler(request)
 
     async def awrap_tool_call(self, request, handler):
         blocked = self._block(request)
-        return blocked if blocked is not None else await handler(request)
+        if blocked is not None:
+            return blocked
+        if self._is_chapter_save(request):
+            async with self.execution._chapter_save_lock:
+                return await handler(request)
+        return await handler(request)
+
+    def _is_chapter_save(self, request):
+        call = request.tool_call
+        return (call.get("name") == "save_artifact"
+                and (call.get("args") or {}).get("kind") == "chapter_text"
+                and self.execution.request.target.task_type == "chapter_text")
 
 
 @dataclass
@@ -122,6 +140,8 @@ class FrozenExecution:
     persist: Any = None
     isolated: bool = False
     _calls: dict = field(default_factory=dict)
+    # All agent builders in this worker share one event loop and this execution.
+    _chapter_save_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False, repr=False, compare=False)
 
     def __enter__(self):
         self._token = _execution.set(self)

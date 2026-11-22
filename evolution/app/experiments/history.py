@@ -56,6 +56,7 @@ class _Event(_Trace):
 
 
 _UNAVAILABLE = "本档案中没有可读取的对应记录。"
+_ROUND_FIELDS = ("design", "summary", "diff", "startup_check", "error")
 _EVENT_TYPES = ("tool_start", "tool_end", "tool_error", "skill_activation", "artifact_revision",
                 "middleware_assembly", "middleware_intervention", "run_error", "llm_error")
 
@@ -107,6 +108,14 @@ def _sample_entry(number: int, sample: dict) -> dict:
             "trace_count": len(sample.get("trace_ids", []))}
 
 
+def _available_sections(record: dict, samples: list[dict]) -> list[str]:
+    sections = ["samples"] if samples else []
+    sections.extend(key for key in _ROUND_FIELDS if record.get(key))
+    if record["status"] == "regression_failed":
+        sections.append("regression")
+    return sections
+
+
 def baseline_evidence_entries(run: dict) -> list[dict]:
     return [_sample_entry(number, sample) for number, sample in enumerate(_samples_at(run, 0), 1)]
 
@@ -137,7 +146,7 @@ def make_history_tools(run: dict, *, on_baseline_evidence: Callable[[str], None]
         for record in [{"round": 0}, *run.get("rounds", [])]:
             number = record["round"]
             location = {"round_number": number}
-            for key in ("design", "summary", "diff", "startup_check", "error"):
+            for key in _ROUND_FIELDS:
                 if record.get(key):
                     yield {**location, "section": key}, record[key]
             if record.get("status") == "regression_failed":
@@ -202,10 +211,14 @@ def make_history_tools(run: dict, *, on_baseline_evidence: Callable[[str], None]
 
     @tool(args_schema=_Strict)
     def list_assessment_history() -> list:
-        """列出轮次、状态和样本数量。先查第 0 轮的原版样本。"""
+        """列出轮次、状态、样本数量及已有内容 available_sections。先查第 0 轮的原版样本。"""
         rounds = [{"round": 0, "status": "baseline"}, *run.get("rounds", [])]
-        return [{"round": item["round"], "status": item["status"],
-                 "sample_count": len(_samples_at(run, item["round"]))} for item in rounds]
+        result = []
+        for item in rounds:
+            samples = _samples_at(run, item["round"])
+            result.append({"round": item["round"], "status": item["status"], "sample_count": len(samples),
+                           "available_sections": _available_sections(item, samples)})
+        return result
 
     @tool(args_schema=_Search)
     def search_assessment_history(query: str, offset: int = 0, limit: int = 12) -> dict:
@@ -229,7 +242,7 @@ def make_history_tools(run: dict, *, on_baseline_evidence: Callable[[str], None]
 
     @tool(args_schema=_Round)
     def read_assessment_round(round_number: int, section: str, offset: int = 0) -> dict:
-        """按轮查改法设计、摘要、diff、启动检查、失败原因、改进题样本列表或复测退分摘要。offset 用于翻页。"""
+        """按 list_assessment_history 给出的 available_sections 读取对应轮次资料。offset 用于翻页。"""
         record = next((item for item in run.get("rounds", []) if item["round"] == round_number), None)
         if round_number and record is None:
             return {"error": _UNAVAILABLE}
@@ -243,6 +256,10 @@ def make_history_tools(run: dict, *, on_baseline_evidence: Callable[[str], None]
             if round_number and not samples:
                 result.update(reason="本轮尚无改进题样本。请先查看第 0 轮的原版样本。", baseline_round=0)
             return result
+        if record and record["status"] == "evolving" and not record.get(section):
+            return {"available": False, "round_status": record["status"], "baseline_round": 0,
+                    "reason": "本轮正在改进，尚无这项记录。可先查第 0 轮的原版样本。",
+                    "available_sections": _available_sections(record, _samples_at(run, round_number))}
         if section == "regression":
             if record and record["status"] == "regression_failed":
                 return _regression_drops(run, round_number)

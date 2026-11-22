@@ -198,7 +198,8 @@ def test_first_model_prompt_only_omits_attempt_identifiers_for_experiments(tmp_p
             model_snapshot={"model": "fixture", "base_url": "https://example.test",
                             "api_key_ref": "experiment:fixture:model"} if evaluation else None,
             target={"task_type": "chapter_text", "chapter": 1},
-            input={"confirmation_rules": "自动决定并执行，不等待人工"},
+            input={"confirmation_rules": "自动决定并执行，不等待人工",
+                   "files": {"章纲/第001章.md": _chapter(1)}},
         )
         _, workspace, store, thread, execution, recorder = _text_driver(root, request)
         thread = thread.model_copy(update={"thread_id": f"target-{task_id}"})
@@ -224,9 +225,16 @@ def test_first_model_prompt_only_omits_attempt_identifiers_for_experiments(tmp_p
     if evaluation:
         assert first[0] == second[0]
         assert "当前 session：" not in first[0] and "message_id:" not in first[0]
+        assert "题内文件：章纲/第001章.md" in first[0]
+        assert "# 第001章 · <章名>\n> 状态：起草中｜<日期>" in first[0]
+        assert all(value in first[0] for value in (
+            "unit_kind=ordinary", "300–400", "450", "unit_kind=skill_scene", "skill_name",
+            "mode=full", "mode=append", "mode=edit", 'description="审第1章"',
+        ))
     else:
         for prompt, thread_id, message_id in captures:
             assert f"当前 session：{thread_id}" in prompt and f"message_id: {message_id}" in prompt
+            assert "unit_kind=ordinary" not in prompt
 
 
 def test_other_assessments_keep_existing_model_prompt(tmp_path):

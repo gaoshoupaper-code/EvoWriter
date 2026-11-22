@@ -2,7 +2,7 @@ import pytest
 
 from contracts.target_tasks import TargetSpec, TargetTaskRequest, TaskInput
 from app.domains.writing.target_tasks import (
-    _next_step, _scoped_outputs, completion_checks, materialize_input, validate_input,
+    _next_step, _scoped_outputs, collect_artifacts, completion_checks, materialize_input, validate_input,
 )
 
 
@@ -45,6 +45,25 @@ def test_master_outline_requires_theme_and_cannot_rewrite_downstream(tmp_path, m
     assert set(_scoped_outputs(request, artifacts)) == {"总纲.md"}
     with pytest.raises(ValueError):
         _scoped_outputs(request, {**artifacts, "卷纲/第01卷.md": "越界"})
+
+
+def test_text_target_compares_frozen_files_with_original_line_endings(tmp_path, monkeypatch):
+    monkeypatch.setenv("WRITING_AGENT_ID", "text")
+    outline = "章纲/第002章.md"
+    original = "# 第二章\r\n开头\n转折\r结尾\r\n"
+    request = TargetTaskRequest(task_id="sample", attempt_id="a1", source_commit="a" * 40,
+        target=TargetSpec(task_type="chapter_text", chapter=2),
+        input=TaskInput(files={outline: original}, demand_md="需求\r\n原文", confirmation_rules="独立创作"))
+    materialize_input(tmp_path, request.input)
+    manuscript = "正文/第002章.md"
+    (tmp_path / "正文").mkdir()
+    (tmp_path / manuscript).write_bytes("正文".encode())
+    assert (tmp_path / outline).read_bytes() == original.encode()
+    assert _scoped_outputs(request, collect_artifacts(tmp_path)) == {manuscript: "正文"}
+
+    (tmp_path / outline).write_bytes(original.replace("\r\n", "\n").encode())
+    with pytest.raises(ValueError, match="章纲/第002章"):
+        _scoped_outputs(request, collect_artifacts(tmp_path))
 
 
 def test_text_target_cannot_change_frozen_character_backstory(monkeypatch):

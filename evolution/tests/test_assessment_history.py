@@ -77,6 +77,24 @@ def test_history_and_holdout_are_disjoint(archive):
         read_round({"run_id": "other-run", "round_number": 1, "section": "samples"})
 
 
+def test_evolver_can_discover_sections_before_reading_an_unfinished_round(archive):
+    archive["rounds"].append({"round": 3, "status": "evolving", "summary": "", "diff": "", "error": None})
+    tools = calls(archive)
+    listed = tools["list_assessment_history"]({})
+    assert listed[0]["available_sections"] == ["samples"]
+    assert set(listed[1]["available_sections"]) == {"samples", "design", "summary", "diff", "regression"}
+    assert set(listed[2]["available_sections"]) == {"error", "startup_check"}
+    assert listed[3]["available_sections"] == []
+
+    read_round = tools["read_assessment_round"]
+    for section in ("design", "startup_check", "error", "regression"):
+        result = read_round({"round_number": 3, "section": section})
+        assert result["round_status"] == "evolving" and result["available_sections"] == []
+        assert result["baseline_round"] == 0 and result["available"] is False
+        assert "content" not in result and "error" not in result
+    assert "error" in read_round({"round_number": 4, "section": "design"})
+
+
 def test_baseline_entries_and_reads_use_only_authorized_evidence(archive, history_db):
     archive["samples"].insert(0, sample("保密复测", "baseline", "baseline", 0, 4))
     baseline = archive["samples"][1]

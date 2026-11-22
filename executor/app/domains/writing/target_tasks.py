@@ -57,9 +57,9 @@ def materialize_input(workspace: Path, data: TaskInput):
             raise ValueError(f"不是受支持的业务产物路径：{name}")
         path = _safe_file(workspace, name)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
+        path.write_text(content, encoding="utf-8", newline="")
     if data.demand_md:
-        _safe_file(workspace, "demand.md").write_text(data.demand_md, encoding="utf-8")
+        _safe_file(workspace, "demand.md").write_text(data.demand_md, encoding="utf-8", newline="")
 
 
 def collect_artifacts(workspace: Path):
@@ -69,7 +69,9 @@ def collect_artifacts(workspace: Path):
             relative = path.relative_to(workspace).as_posix()
             if any(part.startswith(".") for part in Path(relative).parts) or not _business_path(relative):
                 continue
-            files[relative] = _safe_file(workspace, relative).read_text(encoding="utf-8")
+            # Frozen inputs are compared verbatim, including their original line endings.
+            with _safe_file(workspace, relative).open(encoding="utf-8", newline="") as stream:
+                files[relative] = stream.read()
     return files
 
 
@@ -587,6 +589,21 @@ async def drive_task(request, workspace, service, thread, execution, store, *, l
                 f"确认规则：{request.input.confirmation_rules}\n"
                 f"待完成：{'；'.join(checks['missing'])}。请实际保存、审稿并按需修订。"
             )
+            if experiment_identity(request):
+                chapter = request.target.chapter
+                has_draft = bool(execution.read_text().strip())
+                prompt += (
+                    f"\n题内文件：{'、'.join(sorted(request.input.files))}。只读取已提供的资料。"
+                    f"本章{'已有正文，先读稿再续写或修订' if has_draft else '尚无正文，直接从首批起草'}。\n"
+                    "save_artifact 每次保存一个写作单元。普通单元用 unit_kind=ordinary，"
+                    "每次写约 300–400 字，含标点最多 450 字。只在实际匹配已启用技能场景时，"
+                    "用 unit_kind=skill_scene 并填写 skill_name 原名，整场一次保存。\n"
+                    "首批用 mode=full，只写文件头和首个单元。文件头连续两行，中间无空行：\n"
+                    f"# 第{chapter:03d}章 · <章名>\n> 状态：起草中｜<日期>\n"
+                    "后续逐批用 mode=append 追加正文。整章写完，用 mode=edit 把状态行改为初稿，保留日期。"
+                    f'等保存成功，再单独调用 task(subagent_type="review", description="审第{chapter}章") 一次。'
+                    "已有审稿意见时直接用 mode=edit 局部修订，不复审。审稿通过后直接交付。"
+                )
         payload = ScreenplayGenerateRequest(thread_id=current_thread.thread_id, prompt=prompt,
                                             message_id=f"{task_id}-{step_number}-{uuid.uuid4().hex}")
         if resume_trace:
@@ -689,7 +706,7 @@ async def _run_worker(root: Path, task_id: str, stopped, parent_pid, *, prepared
             if not metadata.get("owner_id"):
                 materialize_input(workspace, request.input)
             elif request.input.demand_md and not (workspace / "demand.md").exists():
-                (workspace / "demand.md").write_text(request.input.demand_md, encoding="utf-8")
+                (workspace / "demand.md").write_text(request.input.demand_md, encoding="utf-8", newline="")
             store.journal(task_id, metadata={"initialized": True})
         from app.platform.memory.store import (
             MemoryStorePool, get_memory_store_pool, init_memory_store_pool, resolve_memory_root,

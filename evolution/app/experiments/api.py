@@ -116,6 +116,7 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
         for sample in run.get("samples", []):
             public = {key: item for key, item in sample.items() if key not in {
                 "judge_results", "judge_errors", "judge_evidence_feedback", "usage", "generation_retries", "runtime_metrics",
+                "runtime_judge_input",
             }}
             if "runtime_metrics" in sample:
                 public["runtime_metrics"] = _runtime_numbers(sample["runtime_metrics"])

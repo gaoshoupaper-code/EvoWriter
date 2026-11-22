@@ -283,6 +283,20 @@ def _token_metric(run: dict, sample: dict, value: int) -> dict:
     return {"value": value, "baseline": baseline, "saving": saving, "score": min(5, max(1, 3 + 10 * saving))}
 
 
+def _runtime_judge_input(run: dict, sample: dict) -> dict:
+    saved = sample.get("runtime_judge_input")
+    if saved is not None:
+        return saved
+    runtime = _collect_runtime(sample)
+    statistics = {sample["arm"]: {"tools": runtime["tools"], "tokens": runtime["tokens"]}}
+    other = _paired_runtime_metrics(run, sample)
+    if other.get("tools") and "value" in other.get("tokens", {}):
+        other_arm = "candidate" if sample["arm"] == "baseline" else "baseline"
+        statistics[other_arm] = {"tools": {key: other["tools"][key] for key in ("successes", "total")},
+                                 "tokens": other["tokens"]["value"]}
+    return {"runtime_trace": runtime["summary"], "sample_arm": sample["arm"], "runtime_statistics": statistics}
+
+
 def _send_judge(credentials, messages, trace_id, call_id, stopped):
     with httpx.Client(timeout=httpx.Timeout(300, connect=15)) as client:
         return _judge_chat(client, credentials["base_url"].rstrip("/") + "/chat/completions",
@@ -396,28 +410,21 @@ def score_sample(run: dict, sample: dict) -> dict:
     runtime_message, runtime_error, runtime_refs = None, None, None
     if runtime_enabled:
         try:
-            runtime = _collect_runtime(sample)
+            frozen_input = _runtime_judge_input(run, sample)
         except ValueError as exc:
             runtime_error = exc
         else:
-            tools = runtime["tools"]
+            stats = frozen_input["runtime_statistics"][sample["arm"]]
+            tools, token_count = stats["tools"], stats["tokens"]
             rate = tools["successes"] / tools["total"]
-            metrics = {"tools": {**tools, "rate": rate, "score": 1 + 4 * rate}, "tokens": {"value": runtime["tokens"]}}
+            metrics = {"tools": {**tools, "rate": rate, "score": 1 + 4 * rate}, "tokens": {"value": token_count}}
             sample["runtime_metrics"] = metrics
-            other = _paired_runtime_metrics(run, sample)
             try:
-                metrics["tokens"] = _token_metric(run, sample, runtime["tokens"])
+                metrics["tokens"] = _token_metric(run, sample, token_count)
             except ValueError as exc:
                 runtime_error = exc
-            statistics = {sample["arm"]: {"tools": tools, "tokens": runtime["tokens"]}}
-            if other.get("tools") and "value" in other.get("tokens", {}):
-                other_arm = "candidate" if sample["arm"] == "baseline" else "baseline"
-                statistics[other_arm] = {"tools": {key: other["tools"][key] for key in ("successes", "total")},
-                                         "tokens": other["tokens"]["value"]}
-            runtime_refs = {item["ref"]: item["text"] for item in runtime["summary"]["evidence"]}
-            runtime_message = {"role": "user", "content": json.dumps({**judge_material,
-                "runtime_trace": runtime["summary"], "sample_arm": sample["arm"],
-                "runtime_statistics": statistics}, ensure_ascii=False)}
+            runtime_refs = {item["ref"]: item["text"] for item in frozen_input["runtime_trace"]["evidence"]}
+            runtime_message = {"role": "user", "content": json.dumps({**judge_material, **frozen_input}, ensure_ascii=False)}
     from app.experiments import runner
     recorder = runner.recorder()
     trace_id = None
@@ -477,17 +484,16 @@ def score_sample(run: dict, sample: dict) -> dict:
                         errors[key] = f"{dimension['key']}评测异常：{type(exc).__name__}：无法读取评委配置"
                         repo.put_run(run)
                         continue
+                    if is_runtime and "runtime_judge_input" not in sample:
+                        # Persist before sending so that a restart cannot change the first request.
+                        sample["runtime_judge_input"] = frozen_input
+                        repo.put_run(run)
                     instructions = ("你是独立运行评委。只评当前成稿的运行时维度。\n" if is_runtime else
                                     "你是独立质量评委。只评当前维度，只依据资料与产物中的具体证据。\n"
                                     + "\n".join(rule["discipline_rules"]) + "\n")
                     messages = [{"role": "system", "content": instructions + json.dumps(dimension, ensure_ascii=False)
                                  + "\n" + (_RUNTIME_OUTPUT_FORMAT if is_runtime else output_format)},
                                 runtime_message if is_runtime else user_message]
-                    if key in feedback:
-                        messages.append({"role": "user", "content": json.dumps({
-                            "previous_evidence_errors": feedback[key],
-                            "instruction": "以下引用片段用于定位此前未通过的依据。请核对原材料，修正依据后重新提交完整评分 JSON。",
-                        }, ensure_ascii=False)})
                     node_name = dimension["key"] if repeat is None else f"第 {repeat} 次 · {dimension['key']}"
                     call = {"source": "runtime", "run_id": "judge-" + uuid4().hex, "agent_name": "experiment-judge",
                             "node_name": node_name, "model_name": judge["model"]}
@@ -499,7 +505,8 @@ def score_sample(run: dict, sample: dict) -> dict:
                     sample["usage"]["judge_calls"] += 1
                     sample["usage"].setdefault("judge_attempts", []).append(call_record)
                     if trace_id:
-                        recorder.append_event(trace_id, {**call, "type": "llm_start", "status": "running", "input": messages})
+                        recorder.append_event(trace_id, {**call, "type": "llm_start", "status": "running", "input": messages,
+                                                         "_independent_input": True})
                     request = partial(_send_judge, credentials, messages, trace_id, call["run_id"], lambda: runner.is_stopped(run["id"]))
                     finish = partial(finish_request, key, dimension["key"], call_record, call, started)
                     if pool is not None:

@@ -21,6 +21,7 @@ from app.platform.agent.base_service import BaseAgentService
 from app.platform.streaming import ExtraTask, run_agent_stream
 from app.domains.writing.events import WritingEventSink
 from app.domains.writing.conversation_log import ConversationLog, ConversationLogError
+from app.domains.writing.experiment_stream import experiment_identity
 from app.domains.writing.run_gate import get_conversation_gate, get_workspace_mutation_lock
 from app.domains.writing.style_assets import WritingStyleError
 from app.domains.writing.expert_agent.services.storyline_graph import generate_storyline_graph
@@ -1997,10 +1998,18 @@ class MetaAgentService(BaseAgentService):
         （当前段+进度等磁盘事实，见 pipeline.route）、旧客户端表单内容透传、
         作者消息与结构化字段。
         """
+        # Repeated chapter assessments use task and ledger IDs outside the model prompt.
+        execution = current_execution()
+        is_chapter_assessment = (
+            execution is not None
+            and execution.request.target.task_type == "chapter_text"
+            and experiment_identity(execution.request) is not None
+        )
         context_lines = [
             f"{key}: {value}"
             for key, value in payload.loose_context().items()
             if value not in ("", [], {})
+            and (not is_chapter_assessment or key not in {"message_id", "trace_id"})
         ]
         free_text = payload.primary_text()
         context = "\n".join(context_lines) or "作者没有提供结构化字段。"
@@ -2022,10 +2031,11 @@ class MetaAgentService(BaseAgentService):
             else ""
         )
 
+        session_section = "" if is_chapter_assessment else f"当前 session：{thread.thread_id}\n"
         return (
             "请根据作者消息推进创作。\n"
             "当前工作目录：/\n"
-            f"当前 session：{thread.thread_id}\n\n"
+            f"{session_section}\n"
             f"{directive_section}"
             f"{demand_section}"
             "作者消息：\n"

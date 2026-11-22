@@ -163,10 +163,10 @@ def test_restored_final_volume_without_qc_evidence_must_resume_checking(tmp_path
         asyncio.run(drive_task(request, workspace, Service(), thread, execution, store))
 
 
-def _text_driver(tmp_path):
-    request = TargetTaskRequest(task_id="continue-text", attempt_id="first", source_commit="a" * 40,
-                                target={"task_type": "chapter_text", "chapter": 1},
-                                input={"confirmation_rules": "自动决定并执行，不等待人工"})
+def _text_driver(tmp_path, request=None):
+    request = request or TargetTaskRequest(task_id="continue-text", attempt_id="first", source_commit="a" * 40,
+                                           target={"task_type": "chapter_text", "chapter": 1},
+                                           input={"confirmation_rules": "自动决定并执行，不等待人工"})
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     store = TargetTaskStore(tmp_path / "jobs")
@@ -177,6 +177,75 @@ def _text_driver(tmp_path):
     recorder = SimpleNamespace(read_trace_events=lambda *args: [], append_event=lambda *args: None,
                                complete_run=lambda *args: None)
     return request, workspace, store, thread, execution, recorder
+
+
+@pytest.mark.parametrize("evaluation", [True, False], ids=["experiment", "ordinary-target"])
+def test_first_model_prompt_only_omits_attempt_identifiers_for_experiments(tmp_path, monkeypatch, evaluation):
+    from app.domains.writing.agent import MetaAgentService
+    from app.domains.writing.pipeline import route
+
+    monkeypatch.setenv("WRITING_AGENT_ID", "text")
+    builder = MetaAgentService.__new__(MetaAgentService)
+    captures = []
+    workspaces = []
+    sample_id = f"sample-{'a' * 32}"
+
+    for task_id in (sample_id, f"{sample_id}-a2"):
+        root = tmp_path / task_id
+        root.mkdir()
+        request = TargetTaskRequest(
+            task_id=task_id, attempt_id=task_id, source_commit="a" * 40,
+            model_snapshot={"model": "fixture", "base_url": "https://example.test",
+                            "api_key_ref": "experiment:fixture:model"} if evaluation else None,
+            target={"task_type": "chapter_text", "chapter": 1},
+            input={"confirmation_rules": "自动决定并执行，不等待人工"},
+        )
+        _, workspace, store, thread, execution, recorder = _text_driver(root, request)
+        thread = thread.model_copy(update={"thread_id": f"target-{task_id}"})
+        workspaces.append(workspace)
+
+        class Service:
+            trace_recorder = recorder
+
+            async def generate_stream(self, payload, current_thread, **kwargs):
+                directive = route(workspace, current_thread.thread_id, user_text=payload.primary_text()).directive
+                prompt = builder._build_user_prompt(payload, current_thread, directive=directive)
+                captures.append((prompt, current_thread.thread_id, payload.message_id))
+                _save_reviewed_text(workspace, execution)
+                yield 'event: final\ndata: {}\n\n'
+
+        result = asyncio.run(drive_task(request, workspace, Service(), thread, execution, store))
+        assert result["complete"]
+
+    first, second = captures
+    assert first[1] != second[1] and first[2] != second[2]
+    assert workspaces[0] != workspaces[1]
+    assert all("当前工作目录：/" in prompt and "第1章正文" in prompt for prompt, _, _ in captures)
+    if evaluation:
+        assert first[0] == second[0]
+        assert "当前 session：" not in first[0] and "message_id:" not in first[0]
+    else:
+        for prompt, thread_id, message_id in captures:
+            assert f"当前 session：{thread_id}" in prompt and f"message_id: {message_id}" in prompt
+
+
+def test_other_assessments_keep_existing_model_prompt(tmp_path):
+    from app.domains.writing.agent import MetaAgentService
+    from app.schemas.screenplay import ScreenplayGenerateRequest
+
+    request = TargetTaskRequest(
+        task_id="outline-sample", attempt_id="first", source_commit="a" * 40,
+        model_snapshot={"model": "fixture", "base_url": "https://example.test",
+                        "api_key_ref": "experiment:fixture:model"},
+        target={"task_type": "chapter_outlines", "volume_ids": [1], "chapter": 1},
+        input={"confirmation_rules": "自动确认"},
+    )
+    payload = ScreenplayGenerateRequest(thread_id="outline-thread", prompt="第1章章纲", message_id="outline-message")
+    thread = SimpleNamespace(thread_id=payload.thread_id)
+    builder = MetaAgentService.__new__(MetaAgentService)
+    with FrozenExecution(request, object(), tmp_path, object(), tmp_path):
+        prompt = builder._build_user_prompt(payload, thread)
+    assert "当前 session：outline-thread" in prompt and "message_id: outline-message" in prompt
 
 
 def _save_reviewed_text(workspace, execution):

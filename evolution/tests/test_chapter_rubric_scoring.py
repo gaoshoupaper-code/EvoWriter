@@ -166,6 +166,75 @@ def test_runtime_missing_evidence_retries_without_rescoring_content(chapter_run,
     assert sample["scores"]["overall"] == pytest.approx(3.92)
 
 
+def test_runtime_repeats_and_retry_reuse_the_first_prompt_after_reload(chapter_run, monkeypatch):
+    run, sample = chapter_run
+    run.update(runtime_scoring_version=1, judge_repeats=2)
+    run["private"]["judges"] = run["private"]["judges"][:1]
+    stub_judges(monkeypatch)
+    runtime_messages = []
+    monkeypatch.setattr(evaluation, "_collect_runtime", lambda _: _runtime_input())
+
+    def send(_credentials, messages, *_):
+        if "runtime_trace" in json.loads(messages[1]["content"]):
+            runtime_messages.append(messages)
+            evidence = ["missing:99"] if len(runtime_messages) == 1 else ["trace-body:8"]
+        else:
+            evidence = ["她在门边停下"]
+        return json.dumps({"score": 4, "reason": "按证据评分", "evidence": evidence}), None
+
+    monkeypatch.setattr(evaluation, "_send_judge", send)
+    runner.process_sample(run, sample)
+    assert sample["status"] == "evaluation_error"
+    assert len(runtime_messages) == 2
+    assert runtime_messages[0] == runtime_messages[1]
+
+    saved = repo.get_run(run["id"])
+    recovered = saved["samples"][0]
+    saved["current_round"] = 1
+    saved["samples"].append({**recovered, "id": "candidate", "phase": "exploration", "round": 1, "arm": "candidate",
+                             "runtime_metrics": {"tools": {"successes": 5, "total": 5}, "tokens": {"value": 50_000}}})
+    updated = _runtime_input()
+    updated["summary"]["evidence"][0]["text"] = "后来同步的说明"
+    monkeypatch.setattr(evaluation, "_collect_runtime", lambda _: updated)
+    runner.process_sample(saved, recovered)
+
+    assert recovered["status"] == "completed"
+    assert runtime_messages == [runtime_messages[0]] * 3
+    assert set(json.loads(runtime_messages[0][1]["content"])["runtime_statistics"]) == {"baseline"}
+    assert all("runtime_judge_input" not in item for item in api.public_run(saved, can_read_content=True)["samples"])
+
+
+def test_runtime_prompt_is_not_frozen_without_a_judge_request(chapter_run, monkeypatch):
+    run, sample = chapter_run
+    run.update(runtime_scoring_version=1, judge_repeats=1)
+    monkeypatch.setattr(evaluation, "_collect_runtime", lambda _: _runtime_input())
+
+    def credentials(_):
+        raise ValueError("评委配置不可用")
+
+    monkeypatch.setattr(repo, "decrypt_credentials", credentials)
+    runner.process_sample(run, sample)
+
+    assert sample["status"] == "evaluation_error"
+    assert "runtime_judge_input" not in repo.get_run(run["id"])["samples"][0]
+
+
+def test_scoring_trace_preserves_each_dimension_input_with_the_same_long_prefix(chapter_run, monkeypatch):
+    run, sample = chapter_run
+    run["judge_repeats"] = 2
+    run["private"]["judges"] = run["private"]["judges"][:1]
+    run["private"]["rules"]["chapter_text"]["discipline_rules"] = ["共同评分要求。" * 40]
+    calls = stub_judges(monkeypatch)
+    record_traces(monkeypatch)
+    runner.process_sample(run, sample)
+
+    trace_id, = sample["evaluation_trace_ids"]
+    events = traces._reconstruct_incremental_inputs([traces.hydrate_event(event) for event in traces._load_events(trace_id)])
+    recorded = [event.input for event in events if event.type == "llm_start"]
+    assert len(calls) == 8
+    assert recorded == [call["messages"] for call in calls]
+
+
 def test_runtime_token_scores_use_matching_inputs_and_repeats():
     runs = []
     for repeat, value in enumerate((100_000, 100_000, 200_000), 1):
@@ -527,7 +596,7 @@ def test_numbered_quote_and_line_range_require_the_declared_source(citation, acc
             evaluation._judgement(raw, "语言清晰度", material=material)
 
 
-def test_retry_uses_saved_evidence_feedback_only_for_the_failed_scoring_item(chapter_run, monkeypatch):
+def test_retry_preserves_first_request_and_keeps_evidence_errors_private(chapter_run, monkeypatch):
     run, sample = chapter_run
     manuscript = next(path for path in sample["artifacts"] if path.startswith("正文/"))
     sample["artifacts"][manuscript] = "门开了。\n\n她在门边停下，听清脚步后才出门。"
@@ -560,21 +629,11 @@ def test_retry_uses_saved_evidence_feedback_only_for_the_failed_scoring_item(cha
         serialized = json.dumps(public, ensure_ascii=False)
         assert invalid_quote not in serialized and invalid_line not in serialized
 
+    issues = [error for entries in recovered["judge_evidence_feedback"].values() for error in entries if "citation" in error]
+    assert issues == [{"index": 2, "citation": invalid_quote, "reason": "找不到连续原文"},
+                      {"index": 1, "citation": invalid_line, "reason": "行号超出文件范围"}]
     runner.process_sample(saved, recovered)
-    assert len(calls) == 27
-    assert calls[25] == calls[5]
-    for original, retry, index, citation, reason in (
-        (calls[1], calls[24], 2, invalid_quote, "找不到连续原文"),
-        (calls[12], calls[26], 1, invalid_line, "行号超出文件范围"),
-    ):
-        assert retry["model"] == original["model"]
-        assert retry["messages"][:2] == original["messages"]
-        _, _, feedback = retry["messages"]
-        assert feedback["role"] == "user"
-        errors = json.loads(feedback["content"])["previous_evidence_errors"]
-        assert [error for error in errors if "citation" in error] == [
-            {"index": index, "citation": citation, "reason": reason},
-        ]
+    assert calls[24:] == [calls[1], calls[5], calls[12]]
     assert recovered["status"] == "completed"
     assert recovered["scores"]["overall"] == 4
     assert not recovered.get("judge_evidence_feedback")

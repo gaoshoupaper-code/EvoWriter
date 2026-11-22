@@ -603,9 +603,10 @@ class EvolutionTraceRecorder:
             output_anchor_id = f"anchor-{trace_id}-{sequence}-{self._anchor_counter}"
 
             # 增量存储：仅 llm_start 且有 input 时计算。
+            # Independent scoring requests can share a long prefix without sharing context.
             input_value = values.get("input")
             input_context_range = values.get("input_context_range")
-            if event_type == "llm_start" and input_value is not None:
+            if event_type == "llm_start" and input_value is not None and not values.get("_independent_input"):
                 inc_state = self._increment_states.get(trace_id)
                 if inc_state is not None:
                     result = compute_increment(inc_state, input_value, output_anchor_id)

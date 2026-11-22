@@ -52,9 +52,9 @@ function ComparisonContent({ id, search }: { id: string; search: string }) {
         {requestedRound && <p>{PHASE_LABELS[phase]} · 候选第 {requestedRound} 轮</p>}</header>
       {phase === "regression" ? TASK_TYPES.filter(kind => !regressionTask || kind === regressionTask).map(kind => {
         const regression = regressions[kind];
-        return regression && <ComparisonReport key={kind} title={TASK_LABELS[kind] + "回归"} report={regression} />;
+        return regression && <ComparisonReport key={kind} title={TASK_LABELS[kind] + "回归"} report={regression} composite={!!experiment.runtime_scoring_version} />;
       }) : comparison?.baseline && comparison.candidate
-        && <ComparisonReport title={PHASE_LABELS[phase]} report={comparison} />}
+        && <ComparisonReport title={PHASE_LABELS[phase]} report={comparison} composite={!!experiment.runtime_scoring_version} />}
       {hasChapterComparison && <ChapterComparison experiment={{ ...experiment,
           rounds: experiment.can_read_content ? experiment.rounds : experiment.rounds.map(item => ({ ...item, trace_ids: [] })),
           samples: samples.filter(sample => sampleTask(sample) === "chapter_text").map(sample => ({ ...sample, artifacts: sample.artifacts ?? {},

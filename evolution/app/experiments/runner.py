@@ -73,8 +73,8 @@ def create_run(request: RunCreate, actor: str) -> dict:
         rule = rubrics.get_rule(identifier)
         if rule is None or rule["task_type"] != kind:
             raise ValueError(f"{kind}评分规则版本不存在或类型不匹配")
-        if chapter_assessment and rule.get("profile") != rubrics.TEXT_PROFILE:
-            raise ValueError("请使用新版正文评分规则")
+        if chapter_assessment and not rubrics.is_current_text_rule(rule):
+            raise ValueError("请使用包含四个现行正文维度的评分规则")
         frozen_rules[kind] = rule
     frozen_packages = {}
     input_purposes = {}
@@ -116,6 +116,7 @@ def create_run(request: RunCreate, actor: str) -> dict:
         snapshots.retain(run["id"], selected["commit"])
         run["assessment_version"] = 2
         run["judge_repeats"] = judge_repeats
+        run["runtime_scoring_version"] = evaluation.RUNTIME_SCORING_VERSION
         run["private"]["package_revisions"] = {key: p["input_revision"] for key, p in frozen_packages.items()}
         del run["private"]["packages"]
     run["models"] = repo.public_models(run)
@@ -244,7 +245,8 @@ def process_sample(run: dict, sample: dict) -> None:
         delay = min(60, 5 * attempts)
         sample.update(status="evaluation_error", score_retry_at=time.time() + delay,
                       error=f"评测异常：{type(exc).__name__}：{str(exc)[:240]}；保留原产物，{delay} 秒后重试评分。")
-        repo.event(run, "score_retry", f"{sample['package_title']}：{delay} 秒后进行第 {attempts} 次评分重试。")
+        title = sample.get("package_title") or sample["package_id"]
+        repo.event(run, "score_retry", f"{title}：{delay} 秒后进行第 {attempts} 次评分重试。")
     repo.put_run(run)
 
 

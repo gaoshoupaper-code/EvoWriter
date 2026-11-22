@@ -140,6 +140,44 @@ it("无正文权限只显示分数，不拉取 Trace、评语和错误原文", a
   expect(useTracePolling).not.toHaveBeenCalled();
 });
 
+it.each([true, false])("评分详情核对运行数据并保护 Skill 证据，正文权限 %s", async (canRead) => {
+  const scored = { ...sample, scores: { overall: 4, quality: 4, dimensions: { 因果: 4, 运行时: 4 },
+    weights: { quality: .7, runtime: .3, tools: .1, tokens: .1, skill: .1 }, runtime_scoring_version: 1,
+    runtime: { score: 4, tools: { successes: 8, total: 10, rate: .8, score: 4.2 },
+      tokens: { value: 72000, baseline: 80000, saving: .1, score: 4 }, skill: { score: 3.8 } },
+    reasons: { 运行时: [{ judge_id: 1, score: 4, reason: "Skill 确实用于修订", evidence: ["writing-1:45"],
+      evidence_details: [{ ref: "writing-1:45", text: "受限证据摘要" }] }] } } };
+  vi.mocked(getExperiment).mockResolvedValue({ ...experiment, can_read_content: canRead, runtime_scoring_version: 1,
+    scoring_rule: { id: "rule-2", name: "正文规则", version: 2, dimension_weights: { 因果: 2 } }, samples: [scored] });
+  open("evaluation");
+  expect(await screen.findByText("工具调用成功率")).toBeVisible();
+  expect(screen.getByText(/8 \/ 10/)).toBeVisible();
+  expect(screen.getByText(/72,000/)).toBeVisible();
+  expect(screen.getByText(/80,000/)).toBeVisible();
+  expect(screen.getByText(/正文规则.*v2/)).toBeVisible();
+  if (canRead) {
+    expect(screen.getByText("Skill 确实用于修订")).toBeVisible();
+    expect(screen.getByText(/writing-1:45/)).toBeVisible();
+    expect(screen.getByText(/受限证据摘要/)).toBeVisible();
+  } else {
+    expect(screen.queryByText("Skill 确实用于修订")).not.toBeInTheDocument();
+    expect(screen.queryByText(/writing-1:45/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/受限证据摘要/)).not.toBeInTheDocument();
+  }
+});
+
+it("缺原版用量时保留候选 Token 与已评结果，不显示汇总分", async () => {
+  vi.mocked(getExperiment).mockResolvedValue({ ...experiment, can_read_content: false, runtime_scoring_version: 1,
+    samples: [{ ...sample, scores: null, status: "failed", runtime_metrics: { tokens: { value: 72000 } },
+      score_progress: { completed: 0, total: 1, reasons: { 运行时: [{ judge_id: 1, score: 4 }] } } }] });
+  open("evaluation");
+  expect(await screen.findByText("72,000")).toBeVisible();
+  expect(screen.getByText("同题同次原版 Token").nextElementSibling).toHaveTextContent("未知");
+  expect(screen.getByText(/第一评委 · 4\.000/)).toBeVisible();
+  expect(screen.getByText(/尚无汇总评分/)).toBeVisible();
+  expect(screen.queryByText("Token 分")).not.toBeInTheDocument();
+});
+
 it("读未归档的本样本评分 Trace，始终显示评测模型", async () => {
   vi.mocked(getExperiment).mockResolvedValue({ ...experiment, status: "running",
     samples: [{ ...experiment.samples[0], status: "scoring", scores: null, evaluation_trace_ids: ["archived"] }] });

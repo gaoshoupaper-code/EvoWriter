@@ -37,6 +37,7 @@ function ReviewResult({ experiment, busy, publish, restore }: {
     : report.exploration_round == null || report.exploration_round === candidate?.round ? report.exploration : undefined;
   const regressions = round?.regressions
     ?? (report.regression_round == null || report.regression_round === candidate?.round ? report.regressions : undefined);
+  const composite = !!experiment.runtime_scoring_version;
   const assessment = experiment.task_type === "chapter_text" && experiment.assessment_version === 1;
   const status = experiment.publish_status;
   const publishInProgress = status === "publishing" || experiment.status === "publishing";
@@ -52,10 +53,10 @@ function ReviewResult({ experiment, busy, publish, restore }: {
         <div><dt>候选</dt><dd>第 {candidate.round} 轮</dd></div>
         <div><dt>版本</dt><dd><code>{candidate.commit}</code></dd></div>
       </dl> : <p className="experiment-note">候选版本未记录。</p>}
-      {optimization?.baseline && optimization.candidate && <ComparisonReport title="优化复测" report={optimization} />}
+      {optimization?.baseline && optimization.candidate && <ComparisonReport title="优化复测" report={optimization} composite={composite} />}
       {Object.entries(regressions ?? {}).map(([kind, comparison]) =>
-        <ComparisonReport key={kind} title={experimentTaskLabel(kind as Experiment["task_type"]) + "回归"} report={comparison} />)}
-      {report.validation && <ComparisonReport title="独立终验" report={report.validation} />}
+        <ComparisonReport key={kind} title={experimentTaskLabel(kind as Experiment["task_type"]) + "回归"} report={comparison} composite={composite} />)}
+      {report.validation && <ComparisonReport title="独立终验" report={report.validation} composite={composite} />}
     </section>
     <section aria-label="发布与加载"><h2>发布与加载</h2>
       <p><strong>{publishInProgress ? "发布中" : publishLabels[status] ?? status ?? "尚未发布"}</strong></p>

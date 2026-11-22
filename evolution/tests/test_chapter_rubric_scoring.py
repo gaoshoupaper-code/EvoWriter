@@ -5,6 +5,7 @@ import asyncio
 import json
 import sqlite3
 import sys
+from threading import Event, Lock
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -60,7 +61,7 @@ def chapter_run(monkeypatch, tmp_path):
         connection.close()
 
 
-def stub_judges(monkeypatch, *, invalid_at=(), reject_after=None, http_error_at=(), evidence_at=None):
+def stub_judges(monkeypatch, *, invalid_at=(), reject_after=None, http_error_at=(), evidence_at=None, runtime_ref=None):
     calls = []
 
     class JudgeClient:
@@ -86,6 +87,8 @@ def stub_judges(monkeypatch, *, invalid_at=(), reject_after=None, http_error_at=
                 judgement.pop("reason")
             if evidence_at and index in evidence_at:
                 judgement["evidence"] = evidence_at[index]
+            if runtime_ref and "runtime_trace" in json["messages"][1]["content"]:
+                judgement["evidence"] = [runtime_ref]
             return httpx.Response(200, json={**make_completion(judgement), "usage": {
                 "prompt_tokens": 3, "completion_tokens": 4, "provider_detail": "专用评语 与 她在门边停下",
             }})
@@ -99,6 +102,147 @@ def stub_judges(monkeypatch, *, invalid_at=(), reject_after=None, http_error_at=
         "base_url": "https://judge.invalid", "api_key": "test-secret", "model": judge["model"],
     })
     return calls
+
+
+def _runtime_input():
+    return {"tools": {"successes": 4, "total": 5}, "tokens": 100_000,
+            "summary": {"skill_status": "read", "omitted": {}, "evidence": [
+                {"ref": "trace-body:8", "kind": "review", "text": "已按 Skill 检查叙事视角"}]}}
+
+
+def test_runtime_is_a_fifth_independent_dimension(chapter_run, monkeypatch):
+    run, sample = chapter_run
+    run["runtime_scoring_version"] = 1
+    calls = stub_judges(monkeypatch, runtime_ref="trace-body:8")
+    monkeypatch.setattr(evaluation, "_collect_runtime", lambda _: _runtime_input(), raising=False)
+
+    result = evaluation.score_sample(run, sample)
+
+    assert len(calls) == 30
+    runtime_calls = 0
+    for call in calls:
+        material = json.loads(call["messages"][1]["content"])
+        if "runtime_trace" in material:
+            runtime_calls += 1
+            assert "运行时" in call["messages"][0]["content"]
+            assert material["runtime_trace"]["evidence"][0]["ref"] == "trace-body:8"
+        else:
+            assert '"key": "运行时"' not in call["messages"][0]["content"]
+    assert runtime_calls == 6
+    assert result["quality"] == 4
+    assert result["runtime"]["tools"]["score"] == pytest.approx(4.2)
+    assert result["runtime"]["tokens"]["score"] == 3
+    assert result["runtime"]["skill"]["score"] == 4
+    assert result["dimensions"]["运行时"] == pytest.approx((4.2 + 3 + 4) / 3)
+    assert result["overall"] == pytest.approx(3.92)
+    assert result["reasons"]["运行时"][0]["evidence_details"] == [
+        {"ref": "trace-body:8", "text": "已按 Skill 检查叙事视角"}]
+
+
+def test_runtime_missing_evidence_retries_without_rescoring_content(chapter_run, monkeypatch):
+    run, sample = chapter_run
+    run["runtime_scoring_version"] = 1
+    run["judge_repeats"] = 1
+    run["private"]["judges"] = run["private"]["judges"][:1]
+    calls = stub_judges(monkeypatch, runtime_ref="trace-body:8")
+    runtime_ready = False
+
+    def collect(_):
+        if not runtime_ready:
+            raise ValueError("运行 Trace 尚未校验")
+        return _runtime_input()
+
+    monkeypatch.setattr(evaluation, "_collect_runtime", collect, raising=False)
+    runner.process_sample(run, sample)
+    assert sample["status"] == "evaluation_error"
+    assert sample["generation_status"] == "completed"
+    assert len(sample["judge_results"]) == len(calls) == 4
+    assert sample.get("scores") is None
+
+    runtime_ready = True
+    runner.process_sample(run, sample)
+    assert sample["status"] == "completed"
+    assert len(sample["judge_results"]) == len(calls) == 5
+    assert sample["scores"]["overall"] == pytest.approx(3.92)
+
+
+def test_runtime_token_scores_use_matching_inputs_and_repeats():
+    runs = []
+    for repeat, value in enumerate((100_000, 100_000, 200_000), 1):
+        runs.append({"arm": "baseline", "phase": "regression", "round": 2, "package_id": "chapter",
+                     "input_revision": "same", "repeat": repeat,
+                     "runtime_metrics": {"tokens": {"value": value}}})
+    run = {"samples": [{**runs[0], "input_revision": "different"}, *runs]}
+    scores = []
+    for repeat, value in enumerate((110_000, 110_000, 180_000), 1):
+        sample = {**runs[repeat - 1], "arm": "candidate"}
+        scores.append(evaluation._token_metric(run, sample, value)["score"])
+    assert scores == pytest.approx([2, 2, 4])
+
+
+def test_runtime_token_score_caps_and_invalid_baseline():
+    run = {"samples": [{"arm": "baseline", "phase": "baseline", "round": 0, "package_id": "q", "repeat": 1,
+                        "runtime_metrics": {"tokens": {"value": 80_000}}}]}
+    sample = {"arm": "candidate", "phase": "exploration", "round": 1, "package_id": "q", "repeat": 1}
+    assert [evaluation._token_metric(run, sample, value)["score"] for value in
+            (60_000, 72_000, 76_000, 80_000, 88_000, 100_000)] == pytest.approx([5, 4, 3.5, 3, 2, 1])
+    with pytest.raises(ValueError, match="Token"):
+        evaluation._token_metric(run, run["samples"][0], 0)
+
+
+def test_running_regression_reports_only_aggregate_runtime_drop(chapter_run):
+    from app.experiments.history import _regression_drops
+
+    run, sample = chapter_run
+    run.update(runtime_scoring_version=1)
+    run["settings"]["regression_ids"] = {"chapter_text": [sample["package_id"]]}
+    run["samples"] = [{**sample, "phase": "regression", "round": 1, "arm": arm,
+                       "scores": {"dimensions": {"运行时": score}}}
+                      for arm, score in (("baseline", 4), ("candidate", 3.7))]
+    assert _regression_drops(run, 1) == {"round": 1, "drops": {"运行时": -0.3}}
+
+
+def test_runtime_judge_can_mark_evidence_insufficient():
+    with pytest.raises(evaluation._InvalidEvidence) as caught:
+        evaluation._judgement('{"evidence_insufficient":true,"reason":"缺少关键改稿记录"}', "运行时",
+                              material={}, runtime_refs={"trace-body:8": "运行摘要证据"})
+    assert caught.value.details == [{"reason": "缺少关键改稿记录"}]
+
+
+@pytest.mark.parametrize("runtime_first", [True, False])
+def test_runtime_returns_independently_and_receives_pair_stats(chapter_run, monkeypatch, runtime_first):
+    run, baseline = chapter_run
+    run.update(runtime_scoring_version=1, judge_repeats=1, current_round=1)
+    run["private"]["judges"] = run["private"]["judges"][:1]
+    baseline["runtime_metrics"] = {"tools": {"successes": 3, "total": 4}, "tokens": {"value": 100_000}}
+    sample = {**baseline, "arm": "candidate", "phase": "exploration", "round": 1, "id": "candidate"}
+    run["samples"].append(sample)
+    stub_judges(monkeypatch)
+    monkeypatch.setattr(evaluation, "_collect_runtime", lambda _: {**_runtime_input(), "tokens": 90_000})
+    lock, ready = Lock(), Event()
+    returns = []
+
+    def send(_credentials, messages, *_):
+        material = json.loads(messages[1]["content"])
+        runtime = "runtime_trace" in material
+        if runtime != runtime_first:
+            assert ready.wait(5)
+        with lock:
+            returns.append(runtime)
+            if len(returns) == (1 if runtime_first else 4):
+                ready.set()
+        if runtime:
+            assert material["runtime_statistics"] == {
+                "baseline": {"tools": {"successes": 3, "total": 4}, "tokens": 100_000},
+                "candidate": {"tools": {"successes": 4, "total": 5}, "tokens": 90_000},
+            }
+        evidence = ["trace-body:8"] if runtime else ["她在门边停下"]
+        return json.dumps({"score": 4, "reason": "定档理由", "evidence": evidence}), None
+
+    monkeypatch.setattr(evaluation, "_send_judge", send)
+    result = evaluation.score_sample(run, sample)
+    assert returns == ([True, False, False, False, False] if runtime_first else [False, False, False, False, True])
+    assert result["overall"] == pytest.approx(4.02)
 
 
 def make_completion(value):
@@ -506,7 +650,8 @@ def test_archived_run_without_repeat_snapshot_uses_original_single_judgement(cha
         assert all("达标" in entry and "repeat" not in entry for entry in entries)
 
 
-@pytest.mark.parametrize("candidate_score, minimum, passes", [(4.1, .1, True), (4.09, .1, False), (4, 0, True), (3.99, 0, False)])
+@pytest.mark.parametrize("candidate_score, minimum, passes", [(4.1, .1, True), (4.09, .1, False), (4.096, .1, False),
+                                                              (4, 0, True), (3.99, 0, False)])
 def test_existing_total_score_thresholds_include_boundaries(candidate_score, minimum, passes):
     def scored(score):
         return {"package_id": "q", "repeat": 1, "completed": True, "scores": {"overall": score}}

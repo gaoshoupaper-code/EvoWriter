@@ -175,7 +175,13 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         previous = {"commit": "f" * 40, "version": 1}
         monkeypatch.setattr(clients, "versions", lambda: {"items": [release, previous], "production_version": 2})
         monkeypatch.setattr(clients, "prepare_artifact", lambda _: {"digest": "1" * 64})
+        current_rule = rubrics.get_rule(settings.rule_versions[kind])
+        repo.insert("self_evolution_rules", {**current_rule, "id": "old-three-dimensions", "version": 99,
+            "dimensions": current_rule["dimensions"][1:]})
         assert api.experiment_options()["versions"] == [release]
+        assert api.experiment_options()["launch_rule_ids"] == [current_rule["id"]]
+        with pytest.raises(ValueError, match="四个现行正文维度"):
+            runner.create_run(settings.model_copy(update={"rule_versions": {kind: "old-three-dimensions"}}), "author")
         assert previous in clients.versions()["items"]
         with pytest.raises(ValueError, match="当前生产版本"):
             runner.create_run(settings.model_copy(update={"baseline_version": previous["version"]}), "author")
@@ -188,6 +194,7 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         monkeypatch.setattr(snapshots, "retain", lambda archive, commit: None)
         run = runner.create_run(settings, "author")
         assert run["assessment_version"] == 2
+        assert run["runtime_scoring_version"] == 1
         assert run["judge_repeats"] == 3
         first_rule = run["private"]["rules"][kind]
         next_rule = rubrics.save_rule(RuleCreate.model_validate({key: first_rule[key] for key in
@@ -209,6 +216,7 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         assert reg[0] not in {sample["id"] for sample in repo.list_packages()}
         saved = repo.get_run(run["id"])
         assert "packages" not in saved["private"]
+        assert saved["runtime_scoring_version"] == 1
         assert saved["judge_repeats"] == 3
         assert saved["models"]["judges"][0]["id"] == 2
         assert saved["private"]["rules"][kind] == first_rule

@@ -83,6 +83,7 @@ export type ExperimentThresholds = {
 };
 export type ExperimentOptions = {
   task_types: ExperimentTaskType[];
+  launch_rule_ids?: string[];
   versions: { version: number; commit: string; note: string }[];
   production_version: number | null;
   models: { id: number; name: string; model: string; is_active: boolean; has_key?: boolean; base_url?: string }[];
@@ -125,21 +126,30 @@ export type ExperimentEvaluationCall = {
     prompt_tokens?: number | null; completion_tokens?: number | null } | null;
 };
 export type ExperimentEvaluationUsagePage = { items: ExperimentEvaluationCall[]; total: number; offset: number; limit: number };
-type ExperimentJudgeProgress = { judge_id: number; repeat?: number } & (
-  { score: number; reason: string; evidence: string[] }
-  | { score: number; 达标: string[]; 不足: string[] }
-  | { score: null; error: string }
-);
+type ExperimentJudgeProgress = { judge_id: number; repeat?: number; score: number | null;
+  reason?: string; evidence?: string[]; evidence_details?: { ref: string; text: string }[];
+  达标?: string[]; 不足?: string[]; error?: string };
 type ExperimentScoreProgress = {
   completed: number;
   total: number;
   reasons?: Record<string, ExperimentJudgeProgress[]>;
 };
+export type ExperimentRuntimeMetrics = {
+  tools?: { successes: number; total: number; rate: number; score: number };
+  tokens?: { value: number; baseline?: number; saving?: number; score?: number };
+};
+export type ExperimentScores = {
+  overall: number | null; dimensions: Record<string, number | null>; reasons: Record<string, unknown>;
+  rule_id?: string; quality?: number; runtime_scoring_version?: number;
+  runtime?: ExperimentRuntimeMetrics & { score: number; skill: { score: number } };
+  weights?: { quality: number; runtime: number; tools: number; tokens: number; skill: number };
+};
 export type ExperimentSample = {
   id: string; phase: string; round: number; arm: "baseline" | "candidate"; package_id: string;
   package_title: string; task_type: ExperimentTaskType; repeat: number; attempt: number; status: string;
   task_id: string; trace_ids: string[]; evaluation_trace_ids?: string[]; completed: boolean; checks: Record<string, unknown>;
-  scores: null | { overall: number | null; dimensions: Record<string, number | null>; reasons: Record<string, unknown> };
+  scores: ExperimentScores | null;
+  runtime_metrics?: ExperimentRuntimeMetrics;
   score_progress?: ExperimentScoreProgress;
   error: string | null; artifacts: Record<string, string>; usage: Record<string, unknown>;
   input_revision: string; package_revision?: string; source_commit: string; artifact_digest?: string;
@@ -148,8 +158,9 @@ export type ExperimentSample = {
 export type Experiment = {
   id: string; name: string; task_type: ExperimentTaskType; status: string; phase: string; flow_version?: number;
   assessment_version?: number;
+  runtime_scoring_version?: number;
   judge_repeats?: number;
-  scoring_rule?: { id: string; name: string; version: number };
+  scoring_rule?: { id: string; name: string; version: number; dimension_weights?: Record<string, number> };
   current_round: number; max_rounds: number; end_reason: string | null; settings: ExperimentStart;
   models?: ExperimentModels;
   progress?: {

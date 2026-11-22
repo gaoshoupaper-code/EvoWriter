@@ -83,6 +83,19 @@ def _usage(run: dict) -> dict:
                 (generation, evaluation, evolution) if group["calls"])}
 
 
+def _score_numbers(values: dict, fields) -> dict:
+    return {key: values[key] for key in fields if type(values.get(key)) in (int, float)}
+
+
+def _runtime_numbers(runtime: dict) -> dict:
+    projected = _score_numbers(runtime, ("score",))
+    for group, fields in (("tools", ("successes", "total", "rate", "score")),
+                          ("tokens", ("value", "baseline", "saving", "score")), ("skill", ("score",))):
+        if group in runtime:
+            projected[group] = _score_numbers(runtime[group], fields)
+    return projected
+
+
 def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> dict:
     # Project before copying: discarded histories can contain tens of thousands of calls.
     omitted = {"private", "rounds", "samples", "usage"}
@@ -93,14 +106,19 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
         rule = run.get("private", {}).get("rules", {}).get("chapter_text")
         if rule and all(key in rule for key in ("id", "name", "version")):
             value["scoring_rule"] = {key: rule[key] for key in ("id", "name", "version")}
+            if run.get("runtime_scoring_version"):
+                value["scoring_rule"]["dimension_weights"] = {
+                    dimension["key"]: dimension["weight"] for dimension in rule["dimensions"]}
     if not summary:
         value["rounds"] = [copy.deepcopy({key: item for key, item in round_.items()
             if key not in {"work_root", "frozen_candidate"}}) for round_ in run.get("rounds", [])]
         value["samples"] = []
         for sample in run.get("samples", []):
             public = {key: item for key, item in sample.items() if key not in {
-                "judge_results", "judge_errors", "judge_evidence_feedback", "usage", "generation_retries",
+                "judge_results", "judge_errors", "judge_evidence_feedback", "usage", "generation_retries", "runtime_metrics",
             }}
+            if "runtime_metrics" in sample:
+                public["runtime_metrics"] = _runtime_numbers(sample["runtime_metrics"])
             if sample.get("generation_retries"):
                 public["trace_ids"] = list(dict.fromkeys([
                     *sample.get("trace_ids", []),
@@ -111,7 +129,12 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
             if sample.get("completed") and sample.get("scores") is None and ("judge_repeats" in run or has_partial_scores):
                 progress = evaluation.score_progress(run, sample)
                 if not can_read_content:
-                    progress.pop("reasons")
+                    reasons = progress.pop("reasons")
+                    if run.get("runtime_scoring_version"):
+                        progress["reasons"] = {dimension: [
+                            _score_numbers(item, ("judge_id", "repeat", "score")) for item in entries
+                            if type(item.get("score")) in (int, float)
+                        ] for dimension, entries in reasons.items()}
                 public["score_progress"] = progress
             value["samples"].append(copy.deepcopy(public))
         value["usage"] = _usage(run)
@@ -125,7 +148,7 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
             safe = {key: sample[key] for key in (
                 "id", "phase", "round", "arm", "package_id", "package_title", "task_type", "repeat", "attempt",
                 "status", "task_id", "trace_ids", "evaluation_trace_ids", "completed", "input_revision", "source_commit", "artifact_digest", "usage",
-                "execution_phase", "target", "score_retry_at", "scoring_attempts", "score_progress",
+                "execution_phase", "target", "score_retry_at", "scoring_attempts", "score_progress", "runtime_metrics",
             ) if key in sample}
             checks = sample.get("checks") or {}
             safe["checks"] = {key: checks[key] for key in ("complete", "passed", "missing", "volume_ranges") if key in checks}
@@ -135,6 +158,10 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
                 "dimensions": {key: number for key, number in score.get("dimensions", {}).items() if isinstance(number, (int, float)) and not isinstance(number, bool)},
                 "reasons": {},
             }
+            if score is not None and score.get("runtime_scoring_version"):
+                safe["scores"].update(_score_numbers(score, ("quality", "runtime_scoring_version")),
+                    rule_id=score["rule_id"], runtime=_runtime_numbers(score["runtime"]),
+                    weights=_score_numbers(score["weights"], ("quality", "runtime", "tools", "tokens", "skill")))
             safe.update(artifacts={}, error="任务异常，完整原因需正文读取权限。" if sample.get("error") else None)
             safe_samples.append(safe)
         value["samples"] = safe_samples
@@ -239,10 +266,11 @@ def experiment_options():
     scope = require_suite()
     current = rubrics.list_rules(scope)
     if scope == "chapter_text":
-        current = [rule for rule in current if rule["profile"] == rubrics.TEXT_PROFILE]
+        current = [rule for rule in current if rubrics.is_current_text_rule(rule)]
     rule_versions = {scope: current[0]["id"]} if current else {}
     current_versions = [item for item in versions["items"] if item["version"] == versions["production_version"]]
     return {"task_types": [scope], "versions": current_versions, "production_version": versions["production_version"],
+            **({"launch_rule_ids": [rule["id"] for rule in current]} if scope == "chapter_text" else {}),
             "models": [{key: item.get(key) for key in ("id", "name", "model", "is_active", "has_key")} for item in db.LlmConfigsRepository.list_all("executor")],
             "judge_groups": groups["groups"] if "groups" in groups else groups.get("items", []),
             "defaults": {"rule_versions": rule_versions, "thresholds": {"completion_rate": 1, "quality_gain": .1,

@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.core import db
 from app.core.models import TraceLogEvent
-from app.experiments import repo
+from app.experiments import evaluation, repo
 from app.trace_payloads import hydrate_event
 
 
@@ -77,7 +77,7 @@ def _regression_drops(run: dict, round_number: int) -> dict:
                 and sample["package_id"] in allowed and sample.get("scores")):
             pairs[(sample["package_id"], sample["repeat"])][sample["arm"]] = sample["scores"]["dimensions"]
     drops = {}
-    for dimension in run["private"]["rules"][kind]["dimensions"]:
+    for dimension in evaluation._scoring_dimensions(run, run["private"]["rules"][kind]):
         key = dimension["key"]
         differences = [pair["candidate"][key] - pair["baseline"][key] for pair in pairs.values()
                        if key in pair.get("candidate", {}) and key in pair.get("baseline", {})]

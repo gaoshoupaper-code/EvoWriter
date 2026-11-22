@@ -7,6 +7,7 @@ import { EvolutionExperiments } from "@/components/bench/EvolutionExperiments";
 import ExperimentDetail from "@/pages/bench/ExperimentDetail";
 import ExperimentReview from "@/pages/bench/ExperimentReview";
 import * as apiModule from "@/lib/api";
+import { downloadTextFile } from "@/lib/download";
 
 vi.mock("@/lib/api", () => ({
   listExperimentPackages: vi.fn(), importExperimentPackage: vi.fn(),
@@ -143,6 +144,27 @@ describe("进化端实验交互 / AC-001、AC-012、AC-020、AC-022", () => {
     expect(await screen.findByText("生产版本已变化")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "批准并发布候选" })).not.toBeInTheDocument();
     expect(api.publishExperiment).not.toHaveBeenCalled();
+  });
+
+  it("沿用报告导出入口保存同题同次的运行计分及证据", async () => {
+    const scoring_rule = { id: "rule-2", name: "正文规则", version: 2,
+      dimension_weights: { 事件因果逻辑: 1, 人物行为逻辑: 1, 章纲兑现: 2, 语言清晰度: 1 } };
+    const scores = { overall: 4, quality: 4, dimensions: { 事件因果逻辑: 4, 人物行为逻辑: 4, 章纲兑现: 4, 语言清晰度: 4, 运行时: 4 },
+      weights: { quality: .7, runtime: .3, tools: .1, tokens: .1, skill: .1 }, runtime_scoring_version: 1,
+      runtime: { score: 4, tools: { successes: 8, total: 10, rate: .8, score: 4.2 },
+        tokens: { value: 72000, baseline: 80000, saving: .1, score: 4 }, skill: { score: 3.8 } },
+      reasons: { 运行时: [{ judge_id: 1, score: 4, reason: "Skill 用于修订", evidence: ["trace-1:45"] }] } };
+    const sample = { id: "candidate-1", package_id: "same-case", input_revision: "same-input", repeat: 2,
+      round: 1, arm: "candidate", phase: "regression", status: "completed", package_title: "回归题", trace_ids: [], scores };
+    api.getExperiment.mockResolvedValue(experiment({ task_type: "chapter_text", runtime_scoring_version: 1, scoring_rule,
+      samples: [sample] }) as never);
+    render(<MemoryRouter initialEntries={["/bench/experiments/experiment-1?agent=text"]}><Routes>
+      <Route path="/bench/experiments/:experimentId" element={<ExperimentDetail />} />
+    </Routes></MemoryRouter>);
+    fireEvent.click(await screen.findByRole("button", { name: "导出报告" }));
+    const [filename, content] = vi.mocked(downloadTextFile).mock.calls[0];
+    expect(filename).toBe("experiment-1-report.json");
+    expect(JSON.parse(content)).toMatchObject({ runtime_scoring_version: 1, scoring_rule, samples: [sample] });
   });
 
   it("保留冻结双模型和单条状态，去掉批次标题和重复计数", async () => {

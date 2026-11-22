@@ -16,8 +16,9 @@ import { useExperiments } from "@/hooks/useExperiments";
 import "./experiments.css";
 import "./evaluation-readability.css";
 
-function launchRules(rules: ExperimentRule[], kind: ExperimentTaskType) {
+function launchRules(rules: ExperimentRule[], kind: ExperimentTaskType, eligibleIds?: string[]) {
   const sameKind = rules.filter((rule) => rule.task_type === kind).sort((a, b) => b.version - a.version);
+  if (eligibleIds) return sameKind.filter((rule) => eligibleIds.includes(rule.id));
   const current = sameKind.filter((rule) => rule.profile === ruleProfile(kind));
   return current.length ? current : sameKind.filter((rule) => rule.profile === RULE_PROFILE);
 }
@@ -71,7 +72,7 @@ export function EvolutionExperiments() {
       const activeModel = configuration.models.find((item) => item.is_active && item.has_key !== false);
       setModel(activeModel ? String(activeModel.id) : "");
       setJudges((current) => configuration.judge_groups.some((group) => String(group.id) === current) ? current : "");
-      const candidates = launchRules(scoring.items, kind);
+      const candidates = launchRules(scoring.items, kind, configuration.launch_rule_ids);
       const preferred = configuration.defaults?.rule_versions[kind];
       setRuleIds({[kind]: candidates.find((rule) => rule.id === preferred)?.id ?? candidates[0]?.id});
       setRounds(String(configuration.defaults?.max_rounds ?? 3));
@@ -147,7 +148,7 @@ export function EvolutionExperiments() {
         <fieldset className="experiment-form-main" disabled={starting}><legend className="sr-only">固定门槛与规则</legend>
           <div className="experiment-fields">{[kind].map((type) => <label key={type}>{TASK_LABELS[type]}规则版本
             <select className="config-input" required value={ruleIds[type] ?? ""} onChange={(event) => setRuleIds({ ...ruleIds, [type]: event.target.value })}>
-              <option value="">选择规则</option>{launchRules(rules, type).map((rule) =>
+              <option value="">选择规则</option>{launchRules(rules, type, options.launch_rule_ids).map((rule) =>
                 <option key={rule.id} value={rule.id}>v{rule.version} · {rule.name}</option>)}</select></label>)}</div>
           <label>最多轮数<input className="config-input" type="number" min="1" max="3" value={rounds} onChange={(event) => setRounds(event.target.value)} /></label>
         </fieldset>

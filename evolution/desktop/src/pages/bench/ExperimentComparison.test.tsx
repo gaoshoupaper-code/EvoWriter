@@ -57,6 +57,30 @@ it("对比链接省略 Agent 时，打开 Trace 仍保留评测记住的写作�
   }
 });
 
+it("正文对比只显示所选同题同次的运行依据", async () => {
+  const sample = { package_id: "same-case", package_title: "回归题", input_revision: "same-input", phase: "regression",
+    task_type: "chapter_text", round: 1, attempt: 1, completed: true, trace_ids: [], artifacts: {} };
+  const scores = (value: number, baseline: number) => ({ overall: 4, quality: 4, dimensions: { 运行时: 4 }, reasons: {},
+    runtime: { score: 4, tools: { successes: 8, total: 10, rate: .8, score: 4.2 },
+      tokens: { value, baseline, saving: (baseline - value) / baseline, score: 4 }, skill: { score: 4 } } });
+  vi.mocked(getExperiment).mockResolvedValue({ id: "run", name: "正文实验", task_type: "chapter_text", can_read_content: false,
+    report: {}, baseline: { commit: "base" }, rounds: [{ round: 1 }], runtime_scoring_version: 1, samples: [
+      { ...sample, id: "original-1", arm: "baseline", repeat: 1, scores: scores(70000, 70000) },
+      { ...sample, id: "candidate-1", arm: "candidate", repeat: 1, scores: scores(60000, 70000) },
+      { ...sample, id: "original-2", arm: "baseline", repeat: 2, scores: scores(80000, 80000) },
+      { ...sample, id: "candidate-2", arm: "candidate", repeat: 2, scores: scores(72000, 80000) },
+    ] } as unknown as Experiment);
+  render(<MemoryRouter initialEntries={["/bench/experiments/run/comparison?agent=text&round=1&phase=regression"]}><Routes>
+    <Route path="/bench/experiments/:experimentId/comparison" element={<ExperimentComparison />} />
+  </Routes></MemoryRouter>);
+  expect(await screen.findByText("60,000")).toBeVisible();
+  const choice = screen.getByRole<HTMLOptionElement>("option", { name: /重复 2/ });
+  fireEvent.change(screen.getByLabelText("题目与重复"), { target: { value: choice.value } });
+  expect(screen.getByText("72,000")).toBeVisible();
+  expect(screen.getAllByText("80,000")).toHaveLength(3);
+  expect(screen.queryByText("60,000")).not.toBeInTheDocument();
+});
+
 it.each([["exploration", "优化复测"], ["validation", "独立终验"]])(
   "旧候选的 %s 对比不借用当前候选的汇总分数", async (phase, heading) => {
     const metrics = { total: 3, completed: 3, completion_rate: 1, quality: 3.5, evaluation_errors: 0 };

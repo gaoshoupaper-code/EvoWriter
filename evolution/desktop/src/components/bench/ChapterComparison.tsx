@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { EXPERIMENT_STATUS, PHASE_LABELS, type Experiment, type ExperimentSample } from "@/lib/experiment-types";
-import { SampleScoreDetails } from "./ExperimentEvidence";
+import { RuntimeScoringWeights, RuntimeScoreDetails, SampleScoreDetails } from "./ExperimentEvidence";
 
 const versionLabel = (round: number) => round ? "第 " + round + " 轮" : "原版";
 const purpose = (sample: ExperimentSample) => ["exploration", "baseline"].includes(sample.phase) ? "optimization" : sample.phase;
@@ -69,7 +69,7 @@ function unchangedParagraphs(left: string[], right: string[]) {
 }
 
 export function ChapterComparison({ experiment, onTrace, initialRound }: {
-  experiment: Pick<Experiment, "baseline" | "can_read_content" | "judge_repeats" | "models" | "rounds" | "samples" | "scoring_rule">;
+  experiment: Pick<Experiment, "baseline" | "can_read_content" | "judge_repeats" | "models" | "rounds" | "samples" | "scoring_rule" | "runtime_scoring_version">;
   onTrace: (id: string) => void;
   initialRound: number | null;
 }) {
@@ -105,9 +105,10 @@ export function ChapterComparison({ experiment, onTrace, initialRound }: {
   }
   return <section className="experiment-section" aria-label="跨版本终稿对比">
     <h2>跨版本终稿对比</h2>
-    {(experiment.scoring_rule || experiment.judge_repeats != null) && <p className="experiment-note">
-      {experiment.scoring_rule && <>评测规则 {experiment.scoring_rule.name} · v{experiment.scoring_rule.version}</>}
-      {experiment.scoring_rule && experiment.judge_repeats != null && " · "}
+    <RuntimeScoringWeights rule={experiment.scoring_rule} version={experiment.runtime_scoring_version} weights={right?.scores?.weights ?? left?.scores?.weights} />
+    {((experiment.scoring_rule && !experiment.runtime_scoring_version) || experiment.judge_repeats != null) && <p className="experiment-note">
+      {experiment.scoring_rule && !experiment.runtime_scoring_version && <>评测规则 {experiment.scoring_rule.name} · v{experiment.scoring_rule.version}
+        {experiment.judge_repeats != null && " · "}</>}
       {experiment.judge_repeats != null && <>每个模型评 {experiment.judge_repeats} 次</>}
     </p>}
     <div className="chapter-pair-controls">{["源版本", "对照版本"].map((label, index) => <label key={label}>{label}
@@ -124,8 +125,9 @@ export function ChapterComparison({ experiment, onTrace, initialRound }: {
           {" · 重复 " + sample.repeat + " · 输入 " + sample.input_revision}</option>)}
       </select></label>
     </div>
-    <table className="data-table chapter-scores"><caption>质量变化</caption><thead><tr><th>评分项</th><th>源版本</th><th>对照版本</th><th>对照减源</th></tr></thead>
+    <table className="data-table chapter-scores"><caption>{experiment.runtime_scoring_version ? "评分变化" : "质量变化"}</caption><thead><tr><th>评分项</th><th>源版本</th><th>对照版本</th><th>对照减源</th></tr></thead>
       <tbody>{scoreRow("综合分", left?.scores?.overall, right?.scores?.overall)}
+        {experiment.runtime_scoring_version && scoreRow("正文质量分", left?.scores?.quality, right?.scores?.quality)}
         {dimensions.map((name) => scoreRow(name, left?.scores?.dimensions[name], right?.scores?.dimensions[name]))}</tbody></table>
     {!experiment.can_read_content && <p className="experiment-note">当前账号没有正文读取权限。</p>}
     {versions.length === 1 && <p className="experiment-note">尚无改进轮次，可先查看原版。</p>}
@@ -156,6 +158,9 @@ export function ChapterComparison({ experiment, onTrace, initialRound }: {
           {!sample.scores && sample.score_progress && <p className="experiment-note">
             已完成 {sample.score_progress.completed} / {sample.score_progress.total} 份评分 · 尚无汇总评分
           </p>}
+          <RuntimeScoreDetails sample={sample} showQuality={false} />
+          {!experiment.can_read_content && !!experiment.runtime_scoring_version && !sample.scores && sample.score_progress?.reasons &&
+            <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} canReadEvidence={false} />}
           {experiment.can_read_content && <>
             {(sample.scores || sample.score_progress?.reasons) && <details><summary>逐项评语与依据</summary>
               <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} /></details>}

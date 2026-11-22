@@ -66,6 +66,56 @@ def test_immutable_case_reference_and_categorized_archive(dossier, tmp_path, mon
     assert repo.run_package(loaded, case["id"]) == effective
 
 
+def test_runtime_scoring_read_view_and_archive_keep_numbers_and_protect_evidence(dossier, monkeypatch):
+    from app.experiments import api
+
+    rule = {"id": "new-rule", "name": "正文规则", "version": 4,
+            "dimensions": [{"key": "剧情", "weight": 2}, {"key": "章纲", "weight": 1}]}
+    dossier["private"]["rules"] = {"chapter_text": rule}
+    sample = {"id": "sample-1", "round": 0, "source_commit": "a" * 40, "package_id": "chapter",
+              "input_revision": "input", "repeat": 1, "phase": "baseline", "arm": "baseline",
+              "artifacts": {}, "scores": {"overall": 4.1, "dimensions": {"剧情": 4.1}, "reasons": {}}}
+    dossier["samples"] = [sample]
+    repo.put_run(dossier)
+    legacy = api.public_run(repo.get_run(dossier["id"]), can_read_content=False)
+    assert "runtime_scoring_version" not in legacy
+    assert "dimension_weights" not in legacy["scoring_rule"]
+    assert legacy["samples"][0]["scores"] == sample["scores"]
+
+    tools = {"successes": 8, "total": 10, "rate": .8, "score": 4.2}
+    tokens = {"value": 72_000, "baseline": 80_000, "saving": .1, "score": 4}
+    reasons = {"运行时": [{"judge_id": 1, "repeat": 1, "score": 4, "reason": "这是受限的评语",
+                       "evidence": ["trace-1:42"], "evidence_details": [{"ref": "trace-1:42", "text": "受限摘录"}]}]}
+    weights = {"quality": .7, "runtime": .3, "tools": .1, "tokens": .1, "skill": .1}
+    sample["scores"].update(quality=4.1, runtime_scoring_version=1, weights=weights, rule_id=rule["id"],
+                            reasons=reasons, runtime={"score": 4.07, "tools": tools, "tokens": tokens, "skill": {"score": 4}})
+    sample["scores"]["dimensions"]["运行时"] = 4.07
+    sample["runtime_metrics"] = {"tools": tools, "tokens": tokens}
+    dossier["runtime_scoring_version"] = 1
+    repo.put_run(dossier)
+    saved = repo.get_run(dossier["id"])
+    assert saved["samples"][0]["scores"] == sample["scores"]
+    assert saved["samples"][0]["runtime_metrics"] == sample["runtime_metrics"]
+
+    privileged = api.public_run(saved, can_read_content=True)
+    public = api.public_run(saved, can_read_content=False)
+    assert public["scoring_rule"]["dimension_weights"] == {"剧情": 2, "章纲": 1}
+    assert public["runtime_scoring_version"] == 1
+    assert public["samples"][0]["runtime_metrics"] == sample["runtime_metrics"]
+    assert public["samples"][0]["scores"] == {**sample["scores"], "reasons": {}}
+    assert privileged["samples"][0]["scores"]["reasons"] == reasons
+    assert "受限" not in json.dumps(public, ensure_ascii=False)
+
+    unfinished_metrics = {"tools": tools, "tokens": {"value": 72_000}}
+    saved["samples"][0].update(scores=None, completed=True, runtime_metrics=unfinished_metrics,
+                               judge_results={"1:1:运行时": reasons["运行时"][0]})
+    monkeypatch.setattr(api.evaluation, "score_progress", lambda *_: {"completed": 0, "total": 1, "reasons": reasons.copy()})
+    pending = api.public_run(saved, can_read_content=False)["samples"][0]
+    assert pending["score_progress"]["reasons"] == {"运行时": [{"judge_id": 1, "repeat": 1, "score": 4}]}
+    assert pending["runtime_metrics"] == unfinished_metrics
+    assert "受限" not in json.dumps(pending, ensure_ascii=False)
+
+
 def test_design_links_only_cited_optimization_samples(tmp_path, monkeypatch):
     from app.evolve import docs
     monkeypatch.setattr(docs, "session_dir", lambda _: tmp_path)

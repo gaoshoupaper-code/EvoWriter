@@ -3,7 +3,7 @@ import { useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
-import { ArtifactFiles, EvidenceValues, ModelIdentity, SampleScoreDetails } from "@/components/bench/ExperimentEvidence";
+import { ArtifactFiles, EvidenceValues, ModelIdentity, RuntimeScoringWeights, RuntimeScoreDetails, SampleScoreDetails } from "@/components/bench/ExperimentEvidence";
 import { ArtifactReader } from "@/components/bench/ExperimentArtifacts";
 import { getExperimentPackage } from "@/lib/api";
 import { sampleActivitySection } from "@/lib/experiment-record-traces";
@@ -55,6 +55,7 @@ function RecordContent({ experimentId, sampleId, section }: {
         <RunEvidence sample={sample} allowed={experiment.can_read_content} />
       </> : <>
         <section aria-label="样本评分"><h2>评分结果</h2>
+          <RuntimeScoringWeights rule={experiment.scoring_rule} version={experiment.runtime_scoring_version} weights={sample.scores?.weights} />
           {experiment.models?.judges.length ? <div className="record-judge-models"><span>评测模型</span>
             {experiment.models.judges.map((judge, index) => <ModelIdentity key={judge.id ?? index} model={judge} />)}</div>
             : <p className="experiment-note">评测模型未记录。</p>}
@@ -65,7 +66,9 @@ function RecordContent({ experimentId, sampleId, section }: {
                 <p className="experiment-note">查看评语需要正文读取权限。</p></>}
           </> : <p className="experiment-note">{sample.score_progress &&
             <>已完成 {sample.score_progress.completed} / {sample.score_progress.total} 份评分 · </>}尚无汇总评分。</p>}
-          {experiment.can_read_content && <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} />}
+          <RuntimeScoreDetails sample={sample} />
+          {(experiment.can_read_content || experiment.runtime_scoring_version && !sample.scores && sample.score_progress?.reasons) &&
+            <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} canReadEvidence={experiment.can_read_content} />}
         </section>
       </>}
     </>)}

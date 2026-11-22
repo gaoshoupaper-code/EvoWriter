@@ -135,6 +135,12 @@ def get_rule(rule_id: str) -> dict | None:
     return repo.get_rule(rule_id)
 
 
+def is_current_text_rule(rule: dict) -> bool:
+    expected = {entry[0] for entry in chapter_rubric.DIMENSIONS}
+    keys = [dimension["key"] for dimension in rule.get("dimensions", [])]
+    return rule.get("profile") == TEXT_PROFILE and len(keys) == len(expected) and set(keys) == expected
+
+
 def save_rule(request: RuleCreate) -> dict:
     with _lock:
         old = list_rules(request.task_type)
@@ -155,7 +161,8 @@ def seed_rules() -> None:
             if (scope and kind != scope) or (not scope and kind == "master_outline"):
                 continue
             profile = TEXT_PROFILE if scope == "chapter_text" else "isolated-writing-v1" if scope else PROFILE
-            if any(rule.get("profile") == profile for rule in list_rules(kind)):
+            matches = is_current_text_rule if profile == TEXT_PROFILE else lambda rule: rule.get("profile") == profile
+            if any(matches(rule) for rule in list_rules(kind)):
                 continue
             discipline_rules = DISCIPLINE_RULES
             if profile == TEXT_PROFILE:

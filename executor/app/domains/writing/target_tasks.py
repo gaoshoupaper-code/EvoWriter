@@ -595,8 +595,8 @@ async def drive_task(request, workspace, service, thread, execution, store, *, l
                 prompt += (
                     f"\n题内文件：{'、'.join(sorted(request.input.files))}。只读取已提供的资料。"
                     f"本章{'已有正文，先读稿再续写或修订' if has_draft else '尚无正文，直接从首批起草'}。\n"
-                    "save_artifact 每次保存一个写作单元。普通单元用 unit_kind=ordinary，"
-                    "每次写约 300–400 字，含标点最多 450 字。只在实际匹配已启用技能场景时，"
+                    "用 save_artifact 保存正文。普通单元用 unit_kind=ordinary，"
+                    "用空行分隔自然段，每批约 300–400 字，含标点最多 450 字。只在实际匹配已启用技能场景时，"
                     "用 unit_kind=skill_scene 并填写 skill_name 原名，整场一次保存。\n"
                     "首批用 mode=full，只写文件头和首个单元。文件头连续两行，中间无空行：\n"
                     f"# 第{chapter:03d}章 · <章名>\n> 状态：起草中｜<日期>\n"

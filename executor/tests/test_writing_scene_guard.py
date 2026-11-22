@@ -535,3 +535,94 @@ def test_empty_modern_chapter_full_still_requires_a_prior_read(tmp_path):
 
     assert "先调 read_artifact" in result
     assert (tmp_path / REL).read_bytes() == b""
+
+
+# Paragraph lengths from the three rejected ordinary units in the live assessment.
+@pytest.mark.parametrize(("lengths", "batches"), [
+    ([5, 90, 17, 101, 38, 23, 66, 23, 11, 20, 77], [394, 77]),
+    ([14, 54, 33, 83, 7, 48, 36, 99, 26, 11, 63, 8], [411, 71]),
+    ([41, 7, 24, 72, 31, 92, 6, 64, 17, 6, 89, 41], [449, 41]),
+])
+@pytest.mark.parametrize("mode", ["full", "append"])
+def test_text_saves_whole_ordinary_paragraphs_in_one_revision(tmp_path, lengths, batches, mode):
+    from unittest.mock import Mock
+
+    path = tmp_path / REL
+    header = HEADER.replace("\n", "\r\n")
+    body = "\r\n \t\r\n".join(chr(ord("甲") + i) * n for i, n in enumerate(lengths)) + "\r\n\r\n"
+    if mode == "append":
+        path.parent.mkdir()
+        path.write_bytes((header.replace("\r\n\r\n", "\r\n> 进度：已落 3 批\r\n\r\n")
+                          + "既有正文。\r\n\r\n").encode())
+    recorder = Mock()
+    tool = build_save_artifact_tool(tmp_path, {REL: True}, {}, agent_name="text-subagent",
+                                    writing_context=CONTEXT, recorder=recorder, trace_id="trace")
+    receipt = tool.invoke({"kind": "chapter_text", "chapter": 1, "mode": mode, "unit_kind": "ordinary",
+                           "content": header + body if mode == "full" else body})
+
+    progress = 2 if mode == "full" else 5
+    expected_header = header.replace("\r\n\r\n", f"\r\n> 进度：已落 {progress} 批\r\n\r\n")
+    expected = expected_header + ("既有正文。\r\n\r\n" if mode == "append" else "") + body
+    assert path.read_bytes() == expected.encode()
+    assert "本次按完整自然段保存 2 批" in receipt
+    assert "、".join(map(str, batches)) in receipt
+    assert f"本章已保存 {progress} 个正文单元" in receipt
+    if mode == "append":
+        assert "本轮追加第 1 次" in receipt
+    recorder.record_artifact_revision.assert_called_once()
+    assert recorder.record_artifact_revision.call_args.kwargs["content"] == expected
+
+
+def test_text_oversized_final_paragraph_rejects_entire_append(tmp_path):
+    from unittest.mock import Mock
+
+    path = tmp_path / REL
+    path.parent.mkdir()
+    original = _progress_text(2).encode()
+    path.write_bytes(original)
+    recorder = Mock()
+    tool = build_save_artifact_tool(tmp_path, {REL: True}, {}, agent_name="text-subagent",
+                                    writing_context=CONTEXT, recorder=recorder, trace_id="trace")
+    # A soft line break inside a paragraph is not an authorized batch boundary.
+    ordinary = "首" * 320 + "\n\n" + "中" * 225 + "\n" + "末" * 226
+    receipt = _save(tool, mode="append", unit_kind="ordinary", content=ordinary)
+    assert "拒绝" in receipt and "451" in receipt
+    assert path.read_bytes() == original
+    recorder.record_artifact_revision.assert_not_called()
+
+
+@pytest.mark.parametrize("agent_name", ["author-subagent", "chapter-subagent", "volume-subagent"])
+def test_other_roles_keep_existing_unit_contract(tmp_path, agent_name):
+    tool = build_save_artifact_tool(tmp_path, {}, {}, agent_name=agent_name, writing_context=CONTEXT)
+    receipt = _save(tool, content="甲" * 300 + "\n\n" + "乙" * 180, unit_kind="ordinary")
+    assert "拒绝" in receipt and not (tmp_path / REL).exists()
+
+
+def test_text_skill_and_revision_do_not_acquire_ordinary_batch_limits(tmp_path):
+    tool = build_save_artifact_tool(tmp_path, {}, {}, agent_name="text-subagent", writing_context=CONTEXT,
+                                    enabled_skill_names={SKILL})
+    scene = "甲" * 460 + "\n\n" + "乙" * 460
+    assert "本章已保存 1 个正文单元" in _save(tool, content=scene, unit_kind="skill_scene", skill_name=SKILL)
+    receipt = tool.invoke({"kind": "chapter_text", "chapter": 1, "mode": "edit",
+                           "anchor": "乙" * 460, "replacement": "丙" * 480})
+    assert "本章已保存 1 个正文单元" in receipt
+    assert "本章已保存 1 个正文单元" in _save(tool, content="整" * 490, unit_kind="ordinary")
+
+
+@pytest.mark.parametrize(("anchor", "replacement", "old_bytes", "new_bytes"), [
+    ("沿岸\n水声", "进门\n脚步", "沿岸\r\n水声", "进门\r\n脚步"),
+    ("独行。\n雾散。", "转身。", "独行。  \r\n雾散。", "转身。"),
+])
+def test_read_then_edit_keeps_newlines_outside_selection(tmp_path, anchor, replacement, old_bytes, new_bytes):
+    path = tmp_path / REL
+    path.parent.mkdir()
+    original = HEADER.replace("\n", "\r\n") + "薄雾沿岸\r\n水声渐近。\n独行。  \r\n雾散。\r\n下一自然段。\r\n"
+    path.write_bytes(original.encode())
+    registry = {}
+    read = build_read_artifact_tool(tmp_path, registry).invoke({"kind": "chapter_text", "chapter": 1})
+    assert "\r" not in read and "沿岸\n水声" in read
+    tool = build_save_artifact_tool(tmp_path, registry, {}, agent_name="text-subagent", writing_context=CONTEXT)
+    receipt = tool.invoke({"kind": "chapter_text", "chapter": 1, "mode": "edit",
+                           "anchor": anchor, "replacement": replacement})
+    assert "已落盘" in receipt
+    assert path.read_bytes() == original.replace(old_bytes, new_bytes).encode()

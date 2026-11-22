@@ -34,6 +34,7 @@ import hashlib
 import json
 import logging
 import re
+from itertools import groupby
 from pathlib import Path
 from typing import Literal
 
@@ -76,10 +77,10 @@ kind 取值：theme / outline / style / volume_outline(+volume) / chapter_outlin
 - mode="append"：content = 本次完整写作单元（普通批次或 Skill 完整场景）。
   首个单元用 full 建文件，后续每个单元用 append；场景占 N 批仍只保存一次。
   回执的追加序号仅计本轮 append 次数，不含首次 full，也不是 Skill 篇幅预算。
-  正文新建由工具建立进度 1；已有标准进度由工具维护，修订不增加总数。
+  正文新建按实际保存的批数建立进度；已有标准进度由工具维护，修订不增加总数。
   append 不做锚点匹配，避免短段重复导致整章重写。
   正文新建和追加必须注明 unit_kind：ordinary（普通单元）或 skill_scene（匹配的完整技能场景）。
-  skill_scene 同时填写作者已启用且当前剧情匹配的 skill_name 原名；普通单元过长会拒绝保存，先收束当前一步，不硬切句。
+  skill_scene 同时填写作者已启用且当前剧情匹配的 skill_name 原名；普通单元在自然停顿处收束，不硬切句。
   已有正文的 full 全量修订与 edit 沿用原规则，不按普通单元限长。
 - mode="edit"（默认，推荐）：anchor + replacement——anchor 是文件里的原文片段
   （须逐字一致且在文件中唯一，建议带上标题行等上下文）；replacement 是替换后
@@ -138,7 +139,10 @@ def _find_line_span(text: str, anchor: str, *, quote: bool) -> list[tuple[int, i
     for i in range(n - m + 1):
         if f[i:i + m] == a:
             start = sum(len(ln) for ln in file_lines[:i])
+            last = file_lines[i + m - 1]
             end = start + sum(len(ln) for ln in file_lines[i:i + m])
+            if not anchor.endswith(("\r", "\n")):
+                end -= len(last) - len(last.rstrip("\r\n"))
             spans.append((start, end))
     return spans or None
 
@@ -170,12 +174,25 @@ def find_edit_match(content: str, anchor: str) -> tuple[int, int] | None | str:
 
 def apply_edit(content: str, anchor: str, replacement: str) -> tuple[str, int] | str:
     """应用一次校验编辑。成功返回 (新内容, 替换处数)；失败返回错误说明。"""
-    match = find_edit_match(content, anchor)
+    # read_artifact exposes LF even when the manuscript uses CRLF or mixed endings.
+    visible = content.replace("\r\n", "\n").replace("\r", "\n")
+    match = find_edit_match(visible, anchor.replace("\r\n", "\n").replace("\r", "\n"))
     if match == "ambiguous":
         return "锚点在文件中不唯一：带上标题行等更多上下文重试，或改用 mode=full。"
     if match is None:
         return "锚点在文件中找不到（须与原文逐字一致）：重新 read_artifact 后按当前内容重试。"
     start, end = match
+    if "\r" in content:
+        # Each CRLF before a boundary occupies one extra character in the source.
+        for boundary in re.finditer("\r\n", content):
+            if boundary.start() >= end:
+                break
+            if boundary.start() < start:
+                start += 1
+            end += 1
+        newline = (re.search(r"\r\n?|\n", content[start:end]) or re.search(r"\r\n?|\n", content[end:])
+                   or re.search(r"\r\n?|\n", content))
+        replacement = re.sub(r"\r\n?|\n", newline[0], replacement)
     return content[:start] + replacement + content[end:], 1
 
 
@@ -184,7 +201,7 @@ def _atomic_write(path: Path, text: str) -> None:
     import uuid as _uuid
 
     tmp = path.with_suffix(f"{path.suffix}.{_uuid.uuid4().hex[:8]}.tmp")
-    tmp.write_text(text, encoding="utf-8")
+    tmp.write_text(text, encoding="utf-8", newline="")
     tmp.replace(path)
 
 
@@ -197,6 +214,31 @@ def _body_char_count(text: str) -> int:
             continue
         total += len(s)
     return total
+
+
+def _ordinary_batch_sizes(text: str) -> list[int]:
+    """Plan before writing; the original text remains the only source for the manuscript."""
+    sizes = []
+    for nonblank, lines in groupby(text.splitlines(), key=lambda line: bool(line.strip())):
+        if not nonblank:
+            continue
+        size = _body_char_count("\n".join(lines))
+        if size > 450:
+            raise ValueError(f"单个自然段实际 {size} 字，超过 450 字。请在自然停顿处独立分段后再保存。")
+        if sizes and sizes[-1] + size <= 450:
+            sizes[-1] += size
+        elif size:
+            sizes.append(size)
+    return sizes
+
+
+def _append_text_unit(current: str, content: str) -> str:
+    newline = "\r\n" if "\r\n" in current or "\r\n" in content else "\n"
+    separator = ""
+    if current and not current.endswith(newline * 2):
+        separator = newline if current.endswith(("\r", "\n")) else newline * 2
+    appended = current + separator + content
+    return appended if appended.endswith(("\r", "\n")) else appended + newline
 
 
 def _header_metadata(text: str) -> tuple[list[str], int]:
@@ -374,10 +416,12 @@ def build_save_artifact_tool(
             return "[save_artifact 失败] mode 只能是 edit、full 或 append。"
         path = workspace_root / rel
         exists = path.is_file()
+        text_entry = agent_name == "text-subagent" and kind == KIND_TEXT
         current = ""
         if exists:
             try:
-                current = path.read_text(encoding="utf-8")
+                with path.open(encoding="utf-8", newline="" if text_entry else None) as stream:
+                    current = stream.read()
             except (OSError, UnicodeDecodeError) as exc:
                 return f"[save_artifact 失败] 读取现状失败：{type(exc).__name__}"
 
@@ -401,14 +445,23 @@ def build_save_artifact_tool(
         track_progress = kind == KIND_TEXT and writing_context is not None
         uninitialized = not exists or (track_progress and not current.strip())
         is_draft_unit = kind == KIND_TEXT and (mode == "append" or (mode == "full" and uninitialized))
+        batch_count = 1
+        batch_info = ""
         if is_draft_unit:
             if writing_context is not None and unit_kind is None:
                 return "[save_artifact 拒绝·文件未变] 请注明 unit_kind：普通单元 ordinary；匹配的完整技能场景 skill_scene，并填写 skill_name 原名。"
             if unit_kind == "ordinary" and _body_char_count(content or "") > 450:
-                return (
-                    f"[save_artifact 拒绝·文件未变] 普通单元实际约 {_body_char_count(content or '')} 字，超过 450 字的自然停顿余量。"
-                    "请只推进当前一步，控制在 300-400 字，把后续普通剧情留到下一单元；不硬切句，也不将普通段落冒充技能场景。"
-                )
+                if not text_entry:
+                    return (
+                        f"[save_artifact 拒绝·文件未变] 普通单元实际约 {_body_char_count(content or '')} 字，超过 450 字的自然停顿余量。"
+                        "请只推进当前一步，控制在 300-400 字，把后续普通剧情留到下一单元；不硬切句，也不将普通段落冒充技能场景。"
+                    )
+                try:
+                    sizes = _ordinary_batch_sizes(content)
+                except ValueError as exc:
+                    return f"[save_artifact 拒绝·文件未变] {exc}"
+                batch_count = len(sizes)
+                batch_info = f"本次按完整自然段保存 {batch_count} 批，各批字数：{'、'.join(map(str, sizes))}。"
             if unit_kind == "skill_scene" and (
                 not (skill_name or "").strip()
                 or (enabled_skill_names is not None and skill_name not in enabled_skill_names)
@@ -422,7 +475,7 @@ def build_save_artifact_tool(
                 )
 
         if track_progress and mode == "append" and uninitialized:
-            return "[save_artifact 拒绝·文件未变] 正文尚未初始化，请先用 mode=full 建立标题、状态和进度 1，再追加正文单元。"
+            return "[save_artifact 拒绝·文件未变] 正文尚未初始化，请先用 mode=full 建立标题、状态和首批进度，再追加正文单元。"
         progress = _progress_count(current) if track_progress else None
         if mode == "full":
             if content is None or not content.strip():
@@ -435,7 +488,7 @@ def build_save_artifact_tool(
                             "[save_artifact 拒绝·文件未变] 新建正文文件头须先有标题行，再有状态行。"
                             "请补齐 # 第NNN章 · 章名 与 > 状态：起草中｜日期 后重试。"
                         )
-                    progress = 1
+                    progress = batch_count
                 elif progress is None and _progress_count(content) is not None:
                     return _UNKNOWN_PROGRESS_REJECTION
                 if progress is not None:
@@ -448,7 +501,7 @@ def build_save_artifact_tool(
             _register(rel, content, kind)
             failures.pop(rel, None)
             lines = len(content.splitlines())
-            text_info = (
+            text_info = batch_info or (
                 f"本次正文单元约 {_body_char_count(content)} 字。{_TEXT_UNIT_GUIDANCE}"
                 if is_draft_unit else ""
             )
@@ -465,12 +518,14 @@ def build_save_artifact_tool(
             body = content.strip("\n").rstrip()
             if not body:
                 return "[save_artifact 失败] mode=append 的 content 是空内容。"
-            if exists and current.strip():
+            if text_entry:
+                new_text = _append_text_unit(current, content)
+            elif exists and current.strip():
                 new_text = current.rstrip("\n") + "\n\n" + body + "\n"
             else:
                 new_text = body + "\n"
             if progress is not None:
-                progress += 1
+                progress += batch_count
                 new_text = _with_progress(new_text, progress)
             try:
                 _atomic_write(path, new_text)
@@ -481,7 +536,7 @@ def build_save_artifact_tool(
             batch = append_batches.get(rel, 0) + 1
             append_batches[rel] = batch
             chars = _body_char_count(new_text)
-            text_info = (
+            text_info = batch_info or (
                 f"本次追加约 {_body_char_count(body)} 字。{_TEXT_UNIT_GUIDANCE}"
                 if kind == KIND_TEXT else ""
             )
@@ -539,7 +594,10 @@ def build_save_artifact_tool(
 
     return StructuredTool.from_function(
         name="save_artifact",
-        description=SAVE_ARTIFACT_TOOL_DESCRIPTION + ("\n" + skill_names_hint if skill_names_hint else ""),
+        description=SAVE_ARTIFACT_TOOL_DESCRIPTION
+        + ("\n普通正文超过 450 字时按完整自然段自动分批并一次落盘；单个自然段仍不可超过 450 字。"
+           if agent_name == "text-subagent" else "")
+        + ("\n" + skill_names_hint if skill_names_hint else ""),
         func=_native_save,
         args_schema=CharacterOwnerSaveInput if agent_name in ("outline-subagent", "volume-subagent") else SaveArtifactInput,
         infer_schema=False,

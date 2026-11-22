@@ -196,6 +196,7 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         assert run["assessment_version"] == 2
         assert run["runtime_scoring_version"] == 1
         assert run["judge_repeats"] == 3
+        assert run["regression_repeats"] == 1
         first_rule = run["private"]["rules"][kind]
         next_rule = rubrics.save_rule(RuleCreate.model_validate({key: first_rule[key] for key in
             ("task_type", "profile", "name", "dimensions", "discipline_rules")}))
@@ -218,6 +219,7 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         assert "packages" not in saved["private"]
         assert saved["runtime_scoring_version"] == 1
         assert saved["judge_repeats"] == 3
+        assert saved["regression_repeats"] == 1
         assert saved["models"]["judges"][0]["id"] == 2
         assert saved["private"]["rules"][kind] == first_rule
         assert repo.run_package(saved, reg[0])["input"] == repo.chapter_case(removed)["input"]
@@ -260,6 +262,15 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         assert end["publish_status"] == "not_started"
         assert {sample["package_id"] for sample in end["samples"]} == set(opt + reg)
         assert "validation" not in {sample["phase"] for sample in end["samples"]}
+        regression_samples = [sample for sample in end["samples"] if sample["phase"] == "regression"]
+        assert len(regression_samples) == 2 * len(reg) * end["current_round"]
+        assert {(sample["round"], sample["arm"], sample["package_id"], sample["repeat"]) for sample in regression_samples} == {
+            (round_number, arm, package_id, 1)
+            for round_number in range(1, end["current_round"] + 1)
+            for arm in ("baseline", "candidate")
+            for package_id in reg
+        }
+        assert all(record["regressions"][kind]["paired_count"] == len(reg) for record in end["rounds"])
         if pass_round:
             candidate = end["best_candidate"]
             published = {"version": 3, "commit": candidate["commit"], "artifact_digest": candidate["digest"]}

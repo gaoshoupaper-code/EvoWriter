@@ -54,8 +54,19 @@ class FlowV2Test(fixtures.DatabaseTest):
         self.assertFalse(any(sample["phase"] in {"regression", "validation"} for sample in actual["samples"]))
 
     def test_regression_failure_retries_before_independent_validation(self):
+        self._check_regression_retry(expected_repeats=1)
+
+    def test_existing_run_keeps_three_regression_repeats(self):
+        self._check_regression_retry(expected_repeats=3)
+
+    def _check_regression_retry(self, expected_repeats):
         from app.experiments import repo, runner
         run = self.create_experiment()
+        self.assertEqual(run["regression_repeats"], 1)
+        if expected_repeats == 3:
+            run.pop("regression_repeats")
+            repo.put_run(run)
+
         def score(_run, sample):
             value = 3.0 if sample["arm"] == "baseline" else 4.0
             if sample["phase"] == "regression" and sample["arm"] == "candidate" and sample["round"] == 1:
@@ -76,8 +87,10 @@ class FlowV2Test(fixtures.DatabaseTest):
         self.assertTrue(any(item["phase"] == "regression" for item in improve.call_args_list[1].args[2]))
         self.assertTrue(all(item["phase"] != "validation" for item in improve.call_args_list[1].args[2]))
         for report in actual["report"]["regressions"].values():
-            self.assertEqual(report["baseline"]["total"], 3)
-            self.assertEqual(report["candidate"]["total"], 3)
+            self.assertEqual(report["baseline"]["total"], expected_repeats)
+            self.assertEqual(report["candidate"]["total"], expected_repeats)
+        self.assertEqual(actual["report"]["validation"]["baseline"]["total"], 3)
+        self.assertEqual(actual["report"]["validation"]["candidate"]["total"], 3)
 
     def test_legacy_final_regression_failure_does_not_start_another_round(self):
         from app.experiments import repo, runner

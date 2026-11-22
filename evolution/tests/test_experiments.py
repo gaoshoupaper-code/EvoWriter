@@ -379,7 +379,7 @@ class ExperimentLifecycleTest(DatabaseTest):
             "checks": {"passed": True}, "usage": {"known": True}, "input_revision": payload["input"]["input_revision"],
             "source_commit": payload["source_commit"], "artifact_digest": payload["artifact_digest"]}
 
-    def test_real_state_machine_runs_independent_three_repeat_final_checks(self):
+    def test_real_state_machine_runs_regression_once_and_independent_validation_three_times(self):
         from app.experiments import repo, runner
         run = self.create_experiment()
         def score(_run, sample):
@@ -392,12 +392,13 @@ class ExperimentLifecycleTest(DatabaseTest):
         actual = repo.get_run(run["id"])
         self.assertEqual(actual["status"], "awaiting_review")
         self.assertEqual(actual["current_round"], 1)
-        self.assertEqual(len(actual["samples"]), 20)
+        self.assertEqual(len(actual["samples"]), 12)
         self.assertTrue(actual["report"]["passed"])
         for kind in ("volume_outlines", "chapter_outlines", "chapter_text"):
             for arm in ("baseline", "candidate"):
                 final = [sample for sample in actual["samples"] if sample["phase"] in ("validation", "regression") and sample["task_type"] == kind and sample["arm"] == arm]
-                self.assertEqual({sample["repeat"] for sample in final}, {1, 2, 3})
+                expected_repeats = [1, 2, 3] if kind == "volume_outlines" else [1]
+                self.assertEqual([sample["repeat"] for sample in final], expected_repeats)
         self.assertEqual(improve.call_count, 1)
         self.assertTrue(all(item["phase"] in ("baseline", "exploration") for item in improve.call_args.args[2]))
 

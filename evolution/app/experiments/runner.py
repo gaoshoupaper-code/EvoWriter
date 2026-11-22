@@ -102,6 +102,7 @@ def create_run(request: RunCreate, actor: str) -> dict:
     now = repo.now()
     run = {"id": repo.identifier("experiment"), "name": request.name, "task_type": request.task_type, "flow_version": 3 if scope else 2,
            "status": "pending", "phase": "baseline", "current_round": 0, "max_rounds": request.max_rounds,
+           "regression_repeats": 1,
            "settings": request.model_dump(mode="json"),
            "baseline": {"version": selected["version"], "commit": selected["commit"], "artifact_digest": prepared["digest"]},
            "production_at_start": {"commit": production["commit"], "version": production["version"]},
@@ -331,11 +332,17 @@ def _final_samples(run: dict, phase: str) -> list[dict]:
     return [sample for sample in run["samples"] if sample["phase"] == phase and sample["round"] == run["current_round"]]
 
 
+def _check_repeats(run: dict, phase: str) -> int:
+    # Experiments created before this field used three repeats for every check.
+    return run.get("regression_repeats", 3) if phase == "regression" else 3
+
+
 def _start_checks(run: dict, phase: str, candidate: dict) -> None:
     selections = run["settings"]["regression_ids"].values() if phase == "regression" else [run["settings"]["validation_ids"]]
+    repeats = _check_repeats(run, phase)
     for identifiers in selections:
         for arm, version in (("baseline", run["baseline"]), ("candidate", candidate)):
-            _add_samples(run, identifiers, arm=arm, phase=phase, round_=run["current_round"], repeats=3,
+            _add_samples(run, identifiers, arm=arm, phase=phase, round_=run["current_round"], repeats=repeats,
                          commit=version["commit"], digest=version.get("digest") or version["artifact_digest"])
     run["phase"] = phase
     if run.get("flow_version") == 3:
@@ -355,12 +362,13 @@ def _compare_final(run: dict, samples: list[dict], kind: str, gain: float) -> di
     left = [sample for sample in samples if sample["task_type"] == kind and sample["arm"] == "baseline"]
     right = [sample for sample in samples if sample["task_type"] == kind and sample["arm"] == "candidate"]
     report = evaluation.compare_results(left, right, completion_rate=run["settings"]["thresholds"]["completion_rate"], quality_gain=gain)
-    identifiers = (run["settings"]["validation_ids"] if kind == run["task_type"] and run.get("flow_version") != 3
-                   else run["settings"]["regression_ids"][kind])
-    expected = {(identifier, repeat) for identifier in identifiers for repeat in (1, 2, 3)}
+    phase = "validation" if kind == run["task_type"] and run.get("flow_version") != 3 else "regression"
+    identifiers = run["settings"]["validation_ids"] if phase == "validation" else run["settings"]["regression_ids"][kind]
+    repeats = _check_repeats(run, phase)
+    expected = {(identifier, repeat) for identifier in identifiers for repeat in range(1, repeats + 1)}
     if any({(sample["package_id"], sample["repeat"]) for sample in arm} != expected or len(arm) != len(expected) for arm in (left, right)):
         report["passed"] = False
-        report["problems"].append("缺少指定样本的新旧版各三次实际运行记录")
+        report["problems"].append(f"缺少指定样本的新旧版各 {repeats} 次实际运行记录")
     return report
 
 
@@ -479,8 +487,9 @@ def advance_one(run_id: str) -> None:
                 selections = [(run["settings"]["validation_ids"], "validation")]
                 selections += [(identifiers, "regression") for identifiers in run["settings"]["regression_ids"].values()]
                 for identifiers, phase in selections:
+                    repeats = _check_repeats(run, phase)
                     for arm, version in (("baseline", run["baseline"]), ("candidate", run["best_candidate"])):
-                        _add_samples(run, identifiers, arm=arm, phase=phase, round_=run["current_round"], repeats=3,
+                        _add_samples(run, identifiers, arm=arm, phase=phase, round_=run["current_round"], repeats=repeats,
                                      commit=version["commit"], digest=version.get("digest") or version["artifact_digest"])
                 repo.event(run, "validation", "探索达标；固定候选进入独立终验与另外两类回归。")
             else:
@@ -491,7 +500,8 @@ def advance_one(run_id: str) -> None:
             if _run_pending(run, selected):
                 return
             kind = run["task_type"]
-            if _stop_incomplete_phase(run, selected, run["settings"]["regression_ids"][kind], arms=("baseline", "candidate"), repeats=3):
+            if _stop_incomplete_phase(run, selected, run["settings"]["regression_ids"][kind], arms=("baseline", "candidate"),
+                                      repeats=_check_repeats(run, "regression")):
                 return
             report = _compare_final(run, selected, kind, 0)
             current = run["rounds"][-1]

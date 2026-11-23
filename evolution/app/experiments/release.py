@@ -57,8 +57,8 @@ def _same_release(left: dict, right: dict) -> bool:
     return left.get("commit") == right.get("commit") and left.get("version") == right.get("version")
 
 
-def _recover_locked(run: dict) -> dict:
-    """Observe the durable operation; recovery never grants a fresh promotion."""
+def _recover_locked(run: dict, *, resume_automatic: bool = False) -> dict:
+    """Check which production version the durable operation reached."""
     current = clients.production()
     if run.get("rollback_status") in {"restoring", "failed"} or run.get("restored"):
         authorized = run.get("restore_requested_by") or any(event.get("kind") == "restore_requested" for event in run.get("events", []))
@@ -86,6 +86,8 @@ def _recover_locked(run: dict) -> dict:
         repo.put_run(run)
         return _confirm(run, current)
     elif _same_release(current, _original_production(run)):
+        if resume_automatic:
+            return run
         run.update(status="publish_failed", publish_status="failed", load_error="发布中断；生产尚未晋级，请人工重试发布。")
     else:
         run.update(status="stale", publish_status="failed", stale_reason="发布后生产版本已变化；拒绝覆盖。")
@@ -101,24 +103,36 @@ def recover_run(run_id: str) -> dict:
             raise KeyError(run_id)
         if not needs_recovery(run):
             return run
+        if (run["status"] == "publishing" and not run.get("published") and run.get("auto_publish")
+                and run.get("approved_automatically") and run.get("approved_by")):
+            return publish_run(run_id, run["approved_by"], automatic=True)
         return _recover_locked(run)
 
 
-def publish_run(run_id: str, actor: str) -> dict:
+def publish_run(run_id: str, actor: str, *, automatic: bool = False) -> dict:
     with repo.run_lock(run_id):
         run = repo.get_run(run_id)
         if run is None:
             raise KeyError(run_id)
         if run["status"] == "activated":
             return run
-        if run["status"] not in {"awaiting_review", "publish_failed", "publishing"} or not run.get("report", {}).get("passed") or not run.get("best_candidate"):
+        resuming_automatic = automatic and run["status"] == "publishing" and run.get("approved_automatically")
+        if automatic:
+            if run["status"] in {"stopping", "stopped"}:
+                return run
+            eligible = (run.get("auto_publish") and run["phase"] == "publish"
+                        and (resuming_automatic or run["status"] in {"running", "recovering"}))
+        else:
+            eligible = run["status"] in {"awaiting_review", "publish_failed", "publishing"}
+        if not eligible or not run.get("report", {}).get("passed") or not run.get("best_candidate"):
             raise ValueError("仅评测达标且未过期的固定候选可发布")
         candidate = run["best_candidate"]
         approved = run.get("approved_commit") == candidate["commit"] and bool(run.get("approved_by"))
         checked_original = False
         if not run.get("published") and (run["status"] == "publishing" or (run["status"] == "publish_failed" and approved)):
-            run = _recover_locked(run)
-            if run["status"] != "publish_failed" or run.get("published"):
+            run = _recover_locked(run, resume_automatic=resuming_automatic)
+            resumable_status = "publishing" if resuming_automatic else "publish_failed"
+            if run["status"] != resumable_status or run.get("published"):
                 return run
             # Reconciliation already checked the old production identity. The
             # promotion CAS protects the remaining race with a delayed request.
@@ -131,13 +145,25 @@ def publish_run(run_id: str, actor: str) -> dict:
                 raise ValueError(run["stale_reason"])
             return _confirm(run, run["published"])
         if not checked_original and check_stale(run):
+            if automatic:
+                return run
             raise ValueError(run["stale_reason"])
+        if automatic and not resuming_automatic:
+            from app.experiments.runner import is_stopped
+            if is_stopped(run_id):
+                return run
         expected = _original_production(run)
-        run.update(status="publishing", phase="publish", publish_status="publishing", approved_commit=candidate["commit"], approved_by=actor)
-        repo.event(run, "approved", f"人工批准固定候选 {candidate['commit']}。")
+        run.update(status="publishing", phase="publish", publish_status="publishing",
+                   approved_commit=candidate["commit"], approved_by=actor, approved_automatically=automatic)
+        if not resuming_automatic:
+            if automatic:
+                repo.event(run, "auto_approved", f"改进题复测达标，自动发布固定候选 {candidate['commit']}。")
+            else:
+                repo.event(run, "approved", f"人工批准固定候选 {candidate['commit']}。")
         repo.put_run(run)
         try:
-            response = clients.promote({"source_commit": candidate["commit"], "version_note": f"实验 {run_id} 已通过发布评测",
+            note = "改进题复测达标，自动发布" if automatic else "已通过发布评测"
+            response = clients.promote({"source_commit": candidate["commit"], "version_note": f"实验 {run_id} {note}",
                 "expected_production_commit": expected["commit"], "expected_production_version": expected["version"]})
             if response["commit"] != candidate["commit"] or response.get("artifact_digest") != candidate["digest"]:
                 raise ValueError("实际发布候选与通过验证的候选不一致")
@@ -151,6 +177,9 @@ def publish_run(run_id: str, actor: str) -> dict:
                 current = clients.production()
                 if current["commit"] == candidate["commit"] and current["version"] != expected["version"]:
                     run["published"] = current
+                    if automatic and current.get("artifact_digest") == candidate["digest"]:
+                        repo.put_run(run)
+                        return _confirm(run, current)
                 elif current["commit"] != expected["commit"] or current["version"] != expected["version"]:
                     run.update(status="stale", publish_status="failed", stale_reason="生产版本在发布期间变化；候选已过期。")
                     repo.event(run, "stale", run["stale_reason"])

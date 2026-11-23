@@ -106,6 +106,90 @@ class ExperimentReleaseTest(DatabaseTest):
         self.assertEqual(sent["expected_production_version"], 7)
         self.assertEqual(result["status"], "activated")
 
+    def _automatic_run(self, candidate_score=4.1):
+        run = run_record()
+        candidate = run["best_candidate"]
+        run.update(auto_publish=True, task_type="chapter_text", flow_version=3, judge_repeats=1,
+                   status="running", phase="exploration", best_candidate=None, report={},
+                   private={"actor": "initiator"})
+        run["rounds"] = [{"round": 1, "status": "exploration", "source_commit": candidate["commit"],
+                          "digest": candidate["digest"]}]
+        run["samples"] = [{"arm": arm, "phase": phase, "round": round_, "package_id": "opt", "repeat": 1,
+                           "completed": True, "status": "completed", "scores": {"overall": score}}
+                          for arm, phase, round_, score in (("baseline", "baseline", 0, 4),
+                                                             ("candidate", "exploration", 1, candidate_score))]
+        return run
+
+    @patch.dict("os.environ", {"WRITING_AGENT_ID": "text"})
+    def test_passing_improvement_queues_and_automatically_publishes_the_fixed_candidate(self):
+        from app.experiments import repo, runner
+        run = self._automatic_run()
+        repo.put_run(run)
+        promoted = {"version": 8, "commit": "b" * 40, "artifact_digest": "2" * 64}
+        with patch("app.experiments.clients.production", return_value=run["baseline"]), \
+             patch("app.experiments.clients.promote", return_value=promoted) as promote, \
+             patch("app.experiments.clients.runtime", return_value=promoted):
+            runner.advance_one(run["id"])
+            queued = repo.get_run(run["id"])
+            self.assertEqual((queued["status"], queued["phase"]), ("running", "publish"))
+            self.assertTrue(queued["report"]["passed"])
+            promote.assert_not_called()
+            runner.advance_one(run["id"])
+            runner.advance_one(run["id"])
+        result = repo.get_run(run["id"])
+        self.assertEqual(result["status"], "activated")
+        self.assertEqual(result["published"], promoted)
+        self.assertEqual(result["approved_by"], "initiator")
+        self.assertTrue(result["approved_automatically"])
+        self.assertEqual([event["kind"] for event in result["events"]], ["publish_ready", "auto_approved", "activated"])
+        self.assertEqual([sample["phase"] for sample in result["samples"]], ["baseline", "exploration"])
+        promote.assert_called_once_with({"source_commit": promoted["commit"],
+            "version_note": f"实验 {run['id']} 改进题复测达标，自动发布", "expected_production_commit": run["baseline"]["commit"],
+            "expected_production_version": run["baseline"]["version"]})
+
+    @patch.dict("os.environ", {"WRITING_AGENT_ID": "text"})
+    def test_auto_publish_skips_below_threshold_and_stops_before_promotion(self):
+        from app.experiments import repo, runner
+        below = self._automatic_run(candidate_score=4.09)
+        below["id"] = "below-threshold"
+        stopped = self._automatic_run()
+        stopped["id"] = "stop-before-publish"
+        repo.put_run(below)
+        repo.put_run(stopped)
+        with patch("app.experiments.clients.promote") as promote, patch.object(runner, "start_worker"):
+            runner.advance_one(below["id"])
+            runner.advance_one(stopped["id"])
+            runner.request_stop(stopped["id"])
+            try:
+                runner.advance_one(stopped["id"])
+            finally:
+                runner._stops.pop(stopped["id"], None)
+            promote.assert_not_called()
+        self.assertEqual(repo.get_run(below["id"])["phase"], "evolving")
+        outcome = repo.get_run(stopped["id"])
+        self.assertEqual(outcome["status"], "stopped")
+        self.assertNotIn("approved_automatically", outcome)
+
+    def test_auto_publish_recovery_checks_pointer_before_retrying(self):
+        from app.experiments import release, repo
+        promoted = {"version": 8, "commit": "b" * 40, "artifact_digest": "2" * 64}
+        for interrupted_before_promotion in (True, False):
+            with self.subTest(interrupted_before_promotion=interrupted_before_promotion):
+                run = run_record()
+                run.update(auto_publish=True, status="publishing", phase="publish", publish_status="publishing",
+                           approved_automatically=True, approved_commit=promoted["commit"], approved_by="initiator")
+                repo.event(run, "auto_approved", "改进题复测达标，自动发布。")
+                repo.put_run(run)
+                current = run["baseline"] if interrupted_before_promotion else promoted
+                with patch("app.experiments.clients.production", return_value=current), \
+                     patch("app.experiments.clients.promote", return_value=promoted) as promote, \
+                     patch("app.experiments.clients.runtime", return_value=promoted):
+                    result = release.recover_run(run["id"])
+                self.assertEqual(result["status"], "activated")
+                self.assertEqual(result["published"], promoted)
+                self.assertEqual(promote.call_count, int(interrupted_before_promotion))
+                self.assertEqual([event["kind"] for event in result["events"]], ["auto_approved", "activated"])
+
     def test_pointer_change_without_loaded_commit_is_not_activation(self):
         from app.experiments import repo, release
         run = run_record()

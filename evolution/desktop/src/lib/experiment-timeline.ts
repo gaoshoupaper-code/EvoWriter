@@ -54,9 +54,14 @@ export function evaluationFinished(sample: ExperimentSample) {
   );
 }
 
+export function awaitsAutomaticPublish(experiment: Experiment) {
+  return experiment.auto_publish === true && experiment.phase === "publish" && experiment.publish_status === "not_started"
+    && ["running", "recovering"].includes(experiment.status);
+}
+
 export function hasExperimentReview(experiment: Experiment) {
   const published = ["publishing", "activated", "failed", "unconfirmed", "restored"].includes(experiment.publish_status);
   const ready = experiment.report.passed && experiment.best_candidate
-    && ["awaiting_review", "stale", "publish_failed"].includes(experiment.status);
+    && (["awaiting_review", "stale", "publish_failed"].includes(experiment.status) || awaitsAutomaticPublish(experiment));
   return !!(experiment.can_publish || ready || published || experiment.can_restore);
 }

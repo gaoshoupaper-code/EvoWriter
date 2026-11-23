@@ -186,7 +186,8 @@ export function StagePackages() {
   }
   return <section className="experiment-section evaluation-content" aria-labelledby="stage-packages-title">
     <div className="experiment-heading"><div><h2 id="stage-packages-title">试验数据集</h2>
-      <p className="experiment-note">工作台默认使用本套全部在用题，也可自选。改进题和回归题各至少需要一道。</p></div>
+      <p className="experiment-note">{task === "chapter_text" ? "评测范围以工作台选题为准。"
+        : "工作台默认使用本套全部在用题，也可自选。改进题和回归题各至少需要一道。"}</p></div>
     </div>
     {loading ? <p role="status">正在加载数据集…</p> : loadError ? <p role="alert" className="experiment-error">{loadError}</p> :
       <div className="evaluation-dataset-tabs" role="tablist" aria-label="试验数据集">
@@ -244,7 +245,7 @@ export function StagePackages() {
     {!loading && !loadError && <div id="dataset-content" role="tabpanel" aria-labelledby={"dataset-tab-" + dataset} className="experiment-dataset-content evaluation-panel">
         <div className="experiment-heading"><div><h3>{dataset === "regression" ? "回归题" : "改进题"}</h3>
           <p className="experiment-note">{dataset === "regression" ? "比较候选版与本套基线的组内均分。" : "用改进题定位问题并检验候选版。"}</p></div></div>
-        {visible.length ? table(visible) : <p className="experiment-empty">本组暂无题目。每组至少导入一道题，才能启动评测。</p>}
+        {visible.length ? table(visible) : <p className="experiment-empty">本组暂无题目。{task !== "chapter_text" && "每组至少导入一道题，才能启动评测。"}</p>}
     </div>}
     {selected && (editing ? <form key={selected.id} className="experiment-input-preview" onSubmit={saveEdits}>
       <h3>编辑题目</h3>

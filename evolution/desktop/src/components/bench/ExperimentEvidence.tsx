@@ -4,9 +4,10 @@ import remarkBreaks from "remark-breaks";
 import { downloadTextFile } from "@/lib/download";
 import { EXPERIMENT_STATUS, PHASE_LABELS, type Experiment, type ExperimentCaseCoverage, type ExperimentComparison, type ExperimentModel, type ExperimentSample, type ExperimentScores as Score } from "@/lib/experiment-types";
 
-export function formatCaseCoverage({ optimization, regression }: ExperimentCaseCoverage) {
-  const partial = optimization.selected < optimization.total || regression.selected < regression.total;
-  return `${partial ? "局部评测" : "全量评测"} · 改进 ${optimization.selected}/${optimization.total} 道，回归 ${regression.selected}/${regression.total} 道`;
+export function formatCaseCoverage({ optimization, regression }: ExperimentCaseCoverage, autoPublish = false) {
+  const partial = optimization.selected < optimization.total || (!autoPublish && regression.selected < regression.total);
+  const scope = `${partial ? "局部评测" : "全量评测"} · 改进 ${optimization.selected}/${optimization.total} 道`;
+  return autoPublish ? scope : `${scope}，回归 ${regression.selected}/${regression.total} 道`;
 }
 
 export function EvidenceValues({ value }: { value: unknown }) {

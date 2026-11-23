@@ -88,7 +88,7 @@ function ExperimentRecordList() {
             {run.phase && <strong>{PHASE_LABELS[run.phase] ?? run.phase}</strong>}
           </div>
           <span className="experiment-cell-note">{experimentTaskLabel(run.task_type, run.flow_version)} · 原版 v{run.baseline.version} · 第 {run.current_round} / {run.max_rounds} 轮</span>
-          {run.case_coverage && <span className="experiment-cell-note">{formatCaseCoverage(run.case_coverage)}</span>}
+          {run.case_coverage && <span className="experiment-cell-note">{formatCaseCoverage(run.case_coverage, run.auto_publish)}</span>}
           <time className="experiment-cell-note" dateTime={run.created_at}>创建于 {new Date(run.created_at).toLocaleString("zh-CN", { hour12: false })}</time>
         </div>
         <div className="experiment-record-results">

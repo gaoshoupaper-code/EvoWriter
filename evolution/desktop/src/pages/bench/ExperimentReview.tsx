@@ -2,7 +2,7 @@ import { useParams } from "react-router-dom";
 import { ComparisonReport, formatCaseCoverage } from "@/components/bench/ExperimentEvidence";
 import { publishExperiment, restoreExperiment, type Experiment } from "@/lib/api";
 import { EXPERIMENT_STATUS, experimentTaskLabel } from "@/lib/experiment-types";
-import { hasExperimentReview } from "@/lib/experiment-timeline";
+import { awaitsAutomaticPublish, hasExperimentReview } from "@/lib/experiment-timeline";
 import { ExperimentDetailPage, useExperimentPage } from "./ExperimentDetailPage";
 
 const publishLabels: Record<string, string> = {
@@ -18,12 +18,13 @@ export default function ExperimentReview() {
 
 function ReviewContent({ id }: { id: string }) {
   const { experiment, error, retry, busy, operate } = useExperimentPage(id);
-  return <ExperimentDetailPage id={id} title="实验审核" anchor="experiment-review"
+  return <ExperimentDetailPage id={id} title={experiment?.auto_publish ? "发布状态" : "实验审核"} anchor="experiment-review"
     loading={!experiment} error={error} busy={busy} retry={retry}>
     {experiment && (hasExperimentReview(experiment)
       ? <ReviewResult experiment={experiment} busy={busy}
         publish={() => void operate(publishExperiment)} restore={() => void operate(restoreExperiment)} />
-      : <section><p>暂无可审核的候选。</p>{experiment.end_reason && <p>{experiment.end_reason}</p>}</section>)}
+      : <section><p>{experiment.auto_publish ? "暂无达标候选。" : "暂无可审核的候选。"}</p>
+        {experiment.end_reason && <p>{experiment.end_reason}</p>}</section>)}
   </ExperimentDetailPage>;
 }
 
@@ -39,8 +40,10 @@ function ReviewResult({ experiment, busy, publish, restore }: {
     ?? (report.regression_round == null || report.regression_round === candidate?.round ? report.regressions : undefined);
   const composite = !!experiment.runtime_scoring_version;
   const assessment = experiment.task_type === "chapter_text" && experiment.assessment_version === 1;
+  const candidateTitle = experiment.auto_publish ? "达标候选" : "待审核候选";
   const status = experiment.publish_status;
   const publishInProgress = status === "publishing" || experiment.status === "publishing";
+  const publishLabel = awaitsAutomaticPublish(experiment) ? "等待自动发布" : publishLabels[status] ?? status ?? "尚未发布";
   const restoring = experiment.rollback_status === "restoring";
   const retryPublish = experiment.status === "publish_failed";
   const publishText = assessment ? (retryPublish ? "重试启用" : "启用达标版本")
@@ -48,7 +51,7 @@ function ReviewResult({ experiment, busy, publish, restore }: {
   return <>
     <header className="record-heading"><h2>{experiment.name}</h2>
       <p>{EXPERIMENT_STATUS[experiment.status] ?? experiment.status}</p></header>
-    <section aria-label="待审核候选"><h2>待审核候选</h2>
+    <section aria-label={candidateTitle}><h2>{candidateTitle}</h2>
       {candidate ? <dl className="record-facts">
         <div><dt>候选</dt><dd>第 {candidate.round} 轮</dd></div>
         <div><dt>版本</dt><dd><code>{candidate.commit}</code></dd></div>
@@ -59,14 +62,15 @@ function ReviewResult({ experiment, busy, publish, restore }: {
       {report.validation && <ComparisonReport title="独立终验" report={report.validation} composite={composite} />}
     </section>
     <section aria-label="发布与加载"><h2>发布与加载</h2>
-      <p><strong>{publishInProgress ? "发布中" : publishLabels[status] ?? status ?? "尚未发布"}</strong></p>
-      {experiment.case_coverage && <p id="publish-case-coverage" className="experiment-note">{formatCaseCoverage(experiment.case_coverage)}</p>}
+      <p><strong>{publishInProgress ? "发布中" : publishLabel}</strong></p>
+      {experiment.auto_publish && <p className="experiment-note">改进题达标后自动发布。</p>}
+      {experiment.case_coverage && <p id="publish-case-coverage" className="experiment-note">{formatCaseCoverage(experiment.case_coverage, experiment.auto_publish)}</p>}
       {experiment.loaded_revision && <p>执行端已确认版本 <code>{experiment.loaded_revision}</code></p>}
       {experiment.stale_reason && <p role="status">{experiment.stale_reason}</p>}
       {experiment.load_error && <p role="alert" className="experiment-error">{experiment.load_error}</p>}
       {experiment.rollback_status && <p>恢复旧版 · {restoreLabels[experiment.rollback_status] ?? experiment.rollback_status}</p>}
       <div className="experiment-actions">
-        {experiment.can_publish && <button type="button" className="config-button primary"
+        {experiment.can_publish && (!experiment.auto_publish || retryPublish) && <button type="button" className="config-button primary"
           aria-describedby={experiment.case_coverage ? "publish-case-coverage" : undefined}
           disabled={busy || publishInProgress || restoring} onClick={publish}>{publishText}</button>}
         {experiment.can_restore && <button type="button" className="config-button"

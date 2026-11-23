@@ -71,6 +71,37 @@ it("发布中轮询到执行端确认后显示已生效，恢复仍须主动点�
   }
 });
 
+it("正文达标后展示自动发布状态，发布失败时可重试", async () => {
+  vi.useFakeTimers();
+  try {
+    const publishing = { ...ready, task_type: "chapter_text" as const, auto_publish: true,
+      phase: "publish", status: "publishing", publish_status: "publishing", can_publish: false,
+      case_coverage: { optimization: { selected: 2, total: 2 }, regression: { selected: 0, total: 3 } },
+    };
+    const queued = { ...publishing, status: "recovering", publish_status: "not_started" };
+    const failed = { ...publishing, status: "publish_failed", publish_status: "failed", can_publish: true,
+      load_error: "执行端加载失败" };
+    vi.mocked(getExperiment).mockResolvedValueOnce(queued).mockResolvedValueOnce(publishing).mockResolvedValue(failed);
+    vi.mocked(publishExperiment).mockResolvedValue(failed);
+    open();
+    await act(async () => {});
+    expect(screen.getByRole("heading", { name: "发布状态" })).toBeVisible();
+    expect(screen.getByText("等待自动发布", { selector: "strong" })).toBeVisible();
+    expect(screen.getByText("全量评测 · 改进 2/2 道")).toBeVisible();
+    expect(screen.queryByRole("button", { name: /发布候选|重试发布/ })).not.toBeInTheDocument();
+    expect(publishExperiment).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.getByText("发布中", { selector: "strong" })).toBeVisible();
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(screen.getByText("执行端加载失败")).toBeVisible();
+    await act(async () => { fireEvent.click(screen.getByRole("button", { name: "重试发布并核对加载" })); });
+    expect(publishExperiment).toHaveBeenCalledTimes(1);
+    expect(publishExperiment).toHaveBeenCalledWith("run");
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("未达标实验直达审核也没有发布操作", async () => {
   vi.mocked(getExperiment).mockResolvedValue({ ...ready, status: "exhausted", report: { passed: false },
     can_publish: false, best_candidate: null });

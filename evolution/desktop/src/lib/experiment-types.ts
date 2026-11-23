@@ -83,6 +83,7 @@ export type ExperimentThresholds = {
 };
 export type ExperimentOptions = {
   task_types: ExperimentTaskType[];
+  auto_publish?: boolean;
   launch_rule_ids?: string[];
   versions: { version: number; commit: string; note: string }[];
   production_version: number | null;
@@ -95,6 +96,7 @@ export type ExperimentStart = {
   name?: string; task_type: ExperimentTaskType; baseline_version: number; model_config_id: number;
   judge_group_id: number; rule_versions: Partial<Record<ExperimentTaskType, string>>;
   case_selection?: "all" | "custom";
+  auto_publish?: boolean;
   optimization_ids: string[]; candidate_commit?: string;
   regression_ids: Partial<Record<ExperimentTaskType, string[]>>;
   thresholds: ExperimentThresholds;
@@ -159,6 +161,7 @@ export type ExperimentSample = {
 export type ExperimentCaseCoverage = Record<"optimization" | "regression", { selected: number; total: number }>;
 export type Experiment = {
   id: string; name: string; task_type: ExperimentTaskType; status: string; phase: string; flow_version?: number;
+  auto_publish?: boolean;
   assessment_version?: number;
   runtime_scoring_version?: number;
   judge_repeats?: number;

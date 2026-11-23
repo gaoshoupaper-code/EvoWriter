@@ -78,6 +78,26 @@ def test_rejected_inputs_and_grade_rules(monkeypatch):
             RunCreate.model_validate({**options, **invalid})
 
 
+def test_automatic_publish_requires_the_chapter_workbench_and_improvement_cases(monkeypatch):
+    from app.experiments.schemas import RunCreate
+
+    monkeypatch.setenv("WRITING_AGENT_ID", "text")
+    kind = "chapter_text"
+    payload = dict(task_type=kind, rule_versions={kind: "text-rules"}, optimization_ids=["a"],
+                   auto_publish=True, model_config_id=1, judge_group_id=1, baseline_version=1)
+    request = RunCreate.model_validate(payload)
+    assert request.auto_publish and request.regression_ids == {}
+    for invalid in ({"regression_ids": {kind: ["b"]}}, {"validation_ids": ["c"]},
+                    {"optimization_ids": ["a", "a"]}, {"thresholds": {"quality_gain": 0}},
+                    {"thresholds": {"completion_rate": .5}}, {"auto_publish": "true"}):
+        with pytest.raises(ValueError):
+            RunCreate.model_validate({**payload, **invalid})
+
+    monkeypatch.setenv("WRITING_AGENT_ID", "chapter")
+    with pytest.raises(ValueError, match="只有正文工作台"):
+        RunCreate.model_validate({**payload, "task_type": "chapter_outlines", "rule_versions": {"chapter_outlines": "rules"}})
+
+
 def test_http_suite_boundaries_and_frozen_rubric(monkeypatch):
     import sqlite3
     from fastapi import FastAPI, Request
@@ -181,8 +201,11 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         current_rule = rubrics.get_rule(settings.rule_versions[kind])
         repo.insert("self_evolution_rules", {**current_rule, "id": "old-four-dimensions", "version": 99,
             "dimensions": current_rule["dimensions"][:4]})
-        assert api.experiment_options()["versions"] == [release]
-        assert api.experiment_options()["launch_rule_ids"] == [current_rule["id"]]
+        options = api.experiment_options()
+        assert options["versions"] == [release]
+        assert options["launch_rule_ids"] == [current_rule["id"]]
+        assert options["auto_publish"] is True
+        assert options["defaults"]["thresholds"]["regression_tolerance"] == {}
         with pytest.raises(ValueError, match="全部现行正文维度"):
             runner.create_run(settings.model_copy(update={"rule_versions": {kind: "old-four-dimensions"}}), "author")
         assert previous in clients.versions()["items"]
@@ -207,6 +230,16 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
                     "regression": {"selected": len(selected_reg), "total": len(reg)}}
         assert run["case_coverage"] == coverage
         created_ids = {run["id"]}
+        auto_settings = RunCreate.model_validate({**settings.model_dump(), "auto_publish": True,
+            "regression_ids": {}, "thresholds": options["defaults"]["thresholds"]})
+        with pytest.raises(ValueError, match="刷新题库"):
+            runner.create_run(auto_settings.model_copy(update={"optimization_ids": reg[:1]}), "author")
+        auto_run = runner.create_run(auto_settings, "author")
+        created_ids.add(auto_run["id"])
+        assert api.public_run(auto_run, can_read_content=False, summary=True)["auto_publish"] is True
+        assert auto_run["case_coverage"] == {**coverage, "regression": {"selected": 0, "total": len(reg)}}
+        assert set(auto_run["private"]["package_revisions"]) == set(selected_opt)
+        assert {sample["package_id"] for sample in auto_run["samples"]} == set(selected_opt)
         if case_selection == "custom":
             custom_all = RunCreate.model_validate({**all_settings.model_dump(), "case_selection": "custom"})
             custom_all_run = runner.create_run(custom_all, "author")

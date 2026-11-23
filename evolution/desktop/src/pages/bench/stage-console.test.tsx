@@ -36,6 +36,14 @@ const packages = kinds.flatMap((task_type, index) => ["optimization", "optimizat
 const metrics = (quality: number) => ({ total: 2, completed: 2, completion_rate: 1, quality, evaluation_errors: 0 });
 const report = { passed: true, baseline: metrics(3.6), candidate: metrics(4), quality_delta: 0.4,
   paired_count: 2, changes: [], new_failures: [], problems: [] };
+const options = {
+  task_types: [...kinds], versions: [{ version: 18, commit: "fixed-baseline", note: "当前生产" }], production_version: 18,
+  models: [{ id: 11, name: "执行配置", model: "writer-frozen", is_active: true }],
+  judge_groups: [{ id: 5, name: "异源评委", members: [{ config_id: 12, name: "评测配置", model: "judge-frozen" }] }],
+  defaults: { max_rounds: 3, rule_versions: Object.fromEntries(kinds.map((kind, n) => [kind, `rule-${n}`])),
+    thresholds: { completion_rate: 1, quality_gain: 0.1, regression_tolerance: Object.fromEntries(kinds.map((kind) => [kind, 0])) } },
+  builtin_suite: { id: "isolated-writing-v1", total: packages.length },
+};
 
 beforeEach(() => {
   window.location.hash = "#/agents/volume/bench";
@@ -44,14 +52,7 @@ beforeEach(() => {
   api.listExperimentRules.mockResolvedValue({ items: [{ ...rules[1], id: "old-rule", profile: undefined, version: 99 }, ...rules] as never[] });
   api.listExperiments.mockResolvedValue({ items: [] });
   api.getExperimentPackageTemplates.mockResolvedValue({ items: [] });
-  api.getExperimentOptions.mockResolvedValue({
-    task_types: [...kinds], versions: [{ version: 18, commit: "fixed-baseline", note: "当前生产" }], production_version: 18,
-    models: [{ id: 11, name: "执行配置", model: "writer-frozen", is_active: true }],
-    judge_groups: [{ id: 5, name: "异源评委", members: [{ config_id: 12, name: "评测配置", model: "judge-frozen" }] }],
-    defaults: { max_rounds: 3, rule_versions: Object.fromEntries(kinds.map((kind, n) => [kind, `rule-${n}`])),
-      thresholds: { completion_rate: 1, quality_gain: 0.1, regression_tolerance: Object.fromEntries(kinds.map((kind) => [kind, 0])) } },
-    builtin_suite: { id: "isolated-writing-v1", total: packages.length },
-  } as never);
+  api.getExperimentOptions.mockResolvedValue(options as never);
   api.startExperiment.mockResolvedValue({ id: "new-experiment" } as never);
 });
 
@@ -402,6 +403,39 @@ describe("正文三项评测 / REQ-20261120-161028", () => {
     await waitFor(() => expect(api.startExperiment).toHaveBeenCalledWith(expect.objectContaining({
       task_type: "chapter_text", judge_group_id: 5, rule_versions: { chapter_text: "rule-2" },
     })));
+  });
+
+  it.each(["全量", "自选"])("正文自动发布的%s实验只提交改进题", async (mode) => {
+    window.location.hash = "#/bench?agent=text";
+    api.getExperimentOptions.mockResolvedValueOnce({ ...options, auto_publish: true } as never);
+    if (mode === "全量") {
+      const withoutRegression = packages.filter((item) => item.task_type === "chapter_text" && item.purpose === "optimization");
+      api.listExperimentPackages.mockResolvedValueOnce({ items: withoutRegression as never[], can_read_content: true });
+    }
+    render(<MemoryRouter><EvolutionExperiments /></MemoryRouter>);
+    fireEvent.change(await screen.findByLabelText("评测模型"), { target: { value: "5" } });
+    const summary = screen.getByLabelText("启动前配置摘要");
+    const start = screen.getByRole("button", { name: "启动自进化实验" });
+    expect(summary).toHaveTextContent("改进题 2/2 道");
+    expect(summary).toHaveTextContent("达标后自动发布");
+    expect(summary).not.toHaveTextContent("回归");
+    if (mode === "自选") {
+      fireEvent.click(screen.getByRole("radio", { name: "自选题目" }));
+      expect(screen.getAllByRole("checkbox")).toHaveLength(2);
+      expect(start).toBeDisabled();
+      fireEvent.click(screen.getByRole("checkbox", { name: "chapter_text样本1" }));
+      expect(summary).toHaveTextContent("改进题 1/2 道");
+    }
+    expect(start).toBeEnabled();
+    fireEvent.click(start);
+    await waitFor(() => expect(api.startExperiment).toHaveBeenCalledOnce());
+    const payload = api.startExperiment.mock.calls[0][0];
+    expect(payload).toMatchObject({ task_type: "chapter_text", auto_publish: true,
+      optimization_ids: mode === "自选" ? ["chapter_text-1"] : ["chapter_text-0", "chapter_text-1"],
+    });
+    expect(payload.regression_ids).toEqual({});
+    expect(payload.thresholds.regression_tolerance).toEqual({});
+    expect(payload.case_selection).toBe(mode === "自选" ? "custom" : undefined);
   });
 
   it("完整评分可独立核对每次分数、理由和依据，历史评语仍可读", () => {

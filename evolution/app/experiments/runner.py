@@ -81,9 +81,13 @@ def create_run(request: RunCreate, actor: str) -> dict:
     inventory = None
     if scope:
         inventory = {pkg["id"]: pkg for pkg in repo.list_packages()}
-        if (request.case_selection == "all"
-                and set(request.optimization_ids + request.regression_ids[scope]) != set(inventory)):
-            raise ValueError("必须使用本套全部在用的改进题和回归题，请刷新题库")
+        if request.case_selection == "all":
+            expected = {key for key, package in inventory.items()
+                        if not request.auto_publish or package["purpose"] == "optimization"}
+            selected_ids = request.optimization_ids + request.regression_ids.get(scope, [])
+            if set(selected_ids) != expected:
+                groups = "改进题" if request.auto_publish else "改进题和回归题"
+                raise ValueError(f"必须使用本套全部在用的{groups}，请刷新题库")
     selections = [(identifier, request.task_type, "optimization") for identifier in request.optimization_ids]
     selections += [(identifier, request.task_type, "validation") for identifier in request.validation_ids]
     selections += [(identifier, kind, "regression") for kind, identifiers in request.regression_ids.items() for identifier in identifiers]
@@ -106,7 +110,7 @@ def create_run(request: RunCreate, actor: str) -> dict:
     run = {"id": repo.identifier("experiment"), "name": request.name, "task_type": request.task_type, "flow_version": 3 if scope else 2,
            "status": "pending", "phase": "baseline", "current_round": 0, "max_rounds": request.max_rounds,
            "regression_repeats": 1,
-           "settings": request.model_dump(mode="json"),
+           "settings": request.model_dump(mode="json", exclude={"auto_publish"} if not request.auto_publish else None),
            "baseline": {"version": selected["version"], "commit": selected["commit"], "artifact_digest": prepared["digest"]},
            "production_at_start": {"commit": production["commit"], "version": production["version"]},
            "best_candidate": None, "rounds": [], "samples": [], "report": {}, "events": [], "usage": {},
@@ -114,12 +118,14 @@ def create_run(request: RunCreate, actor: str) -> dict:
            "rollback_status": None, "created_at": now, "updated_at": now,
            "private": {"model": model, "judges": judges, "evolver": evolver, "rules": frozen_rules,
                        "packages": frozen_packages, "actor": actor}}
+    if request.auto_publish:
+        run["auto_publish"] = True
     if inventory is not None:
         run["case_coverage"] = {
             purpose: {"selected": len(identifiers),
                       "total": sum(package["purpose"] == purpose for package in inventory.values())}
             for purpose, identifiers in (("optimization", request.optimization_ids),
-                                         ("regression", request.regression_ids[request.task_type]))
+                                         ("regression", request.regression_ids.get(request.task_type, [])))
         }
     if chapter_assessment:
         from app.experiments import snapshots
@@ -508,6 +514,13 @@ def advance_one(run_id: str) -> None:
             run["report"]["exploration"] = report
             run["report"]["exploration_round"] = run["current_round"]
             if report["passed"]:
+                if run.get("auto_publish"):
+                    run["best_candidate"] = _current_candidate(run)
+                    run["report"]["passed"] = True
+                    run["phase"] = "publish"
+                    repo.event(run, "publish_ready", "改进题复测达标，候选已固定，准备自动发布。")
+                    repo.put_run(run)
+                    return
                 if run.get("flow_version") in {2, 3}:
                     _start_checks(run, "regression", _current_candidate(run))
                     round_record["status"] = "regression"
@@ -527,6 +540,9 @@ def advance_one(run_id: str) -> None:
             else:
                 run["phase"] = "evolving"
                 repo.event(run, "not_improved", "优化复测未达门槛，按剩余轮数继续改版。")
+        elif run["phase"] == "publish" and run.get("auto_publish"):
+            release.publish_run(run_id, run["private"]["actor"], automatic=True)
+            return
         elif run["phase"] == "regression" and run.get("flow_version") == 3:
             selected = _final_samples(run, "regression")
             if _run_pending(run, selected):

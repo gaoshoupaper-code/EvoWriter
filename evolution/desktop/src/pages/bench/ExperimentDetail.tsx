@@ -156,7 +156,8 @@ export default function ExperimentDetail() {
     <PageAgentSelector />
     {error && <p role="alert" className="experiment-error">{error}</p>}
     <dl className="experiment-overview" aria-label="实验概况">
-      {experiment.case_coverage && <div><dt>评测范围</dt><dd>{formatCaseCoverage(experiment.case_coverage)}</dd></div>}
+      {experiment.case_coverage && <div><dt>评测范围</dt><dd>{formatCaseCoverage(experiment.case_coverage, experiment.auto_publish)}</dd></div>}
+      {experiment.auto_publish && <div><dt>发布方式</dt><dd>改进题达标后自动发布</dd></div>}
       <div><dt>Harness 原版 → 当前候选</dt><dd>v{experiment.baseline.version} → {current ? `候选改版 ${current.round}`
         : candidatePlaceholder(experiment.phase, experiment.status, experiment.current_round)}</dd></div>
       <div><dt>执行模型</dt><dd><ModelIdentity model={experiment.models?.executor} /></dd></div>
@@ -175,7 +176,7 @@ export default function ExperimentDetail() {
       {hasExperimentReview(experiment) && <Link className="config-button primary"
         to={"/bench/experiments/" + encodeURIComponent(experiment.id) + "/review" + location.search}
         state={{ fromRecords: true, returnTo: location.pathname + location.search, returnAnchor: "experiment-review" }}
-        onClick={() => remember("experiment-review")}>{published ? "查看发布状态" : "进入审核"}</Link>}
+        onClick={() => remember("experiment-review")}>{published || experiment.auto_publish ? "查看发布状态" : "进入审核"}</Link>}
     </footer>
   </div>;
 }

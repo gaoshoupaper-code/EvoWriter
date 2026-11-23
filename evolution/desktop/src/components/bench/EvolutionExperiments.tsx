@@ -47,19 +47,21 @@ export function EvolutionExperiments() {
 
   const selectedGroup = options?.judge_groups.find((group) => String(group.id) === judges);
   const judgeRepeats = selectedGroup?.score_repeats ?? DEFAULT_JUDGE_REPEATS;
+  const autoPublish = kind === "chapter_text" && options?.auto_publish === true;
   const repeatedScoring = kind === "chapter_text" && rules.some((rule) => rule.id === ruleIds[kind] && rule.profile === ruleProfile(kind));
   const available = packages.filter((item) => item.task_type === kind);
   const optimizationCases = available.filter((item) => item.purpose === "optimization");
-  const regressionCases = available.filter((item) => item.purpose === "regression");
+  const regressionCases = autoPublish ? [] : available.filter((item) => item.purpose === "regression");
+  const caseGroups = [["改进题", optimizationCases], ...(!autoPublish ? [["回归题", regressionCases] as const] : [])] as const;
   const isSelected = (item: ExperimentPackage) => selectedCaseIds === null || selectedCaseIds.includes(item.id);
   const optimization = optimizationCases.filter(isSelected).map((item) => item.id);
   const regression = regressionCases.filter(isSelected).map((item) => item.id);
   const isCustom = selectedCaseIds !== null;
   const staleSelection = isCustom && selectedCaseIds.length !== optimization.length + regression.length;
-  const missingSelection = isCustom && (!optimization.length || !regression.length);
+  const missingSelection = isCustom && (!optimization.length || (!autoPublish && !regression.length));
   const missing = !loading ? [
     ...(!optimizationCases.length ? ["本套没有在用的改进题"] : []),
-    ...(!regressionCases.length ? ["本套没有在用的回归题"] : []),
+    ...(!autoPublish && !regressionCases.length ? ["本套没有在用的回归题"] : []),
     ...(!ruleIds[kind] ? ["请选择本套评分规则"] : []),
     ...(candidate && !options?.versions.some((v) => v.commit === params.get("base") && v.version === Number(baseline)) ? ["候选与所选基线不匹配"] : []),
     ...(!options?.versions.length ? ["没有可用的 Harness 版本"] : []),
@@ -104,9 +106,11 @@ export function EvolutionExperiments() {
     }
     const payload: ExperimentStart = {
       task_type: kind, baseline_version: Number(baseline), model_config_id: Number(model), judge_group_id: Number(judges),
-      rule_versions: {[kind]: ruleIds[kind]!}, optimization_ids: optimization, regression_ids: {[kind]: regression},
+      rule_versions: {[kind]: ruleIds[kind]!}, optimization_ids: optimization,
+      regression_ids: autoPublish ? {} : {[kind]: regression},
+      ...(autoPublish ? {auto_publish: true} : {}),
       ...(isCustom ? {case_selection: "custom"} : {}),
-      thresholds: {completion_rate: 1, quality_gain: .1, regression_tolerance: {[kind]: 0}},
+      thresholds: {completion_rate: 1, quality_gain: .1, regression_tolerance: autoPublish ? {} : {[kind]: 0}},
       max_rounds: Number(rounds), ...(candidate ? {candidate_commit: candidate} : {}),
     };
     setStarting(true);
@@ -117,7 +121,9 @@ export function EvolutionExperiments() {
 
   const launch = <section key="launch" className="evaluation-panel" aria-labelledby="evolution-experiments-title">
     <div className="experiment-heading"><div><h2 id="evolution-experiments-title">启动自动进化</h2>
-      <p className="experiment-note">{kind === "chapter_text"
+      <p className="experiment-note">{autoPublish
+        ? "用改进题评测原版和候选。全部完成、评分有效且均分提高至少 0.1 分时，自动发布候选。"
+        : kind === "chapter_text"
         ? "系统根据正文评测自动修改 Harness。原题和其他章节均达标后，可手动启用通过评测的版本。"
         : "选好目标与模型，自动完成评测、改版和复测。改进题与回归题均达标后，由你确认发布。"}</p></div>
       <button className="config-button readable-button" type="button" disabled={loading || starting} onClick={() => setReload((value) => value + 1)}><RefreshCw size={14} />刷新配置</button>
@@ -149,8 +155,8 @@ export function EvolutionExperiments() {
         <label><input type="radio" name="case-selection" checked={isCustom} onChange={() => setSelectedCaseIds([])} />自选题目</label>
       </fieldset>
       {isCustom && <>
-        <p className="experiment-note">改进题和回归题各至少勾选一道。</p>
-        {([["改进题", optimizationCases], ["回归题", regressionCases]] as const).map(([label, cases]) => {
+        <p className="experiment-note">{autoPublish ? "至少勾选一道改进题。" : "改进题和回归题各至少勾选一道。"}</p>
+        {caseGroups.map(([label, cases]) => {
           const titleCounts = new Map<string, number>();
           for (const item of cases) titleCounts.set(item.title, (titleCounts.get(item.title) ?? 0) + 1);
           return <fieldset key={label} className="experiment-picker" disabled={starting}>
@@ -174,9 +180,10 @@ export function EvolutionExperiments() {
       </div>}
       {!options.judge_groups.length && <p className="experiment-error">暂无评测模型，请先在模型配置中设置异源评委组。</p>}
       <div className="experiment-launch-summary" aria-label="启动前配置摘要">
-        <div><span>本次数据</span><strong>改进题 {optimization.length}/{optimizationCases.length} 道 · 回归题 {regression.length}/{regressionCases.length} 道</strong></div>
+        <div><span>本次数据</span><strong>改进题 {optimization.length}/{optimizationCases.length} 道
+          {!autoPublish && ` · 回归题 ${regression.length}/${regressionCases.length} 道`}</strong></div>
         <div><span>过关门槛</span><strong>全部完成 · 改进题均分提高至少 0.1 分</strong>
-          <small>回归均分不降 · 最多 {rounds} 轮</small></div>
+          <small>{autoPublish ? "达标后自动发布" : "回归均分不降"} · 最多 {rounds} 轮</small></div>
         <div><span>评测模型</span><strong>{selectedGroup?.members.map((member) => member.model).join(" + ") || "等待选择"}</strong>
           {repeatedScoring && selectedGroup && <small>每个模型评 {judgeRepeats} 次 · 每份成稿 {selectedGroup.members.length * judgeRepeats} 份评分</small>}
           <small>{repeatedScoring ? "规则、输入、模型与评分次数在启动后固定" : "规则、输入与模型在启动后固定"}</small></div>

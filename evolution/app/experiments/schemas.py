@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 from contracts.target_tasks import TargetSpec, TaskInput, TaskType, configured_task_type
 
@@ -103,7 +103,8 @@ class RunCreate(StrictModel):
     case_selection: Literal["all", "custom"] = "all"
     optimization_ids: list[str] = Field(min_length=1)
     validation_ids: list[str] = Field(default_factory=list)
-    regression_ids: dict[TaskType, list[str]]
+    regression_ids: dict[TaskType, list[str]] = Field(default_factory=dict)
+    auto_publish: StrictBool = False
     thresholds: Thresholds = Field(default_factory=Thresholds)
     max_rounds: int = Field(default=3, ge=1)
     candidate_commit: str | None = Field(default=None, pattern=r"^[0-9a-f]{40,64}$")
@@ -111,18 +112,25 @@ class RunCreate(StrictModel):
     @model_validator(mode="after")
     def validate_sets(self):
         scope = configured_task_type()
+        if self.auto_publish and scope != "chapter_text":
+            raise ValueError("只有正文工作台支持自动发版")
         if scope:
             if self.task_type != scope or set(self.rule_versions) != {scope}:
                 raise ValueError("必须使用当前 Agent 及本套评分规则")
-            if self.validation_ids or set(self.regression_ids) != {scope} or not self.regression_ids[scope]:
+            if self.auto_publish:
+                if self.validation_ids or self.regression_ids:
+                    raise ValueError("自动发版实验只接受正文改进题")
+            elif self.validation_ids or set(self.regression_ids) != {scope} or not self.regression_ids[scope]:
                 raise ValueError("必须选择本套回归题，不接受终验题或跨套样本")
             if self.max_rounds > 3:
                 raise ValueError("含首轮最多三轮")
+            regression_tolerance = {} if self.auto_publish else {scope: 0}
             if self.thresholds.completion_rate != 1 or self.thresholds.quality_gain != .1 or (
-                    self.thresholds.regression_tolerance not in ({}, {scope: 0})):
-                raise ValueError("门槛固定为全部完成、改进均分提升0.1分、回归均分不降")
-            self.thresholds.regression_tolerance = {scope: 0}
-            all_ids = self.optimization_ids + self.regression_ids[scope]
+                    self.thresholds.regression_tolerance not in ({}, regression_tolerance)):
+                raise ValueError("门槛固定为全部完成、改进均分至少提升 0.1 分" if self.auto_publish else
+                                 "门槛固定为全部完成、改进均分提升0.1分、回归均分不降")
+            self.thresholds.regression_tolerance = regression_tolerance
+            all_ids = self.optimization_ids + self.regression_ids.get(scope, [])
             if len(set(all_ids)) != len(all_ids):
                 raise ValueError("改进与回归样本不能重复或交叉")
             return self

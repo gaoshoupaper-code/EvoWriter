@@ -178,10 +178,10 @@ def _system_prompt(assessment: bool) -> str:
     )
     if assessment:
         prompt += (
-            "你负责正文 Agent 从题目到单章交稿的整体效果。先查第 0 轮原版："
-            "用 read_assessment_round（round_number=0, section=samples）列出样本，"
-            "再读取原版评分、终稿或写作 Trace。已复测的候选轮只用于补充证据。"
-            "当前候选轮样本为空时，回到第 0 轮。"
+            "你负责正文 Agent 从题目到单章交稿的整体效果。首轮先查第 0 轮原版。"
+            "从候选版本继续时，先查任务指定的轮次，核对仍需解决的问题。"
+            "用 read_assessment_round（section=samples）列出该轮样本，再读评分、终稿或写作 Trace。"
+            "续改时也要读取第 0 轮原版的实际证据，核对同题表现。"
             "读取 architecture.json 核对实际装配的提示词、技能、工具、中间件与子 Agent。"
             "可以调整这些资产及其装配关系。设计文档须注明问题、证据编号、拟改资产和预期效果。"
             "涉及改进题时，将样本列表返回的 evidence_ref 原样写入设计条目的 evidence_ref。"
@@ -194,7 +194,7 @@ def _system_prompt(assessment: bool) -> str:
             "改法只适用于原样本或说不清边界时，先重新提炼。仍不成立就跳过。"
             "\n证据不足时先核查本次档案里的相关证据，仍无法查实就跳过该问题。"
             "只有查实通用缺口的修正才进入设计、修改、校验和改动记录流程。"
-            "若查阅原版证据后仍没有符合条件的修正，保留原有资产，"
+            "若核查后仍没有符合条件的修正，保留当前工作区资产，"
             "调用 finish_without_changes 提交理由和实际查阅的原版 evidence_ref。"
             "即使流程提示缺少产出，也禁止制造占位改动或虚构报告。"
         )
@@ -422,7 +422,13 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
         from app.experiments.history import baseline_evidence_entries
 
         entries = json.dumps(baseline_evidence_entries(run), ensure_ascii=False)
-        task = "先核查第 0 轮原版样本的实际证据，再决定是否改进。原版样本入口：" + entries
+        base_round = next((item["round"] for item in run["rounds"]
+                           if item.get("source_commit") == round_record["base_commit"] and item.get("report")), 0)
+        if base_round:
+            task = (f"当前工作区沿用第 {base_round} 轮候选。先查看该轮的改进题样本，找出仍需解决的问题。"
+                    "再查看第 0 轮原版证据作为对照。原版样本入口：" + entries)
+        else:
+            task = "先核查第 0 轮原版样本的实际证据，再决定是否改进。原版样本入口：" + entries
     else:
         task = "请依据给定的改进题证据修改候选并完成校验：\n" + json.dumps(evidence, ensure_ascii=False)
     config = {"configurable": {"thread_id": session_id}, "recursion_limit": 200}

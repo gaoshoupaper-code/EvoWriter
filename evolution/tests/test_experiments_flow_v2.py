@@ -18,7 +18,7 @@ class FlowV2Test(fixtures.DatabaseTest):
     create_experiment = fixtures.ExperimentLifecycleTest.create_experiment
     completed_task = staticmethod(fixtures.ExperimentLifecycleTest.completed_task)
 
-    def test_optimization_failure_retries_with_fixed_baseline_until_round_limit(self):
+    def test_optimization_reuses_improved_candidate_with_fixed_scoring_baseline(self):
         from app.experiments import repo, runner
         run = self.create_experiment()
         baseline = copy.deepcopy(run["baseline"])
@@ -44,7 +44,7 @@ class FlowV2Test(fixtures.DatabaseTest):
         self.assertEqual(actual["status"], "exhausted")
         self.assertEqual(actual["current_round"], 2)
         self.assertEqual(improve_candidate.call_count, 2)
-        self.assertEqual(improvements, [(1, baseline["commit"], baseline), (2, baseline["commit"], baseline)])
+        self.assertEqual(improvements, [(1, baseline["commit"], baseline), (2, "b" * 40, baseline)])
         self.assertEqual(actual["baseline"], baseline)
         self.assertIsNone(actual["best_candidate"])
         self.assertEqual([record["status"] for record in actual["rounds"]], ["not_improved", "not_improved"])

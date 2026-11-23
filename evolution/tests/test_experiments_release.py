@@ -170,6 +170,47 @@ class ExperimentReleaseTest(DatabaseTest):
         self.assertEqual(outcome["status"], "stopped")
         self.assertNotIn("approved_automatically", outcome)
 
+    @patch.dict("os.environ", {"WRITING_AGENT_ID": "text"})
+    def test_partial_gain_becomes_next_round_base_without_moving_release_baseline(self):
+        from app.experiments import repo, runner
+
+        for scenario, second_score in (("lower", 4.06), ("tied", 4.09)):
+            with self.subTest(second_round=scenario):
+                run = self._automatic_run(candidate_score=4.09)
+                run.update(id=f"partial-gain-{scenario}", assessment_version=2, max_rounds=3)
+                baseline, first, second, third = (letter * 40 for letter in "abcd")
+                run["rounds"][0]["base_commit"] = baseline
+                for sample, commit in zip(run["samples"], (baseline, first), strict=True):
+                    sample.update(id=f"sample-{sample['round']}", source_commit=commit)
+                repo.put_run(run)
+
+                scores = {2: second_score, 3: 4.1}
+
+                def add_scored_sample(active_run, package_ids, *, arm, phase, round_, repeats, commit, digest):
+                    self.assertEqual((package_ids, arm, phase, repeats), (["opt"], "candidate", "exploration", 1))
+                    active_run["samples"].append({**run["samples"][1], "id": f"sample-{round_}",
+                                                  "round": round_, "source_commit": commit, "artifact_digest": digest,
+                                                  "scores": {"overall": scores[round_]}})
+
+                candidates = [{"commit": commit, "digest": str(index) * 64, "summary": "继续改版", "diff": "+修订"}
+                              for index, commit in enumerate((second, third), 3)]
+                with patch("app.experiments.agent.improve_candidate", side_effect=candidates) as improve, \
+                     patch.object(runner, "_add_samples", side_effect=add_scored_sample), \
+                     patch("app.experiments.clients.promote") as promote:
+                    for phase in ("evolving", "exploration", "evolving", "exploration", "publish"):
+                        runner.advance_one(run["id"])
+                        saved = repo.get_run(run["id"])
+                        self.assertEqual(saved["phase"], phase)
+                    promote.assert_not_called()
+
+                self.assertEqual(improve.call_count, 2)
+                self.assertEqual(saved["baseline"], run["baseline"])
+                self.assertEqual([record["base_commit"] for record in saved["rounds"]], [baseline, first, first])
+                self.assertEqual([record["report"]["baseline"]["quality"] for record in saved["rounds"]], [4, 4, 4])
+                self.assertEqual([record["report"]["passed"] for record in saved["rounds"]], [False, False, True])
+                self.assertEqual(saved["best_candidate"]["commit"], third)
+                self.assertTrue(saved["report"]["passed"])
+
     def test_auto_publish_recovery_checks_pointer_before_retrying(self):
         from app.experiments import release, repo
         promoted = {"version": 8, "commit": "b" * 40, "artifact_digest": "2" * 64}

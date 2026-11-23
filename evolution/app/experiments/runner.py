@@ -375,6 +375,24 @@ def _current_candidate(run: dict) -> dict:
             "quality": report["candidate"]["quality"], "completion_rate": report["candidate"]["completion_rate"]}
 
 
+def _improvement_base(run: dict) -> str:
+    best = run["best_candidate"]
+    assessment = run.get("assessment_version")
+    default = run["baseline"]["commit"] if assessment or not best else best["commit"]
+    base, best_gain = default, 0.0
+    for record in run["rounds"]:
+        if record["status"] == "regression_failed":
+            base = record["source_commit"] if run.get("flow_version") == 3 and not assessment else default
+            best_gain = 0.0
+        elif record["status"] == "not_improved" and record.get("source_commit"):
+            report = record["report"]
+            gain = report["quality_delta"]
+            if (gain is not None and gain > best_gain + 1e-9
+                    and report["paired_count"] == report["baseline"]["total"] == report["candidate"]["total"]):
+                base, best_gain = record["source_commit"], gain
+    return base
+
+
 def _compare_final(run: dict, samples: list[dict], kind: str, gain: float) -> dict:
     left = [sample for sample in samples if sample["task_type"] == kind and sample["arm"] == "baseline"]
     right = [sample for sample in samples if sample["task_type"] == kind and sample["arm"] == "candidate"]
@@ -449,13 +467,7 @@ def advance_one(run_id: str) -> None:
                     _finish(run, "exhausted", "已用尽改进轮数，候选未达发布门槛。")
                     return
                 run["current_round"] += 1
-                base = run["best_candidate"]["commit"] if run["best_candidate"] else run["baseline"]["commit"]
-                if run.get("assessment_version"):
-                    base = run["baseline"]["commit"]
-                elif run.get("flow_version") == 3 and run["rounds"]:
-                    previous = run["rounds"][-1]
-                    base = previous.get("source_commit") or previous["base_commit"]
-                round_record = {"round": run["current_round"], "status": "evolving", "base_commit": base,
+                round_record = {"round": run["current_round"], "status": "evolving", "base_commit": _improvement_base(run),
                                 "source_commit": None, "summary": "", "error": None, "report": {}, "diff": ""}
                 run["rounds"].append(round_record)
                 repo.put_run(run)
@@ -498,7 +510,9 @@ def advance_one(run_id: str) -> None:
                     round_record.update(status="completed", outcome="no_change", summary=result["summary"],
                                         evidence_samples=result["evidence_samples"])
                     run["outcome"] = "no_change"
-                    _finish(run, "completed", "已核查原版，未找到有证据支持的改动。")
+                    reason = ("已核查原版，未找到有证据支持的改动。" if round_record["base_commit"] == run["baseline"]["commit"]
+                              else "已核查当前候选，未找到有证据支持的进一步改动。")
+                    _finish(run, "completed", reason)
                     return
         elif run["phase"] == "exploration":
             candidate = [sample for sample in run["samples"] if sample["phase"] == "exploration" and sample["round"] == run["current_round"]]

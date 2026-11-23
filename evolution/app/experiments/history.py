@@ -211,7 +211,7 @@ def make_history_tools(run: dict, *, on_baseline_evidence: Callable[[str], None]
 
     @tool(args_schema=_Strict)
     def list_assessment_history() -> list:
-        """列出轮次、状态、样本数量及已有内容 available_sections。先查第 0 轮的原版样本。"""
+        """列出轮次、状态、样本数量及已有内容 available_sections。按任务指定轮次查样本。"""
         rounds = [{"round": 0, "status": "baseline"}, *run.get("rounds", [])]
         result = []
         for item in rounds:

@@ -114,7 +114,7 @@ def _quality_dimension_count(run):
     return len(run["private"]["rules"]["chapter_text"]["dimensions"])
 
 
-def test_runtime_is_independent_of_six_quality_dimensions(chapter_run, monkeypatch):
+def test_runtime_is_independent_of_five_quality_dimensions(chapter_run, monkeypatch):
     run, sample = chapter_run
     run["runtime_scoring_version"] = 1
     calls = stub_judges(monkeypatch, runtime_ref="trace-body:8")
@@ -122,7 +122,7 @@ def test_runtime_is_independent_of_six_quality_dimensions(chapter_run, monkeypat
 
     result = evaluation.score_sample(run, sample)
 
-    assert len(calls) == 42
+    assert len(calls) == 36
     runtime_calls = 0
     for call in calls:
         instructions = call["messages"][0]["content"]
@@ -138,7 +138,7 @@ def test_runtime_is_independent_of_six_quality_dimensions(chapter_run, monkeypat
             assert instructions.index('"focus_points"') < instructions.index('"anchors"')
     assert runtime_calls == 6
     assert set(result["dimensions"]) == {
-        "事件因果逻辑", "人物行为逻辑", "章纲兑现", "语言清晰度", "人物语言", "场景空间", "运行时",
+        "事件因果逻辑", "人物行为逻辑", "章纲兑现", "行文清晰度", "场景空间", "运行时",
     }
     assert result["quality"] == 4
     assert result["runtime"]["tools"]["score"] == pytest.approx(4.2)
@@ -323,7 +323,7 @@ def test_runtime_returns_independently_and_receives_pair_stats(chapter_run, monk
     def send(_credentials, messages, *_):
         material = json.loads(messages[1]["content"])
         runtime = "runtime_trace" in material
-        if runtime or '"key": "语言清晰度"' in messages[0]["content"]:
+        if runtime or '"key": "行文清晰度"' in messages[0]["content"]:
             if runtime != runtime_first:
                 assert ready.wait(5)
             returns.append(runtime)
@@ -619,10 +619,10 @@ def test_numbered_quote_and_line_range_require_the_declared_source(citation, acc
     evidence = [citation] if accepted else ["他把钥匙收好", citation]
     raw = json.dumps({"score": 4, "reason": "原文有清楚的动机。", "evidence": evidence})
     if accepted:
-        assert evaluation._judgement(raw, "语言清晰度", material=material)["evidence"] == evidence
+        assert evaluation._judgement(raw, "行文清晰度", material=material)["evidence"] == evidence
     else:
         with pytest.raises(ValueError, match="评分依据"):
-            evaluation._judgement(raw, "语言清晰度", material=material)
+            evaluation._judgement(raw, "行文清晰度", material=material)
 
 
 def test_retry_preserves_first_request_and_keeps_evidence_errors_private(chapter_run, monkeypatch):
@@ -775,9 +775,11 @@ def test_archived_run_without_repeat_snapshot_uses_original_single_judgement(cha
     frozen = run["private"]["rules"]["chapter_text"]
     frozen["profile"] = "chapter-text-outline-v2"
     frozen["dimensions"] = frozen["dimensions"][:4]
+    frozen["dimensions"][-1]["key"] = "语言清晰度"
     calls = stub_judges(monkeypatch)
     result = evaluation.score_sample(run, sample)
     assert len(calls) == len(run["private"]["judges"]) * len(frozen["dimensions"])
+    assert set(result["dimensions"]) == {"事件因果逻辑", "人物行为逻辑", "章纲兑现", "语言清晰度"}
     for entries in result["reasons"].values():
         assert {entry["judge_id"] for entry in entries} == {1, 2}
         assert all("达标" in entry and "repeat" not in entry for entry in entries)

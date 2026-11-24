@@ -5,6 +5,7 @@ import asyncio
 import json
 import subprocess
 from pathlib import Path
+from typing import Literal
 
 from openai import APIConnectionError, APIStatusError, DefaultAsyncHttpxClient
 
@@ -18,6 +19,21 @@ class IncompleteImprovement(ValueError):
 
 
 _MAX_COMPLETION_NUDGES = 3
+_FEEDBACK_SECTIONS = {"manuscript", "scores"}
+
+
+def _failure_review_problem(record: dict, *, stop: bool = False) -> str | None:
+    feedback = record.get("failure_feedback")
+    if not feedback:
+        return None
+    review = record.get("failure_review", {})
+    if review.get("round") != feedback["round"]:
+        return "请先核对上轮失败稿和原稿的正文及评分，再调用 record_failure_review 提交决策。"
+    if stop and review["decision"] != "stop":
+        return "以无改动结束前，请先提交停止决策。"
+    if not stop and review["decision"] == "stop":
+        return "已提交停止决策，请调用 finish_without_changes 完成本轮。"
+    return None
 
 
 def _git(root: Path, *arguments: str) -> str:
@@ -82,6 +98,8 @@ def _record_design(run, record, path):
 def improve_candidate(run: dict, round_record: dict, evidence: list[dict]) -> dict:
     """Freeze and prepare a candidate; this function never promotes production."""
     if round_record.get("frozen_candidate"):
+        if problem := _failure_review_problem(round_record):
+            raise IncompleteImprovement(problem)
         return _prepare_version(run, round_record, round_record["frozen_candidate"])
     root = settings.db_path.parent / "experiments" / run["id"] / f"round-{round_record['round']}"
     root.parent.mkdir(parents=True, exist_ok=True)
@@ -114,7 +132,11 @@ def improve_candidate(run: dict, round_record: dict, evidence: list[dict]) -> di
             _save_assessment_version(run, round_record, root)
         raise
     if result.get("outcome") == "no_change":
+        if problem := _failure_review_problem(round_record, stop=True):
+            raise IncompleteImprovement(problem)
         return result
+    if problem := _failure_review_problem(round_record):
+        raise IncompleteImprovement(problem)
     if private_version:
         round_record["summary"] = result.get("summary", "")
         commit = _save_assessment_version(run, round_record, root)
@@ -201,7 +223,8 @@ def _system_prompt(assessment: bool) -> str:
     return prompt
 
 
-def _evolver_tools(backend, run: dict, ctx=None, *, on_baseline_evidence=None, finish_no_change=None):
+def _evolver_tools(backend, run: dict, ctx=None, *, on_baseline_evidence=None, on_sample_read=None,
+                   finish_no_change=None):
     from langchain_core.tools import tool
 
     from app.evolve.agent.tools.flow import make_flow_tools
@@ -230,7 +253,7 @@ def _evolver_tools(backend, run: dict, ctx=None, *, on_baseline_evidence=None, f
                 raise RuntimeError("Finishing requires an experiment checkout")
             return finish_no_change(reason, evidence_refs)
 
-        tools.extend(make_history_tools(run, on_baseline_evidence=on_baseline_evidence))
+        tools.extend(make_history_tools(run, on_baseline_evidence=on_baseline_evidence, on_sample_read=on_sample_read))
         tools.append(finish_without_changes)
     return tools, validate_changes
 
@@ -252,14 +275,15 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     from langchain.agents.middleware import hook_config
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.messages import SystemMessage, ToolMessage
+    from langchain_core.tools import tool
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
     from app.common.middleware.no_fs import NoFilesystemToolsMiddleware
     from app.common.model_factory import _ensure_gp_disabled
     from app.evolve import db as sessions
     from app.evolve.ctx import EvolveContext, set_tool_context
     from app.evolve.agent.agent import _run_agent_streamed
-    from app.evolve.agent.middleware.flow_guard import FlowGuardMiddleware
-    from app.experiments import runner
+    from app.evolve.agent.middleware.flow_guard import FINALIZE_ONLY_TOOLS, FlowGuardMiddleware
+    from app.experiments import evaluation, runner
     from app.trace import TraceMiddleware, TraceCallbackHandler
 
     class EvolverModel(ChatOpenAI):
@@ -306,6 +330,20 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
                                        status="error", tool_call_id=request.tool_call["id"])
             if any(part.startswith(".") for part in parts) or (parts and parts[0] in {"registry.json", "contracts", "dataset", "experiments"}):
                 return ToolMessage(content="拒绝访问受保护的元数据或实验区域。", tool_call_id=request.tool_call["id"])
+            if feedback and tool_name in FINALIZE_ONLY_TOOLS:
+                problem = _failure_review_problem(round_record)
+                if not problem and tool_name == "write_design_doc":
+                    selected = set(round_record["failure_review"]["evidence_refs"])
+                    candidate_refs = selected & {case["candidate_id"] for case in feedback["cases"]}
+                    changes = arguments.get("changes")
+                    if not isinstance(changes, list) or not any(
+                            any(isinstance(ref, str) and ref in candidate_refs for ref in change["evidence_ref"])
+                            for change in changes if isinstance(change, dict) and isinstance(change.get("evidence_ref"), list)):
+                        problem = "改动方案须引用已核对的上轮失败样本。"
+                elif not problem and not ctx.design_doc_path:
+                    problem = "请先用 write_design_doc 提交含失败证据的本轮方案。"
+                if problem:
+                    return ToolMessage(content=problem, status="error", tool_call_id=request.tool_call["id"])
             return None
 
         def wrap_tool_call(self, request, handler):
@@ -317,7 +355,10 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
             return denied if denied is not None else await handler(request)
 
     assessment = bool(run.get("assessment_version"))
+    feedback = round_record.get("failure_feedback")
     if assessment and round_record.get("outcome") == "no_change":
+        if problem := _failure_review_problem(round_record, stop=True):
+            raise IncompleteImprovement(problem)
         return {key: round_record[key] for key in ("outcome", "summary", "evidence_samples")}
 
     session_id = round_record["session_id"]
@@ -325,6 +366,8 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     if old_session and old_session.get("case_id") != "experiment:" + run["id"]:
         db.execute("UPDATE evolve_sessions SET case_id=? WHERE session_id=?", ("experiment:" + run["id"], session_id))
     if old_session and old_session["status"] == "done" and old_session.get("change_log_path"):
+        if problem := _failure_review_problem(round_record):
+            raise IncompleteImprovement(problem)
         if run.get("assessment_version") and old_session.get("design_doc_path"):
             _record_design(run, round_record, old_session["design_doc_path"])
         return {"validated": not _compile_candidate(root),
@@ -352,6 +395,58 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     baseline_reads = set(round_record.get("baseline_evidence_read", []))
     no_change = None
 
+    feedback_samples = {}
+    for case in (feedback or {}).get("cases", []):
+        feedback_samples[case["baseline_id"]] = 0
+        feedback_samples[case["candidate_id"]] = feedback["round"]
+    failed_manuscripts = {}
+    for sample in run["samples"] if feedback else ():
+        if feedback_samples.get(sample["id"]) == feedback["round"]:
+            path = f"正文/第{sample['target']['chapter']:03d}章.md"
+            failed_manuscripts[sample["id"]] = {path: sample["artifacts"][path]}
+
+    def note_feedback_read(round_number, sample_id, section):
+        if feedback_samples.get(sample_id) != round_number:
+            return
+        with repo.run_lock(run["id"]):
+            reads = round_record.setdefault("failure_feedback_reads", {})
+            sections = set(reads.get(sample_id, []))
+            if section not in sections:
+                reads[sample_id] = sorted(sections | {section})
+                repo.put_run(run)
+
+    @tool
+    def record_failure_review(decision: Literal["continue", "change_direction", "stop"], reason: str,
+                              evidence_refs: list[str], manuscript_location: str, new_evidence: str = "") -> str:
+        """提交上轮失败复盘。manuscript_location 用失败稿路径:行号。continue 须填 new_evidence。"""
+        reason, manuscript_location, new_evidence = reason.strip(), manuscript_location.strip(), new_evidence.strip()
+        if not reason or not manuscript_location or (decision == "continue" and not new_evidence):
+            return "请填写决策理由和正文位置。重试同一方向时请补充新证据。"
+        if any(len(field) > 1000 for field in (reason, manuscript_location, new_evidence)):
+            return "决策理由、正文位置和新证据每项最多 1000 字。"
+        with repo.run_lock(run["id"]):
+            refs = set(evidence_refs)
+            reads = round_record.get("failure_feedback_reads", {})
+            pairs = [{case["baseline_id"], case["candidate_id"]} for case in feedback["cases"]]
+            selected = [pair for pair in pairs if pair <= refs]
+            if (not pairs or pairs[0] not in selected or set().union(*selected) != refs
+                    or any(not _FEEDBACK_SECTIONS.issubset(reads.get(ref, [])) for ref in refs)):
+                return "请先读取最差分差题的失败稿与同题原稿，各读正文和评分，并引用完整配对样本。"
+            path, separator, _ = manuscript_location.partition(":")
+            if not separator or not any(path in files and evaluation._evidence_issue(manuscript_location, files) is None
+                                        for ref, files in failed_manuscripts.items() if ref in refs):
+                return "请提交所引用失败稿中可定位的行号，格式为正文路径:行号或正文路径:起始行-结束行。"
+            if round_record.get("failure_review"):
+                return "本轮失败复盘决策已记录。"
+            review = {"round": feedback["round"], "decision": decision, "reason": reason,
+                      "manuscript_location": manuscript_location, "evidence_refs": sorted(refs),
+                      "verified_sections": sorted(_FEEDBACK_SECTIONS)}
+            if new_evidence:
+                review["new_evidence"] = new_evidence
+            round_record["failure_review"] = review
+            repo.put_run(run)
+        return "已记录本轮失败复盘决策。"
+
     def unchanged_checkout():
         return (not _git(root, "status", "--porcelain", "--untracked-files=all")
                 and _git(root, "rev-parse", "HEAD") == round_record["base_commit"])
@@ -362,15 +457,25 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
         refs = list(dict.fromkeys(evidence_refs))
         if not reason or len(reason) > 1000:
             return "请提交 1 到 1000 字的无改动理由。"
-        if not refs or not baseline_reads.issuperset(refs):
+        if feedback:
+            if problem := _failure_review_problem(round_record, stop=True):
+                return problem
+            if set(refs) != set(round_record["failure_review"]["evidence_refs"]):
+                return "请引用停止决策中已核对的样本。"
+        elif not refs or not baseline_reads.issuperset(refs):
             return "请先读取第 0 轮原版评分、终稿、检查结果或写作记录，再引用实际读过的样本。"
         if not unchanged_checkout():
             return "工作区已有改动，请补齐候选校验和改动报告。"
         no_change = {"outcome": "no_change", "summary": reason, "evidence_samples": refs}
+        if feedback:
+            round_record.update(no_change)
+            repo.put_run(run)
         return "已记录无改动结论，可以结束本轮。"
 
     def completion_problem():
-        if not baseline_reads:
+        if problem := _failure_review_problem(round_record, stop=bool(no_change)):
+            return problem
+        if not feedback and not baseline_reads:
             return "请先读取第 0 轮原版样本的评分、终稿、检查结果或写作记录。"
         if no_change and unchanged_checkout():
             return None
@@ -408,7 +513,10 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
 
     backend = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     tools, validate_changes = _evolver_tools(
-        backend, run, ctx, on_baseline_evidence=baseline_reads.add, finish_no_change=finish_no_change)
+        backend, run, ctx, on_baseline_evidence=baseline_reads.add,
+        on_sample_read=note_feedback_read if feedback else None, finish_no_change=finish_no_change)
+    if feedback:
+        tools.append(record_failure_review)
     allowed_tools = {item.name for item in tools}
     _ensure_gp_disabled()
     credentials = repo.decrypt_credentials(run["private"]["evolver"])
@@ -429,6 +537,13 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
                     "再查看第 0 轮原版证据作为对照。原版样本入口：" + entries)
         else:
             task = "先核查第 0 轮原版样本的实际证据，再决定是否改进。原版样本入口：" + entries
+        if feedback:
+            task += ("\n改版起点与必查失败轮分别指定。先核对下列失败轮。"
+                     "优先读取 cases 首组的原稿与失败稿，各查正文及逐项评分；必要时继续翻页。"
+                     "用 record_failure_review 提交继续、换方向或停止的决策，引用同题两稿。"
+                     "继续同一方向要说明新证据。提交决策后才能设计、改文件或按停止决策无改动结束。"
+                     "复盘记录引用失败稿路径和行号。写入 Harness 的修正须能跨章节复用。"
+                     "失败轮资料：" + json.dumps(feedback, ensure_ascii=False))
     else:
         task = "请依据给定的改进题证据修改候选并完成校验：\n" + json.dumps(evidence, ensure_ascii=False)
     config = {"configurable": {"thread_id": session_id}, "recursion_limit": 200}

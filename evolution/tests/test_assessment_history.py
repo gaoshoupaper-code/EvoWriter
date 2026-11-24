@@ -11,7 +11,7 @@ from pydantic import ValidationError
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.core import db
-from app.experiments.history import baseline_evidence_entries, make_history_tools
+from app.experiments.history import baseline_evidence_entries, make_history_tools, prepare_failure_feedback
 
 
 def sample(package, arm, phase, round_number, grade):
@@ -47,6 +47,89 @@ def archive():
 
 def calls(run, **kwargs):
     return {t.name: t.invoke for t in make_history_tools(run, **kwargs)}
+
+
+def test_failure_feedback_uses_previous_round_separate_from_checkout(archive):
+    previous = archive["rounds"][0]
+    previous.update(status="not_improved", source_commit="discarded")
+    current = {"round": 2, "base_commit": "original", "status": "evolving"}
+    archive["rounds"][1] = current
+    baseline, candidate = archive["samples"][:2]
+    candidate["scores"]["overall"] = 2.75
+    candidate["scores"]["dimensions"]["文风"] = 2.75
+    archive["settings"]["optimization_ids"].append("另一道题")
+    archive["samples"].insert(0, sample("另一道题", "candidate", "exploration", 1, 4))
+
+    feedback = prepare_failure_feedback(archive, current)
+
+    assert feedback == {"round": 1, "status": "not_improved", "summary": previous["summary"], "cases": [{
+        "title": "公开练习", "repeat": 1, "baseline_number": 1, "candidate_number": 2,
+        "baseline_id": baseline["id"], "candidate_id": candidate["id"], "overall_delta": -0.25,
+        "dimension_deltas": {"文风": -0.25},
+    }]}
+    assert prepare_failure_feedback(archive, {"round": 1}) is None
+
+    baseline["input_revision"] = "frozen-input"
+    candidate["input_revision"] = "different-input"
+    assert prepare_failure_feedback(archive, current)["cases"] == []
+
+
+def test_failure_feedback_prioritizes_largest_score_loss_and_keeps_history_order_for_ties(archive):
+    archive["rounds"][0]["status"] = "not_improved"
+    for title, grade in [("无总分", None), ("严重掉分", 1), ("同幅掉分", 1)]:
+        archive["settings"]["optimization_ids"].append(title)
+        archive["samples"] += [sample(title, "baseline", "baseline", 0, 4),
+                               sample(title, "candidate", "exploration", 1, grade)]
+
+    cases = prepare_failure_feedback(archive, {"round": 2})["cases"]
+
+    assert [(case["title"], case["candidate_number"], case["overall_delta"]) for case in cases] == [
+        ("严重掉分", 3, -3), ("同幅掉分", 4, -3), ("公开练习", 1, 1), ("无总分", 2, None)]
+
+
+def test_failure_feedback_preserves_missing_evidence_and_regression_boundary(archive):
+    feedback = prepare_failure_feedback(archive, archive["rounds"][1])
+    assert feedback["round"] == 1 and feedback["status"] == "regression_failed"
+    assert feedback["regression_drops"] == {"文风": -0.5}
+    assert "保密复测" not in json.dumps(feedback, ensure_ascii=False)
+
+    technical_failure = prepare_failure_feedback(archive, {"round": 3})
+    assert technical_failure["round"] == 2 and technical_failure["status"] == "failed"
+    assert technical_failure["error"] == "启动检查失败" and technical_failure["cases"] == []
+    assert "regression_drops" not in technical_failure
+
+    archive["rounds"][1]["status"] = "passed"
+    assert prepare_failure_feedback(archive, {"round": 3}) is None
+
+
+def test_sample_reads_record_only_first_page_of_actual_manuscript_and_scores(archive):
+    baseline, candidate = archive["samples"][:2]
+    candidate["artifacts"]["正文/第001章.md"] *= 1200
+    retained = []
+    reads = []
+    tools = calls(archive, on_baseline_evidence=retained.append,
+                  on_sample_read=lambda *parts: reads.append(parts))
+    read = tools["read_improvement_sample"]
+    query = {"round_number": 1, "sample_number": 1, "section": "manuscript"}
+
+    assert read({**query, "offset": 6000})["content"]
+    assert read({**query, "section": "assignment"})["content"]
+    assert "error" in read({**query, "sample_number": 2})
+    assert tools["search_assessment_history"]({"query": "公开练习评语"})["items"]
+    assert reads == []
+
+    assert read(query)["content"]
+    assert read({**query, "section": "scores"})["content"]
+    assert read({**query, "round_number": 0})["content"]
+    assert reads == [(1, candidate["id"], "manuscript"), (1, candidate["id"], "scores"),
+                     (0, baseline["id"], "manuscript")]
+    assert retained == [baseline["id"]]
+
+    candidate["artifacts"]["正文/第001章.md"] = "  \n"
+    candidate["scores"] = {}
+    read(query)
+    read({**query, "section": "scores"})
+    assert len(reads) == 3
 
 
 def test_history_and_holdout_are_disjoint(archive):

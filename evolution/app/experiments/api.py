@@ -110,8 +110,10 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
                 value["scoring_rule"]["dimension_weights"] = {
                     dimension["key"]: dimension["weight"] for dimension in rule["dimensions"]}
     if not summary:
+        internal_round_fields = {"work_root", "frozen_candidate", "completion_nudges", "baseline_evidence_read",
+                                 "failure_feedback", "failure_feedback_reads"}
         value["rounds"] = [copy.deepcopy({key: item for key, item in round_.items()
-            if key not in {"work_root", "frozen_candidate", "completion_nudges", "baseline_evidence_read"}})
+            if key not in internal_round_fields})
             for round_ in run.get("rounds", [])]
         value["samples"] = []
         for sample in run.get("samples", []):

@@ -466,9 +466,18 @@ def advance_one(run_id: str) -> None:
                 if run["current_round"] >= run["max_rounds"]:
                     _finish(run, "exhausted", "已用尽改进轮数，候选未达发布门槛。")
                     return
-                run["current_round"] += 1
-                round_record = {"round": run["current_round"], "status": "evolving", "base_commit": _improvement_base(run),
+                number = run["current_round"] + 1
+                round_record = {"round": number, "status": "evolving", "base_commit": _improvement_base(run),
                                 "source_commit": None, "summary": "", "error": None, "report": {}, "diff": ""}
+                if run.get("assessment_version") and run["task_type"] == "chapter_text" and number > 1:
+                    from app.experiments.history import prepare_failure_feedback
+
+                    feedback = prepare_failure_feedback(run, round_record)
+                    if not feedback or feedback["status"] == "failed" or not feedback["cases"]:
+                        _finish(run, "failed", f"第 {number - 1} 轮缺少完整的同题复盘资料，已有稿件和评分已保留。")
+                        return
+                    round_record["failure_feedback"] = feedback
+                run["current_round"] = number
                 run["rounds"].append(round_record)
                 repo.put_run(run)
             supplied = run["settings"].get("candidate_commit") if round_record["round"] == 1 else None
@@ -510,8 +519,11 @@ def advance_one(run_id: str) -> None:
                     round_record.update(status="completed", outcome="no_change", summary=result["summary"],
                                         evidence_samples=result["evidence_samples"])
                     run["outcome"] = "no_change"
-                    reason = ("已核查原版，未找到有证据支持的改动。" if round_record["base_commit"] == run["baseline"]["commit"]
-                              else "已核查当前候选，未找到有证据支持的进一步改动。")
+                    if round_record.get("failure_feedback"):
+                        reason = "已复盘上一轮候选，未找到有证据支持的进一步改动。"
+                    else:
+                        reason = ("已核查原版，未找到有证据支持的改动。" if round_record["base_commit"] == run["baseline"]["commit"]
+                                  else "已核查当前候选，未找到有证据支持的进一步改动。")
                     _finish(run, "completed", reason)
                     return
         elif run["phase"] == "exploration":

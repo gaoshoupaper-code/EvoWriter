@@ -4,6 +4,7 @@ from __future__ import annotations
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -174,6 +175,9 @@ class ExperimentReleaseTest(DatabaseTest):
     def test_partial_gain_becomes_next_round_base_without_moving_release_baseline(self):
         from app.experiments import repo, runner
 
+        db_path = Path(self.enterContext(TemporaryDirectory())) / "evolution.db"
+        self.enterContext(patch.object(self.db.settings, "evolution_db", str(db_path)))
+        manuscript_path = "正文/第001章.md"
         for scenario, second_score in (("lower", 4.06), ("tied", 4.09)):
             with self.subTest(second_round=scenario):
                 run = self._automatic_run(candidate_score=4.09)
@@ -181,7 +185,11 @@ class ExperimentReleaseTest(DatabaseTest):
                 baseline, first, second, third = (letter * 40 for letter in "abcd")
                 run["rounds"][0]["base_commit"] = baseline
                 for sample, commit in zip(run["samples"], (baseline, first), strict=True):
-                    sample.update(id=f"sample-{sample['round']}", source_commit=commit)
+                    number = sample["round"]
+                    sample.update(id=f"sample-{number}", source_commit=commit, task_type="chapter_text",
+                                  package_title="同一改进题", input_revision="same-input", target={"chapter": 1},
+                                  artifacts={manuscript_path: f"第 {number} 轮正文"})
+                    sample["scores"]["dimensions"] = {"场景空间": 4 - number}
                 repo.put_run(run)
 
                 scores = {2: second_score, 3: 4.1}
@@ -190,11 +198,24 @@ class ExperimentReleaseTest(DatabaseTest):
                     self.assertEqual((package_ids, arm, phase, repeats), (["opt"], "candidate", "exploration", 1))
                     active_run["samples"].append({**run["samples"][1], "id": f"sample-{round_}",
                                                   "round": round_, "source_commit": commit, "artifact_digest": digest,
-                                                  "scores": {"overall": scores[round_]}})
+                                                  "artifacts": {manuscript_path: f"第 {round_} 轮正文"},
+                                                  "scores": {"overall": scores[round_],
+                                                             "dimensions": {"场景空间": round_}}})
 
                 candidates = [{"commit": commit, "digest": str(index) * 64, "summary": "继续改版", "diff": "+修订"}
                               for index, commit in enumerate((second, third), 3)]
-                with patch("app.experiments.agent.improve_candidate", side_effect=candidates) as improve, \
+
+                def improve_candidate(active_run, record, _evidence):
+                    previous = record["round"] - 1
+                    feedback = record["failure_feedback"]
+                    persisted = repo.get_run(active_run["id"])["rounds"][-1]["failure_feedback"]
+                    self.assertEqual(persisted, feedback)
+                    self.assertEqual(feedback["round"], previous)
+                    self.assertEqual([(case["baseline_id"], case["candidate_id"]) for case in feedback["cases"]],
+                                     [("sample-0", f"sample-{previous}")])
+                    return candidates[previous - 1]
+
+                with patch("app.experiments.agent.improve_candidate", side_effect=improve_candidate) as improve, \
                      patch.object(runner, "_add_samples", side_effect=add_scored_sample), \
                      patch("app.experiments.clients.promote") as promote:
                     for phase in ("evolving", "exploration", "evolving", "exploration", "publish"):
@@ -210,6 +231,36 @@ class ExperimentReleaseTest(DatabaseTest):
                 self.assertEqual([record["report"]["passed"] for record in saved["rounds"]], [False, False, True])
                 self.assertEqual(saved["best_candidate"]["commit"], third)
                 self.assertTrue(saved["report"]["passed"])
+
+    @patch.dict("os.environ", {"WRITING_AGENT_ID": "text"})
+    def test_missing_comparable_manuscript_preserves_round_and_stops(self):
+        from app.experiments import repo, runner
+
+        db_path = Path(self.enterContext(TemporaryDirectory())) / "evolution.db"
+        self.enterContext(patch.object(self.db.settings, "evolution_db", str(db_path)))
+        run = self._automatic_run(candidate_score=4.09)
+        run["assessment_version"] = 2
+        first_round = run["rounds"][0]
+        first_round["base_commit"] = run["baseline"]["commit"]
+        for sample, commit in zip(run["samples"], (first_round["base_commit"], first_round["source_commit"]), strict=True):
+            sample.update(id=f"sample-{sample['round']}", source_commit=commit, task_type="chapter_text",
+                          package_title="同一改进题", input_revision="same-input", target={"chapter": 1})
+        run["samples"][0]["artifacts"] = {"正文/第001章.md": "原稿仍可读取"}
+        repo.put_run(run)
+
+        with patch("app.experiments.agent.improve_candidate") as improve, patch.object(runner, "_add_samples") as dispatch:
+            runner.advance_one(run["id"])
+            previous = repo.get_run(run["id"])
+            self.assertEqual(previous["rounds"][0]["status"], "not_improved")
+            runner.advance_one(run["id"])
+        improve.assert_not_called()
+        dispatch.assert_not_called()
+
+        saved = repo.get_run(run["id"])
+        self.assertEqual((saved["status"], saved["current_round"]), ("failed", 1))
+        self.assertIn("第 1 轮缺少完整的同题复盘资料", saved["end_reason"])
+        self.assertEqual(saved["rounds"], previous["rounds"])
+        self.assertEqual(saved["samples"], previous["samples"])
 
     def test_auto_publish_recovery_checks_pointer_before_retrying(self):
         from app.experiments import release, repo
@@ -303,6 +354,24 @@ class ExperimentReleaseTest(DatabaseTest):
         privileged = public_run(run, can_read_content=True)
         self.assertIn("SECRET_REVIEW", str(privileged))
         self.assertIn("SECRET_SOURCE", str(privileged))
+
+    def test_failure_review_projection_requires_content_access(self):
+        from app.experiments.api import public_run
+
+        run = self._automatic_run()
+        run["assessment_version"] = 2
+        review = {"round": 1, "decision": "change_direction", "reason": "REVIEW_REASON",
+                  "manuscript_location": "正文/第001章.md:12", "evidence_refs": ["baseline", "candidate"]}
+        run["rounds"][0].update(failure_review=review, failure_feedback={"summary": "RAW_FEEDBACK"},
+                                failure_feedback_reads={"baseline": ["manuscript", "scores"]})
+
+        privileged = public_run(run, can_read_content=True)["rounds"][0]
+        restricted = public_run(run, can_read_content=False)["rounds"][0]
+        self.assertEqual(privileged["failure_review"], review)
+        self.assertNotIn("failure_review", restricted)
+        for round_ in (privileged, restricted):
+            self.assertNotIn("failure_feedback", round_)
+            self.assertNotIn("failure_feedback_reads", round_)
 
 
 class ExperimentKeyAuthTest(unittest.TestCase):

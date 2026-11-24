@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.core import db
 from app.core.settings import settings
 from app.evolve import db as sessions, docs
-from app.experiments import agent, api, repo, runner
+from app.experiments import agent, api, evaluation, history, repo, runner
 from app.trace import EvolutionTraceRecorder
 
 
@@ -179,7 +179,7 @@ def test_real_graph_recovers_in_the_same_chapter_round(chapter_run, tmp_path, mo
     assert traces == [{"trace_id": saved["trace_ids"][0], "status": "completed"}]
 
 
-def _script_model(monkeypatch, responses):
+def _script_model(monkeypatch, responses, *, on_exhausted=None):
     calls = []
 
     class ScriptedChapterModel(FakeMessagesListChatModel):
@@ -191,6 +191,8 @@ def _script_model(monkeypatch, responses):
 
         def _generate(self, messages, stop=None, run_manager=None, **kwargs):
             calls.append(list(messages))
+            if on_exhausted is not None and len(calls) == len(responses) + 1:
+                on_exhausted()
             assert len(calls) <= len(responses), "流程超过预期的模型调用上限"
             return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
@@ -198,8 +200,152 @@ def _script_model(monkeypatch, responses):
     return calls
 
 
-def _tool_call(name, **args):
-    return AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": name}])
+def _tool_call(name, *, call_id=None, **args):
+    return AIMessage(content="", tool_calls=[{"name": name, "args": args, "id": call_id or name}])
+
+
+@pytest.fixture
+def failed_round(chapter_run):
+    run, first, baseline, _ = chapter_run
+    baseline.update(completed=True, input_revision="same-topic-input")
+    other_baseline = {
+        **baseline, "id": "sample-other-topic-baseline", "package_id": "other-optimization-topic",
+        "package_title": "另一题", "input_revision": "other-topic-input",
+    }
+    candidate_commit = "a" * 40
+    manuscript_path = next(iter(baseline["artifacts"]))
+    candidate = {
+        **baseline, "id": "sample-failed-candidate", "arm": "candidate", "phase": "exploration", "round": 1,
+        "source_commit": candidate_commit, "scores": {"overall": 2.0, "dimensions": {"衔接": 2.0}},
+        "artifacts": {manuscript_path: "她还在屋内。\n门外的人递来信。"},
+    }
+    other_candidate = {
+        **other_baseline, "id": "sample-other-topic-candidate", "arm": "candidate", "phase": "exploration",
+        "round": 1, "source_commit": candidate_commit, "scores": {"overall": 3.0, "dimensions": {"衔接": 3.0}},
+    }
+    first.update(status="not_improved", source_commit=candidate_commit, report=evaluation.compare_results(
+        [baseline, other_baseline], [candidate, other_candidate], completion_rate=1, quality_gain=.1,
+    ))
+    run["settings"]["optimization_ids"].append(other_baseline["package_id"])
+    run["samples"].extend([other_baseline, candidate, other_candidate])
+    record = {"round": 2, "base_commit": first["base_commit"], "session_id": "graph-evolve-2", "status": "evolving"}
+    run["rounds"].append(record)
+    record["failure_feedback"] = history.prepare_failure_feedback(run, record)
+    assert record["failure_feedback"]["cases"][0]["candidate_id"] == candidate["id"]
+    return record, candidate, other_baseline, f"{manuscript_path}:1-2"
+
+
+def _failure_read(round_number, section, *, sample_number=1):
+    return _tool_call("read_improvement_sample", call_id=f"read-{round_number}-{sample_number}-{section}",
+                      round_number=round_number, sample_number=sample_number, section=section)
+
+
+def _tool_reply(calls, call_id):
+    return next(message for messages in reversed(calls) for message in reversed(messages)
+                if isinstance(message, ToolMessage) and message.tool_call_id == call_id)
+
+
+@pytest.mark.parametrize("decision", ["change_direction", "continue"])
+def test_real_graph_requires_previous_failed_candidate_before_editing_after_rollback(chapter_run, failed_round, monkeypatch, decision):
+    run, _, baseline, root = chapter_run
+    record, candidate, other_baseline, location = failed_round
+    refs = [baseline["id"], candidate["id"]]
+    review = {"decision": "change_direction", "reason": "候选引入走位断裂，改查关键动作衔接。",
+              "evidence_refs": refs, "manuscript_location": location}
+    accepted = {**review, "decision": decision}
+    if decision == "continue":
+        accepted.update(reason="继续修正动作衔接，但把核对放到审稿。", new_evidence="候选对照显示动笔提示没防住走位断裂。")
+    design = {"rationale": review["reason"], "changes": [{
+        "target": PROMPT, "change_desc": "补足关键动作前后的空间信息", "reason": review["reason"],
+        "evidence_ref": refs, "expected_up": "动作衔接", "expected_down": "无",
+    }]}
+    edit = {"file_path": PROMPT, "old_string": "按章纲写正文。", "new_string": "核对关键动作前后人物的位置。"}
+    calls = _script_model(monkeypatch, [
+        _tool_call("edit_source", call_id="edit-too-early", **{**edit, "new_string": "过早改了。"}),
+        _failure_read(0, "scores"),
+        _failure_read(0, "manuscript"),
+        _failure_read(1, "scores"),
+        _tool_call("record_failure_review", call_id="review-missing-manuscript", **review),
+        _failure_read(1, "manuscript"),
+        _failure_read(0, "scores", sample_number=2),
+        _failure_read(0, "manuscript", sample_number=2),
+        _tool_call("record_failure_review", call_id="review-wrong-topic",
+                   **{**review, "evidence_refs": [other_baseline["id"], candidate["id"]]}),
+        _tool_call("record_failure_review", call_id="review-invalid-location",
+                   **{**review, "manuscript_location": location.split(":", 1)[0] + ":99"}),
+        _tool_call("record_failure_review", call_id="continue-without-new-evidence", **{**review, "decision": "continue"}),
+        _tool_call("record_failure_review", **accepted),
+        _tool_call("edit_source", call_id="edit-before-design", **{**edit, "new_string": "漏写设计。"}),
+        _tool_call("write_design_doc", call_id="design-baseline-only", rationale=design["rationale"],
+                   changes=[{**design["changes"][0], "evidence_ref": [baseline["id"]]}]),
+        _tool_call("write_design_doc", **design),
+        _tool_call("edit_source", **edit),
+        _tool_call("validate_changes"),
+        _tool_call("write_change_log", summary="补足动作衔接", applied=[
+            {"target": PROMPT, "action": "edit_source", "result": "ok", "detail": "核对走位", "design_ref": 1}]),
+        AIMessage(content="已完成改动和校验。"),
+    ])
+
+    result = asyncio.run(agent._improve(run, record, root, []))
+
+    for call_id in ("edit-too-early", "edit-before-design"):
+        assert "已编辑" not in str(_tool_reply(calls, call_id).content)
+    assert _tool_reply(calls, "design-baseline-only").status == "error"
+    assert "已编辑" in str(_tool_reply(calls, "edit_source").content)
+    for call_id in ("review-missing-manuscript", "review-wrong-topic"):
+        assert "各读正文和评分" in str(_tool_reply(calls, call_id).content)
+    assert "可定位的行号" in str(_tool_reply(calls, "review-invalid-location").content)
+    assert "补充新证据" in str(_tool_reply(calls, "continue-without-new-evidence").content)
+    assert "已记录本轮失败复盘决策" in str(_tool_reply(calls, "record_failure_review").content)
+    assert result["validated"]
+    assert (root / PROMPT).read_text(encoding="utf-8") == edit["new_string"]
+    saved = repo.get_run(run["id"])["rounds"][1]
+    assert saved["base_commit"] == run["baseline"]["commit"]
+    assert saved["failure_review"]["round"] == 1
+    assert saved["failure_review"]["decision"] == decision
+    assert saved["failure_review"]["manuscript_location"] == location
+    assert set(saved["failure_review"]["evidence_refs"]) == set(refs)
+
+
+def test_real_graph_recovers_partial_failure_read_and_accepts_grounded_stop(chapter_run, failed_round, monkeypatch):
+    run, _, baseline, root = chapter_run
+    record, candidate, _, location = failed_round
+    refs = [baseline["id"], candidate["id"]]
+    reason = "失败候选缺少动作过渡，现有同题证据还不能定位通用缺口。"
+    reads = [_failure_read(0, "scores"), _failure_read(0, "manuscript"), _failure_read(1, "scores")]
+
+    def interrupt():
+        saved = repo.get_run(run["id"])["rounds"][1]
+        assert set(saved["failure_feedback_reads"][baseline["id"]]) == {"scores", "manuscript"}
+        assert saved["failure_feedback_reads"][candidate["id"]] == ["scores"]
+        raise RuntimeError("模拟进程中断")
+
+    _script_model(monkeypatch, reads, on_exhausted=interrupt)
+
+    with pytest.raises(RuntimeError, match="模拟进程中断"):
+        asyncio.run(agent._improve(run, record, root, []))
+
+    recovered = repo.get_run(run["id"])
+    record = recovered["rounds"][1]
+    assert not record.get("failure_review")
+    calls = _script_model(monkeypatch, [
+        _tool_call("finish_without_changes", call_id="finish-before-review", reason=reason, evidence_refs=refs),
+        _failure_read(1, "manuscript"),
+        _tool_call("record_failure_review", decision="stop", reason=reason, evidence_refs=refs, manuscript_location=location),
+        _tool_call("finish_without_changes", reason=reason, evidence_refs=refs),
+        AIMessage(content="已核对失败候选，结束本轮。"),
+    ])
+
+    result = asyncio.run(agent._improve(recovered, record, root, []))
+
+    assert "已记录无改动" not in str(_tool_reply(calls, "finish-before-review").content)
+    assert "已记录无改动" in str(_tool_reply(calls, "finish_without_changes").content)
+    assert result["outcome"] == "no_change"
+    assert set(result["evidence_samples"]) == set(refs)
+    assert (root / PROMPT).read_text(encoding="utf-8") == "按章纲写正文。"
+    saved = repo.get_run(run["id"])["rounds"][1]
+    assert saved["failure_review"]["decision"] == "stop"
+    assert set(saved["failure_feedback_reads"][candidate["id"]]) == {"scores", "manuscript"}
 
 
 def test_real_graph_accepts_a_grounded_no_change_conclusion(chapter_run, monkeypatch):

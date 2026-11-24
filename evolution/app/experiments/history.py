@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections import defaultdict
 from collections.abc import Callable
 from typing import Literal
@@ -120,7 +121,62 @@ def baseline_evidence_entries(run: dict) -> list[dict]:
     return [_sample_entry(number, sample) for number, sample in enumerate(_samples_at(run, 0), 1)]
 
 
-def make_history_tools(run: dict, *, on_baseline_evidence: Callable[[str], None] | None = None) -> list:
+def _manuscript(sample: dict) -> str | None:
+    chapter = sample.get("target", {}).get("chapter")
+    return sample.get("artifacts", {}).get(f"正文/第{chapter:03d}章.md") if chapter else None
+
+
+def _score_delta(baseline, candidate) -> float | None:
+    if type(baseline) not in (float, int) or type(candidate) not in (float, int):
+        return None
+    delta = candidate - baseline
+    return round(delta, 6) if math.isfinite(delta) else None
+
+
+def prepare_failure_feedback(run: dict, round_record: dict) -> dict | None:
+    previous_round = round_record["round"] - 1
+    previous = next((record for record in run.get("rounds", []) if record["round"] == previous_round), None)
+    if not previous or previous["status"] not in {"not_improved", "regression_failed", "failed"}:
+        return None
+
+    def scored_manuscripts(round_number, arm):
+        for number, sample in enumerate(_samples_at(run, round_number), 1):
+            if sample["arm"] != arm or sample["status"] != "completed" or not sample.get("scores"):
+                continue
+            manuscript = _manuscript(sample)
+            if manuscript and manuscript.strip():
+                key = (sample["package_id"], sample["repeat"], sample.get("input_revision"))
+                yield key, (number, sample)
+
+    baselines = dict(scored_manuscripts(0, "baseline"))
+    cases = []
+    for key, (candidate_number, candidate) in scored_manuscripts(previous_round, "candidate"):
+        if key not in baselines:
+            continue
+        baseline_number, baseline = baselines[key]
+        if baseline.get("target") != candidate.get("target"):
+            continue
+        before, after = baseline["scores"], candidate["scores"]
+        before_dimensions = before.get("dimensions", {})
+        dimension_deltas = {name: delta for name, value in after.get("dimensions", {}).items()
+                            if (delta := _score_delta(before_dimensions.get(name), value)) is not None}
+        cases.append({"title": candidate["package_title"], "repeat": candidate["repeat"],
+                      "baseline_id": baseline["id"], "candidate_id": candidate["id"],
+                      "baseline_number": baseline_number, "candidate_number": candidate_number,
+                      "overall_delta": _score_delta(before.get("overall"), after.get("overall")),
+                      "dimension_deltas": dimension_deltas})
+    cases.sort(key=lambda case: (case["overall_delta"] is None, case["overall_delta"] or 0))
+    feedback = {"round": previous_round, "status": previous["status"],
+                "summary": (previous.get("summary") or "")[:1000], "cases": cases}
+    if previous["status"] == "regression_failed":
+        feedback["regression_drops"] = _regression_drops(run, previous_round)["drops"]
+    if error := previous.get("error") or ("上一轮没有同题可比的成稿和评分。" if not cases else None):
+        feedback["error"] = error[:500]
+    return feedback
+
+
+def make_history_tools(run: dict, *, on_baseline_evidence: Callable[[str], None] | None = None,
+                       on_sample_read: Callable[[int, str, str], None] | None = None) -> list:
     def sample_at(round_number, sample_number):
         samples = _samples_at(run, round_number)
         return samples[sample_number - 1] if sample_number <= len(samples) else None
@@ -137,9 +193,7 @@ def make_history_tools(run: dict, *, on_baseline_evidence: Callable[[str], None]
                 return None
             return package["input"] if package["purpose"] == "optimization" else None
         if section == "manuscript":
-            chapter = sample.get("target", {}).get("chapter")
-            name = f"正文/第{chapter:03d}章.md" if chapter else None
-            return sample.get("artifacts", {}).get(name)
+            return _manuscript(sample)
         return sample.get(section)
 
     def searchable_sections():
@@ -276,6 +330,8 @@ def make_history_tools(run: dict, *, on_baseline_evidence: Callable[[str], None]
         page = _page(content, offset)
         if section in {"manuscript", "scores", "checks"} and content and page.get("content"):
             note_baseline_read(round_number, sample["id"])
+            if on_sample_read is not None and offset == 0 and section in {"manuscript", "scores"} and page["content"].strip():
+                on_sample_read(round_number, sample["id"], section)
         return page
 
     @tool(args_schema=_Timeline)

@@ -15,7 +15,8 @@ const base: Experiment = {
   id: "header-archive", name: "正文评测", task_type: "chapter_text", assessment_version: 1,
   phase: "baseline", status: "running", current_round: 0, max_rounds: 3, end_reason: null,
   baseline: { version: 1, commit: "base" }, best_candidate: null,
-  models: { executor: { name: "执行配置", model: "writer" }, judges: [{ name: "评测配置", model: "judge" }] },
+  models: { executor: { name: "执行配置", model: "writer" }, judges: [{ name: "评测配置", model: "judge" }],
+    evolver: { name: "进化配置", model: "evolver" } },
   samples: [], rounds: [], report: {}, events: [],
   settings: { task_type: "chapter_text", baseline_version: 1, model_config_id: 1, judge_group_id: 2,
     rule_versions: {}, optimization_ids: [], regression_ids: {}, max_rounds: 3,
@@ -43,7 +44,7 @@ async function openArchive(overrides: Partial<Experiment>) {
   await screen.findByRole("heading", { name: base.name });
 }
 
-it("紧凑版头先列出四项信息，再展开已有的运行和评测", async () => {
+it("紧凑版头先列出实验概况，再展开已有的运行和评测", async () => {
   await openArchive({
     status: "stopped",
     samples: [{ id: "sample", arm: "baseline", phase: "baseline", round: 0, package_title: "当前活跃题",
@@ -58,9 +59,11 @@ it("紧凑版头先列出四项信息，再展开已有的运行和评测", asyn
   expect(within(phases).getAllByRole("region").map((region) => region.getAttribute("aria-label"))).toEqual([
     "运行 · 第 1 轮", "评测 · 第 1 轮",
   ]);
-  for (const label of ["Harness 原版 → 当前候选", "执行模型", "评测模型", "保留最佳候选"]) {
+  for (const label of ["Harness 原版 → 当前候选", "执行模型", "评测模型", "进化模型", "保留最佳候选"]) {
     expect(overview.getByText(label).compareDocumentPosition(phases) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   }
+  expect(overview.getByText("进化配置")).toBeVisible();
+  expect(overview.getByText("evolver")).toBeVisible();
   expect(header.queryByRole("progressbar")).not.toBeInTheDocument();
   expect(screen.getByText(/停止原因记录/)).toBeInTheDocument();
   for (const removed of [/当前活跃题/, /最近活动/, /固定版本与实验设置/, /调用用量/, /改版先检查启动/]) {

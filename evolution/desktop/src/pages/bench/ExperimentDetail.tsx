@@ -163,6 +163,7 @@ export default function ExperimentDetail() {
       <div><dt>执行模型</dt><dd><ModelIdentity model={experiment.models?.executor} /></dd></div>
       <div><dt>评测模型</dt><dd>{experiment.models?.judges?.length ? experiment.models.judges.map((judge, index) =>
         <ModelIdentity key={judge.id ?? index} model={judge} />) : "未记录模型"}</dd></div>
+      <div><dt>进化模型</dt><dd><ModelIdentity model={experiment.models?.evolver} /></dd></div>
       <div><dt>保留最佳候选</dt><dd>{experiment.best_candidate ? `候选改版 ${experiment.best_candidate.round}` : "尚无合格候选"}</dd></div>
     </dl>
     {liveError && <p role="status" className="experiment-error">{liveError}</p>}

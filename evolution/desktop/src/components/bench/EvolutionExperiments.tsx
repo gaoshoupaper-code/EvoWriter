@@ -186,7 +186,7 @@ export function EvolutionExperiments() {
           <small>{autoPublish ? "达标后自动发布" : "回归均分不降"} · 最多 {rounds} 轮</small></div>
         <div><span>评测模型</span><strong>{selectedGroup?.members.map((member) => member.model).join(" + ") || "等待选择"}</strong>
           {repeatedScoring && selectedGroup && <small>每个模型评 {judgeRepeats} 次 · 每份成稿 {selectedGroup.members.length * judgeRepeats} 份评分</small>}
-          <small>{repeatedScoring ? "规则、输入、模型与评分次数在启动后固定" : "规则、输入与模型在启动后固定"}</small></div>
+          <small>{repeatedScoring ? "规则、输入与评分次数在启动后固定。" : "规则与输入在启动后固定。"}</small></div>
       </div>
       <details className="experiment-advanced" open={advanced}>
         <summary className="readable-button" aria-expanded={advanced} onClick={(event) => { event.preventDefault(); setAdvanced((current) => !current); }}><SlidersHorizontal size={15} />高级设置</summary>
@@ -202,7 +202,7 @@ export function EvolutionExperiments() {
       </details>
       <div className="experiment-launch-footer"><button className="config-button primary readable-button" type="submit"
         disabled={starting || missing.length > 0 || staleSelection || missingSelection}>
-        <Play size={15} />{starting ? "正在启动…" : "启动自进化实验"}</button><span className="experiment-note">自动命名，启动后即可查看实时进度。</span></div>
+        <Play size={15} />{starting ? "正在启动…" : "启动自进化实验"}</button><span className="experiment-note">启动时固定模型和 Key。换 Key 后请启动新实验。</span></div>
     </form>}
   </section>;
 

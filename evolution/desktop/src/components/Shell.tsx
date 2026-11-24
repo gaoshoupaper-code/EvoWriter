@@ -158,12 +158,15 @@ export default function Shell() {
               <div className="shell-nav-group-title">{group.title}</div>
               {group.items.map((item) => {
                 const Icon = item.icon;
+                const to = agent && area === "evaluation" && item.to.startsWith("/config/")
+                  ? withAgent(item.to, agent)
+                  : item.to;
                 const matchesView = (item.to !== "/bench" || !showsEvolutionAssets)
                   && (item.to !== EVOLUTION_AGENT_ASSETS_PATH || showsEvolutionAssets);
                 return (
                   <NavLink
                     key={item.to}
-                    to={item.to}
+                    to={to}
                     end={item.end}
                     aria-current={matchesView ? "page" : false}
                     className={({ isActive }) =>

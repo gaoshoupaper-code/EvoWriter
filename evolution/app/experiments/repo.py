@@ -1,7 +1,6 @@
 """Additive SQLite records; one atomic document owns each experiment state."""
 from __future__ import annotations
 
-import copy
 import json
 import threading
 from datetime import UTC, datetime, timedelta, timezone
@@ -188,10 +187,6 @@ def frozen_model_credentials(run_id: str) -> dict:
     if run is None:
         raise KeyError(run_id)
     return decrypt_credentials(run["private"]["model"])
-
-
-def public_settings(settings: dict) -> dict:
-    return copy.deepcopy(settings)
 
 
 def public_model(snapshot: dict | None) -> dict | None:

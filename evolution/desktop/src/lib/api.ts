@@ -1712,35 +1712,6 @@ export interface BenchmarkCompare {
   dimensions?: Record<string, Record<string, { mean: number | null; n: number }>>;
 }
 
-/** 触发评测批次（FR-003；并发度为 REQ-20260920-104714 增强；
- * 评测组必选 REQ-20260930-162207/FR-002——单 judge 用法迁移为建 1 人组）。 */
-export async function runBenchmark(payload: {
-  version?: number;
-  versions?: number[];
-  seeds?: number;
-  concurrency?: 1 | 3 | 5;
-  judge_group_id: number;
-  /** case 子集（REQ-20260921-135543 DEC-008：空/缺省 = 全量 golden） */
-  case_ids?: string[];
-}): Promise<{ batch_id: string; status: string; progress: Record<string, number>; golden_revision: string }> {
-  return evoJson("/api/benchmark/run", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-}
-
-/** golden 升级后重跑最近 K 个版本（评测页「一键重跑」用，FR-004/DEC-009）。 */
-export async function rerunGolden(
-  k = 3,
-): Promise<{ batch_id: string; status: string; progress: Record<string, number>; golden_revision: string }> {
-  return evoJson("/api/benchmark/rerun-golden", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ k }),
-  });
-}
-
 /** 停止批次（REQ-20260920-192126/FR-001：立即停 + 幂等，僵尸批次同样可清）。 */
 export async function stopBenchmark(
   batchId: string,

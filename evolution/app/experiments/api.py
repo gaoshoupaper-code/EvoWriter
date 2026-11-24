@@ -268,7 +268,7 @@ def experiment_options():
         versions = clients.versions()
     except (clients.ServiceUnavailable, clients.TaskNotFound) as exc:
         _failure(exc)
-    groups = list_judge_groups()
+    groups = list_judge_groups()["groups"]
     scope = require_suite()
     current = rubrics.list_rules(scope)
     if scope == "chapter_text":
@@ -278,7 +278,7 @@ def experiment_options():
     return {"task_types": [scope], "versions": current_versions, "production_version": versions["production_version"],
             **({"launch_rule_ids": [rule["id"] for rule in current], "auto_publish": True} if scope == "chapter_text" else {}),
             "models": [{key: item.get(key) for key in ("id", "name", "model", "is_active", "has_key")} for item in db.LlmConfigsRepository.list_all("executor")],
-            "judge_groups": groups["groups"] if "groups" in groups else groups.get("items", []),
+            "judge_groups": groups,
             "defaults": {"rule_versions": rule_versions, "thresholds": {"completion_rate": 1, "quality_gain": .1,
                 "regression_tolerance": {} if scope == "chapter_text" else {scope: 0}}, "max_rounds": 3},
             "builtin_suite": {"id": "isolated-writing-v1", "total": 4}}

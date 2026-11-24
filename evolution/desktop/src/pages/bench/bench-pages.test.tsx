@@ -8,7 +8,6 @@ import { beforeEach, beforeAll, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/api", () => ({
   fetchMeOrNull: vi.fn(),
   logout: vi.fn(),
-  runBenchmark: vi.fn(),
   stopBenchmark: vi.fn(),
   listBenchmarkBatches: vi.fn(),
   getBenchmarkReport: vi.fn(),
@@ -19,7 +18,6 @@ vi.mock("@/lib/api", () => ({
   createJudgeGroup: vi.fn(),
   updateJudgeGroup: vi.fn(),
   deleteJudgeGroup: vi.fn(),
-  rerunGolden: vi.fn(),
   createGoldenCase: vi.fn(),
   getDatasetCases: vi.fn(),
   getCaseContent: vi.fn(),
@@ -93,6 +91,15 @@ beforeEach(() => {
 // ── AC-001：侧栏评测分组 ──
 
 describe("Shell 导航（AC-001）", () => {
+  it("从评测工作台进入模型页时沿用当前 Agent", async () => {
+    render(<MemoryRouter initialEntries={["/bench?agent=text"]}><Shell /></MemoryRouter>);
+
+    expect(await screen.findByRole("link", { name: "执行端模型" }))
+      .toHaveAttribute("href", "/config/executor?agent=text");
+    expect(screen.getByRole("link", { name: "进化端模型" }))
+      .toHaveAttribute("href", "/config/evolution?agent=text");
+  });
+
   it("评测分组含 4 入口；旧评测/数据集入口不在原分组", async () => {
     render(
       <MemoryRouter>

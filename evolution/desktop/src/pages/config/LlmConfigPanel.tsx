@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
   listLlmConfigs,
@@ -53,9 +53,9 @@ export default function LlmConfigPanel({ scope }: LlmConfigPanelProps) {
   const [form, setForm] = useState<FormState | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // 每条配置独立的测试状态（id → 结果 + loading）
-  const [testingIds, setTestingIds] = useState<Set<number>>(new Set());
-  const [testResults, setTestResults] = useState<Record<number, LlmConfigTestResult>>({});
+  const [savedTests, setSavedTests] = useState<Partial<Record<number, LlmConfigTestResult | "pending">>>({});
+  const savedTestRequests = useRef(new Map<number, symbol>());
+  const savedTestToastPrefix = useId();
 
   // 草稿测试（新建表单里点测试）
   const [draftTesting, setDraftTesting] = useState(false);
@@ -120,12 +120,16 @@ export default function LlmConfigPanel({ scope }: LlmConfigPanelProps) {
         });
         toast.success("配置已新建");
       } else {
-        await updateLlmConfig(form.editingId, {
+        const id = form.editingId;
+        await updateLlmConfig(id, {
           name: form.name.trim(),
           api_key: form.apiKey || undefined, // 空=不改
           base_url: form.baseUrl.trim(),
           model: form.model.trim(),
         });
+        // 保存后的配置仍用同一 ID，先让旧测试和晚到的响应失效。
+        clearSavedTest(id);
+        toast.dismiss(`${savedTestToastPrefix}-${id}`);
         toast.success("配置已更新");
       }
       closeForm();
@@ -175,30 +179,37 @@ export default function LlmConfigPanel({ scope }: LlmConfigPanelProps) {
     }
   }
 
-  /** 测试已保存配置：后端读库解密，无需 key。 */
-  async function handleTestSaved(item: LlmConfigItem) {
-    setTestingIds((s) => new Set(s).add(item.id));
-    setTestResults((r) => {
-      const next = { ...r };
-      delete next[item.id];
+  function clearSavedTest(id: number) {
+    savedTestRequests.current.delete(id);
+    setSavedTests((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
       return next;
     });
+  }
+
+  /** 测试已保存配置：后端读库解密，无需 key。 */
+  async function handleTestSaved(item: LlmConfigItem) {
+    const id = item.id;
+    const request = Symbol();
+    const toastId = `${savedTestToastPrefix}-${id}`;
+    savedTestRequests.current.set(id, request);
+    setSavedTests((current) => ({ ...current, [id]: "pending" }));
     try {
-      const result = await testLlmConfig({ id: item.id });
-      setTestResults((r) => ({ ...r, [item.id]: result }));
+      const result = await testLlmConfig({ id });
+      if (savedTestRequests.current.get(id) !== request) return;
+      savedTestRequests.current.delete(id);
+      setSavedTests((current) => ({ ...current, [id]: result }));
       if (result.ok) {
-        toast.success(`「${item.name}」连通正常（${result.latency_ms}ms）`);
+        toast.success(`「${item.name}」连通正常（${result.latency_ms}ms）`, { id: toastId });
       } else {
-        toast.error(`「${item.name}」连通失败：${result.error}`);
+        toast.error(`「${item.name}」连通失败：${result.error}`, { id: toastId });
       }
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "测试失败");
-    } finally {
-      setTestingIds((s) => {
-        const next = new Set(s);
-        next.delete(item.id);
-        return next;
-      });
+      if (savedTestRequests.current.get(id) !== request) return;
+      clearSavedTest(id);
+      toast.error(err instanceof Error ? err.message : "测试失败", { id: toastId });
     }
   }
 
@@ -361,8 +372,9 @@ export default function LlmConfigPanel({ scope }: LlmConfigPanelProps) {
             还没有{scopeLabel}配置。点击「+ 新建配置」添加你的第一个大模型 API。
           </div>
         ) : (
-          configs.map((item) => (
-            <div key={item.id} className={`config-card ${item.is_active ? "active" : ""}`}>
+          configs.map((item) => {
+            const test = savedTests[item.id];
+            return <div key={item.id} className={`config-card ${item.is_active ? "active" : ""}`}>
               <div className="config-card-head">
                 <span className="config-card-name">
                   {item.is_active && <span className="config-active-dot" />}
@@ -381,24 +393,24 @@ export default function LlmConfigPanel({ scope }: LlmConfigPanelProps) {
                   ? `••••${item.key_hint ?? ""}`
                   : <span className="config-key-missing">未填写</span>}
               </div>
-              {testResults[item.id] && (
+              {test && test !== "pending" && (
                 <div
                   className={`config-test-result ${
-                    testResults[item.id].ok ? "ok" : "fail"
+                    test.ok ? "ok" : "fail"
                   }`}
                 >
-                  {testResults[item.id].ok
-                    ? `✓ 连通正常，延迟 ${testResults[item.id].latency_ms}ms`
-                    : `✗ 连通失败：${testResults[item.id].error}`}
+                  {test.ok
+                    ? `✓ 连通正常，延迟 ${test.latency_ms}ms`
+                    : `✗ 连通失败：${test.error}`}
                 </div>
               )}
               <div className="config-card-actions">
                 <button
                   className="config-button small"
                   onClick={() => handleTestSaved(item)}
-                  disabled={testingIds.has(item.id)}
+                  disabled={test === "pending"}
                 >
-                  {testingIds.has(item.id) ? "测试中…" : "测试"}
+                  {test === "pending" ? "测试中…" : "测试"}
                 </button>
                 <button className="config-button small" onClick={() => openEdit(item)}>
                   编辑
@@ -418,8 +430,8 @@ export default function LlmConfigPanel({ scope }: LlmConfigPanelProps) {
                   删除
                 </button>
               </div>
-            </div>
-          ))
+            </div>;
+          })
         )}
       </section>
     </div>

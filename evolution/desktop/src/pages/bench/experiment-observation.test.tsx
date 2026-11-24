@@ -141,6 +141,7 @@ describe("实验观测 / REQ-20261108-191146、REQ-20261119-203159", () => {
     });
     openArchive("/bench/experiments/id/rounds/1");
     expect(api.getExperimentVersionSource).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByText("版本文件"));
     fireEvent.click(await screen.findByRole("button", { name: "查看原版文件" }));
     fireEvent.change(await screen.findByLabelText("选择版本文件"), { target: { value: path } });
     await waitFor(() => expect(api.getExperimentVersionSource).toHaveBeenCalledWith("id", 0, path));
@@ -209,7 +210,7 @@ describe("实验观测 / REQ-20261108-191146、REQ-20261119-203159", () => {
       rounds: [{ round: 2, status: "failed", base_commit: "base", source_commit: "candidate", trace_ids: [],
         summary: "私有改法", design: "私有依据", error: "私有错误", report: {}, diff: "" }] }) as never);
     openArchive("/bench/experiments/id/rounds/2");
-    expect(await screen.findByText("查看版本文件需要正文读取权限。")).toBeInTheDocument();
+    expect(await screen.findByText("本轮异常。查看完整原因需要正文读取权限。")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "查看原版文件" })).not.toBeInTheDocument();
     expect(screen.queryByText(/私有/)).not.toBeInTheDocument();
     expect(api.getExperimentVersionSource).not.toHaveBeenCalled();
@@ -243,6 +244,7 @@ describe("实验观测 / REQ-20261108-191146、REQ-20261119-203159", () => {
     expect(screen.getByText("最终评分失败")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /返回/ }));
     fireEvent.click(await screen.findByRole("link", { name: /第 2 次改版/ }));
+    fireEvent.click(await screen.findByText("运行日志"));
     expect(await screen.findByTestId("embedded-trace")).toHaveAttribute("data-trace-id", "improvement-2");
     expect(JSON.parse(screen.getByTestId("embedded-trace").getAttribute("data-display-context")!)).toMatchObject({
       experiment_name: "正文实验", operation: "improvement", round: 2,
@@ -322,6 +324,7 @@ describe("实验观测 / REQ-20261108-191146、REQ-20261119-203159", () => {
     expect(entry).toHaveAttribute("href", "/bench/experiments/id/rounds/2");
     expect(row).not.toHaveTextContent(/山城样本|独立终验|重复/);
     fireEvent.click(entry);
+    fireEvent.click(await screen.findByText("运行日志"));
     expect(await screen.findByTestId("embedded-trace")).toHaveAttribute("data-trace-id", "live-improvement");
     expect(JSON.parse(screen.getByTestId("embedded-trace").getAttribute("data-display-context")!)).toMatchObject({
       experiment_name: "正文实验", operation: "improvement", phase: "improvement", round: 2,

@@ -1,7 +1,7 @@
 import type { MouseEvent } from "react";
 import { Link, useLocation } from "react-router-dom";
 import type { ActiveRun, Experiment } from "@/lib/api";
-import { EXPERIMENT_STATUS, PHASE_LABELS, executionPhaseLabel, experimentTaskLabel,
+import { EXPERIMENT_STATUS, FAILURE_REVIEW_DECISION_LABELS, PHASE_LABELS, executionPhaseLabel, experimentTaskLabel,
   type ExperimentComparison, type ExperimentSample } from "@/lib/experiment-types";
 import { experimentTimeline, evaluationFinished, type ExperimentTimelineRow } from "@/lib/experiment-timeline";
 import { sampleActivitySection } from "@/lib/experiment-record-traces";
@@ -110,16 +110,17 @@ export function ExperimentTimeline({ experiment, liveRuns, onOpenRecord }: Props
     {rows.map(row => {
       const name = `${labels[row.kind]} · 第 ${row.number} 轮`;
       const improvement = row.improvement;
+      const review = experiment.can_read_content ? improvement?.failure_review : undefined;
       const anchor = "record-improvement-" + row.round;
       return <section key={row.key} className={"timeline-stage " + row.kind} aria-label={name}>
         <div className="timeline-stage-label"><h2>{labels[row.kind]}</h2><span>第 {row.number} 轮</span></div>
         <div className="timeline-stage-content">
           {improvement ? <article id={anchor} tabIndex={-1}>
             <div className="timeline-stage-heading"><Link {...linkProps(base + "/rounds/" + row.round, anchor)}>Harness · 第 {row.round} 次改版</Link>
-              <span>{improvement.status === "evolving" ? "进化中" : improvement.status === "failed" ? "进化失败" : "进化完成"}</span></div>
-            <p className="timeline-improvement-summary">{experiment.can_read_content
-              ? improvement.error || improvement.summary || (improvement.status === "evolving" ? "正在改进 Harness" : "查看进化详情")
-              : "查看进化记录，完整内容需读取权限。"}</p>
+              <span>{improvement.outcome === "no_change" ? "无改动" : EXPERIMENT_STATUS[improvement.status] ?? improvement.status}</span></div>
+            {review && <p className="timeline-improvement-summary">
+              <strong>{FAILURE_REVIEW_DECISION_LABELS[review.decision]}</strong>{review.reason && ` · ${review.reason}`}
+            </p>}
           </article> : <>
             <ul className="timeline-records">{row.samples.map(sample => record(sample, row.kind as "writing" | "evaluation"))}</ul>
             {row.kind === "evaluation" && comparison(row)}

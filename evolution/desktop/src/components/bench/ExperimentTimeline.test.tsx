@@ -80,11 +80,27 @@ it("作品名中的中点保持完整，未知时间不会被实验日期替代"
 
 it("无正文权限时保留进化状态及入口，摘要全文不会泄露", () => {
   open(experiment([sample("base")], { can_read_content: false, rounds: [
-    { round: 1, status: "evolving", summary: "私有正文改法", error: "私有错误" },
+    { round: 1, status: "evolving", summary: "私有正文改法", error: "私有错误",
+      failure_review: { decision: "change_direction", reason: "私有复盘理由" } },
   ] }));
   const improvement = within(screen.getByRole("region", { name: "进化 · 第 1 轮" }));
   expect(improvement.getByRole("link")).toHaveAttribute("href", "/bench/experiments/exp/rounds/1?agent=text");
+  expect(improvement.getByText("改版中")).toBeVisible();
+  expect(improvement.queryByText("调整方向")).not.toBeInTheDocument();
   expect(screen.queryByText(/私有/)).not.toBeInTheDocument();
+});
+
+it("进化行展示复盘决策与真实状态，不显示机器格式的旧摘要", () => {
+  open(experiment([sample("base")], { rounds: [
+    { round: 1, status: "not_improved", summary: "executed_at: 2026-11-23\n# 旧改动" },
+    { round: 2, status: "completed", outcome: "no_change", summary: "旧运行报告",
+      failure_review: { decision: "stop", reason: "没有新的证据支持继续修改。" } },
+  ] }));
+  expect(screen.getByText("未达改进门槛")).toBeVisible();
+  expect(screen.getByText("无改动")).toBeVisible();
+  expect(screen.getByText("停止改进")).toBeVisible();
+  expect(screen.getByText(/没有新的证据支持继续修改/)).toBeVisible();
+  expect(screen.queryByText(/executed_at|旧改动|旧运行报告/)).not.toBeInTheDocument();
 });
 
 it("旧流程跨写作类型的回归报告仍有独立对比入口", () => {

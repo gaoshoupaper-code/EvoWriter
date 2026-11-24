@@ -12,3 +12,33 @@
 .experiment-record-detail .record-facts dd { margin: 3px 0 0; overflow-wrap: anywhere; }
 .experiment-record-detail .record-version-files { margin-top: 12px; }
 .experiment-record-detail .experiment-actions { margin-top: 16px; }
+
+.improvement-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px 16px;
+}
+.improvement-state, .improvement-step-label > span {
+  color: var(--evo-ink-muted);
+  font-size: var(--evo-text-sm);
+}
+.improvement-steps { list-style: none; padding: 0; margin: 8px 0 0; }
+.improvement-steps > li {
+  display: grid;
+  grid-template-columns: minmax(7.5rem, max-content) minmax(0, 1fr);
+  align-items: start;
+  gap: 8px 18px;
+  padding: 12px 0;
+}
+.improvement-steps > li + li { border-top: 1px solid var(--evo-line); }
+.improvement-steps h3 { margin: 0; font-size: inherit; font-weight: 600; }
+.improvement-steps p { margin: 0; overflow-wrap: anywhere; }
+.improvement-steps p + p { margin-top: 6px; }
+.improvement-steps .improvement-source { color: var(--evo-ink-muted); font-size: var(--evo-text-sm); }
+.improvement-steps :is(details, .experiment-change-diff) { min-width: 0; }
+
+@media (max-width: 640px) {
+  .improvement-steps > li { grid-template-columns: minmax(0, 1fr); }
+}

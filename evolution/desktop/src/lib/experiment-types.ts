@@ -23,6 +23,9 @@ export const EXPERIMENT_STATUS: Record<string, string> = {
   evaluation_error: "评测异常", interrupted: "已中断", passed: "已通过", not_improved: "未达改进门槛",
   regression_failed: "回归未通过", exploration: "优化复测", regression: "回归中", evolving: "改版中",
 };
+export const FAILURE_REVIEW_DECISION_LABELS = {
+  continue: "继续原方向", change_direction: "调整方向", stop: "停止改进",
+};
 export const PHASE_LABELS: Record<string, string> = {
   baseline: "原版评测", evolving: "改进 Harness", exploration: "优化复测", validation: "独立终验",
   regression: "本套回归", review: "人工审阅", publish: "发布与加载",
@@ -158,6 +161,15 @@ export type ExperimentSample = {
   input_revision: string; package_revision?: string; source_commit: string; artifact_digest?: string;
   execution_phase?: string | null; target?: ExperimentTarget; score_retry_at?: number;
 };
+export type ExperimentFailureReview = {
+  round: number;
+  decision: keyof typeof FAILURE_REVIEW_DECISION_LABELS;
+  reason: string;
+  manuscript_location: string;
+  evidence_refs: string[];
+  new_evidence?: string;
+  verified_sections?: ("manuscript" | "scores")[];
+};
 export type ExperimentCaseCoverage = Record<"optimization" | "regression", { selected: number; total: number }>;
 export type Experiment = {
   id: string; name: string; task_type: ExperimentTaskType; status: string; phase: string; flow_version?: number;
@@ -179,6 +191,7 @@ export type Experiment = {
   rounds: { round: number; status: string; source_commit: string; base_commit: string; summary: string;
     error: string | null; report: Partial<ExperimentComparison>; diff: string; design?: string; trace_ids?: string[];
     startup_check?: { status: "passed" | "failed"; error?: string };
+    outcome?: "no_change"; failure_review?: ExperimentFailureReview;
     evidence_samples?: string[];
     regressions?: Partial<Record<ExperimentTaskType, ExperimentComparison>> }[];
   samples: ExperimentSample[];

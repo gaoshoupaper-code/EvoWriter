@@ -51,8 +51,8 @@ def existing_chapter(workspace_root: Path) -> str:
         return ""
 
 
-def build_sentence_tool(abc, name: str, guidance: str) -> StructuredTool:
-    """一类形式一个工具：收一句，回「第几句、本章累计多少字」。"""
+def build_sentence_tool(abc, name: str, description: str) -> StructuredTool:
+    """一类形式一个工具：收一句，回「第几句、本章累计多少字」。说明全文由各工具文件给出。"""
     workspace_root = Path(abc.workspace_path)
 
     def write_sentence(text: str, runtime: ToolRuntime = None) -> str:
@@ -68,7 +68,7 @@ def build_sentence_tool(abc, name: str, guidance: str) -> StructuredTool:
 
     return StructuredTool.from_function(
         name=name,
-        description=f"写下一句{guidance}。一次只写一个完整的句子，这一句自成一段；等工具返回后再写下一句。",
+        description=description,
         func=write_sentence,
         args_schema=SentenceInput,
         infer_schema=False,

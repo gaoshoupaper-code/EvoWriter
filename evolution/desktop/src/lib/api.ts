@@ -1167,7 +1167,8 @@ export type ToolScope =
 export interface ToolInfo {
   path: string;                  // 如 "tools/goal.py"
   name: string;                  // 文件名去后缀，如 "goal"
-  description: string | null;    // 工具用途
+  description: string | null;    // 工具说明全文（模型实际读到的文字）
+  description_source?: "source" | "fallback"; // fallback = 源码里读不出说明，description 是回退文字；旧后端不提供
   scope: ToolScope;              // 作用域标注
   load_error: string | null;     // 解析失败时填
 }

@@ -7885,6 +7885,10 @@ html[data-theme="dark"] {
   line-height: 1.5;
   color: var(--evo-ink-muted);
 }
+.tool-desc-note {
+  margin-inline-start: var(--evo-space-2);
+  font-size: var(--evo-text-xs);
+}
 .tool-empty {
   margin: 0;
   padding: var(--evo-space-6) var(--evo-space-2);

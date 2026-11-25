@@ -33,6 +33,7 @@ from contracts.architecture_manifest import (
     BASE_CHAIN_MODULES,
     ArchitectureManifest,
 )
+from contracts.sentence_draft import SENTENCE_TOOLS
 from contracts.target_tasks import AGENT_TASK_TYPES
 
 from app.core.git_ops import show_file, version_source
@@ -387,6 +388,7 @@ def _build_middleware_stacks(commit: str | None) -> dict[str, list[dict[str, Any
     return build_middleware_projection(sources)
 
 
+# 读不出源码里的说明时（说明由代码拼出，或版本较旧）的回退文案（REQ-20261125-210621 FR-003）。
 _TOOL_FUNCTIONS = {
     "read_artifact": "读取指定的总纲、章纲、正文或人物卡，也可只读其中一个小节。",
     "list_characters": "列出本书已有的人物卡，方便找到要查看的人物。",
@@ -406,8 +408,46 @@ _TOOL_FUNCTIONS = {
 }
 
 
-def _build_tool_infos(commit: str | None) -> list[dict[str, Any]]:
-    """从所选版本读取工具用途，保留旧客户端所需的 scope 字段。"""
+def _declared_descriptions(source: str) -> list[tuple[str, str]]:
+    """工具源码里写明的说明：(名字, 说明全文)，按出现顺序。只读字面量，不执行源码。
+
+    名字是模块顶部说明常量的名字，或创建工具那一行的 from_function。参数说明（Field）不算。
+    """
+    tree = ast.parse(source)
+    declared: list[tuple[str, str]] = []
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            declared.extend((target.id, node.value.value) for target in node.targets
+                            if isinstance(target, ast.Name) and target.id.endswith("_DESCRIPTION"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "from_function":
+            declared.extend((node.func.attr, keyword.value.value) for keyword in node.keywords
+                            if keyword.arg == "description" and isinstance(keyword.value, ast.Constant)
+                            and isinstance(keyword.value.value, str))
+    return declared
+
+
+def _source_description(source: str, *, sentence_package: bool) -> str | None:
+    """模型实际读到的说明全文；说明由代码拼出、源码里没有写明时为 None。
+
+    名字以 SENTENCE_PACKAGE_ 开头的常量，是同一文件里那份说明在逐句包中的替代版
+    （见 save_artifact），按该版本是否逐句包二选一。
+    """
+    declared = _declared_descriptions(source)
+    if not declared:
+        return None
+    variants = [item for item in declared if item[0].startswith("SENTENCE_PACKAGE_")]
+    if variants:
+        declared = variants if sentence_package else [item for item in declared if item not in variants]
+    return "\n\n".join(dict.fromkeys(text for _, text in declared))
+
+
+def _build_tool_infos(commit: str | None, *, sentence_package: bool = False) -> list[dict[str, Any]]:
+    """从所选版本读取工具说明，保留旧客户端所需的 scope 字段。
+
+    description 是源码里写明的说明全文（description_source=source）；读不出时回退到手写
+    目录或文件注释首行，description_source=fallback（REQ-20261125-210621 FR-003）。
+    """
     if not commit:
         return []
     py_files = [
@@ -418,13 +458,18 @@ def _build_tool_infos(commit: str | None) -> list[dict[str, Any]]:
     for f in py_files:
         name = f.rsplit("/", 1)[-1].rsplit(".", 1)[0]
         description: str | None = None
+        description_source = "fallback"
         load_error: str | None = None
         try:
             src = show_file(commit, f)
-            full_doc = ast.get_docstring(ast.parse(src))
-            description = _TOOL_FUNCTIONS.get(name) if f == f"tools/{name}.py" else None
-            if not description and full_doc:
-                description = full_doc.splitlines()[0]
+            description = _source_description(src, sentence_package=sentence_package)
+            if description is not None:
+                description_source = "source"
+            else:
+                full_doc = ast.get_docstring(ast.parse(src))
+                description = _TOOL_FUNCTIONS.get(name) if f == f"tools/{name}.py" else None
+                if not description and full_doc:
+                    description = full_doc.splitlines()[0]
         except Exception as e:  # noqa: BLE001
             logger.debug("tool docstring 解析失败: %s @ %s", f, commit)
             load_error = str(e)
@@ -432,6 +477,7 @@ def _build_tool_infos(commit: str | None) -> list[dict[str, Any]]:
             "path": f,
             "name": name,
             "description": description,
+            "description_source": description_source,
             "scope": TOOL_SCOPE_MAP.get(f, {"kind": "unknown"}),
             "load_error": load_error,
         })
@@ -533,7 +579,8 @@ def _build_manifest_elements_view(
     """
     skills = _build_skill_infos(commit)
     stacks = _manifest_middleware_stacks(commit, manifest)
-    tools = _build_tool_infos(commit)
+    sentence_package = any(tool in SENTENCE_TOOLS for agent in manifest.agents for tool in agent.tools)
+    tools = _build_tool_infos(commit, sentence_package=sentence_package)
     exact_skill_mounts = getenv("WRITING_AGENT_ID") in AGENT_TASK_TYPES
 
     stage_files: list[str] = []

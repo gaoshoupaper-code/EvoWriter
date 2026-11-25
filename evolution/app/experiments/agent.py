@@ -215,6 +215,8 @@ def _system_prompt(assessment: bool) -> str:
             "能用真实成稿或 Trace 把问题定位到实际装配的某个环节，就可以试验有依据的通用假设。"
             "单次问题也可以试。写明已观察的事实、待验证的原因、拟改资产和可回退的改法。"
             "每轮聚焦一个主要假设。同一机制涉及多项资产时可以联动修改。"
+            "某一类句子反复写不到位时（例如动作句缺来路），改这一类句子对应的写作工具的描述："
+            "动作 write_action、语言 write_dialogue、感官 write_sensory、反应 write_reaction、叙述 write_narration。\n"
             "事先说明复测应看到什么改善、什么结果会推翻假设，以及可能出现的退步和开销变化。"
             "validate_changes 检查候选源码。write_change_log 记录实际改动和待复测的预期。"
             "正文和开销以实验系统的同题复测结果为准。"

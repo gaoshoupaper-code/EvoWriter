@@ -127,6 +127,16 @@ def test_header_flush_tells_the_run_where_the_file_stops_only_when_sentences_wer
     assert saved == ["c1"]
 
 
+def test_header_flush_leaves_an_artifact_revision_for_the_whole_chapter(chapter):
+    revisions = []
+    abc = _abc(chapter.root, writing_context="起草规程")
+    abc.ctx.trace_recorder = SimpleNamespace(record_artifact_revision=lambda *args, **kwargs: revisions.append(kwargs))
+    abc.ctx.trace_id = "trace-x"
+    build_header(abc).func(status="初稿", title="夜探", runtime=_runtime(_turn(), "head"))
+    assert [item["content"] for item in revisions] == [chapter.path.read_text(encoding="utf-8")]
+    assert (revisions[0]["tool_name"], revisions[0]["file_path"]) == (HEADER_TOOL, "正文/第002章.md")
+
+
 def test_sentences_after_a_flush_are_not_written_twice(chapter):
     _header(chapter, _turn())
     before = chapter.path.read_text(encoding="utf-8")

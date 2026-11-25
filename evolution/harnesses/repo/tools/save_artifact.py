@@ -47,7 +47,8 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 from contracts.sentence_draft import (
-    compose_chapter, draft_state, note_flushed, pending_sentences, package_uses_sentences, rejection, split_chapter,
+    HEADER_TOOL, compose_chapter, draft_state, note_flushed, package_uses_sentences, pending_sentences, rejection,
+    split_chapter,
 )
 from contracts.writing_artifacts import (
     KIND_CHAPTER,
@@ -418,7 +419,7 @@ def _build_writer(
             if kind == KIND_VOLUME else True
         )
 
-    def _capture_revision(rel: str, text: str) -> None:
+    def _capture_revision(rel: str, text: str, tool_name: str = "save_artifact") -> None:
         """落盘成功后冻结 ArtifactRevision（进化侧产物库摄入源）。
 
         内容在手直记，不重读文件——重读会与同文件并发写竞态（平台取证层
@@ -433,11 +434,11 @@ def _build_writer(
         """
         if recorder is None or not trace_id:
             return
-        capture_id = "save_artifact:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        capture_id = f"{tool_name}:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
         try:
             recorder.record_artifact_revision(
                 trace_id, agent_name,
-                file_path=rel, content=text, tool_name="save_artifact",
+                file_path=rel, content=text, tool_name=tool_name,
                 tool_call_id=capture_id,
             )
         except Exception as exc:  # noqa: BLE001 — 取证失败不得影响写作（DEC-004）
@@ -679,6 +680,11 @@ def _build_writer(
 
         def write():
             _atomic_write(path, content)
+            # 与整批保存走同一条取证链：父进程核验和进化端产物库都靠这份修订记录
+            # 认识本章（审前稿、审后修订）。只写文件不发记录，评测任务会被判失败。
+            _capture_revision(rel, content, tool_name=HEADER_TOOL)
+            _register(rel, content, KIND_TEXT)
+            failures.pop(rel, None)
             return f"文件头已改为「{status}」" + (f"，写入本章 {len(pending)} 句。" if pending else "。")
 
         values = {"kind": KIND_TEXT, "chapter": chapter, "mode": "full", "content": content,

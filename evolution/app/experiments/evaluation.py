@@ -281,7 +281,9 @@ def _paired_runtime_metrics(run: dict, sample: dict) -> dict:
     return other.get("runtime_metrics") or (other.get("scores") or {}).get("runtime", {})
 
 
-def _token_metric(run: dict, sample: dict, value: int) -> dict:
+def _token_metric(run: dict, sample: dict, value: int | None) -> dict:
+    if value is None:
+        raise ValueError("本次生成的 Token 用量不完整")
     baseline = value if sample["arm"] == "baseline" else _paired_runtime_metrics(run, sample).get("tokens", {}).get("value")
     if type(baseline) is not int or baseline <= 0:
         raise ValueError("缺少同题同次的有效原版 Token 用量")
@@ -294,7 +296,10 @@ def _runtime_judge_input(run: dict, sample: dict) -> dict:
     if saved is not None:
         return saved
     runtime = _collect_runtime(sample)
-    statistics = {sample["arm"]: {"tools": runtime["tools"], "tokens": runtime["tokens"]}}
+    stats = {"tools": runtime["tools"]}
+    if runtime["tokens"] is not None:
+        stats["tokens"] = runtime["tokens"]
+    statistics = {sample["arm"]: stats}
     other = _paired_runtime_metrics(run, sample)
     if other.get("tools") and "value" in other.get("tokens", {}):
         other_arm = "candidate" if sample["arm"] == "baseline" else "baseline"
@@ -421,7 +426,7 @@ def score_sample(run: dict, sample: dict) -> dict:
     errors = sample.setdefault("judge_errors", {})
     feedback = sample.get("judge_evidence_feedback", {})
     runtime_enabled = run.get("runtime_scoring_version") == RUNTIME_SCORING_VERSION
-    runtime_message, runtime_error, runtime_refs = None, None, None
+    runtime_message, runtime_error, runtime_refs, token_error = None, None, None, None
     if runtime_enabled:
         try:
             frozen_input = _runtime_judge_input(run, sample)
@@ -429,14 +434,18 @@ def score_sample(run: dict, sample: dict) -> dict:
             runtime_error = exc
         else:
             stats = frozen_input["runtime_statistics"][sample["arm"]]
-            tools, token_count = stats["tools"], stats["tokens"]
+            tools, token_count = stats["tools"], stats.get("tokens")
             rate = tools["successes"] / tools["total"]
-            metrics = {"tools": {**tools, "rate": rate, "score": 1 + 4 * rate}, "tokens": {"value": token_count}}
+            metrics = {"tools": {**tools, "rate": rate, "score": 1 + 4 * rate}}
             sample["runtime_metrics"] = metrics
             try:
+                if token_count is None and "runtime_judge_input" in sample:
+                    token_count = _collect_runtime(sample)["tokens"]
+                if token_count is not None:
+                    metrics["tokens"] = {"value": token_count}
                 metrics["tokens"] = _token_metric(run, sample, token_count)
             except ValueError as exc:
-                runtime_error = exc
+                token_error = exc
             runtime_refs = {item["ref"]: item["text"] for item in frozen_input["runtime_trace"]["evidence"]}
             runtime_message = {"role": "user", "content": json.dumps({**judge_material, **frozen_input}, ensure_ascii=False)}
     from app.experiments import runner
@@ -563,6 +572,8 @@ def score_sample(run: dict, sample: dict) -> dict:
         if runtime_enabled:
             if runtime_error is not None:
                 raise runtime_error
+            if token_error is not None:
+                raise token_error
             runtime = {**sample["runtime_metrics"], "skill": {"score": dimensions[_RUNTIME_KEY]}}
             runtime["score"] = sum(runtime[key]["score"] for key in ("tools", "tokens", "skill")) / 3
             dimensions[_RUNTIME_KEY] = runtime["score"]

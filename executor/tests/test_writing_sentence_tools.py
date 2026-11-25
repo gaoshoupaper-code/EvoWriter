@@ -74,14 +74,18 @@ def _header(chapter, messages, status="初稿", title="夜探"):
 
 
 def test_sentence_tool_takes_one_sentence_and_writes_nothing_to_disk(chapter):
-    receipt = build_sensory(_abc(chapter.root)).func("热气漫上纸页。", runtime=_runtime(_turn([]), "c1"))
+    receipt = build_sensory(_abc(chapter.root)).func(
+        "从端茶的动作接到纸页上的热气", "热气漫上纸页。", runtime=_runtime(_turn([]), "c1"),
+    )
     assert receipt == "第 1 句，本章累计约 7 字。"
     assert not chapter.path.exists()
 
 
 @pytest.mark.parametrize("text", ["   ", "他站起来。\n走到窗边。"])
 def test_sentence_tool_rejects_an_empty_sentence_or_a_line_break(chapter, text):
-    receipt = build_sensory(_abc(chapter.root)).func(text, runtime=_runtime(_turn(), "c4"))
+    receipt = build_sensory(_abc(chapter.root)).func(
+        "从端茶的动作接到纸页上的热气", text, runtime=_runtime(_turn(), "c4"),
+    )
     assert receipt.startswith("[拒绝] ")
     assert chapter.path.exists() is False
 
@@ -90,8 +94,39 @@ def test_receipt_counts_this_turn_and_the_existing_body(chapter):
     chapter.path.parent.mkdir(parents=True)
     chapter.path.write_text("# 第002章\n> 状态：起草中｜2026-11-20\n\n旧批次的一段。\n", encoding="utf-8")
     written = [("c1", "write_action", "她推门进来。"), ("c2", "write_dialogue", "「谁？」")]
-    receipt = build_sensory(_abc(chapter.root)).func("热气漫上纸页。", runtime=_runtime(_turn(written), "c3"))
+    receipt = build_sensory(_abc(chapter.root)).func(
+        "从端茶的动作接到纸页上的热气", "热气漫上纸页。", runtime=_runtime(_turn(written), "c3"),
+    )
     assert receipt == "第 3 句，本章累计约 24 字。"
+
+
+@pytest.mark.parametrize("intent", ["   ", "接上。\n往下写。", "字" * 61])
+def test_sentence_tool_rejects_an_invalid_writing_intent(chapter, intent):
+    receipt = build_sensory(_abc(chapter.root)).func(
+        intent, "热气漫上纸页。", runtime=_runtime(_turn([]), "c1"),
+    )
+    assert receipt.startswith("[拒绝] 请先用一行短语写下本句的具体写法")
+
+
+def test_sentence_tool_waits_for_its_own_model_reply(chapter):
+    tool = build_sensory(_abc(chapter.root))
+    args = {"writing_intent": "从端茶的动作接到纸页上的热气", "text": "热气漫上纸页。"}
+    write_call = {"name": "write_sensory", "args": args, "id": "c2"}
+    read_call = {"name": "read_artifact", "args": {}, "id": "r1"}
+    messages = [*_turn([]), AIMessage(content="", tool_calls=[read_call, write_call])]
+    refused = tool.func(**args, runtime=_runtime(messages, "c2"))
+    assert refused.startswith("[拒绝] 写句子时一次只调用一个工具")
+    messages.extend([
+        ToolMessage(content="已读章纲。", tool_call_id="r1"),
+        ToolMessage(content=refused, tool_call_id="c2"),
+        AIMessage(content="", tool_calls=[{**write_call, "id": "c3"}]),
+    ])
+    receipt = tool.func(**args, runtime=_runtime(messages, "c3"))
+    assert receipt == "第 1 句，本章累计约 7 字。"
+    messages.append(ToolMessage(content=receipt, tool_call_id="c3"))
+    _header(chapter, messages)
+    assert chapter.path.read_text(encoding="utf-8").endswith("\n\n热气漫上纸页。\n")
+    assert args["writing_intent"] not in chapter.path.read_text(encoding="utf-8")
 
 
 # ── 文件头工具：转「初稿」时整章一次写入（FR-005、FR-006）────────────────
@@ -184,7 +219,7 @@ def test_header_tool_refuses_a_title_that_is_not_one_short_line(chapter, title):
     assert chapter.path.exists() is False
 
 
-def test_two_sentence_calls_in_one_reply_are_both_kept_in_call_order(chapter):
+def test_historical_successful_sentence_calls_are_kept_in_call_order(chapter):
     calls = [{"name": "write_action", "args": {"text": "她推门进来。"}, "id": "c1"},
              {"name": "write_dialogue", "args": {"text": "「谁？」"}, "id": "c2"}]
     messages = [HumanMessage(content="写第2章", id="h1"), AIMessage(content="", tool_calls=calls, id="a-1"),

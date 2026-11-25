@@ -24,6 +24,8 @@ def regimen() -> str:
 def test_regimen_describes_writing_by_sentence_and_no_longer_by_batch(regimen):
     assert all(tool in regimen for tool in DRAFT_TOOLS)
     assert "每次回复仅调用一个写作工具" in regimen and "该句自成一段" in regimen
+    assert regimen.index("`writing_intent`") < regimen.index("`text`")
+    assert "等回执回来才想下一句" in regimen
     assert not [word for word in _BATCH_DRAFTING if word in regimen]
 
 
@@ -86,5 +88,6 @@ _DESCRIPTIONS = {
 def test_every_sentence_tool_reads_the_approved_description(tmp_path, name):
     tool = importlib.import_module(f"harness_current.tools.{name}").build(SimpleNamespace(workspace_path=tmp_path))
     assert tool.description == _DESCRIPTIONS[name]
-    assert list(tool.args) == ["text"]
+    assert list(tool.args) == ["writing_intent", "text"]
+    assert tool.args_schema.model_json_schema()["required"] == ["writing_intent", "text"]
     assert tool.args["text"]["description"] == "这一句的正文：一个完整的句子，不带换行"

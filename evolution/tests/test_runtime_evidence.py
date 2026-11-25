@@ -117,15 +117,13 @@ def test_full_recovery_rejects_another_attempt(trace, monkeypatch):
     assert ingested == [(events, "workspace")]
 
 
-@pytest.mark.parametrize("gap", ["zero_tools", "open_tool", "usage", "unverified", "wrong_attempt", "skill_payload"])
+@pytest.mark.parametrize("gap", ["zero_tools", "open_tool", "unverified", "wrong_attempt", "skill_payload"])
 def test_missing_runtime_evidence_cannot_produce_scores(trace, gap):
     sample, row, events, _, add = trace
     if gap != "zero_tools":
         tool(add, "review")
     if gap == "open_tool":
         add("tool_start", "running", tool_call_id="unfinished", tool_name="read_artifact")
-    if gap == "usage":
-        events[2].usage = None
     if gap == "unverified":
         row["integrity_status"] = "incomplete"
     if gap == "wrong_attempt":
@@ -138,7 +136,29 @@ def test_missing_runtime_evidence_cannot_produce_scores(trace, gap):
         runtime_evidence.collect(sample)
 
 
-def test_zero_token_baseline_requests_recovery_but_candidate_remains_valid(trace, monkeypatch):
+def test_partial_usage_retains_tool_and_skill_evidence_after_recovery(trace, monkeypatch):
+    sample, _, _, _, add = trace
+    add("llm_start", "running", run_id="review")
+    add("llm_end", run_id="review", payload_refs={"output": {
+        "payload_id": "review-output", "content_hash": "hash", "kind": "semantic_full", "size_bytes": 120}})
+    tool(add, "review")
+    add("run_end")
+    recovered = []
+    output = None
+    monkeypatch.setattr(runtime_evidence, "_recover_trace", lambda trace_id, sample: recovered.append(trace_id))
+    monkeypatch.setattr(runtime_evidence, "read_payload", lambda payload_id: output)
+
+    evidence = runtime_evidence.collect(sample)
+
+    assert recovered == ["submitted"]
+    assert evidence["tokens"] is None
+    assert evidence["tools"] == {"successes": 1, "total": 1}
+    assert evidence["summary"]["skill_status"] == "not_read"
+    output = {"messages": [{"usage": {"prompt_tokens": 1500, "completion_tokens": 500}}]}
+    assert runtime_evidence.collect(sample)["tokens"] == 62000
+
+
+def test_zero_token_baseline_requests_recovery_without_discarding_evidence(trace, monkeypatch):
     sample, _, events, _, add = trace
     events[2].usage = TraceUsage(input_tokens=0, output_tokens=0, total_tokens=0)
     tool(add, "review")
@@ -147,8 +167,7 @@ def test_zero_token_baseline_requests_recovery_but_candidate_remains_valid(trace
 
     recovered = []
     monkeypatch.setattr(runtime_evidence, "_recover_trace", lambda trace_id, sample: recovered.append(trace_id))
-    with pytest.raises(runtime_evidence.EvidenceUnavailable, match="原版"):
-        runtime_evidence.collect({**sample, "arm": "baseline"})
+    assert runtime_evidence.collect({**sample, "arm": "baseline"})["tokens"] == 0
     assert recovered == ["submitted"]
 
 

@@ -195,6 +195,37 @@ def test_runtime_missing_evidence_retries_without_rescoring_content(chapter_run,
     assert sample["scores"]["overall"] == pytest.approx(3.92)
 
 
+def test_runtime_missing_tokens_keeps_skill_scores_and_reuses_them_after_recovery(chapter_run, monkeypatch):
+    run, sample = chapter_run
+    run.update(runtime_scoring_version=1, judge_repeats=3)
+    run["private"]["judges"] = run["private"]["judges"][:1]
+    calls = stub_judges(monkeypatch, runtime_ref="trace-body:8")
+    evidence = {**_runtime_input(), "tokens": None}
+    monkeypatch.setattr(evaluation, "_collect_runtime", lambda _: evidence)
+
+    runner.process_sample(run, sample)
+
+    progress = evaluation.score_progress(run, sample)
+    assert [entry["score"] for entry in progress["reasons"]["运行时"]] == [4, 4, 4]
+    assert progress["completed"] == progress["total"] == 3
+    expected_calls = progress["total"] * (_quality_dimension_count(run) + 1)
+    assert len(calls) == expected_calls
+    assert sample["status"] == "evaluation_error"
+    assert "本次生成的 Token 用量不完整" in sample["error"]
+    assert sample["scores"] is None
+    assert "tokens" not in sample["runtime_metrics"]
+    assert "tokens" not in sample["runtime_judge_input"]["runtime_statistics"]["baseline"]
+
+    saved = repo.get_run(run["id"])
+    recovered = saved["samples"][0]
+    evidence["tokens"] = 100_000
+    runner.process_sample(saved, recovered)
+
+    assert recovered["status"] == "completed"
+    assert len(calls) == expected_calls
+    assert recovered["scores"]["overall"] == pytest.approx(3.92)
+
+
 def test_runtime_repeats_and_retry_reuse_the_first_prompt_after_reload(chapter_run, monkeypatch):
     run, sample = chapter_run
     run.update(runtime_scoring_version=1, judge_repeats=2)

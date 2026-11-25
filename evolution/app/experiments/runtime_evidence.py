@@ -13,7 +13,7 @@ from app.core import db
 from app.ingestion import importer
 from app.ingestion.ingestion import _fetch_trace_content
 from app.trace.tool_results import is_successful_tool_end
-from app.trace_payloads import hydrate_event
+from app.trace_payloads import hydrate_event, read_payload
 
 
 SUMMARY_BYTES = 12000
@@ -380,18 +380,17 @@ def _collect(trace_ids: list[str], sample: dict) -> dict:
         calls.extend(_tool_calls(status, trace_events))
         events.extend(trace_events)
         for event in trace_events:
-            if event.type in {"llm_end", "llm_error"} and event.usage is None and "output" in event.payload_refs:
-                event = _with_fields(event, "output")
+            if (event.type in {"llm_end", "llm_error"} and event.usage is None
+                    and event.output is None and "output" in event.payload_refs):
+                event = event.model_copy(update={"output": read_payload(event.payload_refs["output"].payload_id)})
             metrics.add_event(event)
     if not calls:
         raise EvidenceUnavailable("正文已交稿，但缺少本次工具调用记录")
     usage = metrics.snapshot(terminal=True)
-    if (usage.input_tokens is None or usage.output_tokens is None or usage.input_partial
-            or usage.output_partial or usage.total_partial):
-        raise EvidenceUnavailable("本次生成的 Token 用量不完整")
-    tokens = usage.input_tokens + usage.output_tokens
-    if tokens == 0 and sample.get("arm") == "baseline":
-        raise EvidenceUnavailable("原版的计分 Token 用量为零")
+    tokens = None
+    if (usage.input_tokens is not None and usage.output_tokens is not None
+            and not (usage.input_partial or usage.output_partial or usage.total_partial)):
+        tokens = usage.input_tokens + usage.output_tokens
     chapter = sample["target"]["chapter"]
     return {"tools": {"successes": sum(call[2] for call in calls), "total": len(calls)}, "tokens": tokens,
             "summary": _summary(events, calls, f"正文/第{chapter:03d}章.md")}
@@ -403,8 +402,13 @@ def collect(sample: dict) -> dict:
     if not trace_ids:
         raise EvidenceUnavailable("正文已交稿，但缺少本次成功生成的 Trace")
     try:
-        return _collect(trace_ids, sample)
+        evidence = _collect(trace_ids, sample)
     except EvidenceUnavailable:
-        for trace_id in trace_ids:
-            _recover_trace(trace_id, sample)
-        return _collect(trace_ids, sample)
+        pass
+    else:
+        tokens = evidence["tokens"]
+        if tokens is not None and (tokens > 0 or sample.get("arm") != "baseline"):
+            return evidence
+    for trace_id in trace_ids:
+        _recover_trace(trace_id, sample)
+    return _collect(trace_ids, sample)

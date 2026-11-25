@@ -19,6 +19,7 @@ from contracts.writing_artifacts import KIND_TEXT, artifact_relpath
 
 
 class SentenceInput(BaseModel):
+    writing_intent: str = Field(description="先想清这一句怎么接、落到哪个具体细节，再用一行短语写下选择，最多 60 字")
     text: str = Field(description="这一句的正文：一个完整的句子，不带换行")
 
 
@@ -55,12 +56,16 @@ def build_sentence_tool(abc, name: str, description: str) -> StructuredTool:
     """一类形式一个工具：收一句，回「第几句、本章累计多少字」。说明全文由各工具文件给出。"""
     workspace_root = Path(abc.workspace_path)
 
-    def write_sentence(text: str, runtime: ToolRuntime = None) -> str:
+    def write_sentence(writing_intent: str, text: str, runtime: ToolRuntime = None) -> str:
+        messages = messages_of(runtime)
+        if messages and len(getattr(messages[-1], "tool_calls", ())) > 1:
+            return rejection("写句子时一次只调用一个工具。等上一句的回执，再单独想和写当前这一句。")
+        if not 1 <= len(writing_intent.strip()) <= 60 or "\n" in writing_intent or "\r" in writing_intent:
+            return rejection("请先用一行短语写下本句的具体写法，最多 60 字。")
         reason = validate_sentence(text)
         if reason:
             return rejection(reason)
         sentence = text.strip()
-        messages = messages_of(runtime)
         pending = pending_sentences(messages, draft_state().flushed_through)
         total = (body_char_count(existing_chapter(workspace_root))
                  + sum(len(item) for _, item in pending) + len(sentence))

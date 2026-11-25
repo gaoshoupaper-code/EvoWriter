@@ -136,6 +136,7 @@ class ErrorRecoveryMiddleware(AgentMiddleware):
             return
         try:
             self.intervention_callback(
+                middleware_name=type(self).__name__,
                 action=action,
                 hook="wrap_tool_call",
                 affected_fields=["control_flow"],

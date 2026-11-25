@@ -35,6 +35,7 @@ class RevisionLimitMiddleware(AgentMiddleware):
         max_revisions: int = 1,
         review_name: str = "review",
         workspace_root: Path | None = None,
+        on_intervention=None,
     ) -> None:
         """
         Args:
@@ -49,6 +50,7 @@ class RevisionLimitMiddleware(AgentMiddleware):
         self.max_revisions = self.limits.get(review_name, max_revisions)
         self._counts: dict[str, int] = {}
         self.workspace_root = workspace_root
+        self.on_intervention = on_intervention
 
     # ------------------------------------------------------------------
     # 调用周期重置（子代理每次被 task 委托开始时触发）
@@ -85,6 +87,10 @@ class RevisionLimitMiddleware(AgentMiddleware):
         """构造达到审查上限的终止消息：停止审查 + 指示子代理在返回摘要中转述（解读A 可见性）。"""
         tool_call = getattr(request, "tool_call", {})
         tool_call_id = _mapping_value(tool_call, "id")
+        if self.on_intervention:
+            self.on_intervention(middleware_name=type(self).__name__, hook="wrap_tool_call",
+                                 action="limit_review", affected_fields=["tool_call"],
+                                 reason=f"{target} 已达到本轮审查上限 {self.limits[target]} 次")
         return ToolMessage(
             content=(
                 f"已达到本轮审查上限（{self.limits[target]} 次 / 本轮创作）。"
@@ -110,6 +116,9 @@ class RevisionLimitMiddleware(AgentMiddleware):
         call = getattr(request, "tool_call", {})
         reason = review_block_reason(state, self.workspace_root, (call.get("args") or {}).get("description", ""))
         if reason:
+            if self.on_intervention:
+                self.on_intervention(middleware_name=type(self).__name__, hook="wrap_tool_call",
+                                     action="deny_review", affected_fields=["tool_call"], reason=reason)
             return ToolMessage(content=f"[审稿拒绝] {reason}", status="error", tool_call_id=call.get("id", ""))
         return None
 
@@ -215,4 +224,5 @@ def build(abc):
             limits[name] = sub_cap
     from ..text_completion import enabled_for
 
-    return RevisionLimitMiddleware(limits=limits, workspace_root=abc.workspace_path if enabled_for(abc) else None)
+    return RevisionLimitMiddleware(limits=limits, workspace_root=abc.workspace_path if enabled_for(abc) else None,
+                                   on_intervention=getattr(abc, "intervention_callback", None))

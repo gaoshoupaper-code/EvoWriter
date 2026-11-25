@@ -45,6 +45,12 @@ STAGE_PROMPT_FILES: dict[str, str] = {
 }
 
 
+def workspace_style_prompt(content: str) -> str:
+    """正文与审稿共用的文风快照模板；行为约束随 harness 发版。"""
+    template = (PACKAGE_DIR / "prompts" / "workspace_style.md").read_text(encoding="utf-8")
+    return template.replace("{style_card}", content)
+
+
 def stage_prompt(stage: str) -> str | None:
     """读当前段的流程提示词文本（DEC-002：executor 每轮装配时调用）。
 
@@ -142,13 +148,6 @@ def author_base_neutral_prompt() -> str | None:
 def character_repair_prompt() -> str | None:
     """人物卡原地重建使用独立规程，不叠加当前阶段的产物写入规则。"""
     return _read_prompt("character_repair.md")
-
-
-
-def workspace_style_prompt(content: str) -> str:
-    """完整作品文风快照，正文和审稿共用。"""
-    template = (PACKAGE_DIR / "prompts" / "workspace_style.md").read_text(encoding="utf-8")
-    return template.replace("{style_card}", content)
 
 
 def assemble(ctx: RuntimeContext, agent_name: str | None = None):

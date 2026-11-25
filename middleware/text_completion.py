@@ -10,6 +10,7 @@ from typing_extensions import NotRequired
 
 from ..text_completion import (
     STATE_KEY, completion_snapshot, current_turn, delivery_block_reason, enabled_for, failed_review_note,
+    unflushed_reason,
 )
 from .tool_call_recovery import _FAILURE_TEXT as TOOL_CALL_EXHAUSTED
 
@@ -23,8 +24,9 @@ class TextCompletionState(AgentState):
 class TextCompletionMiddleware(AgentMiddleware[TextCompletionState]):
     state_schema = TextCompletionState
 
-    def __init__(self, workspace_root: Path | None = None):
+    def __init__(self, workspace_root: Path | None = None, on_intervention=None):
         self.root = Path(workspace_root) if workspace_root is not None else None
+        self.on_intervention = on_intervention
 
     def before_model(self, state, runtime):
         if self.root is None:
@@ -50,12 +52,15 @@ class TextCompletionMiddleware(AgentMiddleware[TextCompletionState]):
         message = messages[-1]
         if not isinstance(message, AIMessage) or message.tool_calls or message.content == TOOL_CALL_EXHAUSTED:
             return None
-        if completion_snapshot(state, self.root).get("active_turn") != current_turn(state):
-            return None
-        reason = delivery_block_reason(state, self.root)
+        # 句子没写进文件时，本章有没有保存回执都要拦：否则整章只留在对话记录里。
+        active = completion_snapshot(state, self.root).get("active_turn") == current_turn(state)
+        reason = unflushed_reason(state) or (delivery_block_reason(state, self.root) if active else None)
         if not reason:
             note = failed_review_note(state, self.root)
             if note and note not in str(message.content):
+                if self.on_intervention:
+                    self.on_intervention(middleware_name=type(self).__name__, hook="after_model",
+                                         action="report_failed_review", affected_fields=["messages"], reason=note)
                 content = f"{message.content}\n\n{note}" if isinstance(message.content, str) else [
                     *message.content, {"type": "text", "text": note},
                 ]
@@ -64,6 +69,10 @@ class TextCompletionMiddleware(AgentMiddleware[TextCompletionState]):
         turn = current_turn(state)
         count = state.get("text_completion_output_count", 0) if state.get("text_completion_output_turn") == turn else 0
         output = [RemoveMessage(id=message.id)] if message.id else []
+        if self.on_intervention:
+            self.on_intervention(middleware_name=type(self).__name__, hook="after_model",
+                                 action="stop_delivery" if count >= 2 else "correct_delivery",
+                                 affected_fields=["messages"], reason=reason)
         if count >= 2:
             return {"messages": [*output, AIMessage(content=f"正文交付未完成：{reason}已尝试纠正2次，本轮停止；请核对实际正文后继续。") ]}
         return {
@@ -77,4 +86,5 @@ class TextCompletionMiddleware(AgentMiddleware[TextCompletionState]):
 
 
 def build(abc):
-    return TextCompletionMiddleware(abc.workspace_path if enabled_for(abc) else None)
+    return TextCompletionMiddleware(abc.workspace_path if enabled_for(abc) else None,
+                                    getattr(abc, "intervention_callback", None))

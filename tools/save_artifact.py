@@ -23,6 +23,10 @@
 append 落盘成功后把该产物登记进读取登记——内容刚由本工具写出，后续
 append/edit 视为已读，不必为此重读整章。
 
+整章写入（REQ-20261125-154544）：正文包按句写作时，起草不再走 full/append 的
+整批路径。五个写作工具只收句子；文件头工具把状态改为「初稿」时调用这里的整章
+写入——改文件头两行，并把本轮攒下的句子一次写入。走同一条保存通道与取证。
+
 每次「锚点→替换」经既有 TraceMiddleware 进 trace（L4 审计，DEC-008）。
 落盘成功后经 ctx.trace_recorder 冻结 ArtifactRevision——进化侧产物库的唯一
 摄入源（REQ-20261019-203500 FR-001）：内容在手直记，不重读文件；取证失败
@@ -34,12 +38,18 @@ import hashlib
 import json
 import logging
 import re
+from datetime import date
+from itertools import groupby
 from pathlib import Path
 from typing import Literal
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from contracts.sentence_draft import (
+    HEADER_TOOL, compose_chapter, draft_state, note_flushed, package_uses_sentences, pending_sentences, rejection,
+    split_chapter,
+)
 from contracts.writing_artifacts import (
     KIND_CHAPTER,
     KIND_CHARACTER,
@@ -76,10 +86,10 @@ kind 取值：theme / outline / style / volume_outline(+volume) / chapter_outlin
 - mode="append"：content = 本次完整写作单元（普通批次或 Skill 完整场景）。
   首个单元用 full 建文件，后续每个单元用 append；场景占 N 批仍只保存一次。
   回执的追加序号仅计本轮 append 次数，不含首次 full，也不是 Skill 篇幅预算。
-  正文新建由工具建立进度 1；已有标准进度由工具维护，修订不增加总数。
+  正文新建按实际保存的批数建立进度；已有标准进度由工具维护，修订不增加总数。
   append 不做锚点匹配，避免短段重复导致整章重写。
   正文新建和追加必须注明 unit_kind：ordinary（普通单元）或 skill_scene（匹配的完整技能场景）。
-  skill_scene 同时填写作者已启用且当前剧情匹配的 skill_name 原名；普通单元过长会拒绝保存，先收束当前一步，不硬切句。
+  skill_scene 填与当前剧情匹配的技能原名；普通单元在自然停顿处收束，不硬切句。
   已有正文的 full 全量修订与 edit 沿用原规则，不按普通单元限长。
 - mode="edit"（默认，推荐）：anchor + replacement——anchor 是文件里的原文片段
   （须逐字一致且在文件中唯一，建议带上标题行等上下文）；replacement 是替换后
@@ -90,6 +100,17 @@ kind 取值：theme / outline / style / volume_outline(+volume) / chapter_outlin
 仅卷纲支持 draft=true：读取并编辑修订草稿，须先 read_artifact(draft=true)。
 
 落盘内容遵守文件头两行约定：标题行 + 状态日期行；约束级/参考级分区。"""
+
+# 正文包按句写作时换用这份说明：起草已交给写作工具，这里不再提供整批路径。
+SENTENCE_PACKAGE_TOOL_DESCRIPTION = """保存或修改本章正文（不接触文件路径）。
+
+起草不用这个工具：正文用五个写作工具逐句写，写完用 write_chapter_header 把状态改为「初稿」，系统在那时把整章写入文件。
+这里只做两件事：
+- mode="full"：content = 本章完整的新内容，推翻重写整章时用。先用 read_artifact 读过本章；
+  content 从两行文件头写起：「# 第NNN章 · 章名」和「> 状态：初稿｜日期」。
+- mode="edit"（默认）：anchor + replacement——anchor 是文件里的原文片段（须逐字一致且在文件中唯一），
+  replacement 是替换后的文本。编辑前必须先 read_artifact 读过本章；锚点不唯一或找不到会报错且文件不变，
+  带更多上下文重试；连续失败 3 次后改用 mode="full"。"""
 
 
 class SaveArtifactInput(BaseModel):
@@ -108,7 +129,12 @@ class SaveArtifactInput(BaseModel):
     unit_kind: Literal["ordinary", "skill_scene"] | None = Field(
         default=None, description="正文新建/追加：ordinary普通单元；skill_scene当前剧情匹配的完整技能场景。修订与其他产物无需填写。",
     )
-    skill_name: str | None = Field(default=None, description="skill_scene时填写已启用技能的原名；普通单元留空。")
+    skill_name: str | None = Field(default=None, description="skill_scene 填匹配场景的技能原名；普通单元留空。")
+
+
+class CharacterOwnerSaveInput(SaveArtifactInput):
+    character_role: Literal["protagonist", "antagonist", "supporting"] | None = Field(
+        default=None, description="保存人物设定时填写人物归属：主角、反派或配角")
 
 
 def _quote_norm(s: str) -> str:
@@ -133,7 +159,10 @@ def _find_line_span(text: str, anchor: str, *, quote: bool) -> list[tuple[int, i
     for i in range(n - m + 1):
         if f[i:i + m] == a:
             start = sum(len(ln) for ln in file_lines[:i])
+            last = file_lines[i + m - 1]
             end = start + sum(len(ln) for ln in file_lines[i:i + m])
+            if not anchor.endswith(("\r", "\n")):
+                end -= len(last) - len(last.rstrip("\r\n"))
             spans.append((start, end))
     return spans or None
 
@@ -165,12 +194,25 @@ def find_edit_match(content: str, anchor: str) -> tuple[int, int] | None | str:
 
 def apply_edit(content: str, anchor: str, replacement: str) -> tuple[str, int] | str:
     """应用一次校验编辑。成功返回 (新内容, 替换处数)；失败返回错误说明。"""
-    match = find_edit_match(content, anchor)
+    # read_artifact exposes LF even when the manuscript uses CRLF or mixed endings.
+    visible = content.replace("\r\n", "\n").replace("\r", "\n")
+    match = find_edit_match(visible, anchor.replace("\r\n", "\n").replace("\r", "\n"))
     if match == "ambiguous":
         return "锚点在文件中不唯一：带上标题行等更多上下文重试，或改用 mode=full。"
     if match is None:
         return "锚点在文件中找不到（须与原文逐字一致）：重新 read_artifact 后按当前内容重试。"
     start, end = match
+    if "\r" in content:
+        # Each CRLF before a boundary occupies one extra character in the source.
+        for boundary in re.finditer("\r\n", content):
+            if boundary.start() >= end:
+                break
+            if boundary.start() < start:
+                start += 1
+            end += 1
+        newline = (re.search(r"\r\n?|\n", content[start:end]) or re.search(r"\r\n?|\n", content[end:])
+                   or re.search(r"\r\n?|\n", content))
+        replacement = re.sub(r"\r\n?|\n", newline[0], replacement)
     return content[:start] + replacement + content[end:], 1
 
 
@@ -179,7 +221,7 @@ def _atomic_write(path: Path, text: str) -> None:
     import uuid as _uuid
 
     tmp = path.with_suffix(f"{path.suffix}.{_uuid.uuid4().hex[:8]}.tmp")
-    tmp.write_text(text, encoding="utf-8")
+    tmp.write_text(text, encoding="utf-8", newline="")
     tmp.replace(path)
 
 
@@ -194,6 +236,31 @@ def _body_char_count(text: str) -> int:
     return total
 
 
+def _ordinary_batch_sizes(text: str) -> list[int]:
+    """Plan before writing; the original text remains the only source for the manuscript."""
+    sizes = []
+    for nonblank, lines in groupby(text.splitlines(), key=lambda line: bool(line.strip())):
+        if not nonblank:
+            continue
+        size = _body_char_count("\n".join(lines))
+        if size > 450:
+            raise ValueError(f"单个自然段实际 {size} 字，超过 450 字。请在自然停顿处独立分段后再保存。")
+        if sizes and sizes[-1] + size <= 450:
+            sizes[-1] += size
+        elif size:
+            sizes.append(size)
+    return sizes
+
+
+def _append_text_unit(current: str, content: str) -> str:
+    newline = "\r\n" if "\r\n" in current or "\r\n" in content else "\n"
+    separator = ""
+    if current and not current.endswith(newline * 2):
+        separator = newline if current.endswith(("\r", "\n")) else newline * 2
+    appended = current + separator + content
+    return appended if appended.endswith(("\r", "\n")) else appended + newline
+
+
 def _header_metadata(text: str) -> tuple[list[str], int]:
     """只读开头连续的元数据行，不越过空行或正文。"""
     lines = text.splitlines(keepends=True)
@@ -203,6 +270,28 @@ def _header_metadata(text: str) -> tuple[list[str], int]:
     while end < len(lines) and lines[end].startswith(("> 状态：", "> 进度：")):
         end += 1
     return lines, end
+
+
+def _initial_text_header(lines: list[str], chapter: int) -> str | None:
+    """Normalize header formatting only when the author supplied the chapter, draft status and date."""
+    title = re.fullmatch(r"# 第([0-9]+)章(.*)", lines[0].rstrip("\r\n")) if lines else None
+    if not title or title[1].lstrip("0") != str(chapter) or not title[2].strip(" \t·：:—-"):
+        return None
+    index = next((i for i, line in enumerate(lines[1:], 1) if line.strip()), None)
+    if index is None:
+        return None
+    status = lines[index].removeprefix("> ")
+    match = re.fullmatch(r"状态：[ \t]*起草中[ \t]*(?:[｜|][ \t]*(?:日期：[ \t]*)?|·[ \t]*)"
+                         r"([0-9]{4}-[0-9]{2}-[0-9]{2})[ \t]*", status.rstrip("\r\n"))
+    if not match:
+        return None
+    try:
+        date.fromisoformat(match[1])
+    except ValueError:
+        return None
+    if "·" in status or "日期：" in status:
+        status = "状态：起草中｜" + status[match.start(1):]
+    return lines[0] + "> " + status + "".join(lines[index + 1:])
 
 
 def _progress_count(text: str) -> int | None:
@@ -257,14 +346,24 @@ def save_artifact(*args, **kwargs) -> str:  # pragma: no cover - 由 build 闭�
 
 
 def build_save_artifact_tool(
+    workspace_root: Path, registry: dict, failures: dict, **options,
+) -> StructuredTool:
+    """只取落盘工具本身（测试与旧调用方）；整章写入入口经 chapter_draft_flush(abc) 取得。"""
+    tool, _flush = _build_writer(workspace_root, registry, failures, **options)
+    return tool
+
+
+def _build_writer(
     workspace_root: Path, registry: dict, failures: dict,
     *, recorder=None, trace_id: str | None = None,
     agent_name: str = "author-subagent",
     append_batches: dict | None = None,
     writing_context: str | None = None,
     enabled_skill_names: set[str] | None = None,
-) -> StructuredTool:
-    """构建落盘工具。
+    read_package_skill_names: set[str] | None = None,
+    sentence_package: bool = False,
+) -> tuple[StructuredTool, Callable]:
+    """构建落盘工具及其整章写入入口。
 
     Args:
         workspace_root:  工作区根。
@@ -276,10 +375,12 @@ def build_save_artifact_tool(
         append_batches:  追加批次计数（正文分段生长回执用；None = 工具自持）。
         writing_context: 当前 author 规程与启用技能；None 保持旧调用兼容。
         enabled_skill_names: 同轮启用技能原名；None 兼容旧执行端的标题核验。
+        read_package_skill_names: 当前正文角色成功读取的包内技能，与读取工具共用同一集合。
+        sentence_package: 正文包按句写作时为 True，说明文字不再提供整批起草。
     """
     append_batches = append_batches if append_batches is not None else {}
     skill_names_hint = (
-        "本轮已启用的 skill_name 原名："
+        "作者已启用的 skill_name 原名："
         + json.dumps(sorted(enabled_skill_names), ensure_ascii=False)
         + "。只填原名，不附带标题中的描述。"
         if enabled_skill_names is not None else ""
@@ -318,7 +419,7 @@ def build_save_artifact_tool(
             if kind == KIND_VOLUME else True
         )
 
-    def _capture_revision(rel: str, text: str) -> None:
+    def _capture_revision(rel: str, text: str, tool_name: str = "save_artifact") -> None:
         """落盘成功后冻结 ArtifactRevision（进化侧产物库摄入源）。
 
         内容在手直记，不重读文件——重读会与同文件并发写竞态（平台取证层
@@ -333,11 +434,11 @@ def build_save_artifact_tool(
         """
         if recorder is None or not trace_id:
             return
-        capture_id = "save_artifact:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+        capture_id = f"{tool_name}:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
         try:
             recorder.record_artifact_revision(
                 trace_id, agent_name,
-                file_path=rel, content=text, tool_name="save_artifact",
+                file_path=rel, content=text, tool_name=tool_name,
                 tool_call_id=capture_id,
             )
         except Exception as exc:  # noqa: BLE001 — 取证失败不得影响写作（DEC-004）
@@ -369,10 +470,12 @@ def build_save_artifact_tool(
             return "[save_artifact 失败] mode 只能是 edit、full 或 append。"
         path = workspace_root / rel
         exists = path.is_file()
+        text_entry = agent_name == "text-subagent" and kind == KIND_TEXT
         current = ""
         if exists:
             try:
-                current = path.read_text(encoding="utf-8")
+                with path.open(encoding="utf-8", newline="" if text_entry else None) as stream:
+                    current = stream.read()
             except (OSError, UnicodeDecodeError) as exc:
                 return f"[save_artifact 失败] 读取现状失败：{type(exc).__name__}"
 
@@ -395,29 +498,45 @@ def build_save_artifact_tool(
 
         track_progress = kind == KIND_TEXT and writing_context is not None
         uninitialized = not exists or (track_progress and not current.strip())
+        if text_entry and track_progress and uninitialized and mode == "full" and content:
+            content = _initial_text_header(content.splitlines(keepends=True), chapter) or content
         is_draft_unit = kind == KIND_TEXT and (mode == "append" or (mode == "full" and uninitialized))
+        batch_count = 1
+        batch_info = ""
         if is_draft_unit:
             if writing_context is not None and unit_kind is None:
                 return "[save_artifact 拒绝·文件未变] 请注明 unit_kind：普通单元 ordinary；匹配的完整技能场景 skill_scene，并填写 skill_name 原名。"
             if unit_kind == "ordinary" and _body_char_count(content or "") > 450:
-                return (
-                    f"[save_artifact 拒绝·文件未变] 普通单元实际约 {_body_char_count(content or '')} 字，超过 450 字的自然停顿余量。"
-                    "请只推进当前一步，控制在 300-400 字，把后续普通剧情留到下一单元；不硬切句，也不将普通段落冒充技能场景。"
-                )
-            if unit_kind == "skill_scene" and (
-                not (skill_name or "").strip()
-                or (enabled_skill_names is not None and skill_name not in enabled_skill_names)
-                or (enabled_skill_names is None and writing_context is not None
-                    and f"### {skill_name}——" not in writing_context)
-            ):
-                return (
-                    "[save_artifact 拒绝·文件未变] skill_scene 需要填写当前已启用技能的原名；不能用未启用的技能绕过普通批长。"
-                    + skill_names_hint
-                    + "若剧情已匹配场景，请改正名称后整场重试，不得改为 ordinary 拆批保存。"
-                )
+                if not text_entry:
+                    return (
+                        f"[save_artifact 拒绝·文件未变] 普通单元实际约 {_body_char_count(content or '')} 字，超过 450 字的自然停顿余量。"
+                        "请只推进当前一步，控制在 300-400 字，把后续普通剧情留到下一单元；不硬切句，也不将普通段落冒充技能场景。"
+                    )
+                try:
+                    sizes = _ordinary_batch_sizes(content)
+                except ValueError as exc:
+                    return f"[save_artifact 拒绝·文件未变] {exc}"
+                batch_count = len(sizes)
+                batch_info = f"本次按完整自然段保存 {batch_count} 批，各批字数：{'、'.join(map(str, sizes))}。"
+            if unit_kind == "skill_scene":
+                if enabled_skill_names is not None:
+                    enabled = skill_name in enabled_skill_names
+                elif writing_context is not None:
+                    enabled = f"### {skill_name}——" in writing_context
+                else:
+                    enabled = read_package_skill_names is None  # 旧调用未提供任何技能名单。
+                package_read = text_entry and read_package_skill_names is not None and skill_name in read_package_skill_names
+                if not (skill_name or "").strip() or not (enabled or package_read):
+                    return (
+                        "[save_artifact 拒绝·文件未变] 请填写适用于当前场景的技能原名。"
+                        + skill_names_hint
+                        + ("包内技能请先用 read_writing_skill 读取本角色目录里的 SKILL.md。"
+                           if text_entry and read_package_skill_names is not None else "")
+                        + "若剧情已匹配场景，请改正名称后整场重试，不得改为 ordinary 拆批保存。"
+                    )
 
         if track_progress and mode == "append" and uninitialized:
-            return "[save_artifact 拒绝·文件未变] 正文尚未初始化，请先用 mode=full 建立标题、状态和进度 1，再追加正文单元。"
+            return "[save_artifact 拒绝·文件未变] 正文尚未初始化，请先用 mode=full 建立标题、状态和首批进度，再追加正文单元。"
         progress = _progress_count(current) if track_progress else None
         if mode == "full":
             if content is None or not content.strip():
@@ -430,7 +549,7 @@ def build_save_artifact_tool(
                             "[save_artifact 拒绝·文件未变] 新建正文文件头须先有标题行，再有状态行。"
                             "请补齐 # 第NNN章 · 章名 与 > 状态：起草中｜日期 后重试。"
                         )
-                    progress = 1
+                    progress = batch_count
                 elif progress is None and _progress_count(content) is not None:
                     return _UNKNOWN_PROGRESS_REJECTION
                 if progress is not None:
@@ -443,7 +562,7 @@ def build_save_artifact_tool(
             _register(rel, content, kind)
             failures.pop(rel, None)
             lines = len(content.splitlines())
-            text_info = (
+            text_info = batch_info or (
                 f"本次正文单元约 {_body_char_count(content)} 字。{_TEXT_UNIT_GUIDANCE}"
                 if is_draft_unit else ""
             )
@@ -460,12 +579,14 @@ def build_save_artifact_tool(
             body = content.strip("\n").rstrip()
             if not body:
                 return "[save_artifact 失败] mode=append 的 content 是空内容。"
-            if exists and current.strip():
+            if text_entry:
+                new_text = _append_text_unit(current, content)
+            elif exists and current.strip():
                 new_text = current.rstrip("\n") + "\n\n" + body + "\n"
             else:
                 new_text = body + "\n"
             if progress is not None:
-                progress += 1
+                progress += batch_count
                 new_text = _with_progress(new_text, progress)
             try:
                 _atomic_write(path, new_text)
@@ -476,7 +597,7 @@ def build_save_artifact_tool(
             batch = append_batches.get(rel, 0) + 1
             append_batches[rel] = batch
             chars = _body_char_count(new_text)
-            text_info = (
+            text_info = batch_info or (
                 f"本次追加约 {_body_char_count(body)} 字。{_TEXT_UNIT_GUIDANCE}"
                 if kind == KIND_TEXT else ""
             )
@@ -524,26 +645,91 @@ def build_save_artifact_tool(
         receipt = f"已落盘 {_describe(kind, volume, chapter, name)}（校验编辑：替换 {hits} 处，仅目标区段变更）。{_progress_receipt(progress)}"
         return _saved_receipt(receipt, kind, chapter, path)
 
-    def _native_save(*args, **kwargs):
-        result = _save(*args, **kwargs)
-        return result if isinstance(result, tuple) else (result, None)
+    def _through_task(values, run):
+        """受限进程里先写本地副本再交父进程落盘；没有任务时直接写。回执连同取证元数据一起返回。"""
+        from app.domains.writing.creative_scope import ACTIVE
 
+        task = ACTIVE.get()
+        result = task.save(values, run) if task else run()
+        return tuple(result) if isinstance(result, (tuple, list)) else (result, None)
+
+    def _native_save(*args, **kwargs):
+        values = dict(kwargs)
+        kwargs.pop("character_role", None)
+        return _through_task(values, lambda: _save(*args, **kwargs))
+
+    def _flush_chapter(status, title, messages):
+        """整章写入：改文件头两行，并把本轮攒下的句子一次写入（REQ-20261125-154544 FR-005/FR-006）。"""
+        from .sentence_common import current_chapter
+
+        chapter = current_chapter()
+        if chapter is None:
+            return rejection("当前没有目标章节。"), None
+        rel = artifact_relpath(KIND_TEXT, chapter=chapter)
+        path = workspace_root / rel
+        try:
+            current = path.read_text(encoding="utf-8") if path.is_file() else ""
+        except (OSError, UnicodeDecodeError) as exc:
+            return rejection(f"读取现状失败：{type(exc).__name__}。"), None
+        state = draft_state()
+        pending = pending_sentences(messages, state.flushed_through)
+        if not pending and not split_chapter(current)[1]:
+            return rejection("本章还没有正文，先写正文再改文件头。"), None
+        content = compose_chapter(current, chapter, [sentence for _, sentence in pending], title=title, status=status)
+        marker = pending[-1][0] if pending else state.flushed_through
+
+        def write():
+            _atomic_write(path, content)
+            # 与整批保存走同一条取证链：父进程核验和进化端产物库都靠这份修订记录
+            # 认识本章（审前稿、审后修订）。只写文件不发记录，评测任务会被判失败。
+            _capture_revision(rel, content, tool_name=HEADER_TOOL)
+            _register(rel, content, KIND_TEXT)
+            failures.pop(rel, None)
+            return f"文件头已改为「{status}」" + (f"，写入本章 {len(pending)} 句。" if pending else "。")
+
+        values = {"kind": KIND_TEXT, "chapter": chapter, "mode": "full", "content": content,
+                  "draft_flushed_through": marker, "draft_sentences": len(pending)}
+        if not pending:
+            values.pop("draft_flushed_through")
+        result, _metadata = _through_task(values, write)
+        if not isinstance(result, str) or result.startswith("[拒绝]"):
+            return result, None
+        if pending:
+            note_flushed(marker)
+        receipt = _saved_receipt(result, KIND_TEXT, chapter, path, is_writing_unit=True)
+        return receipt if isinstance(receipt, tuple) else (receipt, None)
+
+    description = (
+        SENTENCE_PACKAGE_TOOL_DESCRIPTION if sentence_package else SAVE_ARTIFACT_TOOL_DESCRIPTION
+        + ("\n新建正文的 content 从两行文件头开始。第一行写 # 第NNN章 · 章名，"
+           "第二行写 > 状态：起草中｜YYYY-MM-DD，填实际章号、章名和日期。空一行后写正文。"
+           "\n普通正文超过 450 字时按完整自然段自动分批并一次落盘；单个自然段仍不可超过 450 字。"
+           if agent_name == "text-subagent" else "")
+        + ("\n匹配当前场景时，作者已启用的技能，或本角色已用 read_writing_skill 读过入口的包内技能，"
+           "均可按原名整场保存。仅规定文风的技能仍按普通正文保存。"
+           if agent_name == "text-subagent" and read_package_skill_names is not None else "")
+        + ("\n" + skill_names_hint if skill_names_hint else "")
+    )
     return StructuredTool.from_function(
         name="save_artifact",
-        description=SAVE_ARTIFACT_TOOL_DESCRIPTION + ("\n" + skill_names_hint if skill_names_hint else ""),
+        description=description,
         func=_native_save,
-        args_schema=SaveArtifactInput,
+        args_schema=CharacterOwnerSaveInput if agent_name in ("outline-subagent", "volume-subagent") else SaveArtifactInput,
         infer_schema=False,
         response_format="content_and_artifact",
-    )
+    ), _flush_chapter
 
 
 def build(abc):
     """架构清单挂载钩子：与 read_artifact 共享读取登记；失败计数挂 ctx。
 
+    同一装配只建一次落盘工具，文件头工具经 chapter_draft_flush 共用这份入口。
     取证接线（REQ-20261019-203500）：recorder/trace_id 来自 RuntimeContext，
     agent 名用 trace 埋点名（与 TraceMiddleware 同源，如 author-subagent）。
     """
+    existing = getattr(abc, "_save_artifact_tool", None)
+    if existing is not None:
+        return existing
     registry = getattr(abc.ctx, "artifact_read_registry", None)
     if registry is None:
         registry = {}
@@ -568,7 +754,7 @@ def build(abc):
     ctx = getattr(abc, "ctx", None)
     styles = getattr(ctx, "styles", None) or {}
     skill_names = styles.get("_writing_skill_names")
-    return build_save_artifact_tool(
+    tool, flush = _build_writer(
         abc.workspace_path, registry, failures,
         recorder=getattr(ctx, "trace_recorder", None),
         trace_id=getattr(ctx, "trace_id", None),
@@ -576,14 +762,28 @@ def build(abc):
         append_batches=append_batches,
         writing_context=styles.get("author"),
         enabled_skill_names=set(json.loads(skill_names)) if skill_names is not None else None,
+        read_package_skill_names=getattr(abc, "read_package_skill_names", None)
+        if getattr(abc, "trace_name", None) == "text-subagent" else None,
+        sentence_package=package_uses_sentences(getattr(abc, "pkg_dir", None)),
     )
+    abc._save_artifact_tool = tool
+    abc._chapter_draft_flush = flush
+    return tool
+
+
+def chapter_draft_flush(abc):
+    """文件头工具用的整章写入；与落盘工具共用同一份读取登记和取证。"""
+    build(abc)
+    return abc._chapter_draft_flush
 
 
 __all__ = [
     "SAVE_ARTIFACT_TOOL_DESCRIPTION",
+    "SENTENCE_PACKAGE_TOOL_DESCRIPTION",
     "SaveArtifactInput",
     "apply_edit",
     "build",
     "build_save_artifact_tool",
+    "chapter_draft_flush",
     "find_edit_match",
 ]

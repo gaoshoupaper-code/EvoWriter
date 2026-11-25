@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from app.auth import CurrentUser, current_user
 from app.domains.writing.conversation_log import ConversationLog
-from app.domains.writing.creative_scope import ACTIVE, Book
+from app.domains.writing.creative_scope import ACTIVE, Book, flush_unfinished_draft
 from app.routers.context import get_agent_service, get_thread_store, get_trace_recorder
 from app.schemas.screenplay import ScreenplayGenerateRequest
 from contracts.creative_harness import AGENTS, entry_missing
@@ -149,6 +149,9 @@ async def _stream(task, row, payload, user, request, *, resume):
     from app.platform.credits.api import prepare_operation
     from app.platform.credits.runtime import get_billing_runs
     previous = task.row["status"]
+    if resume and previous == "interrupted":
+        # 上次没能正常收尾（如服务重启）：先把检查点里没进文件的句子补进本章，再从断点续跑。
+        await flush_unfinished_draft(task, row.workspace_path)
     try:
         task.begin(resume=resume)
     except ValueError as exc:
@@ -215,6 +218,8 @@ async def _stream(task, row, payload, user, request, *, resume):
             if task.row["status"] == "running":
                 task.mark("interrupted")
             try:
+                # 无论怎样结束（含作者主动停止），已写出的句子都要进文件。
+                await flush_unfinished_draft(task, row.workspace_path)
                 await asyncio.to_thread(_notify_private_trace, task, row)
             finally:
                 ACTIVE.reset(token)

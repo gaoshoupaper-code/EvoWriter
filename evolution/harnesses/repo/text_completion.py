@@ -11,6 +11,8 @@ from typing import Any
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 
+from contracts.sentence_draft import DRAFT_TOOLS, draft_state, pending_sentences
+
 STATE_KEY = "text_completion"
 FAILURE_NOTE = "审稿环节失败已跳过"
 
@@ -99,6 +101,8 @@ def parallel_writing_unit(state: dict, root: Path) -> bool:
     known = set(snapshot["initial"]) | {int(k) for k in snapshot["chapters"]}
     for call in messages[-1].tool_calls:
         args = call.get("args", {})
+        if call.get("name") in DRAFT_TOOLS:
+            return True
         if call.get("name") == "save_artifact" and args.get("kind") == "chapter_text":
             if args.get("mode", "full") == "append":
                 return True
@@ -107,9 +111,21 @@ def parallel_writing_unit(state: dict, root: Path) -> bool:
     return False
 
 
+def unflushed_sentences(state: dict) -> list:
+    """本轮已写出、还没写进文件的句子（REQ-20261125-154544）。整章写入前只留在对话记录里。"""
+    return pending_sentences(state.get("messages", []), draft_state().flushed_through)
+
+
+def unflushed_reason(state: dict) -> str | None:
+    count = len(unflushed_sentences(state))
+    return f"本章还有 {count} 句没写入文件，先用 write_chapter_header 把状态改为初稿。" if count else None
+
+
 def review_block_reason(state: dict, root: Path, description: str = "") -> str | None:
     if parallel_writing_unit(state, root):
         return "本批正文保存尚未返回；请先核对真实保存结果，再委托审稿。"
+    if reason := unflushed_reason(state):
+        return f"{reason}整章写入后再审稿。"
     snapshot = completion_snapshot(state, root)
     if not snapshot["chapters"]:
         return None
@@ -136,6 +152,8 @@ def review_block_reason(state: dict, root: Path, description: str = "") -> str |
 def delivery_block_reason(state: dict, root: Path) -> str | None:
     if parallel_writing_unit(state, root):
         return "正文保存尚未返回，不能同时交审。"
+    if reason := unflushed_reason(state):
+        return reason
     for chapter, entry in completion_snapshot(state, root)["chapters"].items():
         if entry["status"] not in {"初稿", "人修定稿", "定稿"}:
             return f"第{chapter}章仍未转为初稿。"

@@ -13,6 +13,7 @@ from threading import Lock
 from hashlib import sha256
 
 from app.domains.writing.creative_worker import _artifact, _json, _packet, _receive, _send, _size
+from contracts.sentence_draft import DRAFT, DraftState
 
 
 def _read_exact(stream, count):
@@ -161,6 +162,8 @@ async def _run(data, frames, changes, models):
             return None
 
     token = ACTIVE.set(task)
+    # 恢复任务时带上「已写进文件到哪一句」；本轮新写的句子从这之后才算待存。
+    draft_token = DRAFT.set(DraftState(flushed_through=data.get("draft_flushed_through")))
     try:
         checkpoint = session / "checkpoint.sqlite3"
         async with AsyncSqliteSaver.from_conn_string(str(checkpoint)) as saver:
@@ -170,14 +173,22 @@ async def _run(data, frames, changes, models):
             async for frame in service.generate_stream(payload, thread, owner_id=data["owner"], traceparent=data["traceparent"]):
                 await _send(frames_out, _json({"frame": frame}))
     finally:
+        DRAFT.reset(draft_token)
         ACTIVE.reset(token)
         await recorder.aclose()
         model_out.close()
     await _send(frames_out, _json({"done": True}))
 
 
+def _finish_on_sigterm(signum, _frame):
+    # 作者主动停止时把强杀变成正常收尾：运行记录和检查点先落盘再退出，停止前已写的句子才补得回来
+    # （REQ-20261125-154544）。父进程等 3 秒后仍会强杀，这里卡住也不会挂死。
+    raise SystemExit(128 + signum)
+
+
 def main():
     from app.platform.isolation.sandbox import restrict_process, runtime_read_paths
+    signal.signal(signal.SIGTERM, _finish_on_sigterm)
     fds = [int(v) for v in sys.argv[1:4]]
     parent = int(sys.argv[4])
     if ctypes.CDLL(None).prctl(1, signal.SIGTERM, 0, 0, 0) != 0 or os.getppid() != parent:

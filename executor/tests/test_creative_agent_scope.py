@@ -503,7 +503,7 @@ def test_paid_resume_claims_one_attempt_and_keeps_original_budget(tmp_path, monk
         yield 'event: final\ndata: {"content":"完成"}\n\n'
     monkeypatch.setattr(api, "prepare_operation", reserve)
     monkeypatch.setattr(creative_agents, "_run_private", execute)
-    row = SimpleNamespace(thread_id="t")
+    row = SimpleNamespace(thread_id="t", workspace_path=str(book.session_dir("outline", "t")))
     user = SimpleNamespace(user_id="writer")
     request = SimpleNamespace(headers={})
     async def run():

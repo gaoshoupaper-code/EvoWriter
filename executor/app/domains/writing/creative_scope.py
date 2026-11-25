@@ -15,7 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from contracts.creative_harness import AGENTS, entry_missing, publication_path, readable_kind, write_denial
-from contracts.writing_artifacts import artifact_relpath, parse_relpath
+from contracts.sentence_draft import compose_chapter, sentences_after
+from contracts.writing_artifacts import KIND_TEXT, artifact_relpath, parse_relpath
 
 PROCESS = uuid.uuid4().hex
 ACTIVE = ContextVar("creative_instruction", default=None)
@@ -86,6 +87,30 @@ async def remove_deleted_books(agent, store, recorder):
                 logging.getLogger(__name__).exception("销毁已删除作品的私有文件失败，将再次清理")
 
 
+async def flush_unfinished_draft(task, session):
+    """任务没写完就结束时调用：从本次运行的记录里取回已写、未进文件的句子，补进本章（REQ-20261125-154544）。
+
+    读不到记录不阻断收尾；返回补进文件的句子数。
+    """
+    trace_id = task.row["trace"]
+    if task.agent != "text" or not trace_id:
+        return 0
+
+    def written():
+        from app.domains.writing.trace_sentences import recorded_sentences
+        from app.platform.trace.recorder import TraceRecorder
+
+        # 独立的只读读取器：不改应用级记录器的索引。
+        return recorded_sentences(TraceRecorder(), session, trace_id)
+
+    try:
+        sentences = await asyncio.to_thread(written)
+    except Exception:  # noqa: BLE001 — 补存是收尾的兜底，不能盖住任务本身的结局
+        logging.getLogger(__name__).exception("取回未写入的句子失败 task=%s", task.id)
+        return 0
+    return await asyncio.to_thread(task.flush_draft, sentences)
+
+
 class Book:
     def __init__(self, root, *, owner=None, workspace=None, evaluation=False):
         self.root = Path(root)
@@ -116,6 +141,8 @@ class Book:
                     chapter INTEGER, reason TEXT);
                 CREATE TABLE IF NOT EXISTS conflicts(id INTEGER PRIMARY KEY, name TEXT, field TEXT,
                     prior TEXT, proposal TEXT, reason TEXT, chapter INTEGER, resolved INTEGER DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS private.drafts(task TEXT PRIMARY KEY,
+                    flushed_through TEXT NOT NULL, sentences INTEGER NOT NULL);
             """)
         marker = self.private / "owner.json"
         if owner and workspace and not marker.is_file():
@@ -336,6 +363,32 @@ class Task:
             db.execute("INSERT OR IGNORE INTO private.attempts VALUES (?,?,?,?)",
                        (self.id, source, request, _json(payload)))
 
+    def _draft_marker(self, db):
+        row = db.execute("SELECT flushed_through FROM private.drafts WHERE task=?", (self.id,)).fetchone()
+        return row[0] if row else None
+
+    def draft_marker(self):
+        """已写进文件的最后一句是哪次写作调用；本章还没写过为 None。"""
+        with self.book.tx() as db:
+            return self._draft_marker(db)
+
+    def flush_draft(self, written):
+        """没写完就结束：把已写、未进文件的句子补进本章，状态保持「起草中」（REQ-20261125-154544）。"""
+        if self.agent != "text" or not sentences_after(written, self.draft_marker()):
+            return 0
+        rel = artifact_relpath(KIND_TEXT, chapter=self.row["chapter"])
+
+        def write(db, _previous):
+            again = sentences_after(written, self._draft_marker(db))
+            if not again:
+                return 0, None
+            latest = self.book.current(db, rel) or ""
+            content = compose_chapter(latest, self.row["chapter"], [text for _, text in again], status="起草中")
+            db.execute("INSERT OR REPLACE INTO pending VALUES (?,?)", (rel, content))
+            db.execute("INSERT OR REPLACE INTO private.drafts VALUES (?,?,?)", (self.id, again[-1][0], len(again)))
+            return len(again), content
+        return self._operation(rel, write, final=True)
+
     def require_write(self, tool, args):
         return write_denial(self.agent, tool, args, self.row["volume"], self.row["chapter"],
                             package_root=getattr(self, "package_root", None))
@@ -387,6 +440,10 @@ class Task:
                 db.execute("INSERT OR IGNORE INTO cards VALUES (?,?,?,?)", (args["name"], self.agent, self.row["volume"], role))
                 text = text.split(_DYNAMIC)[0] + (_DYNAMIC + current.split(_DYNAMIC, 1)[1] if current and _DYNAMIC in current else "")
             db.execute("INSERT OR REPLACE INTO pending VALUES (?,?)", (rel, text))
+            if marker := args.get("draft_flushed_through"):
+                # 整章写入与「写到哪一句」的标记同一次提交，补存与续写才不会重复（REQ-20261125-154544）。
+                db.execute("INSERT OR REPLACE INTO private.drafts VALUES (?,?,?)",
+                           (self.id, marker, int(args.get("draft_sentences") or 0)))
             return result, text
         return self._operation(rel, write)
 
@@ -421,16 +478,18 @@ class Task:
             return "已更新人物卡现状和变化记录", local
         return self._operation(rel, write)
 
-    def _operation(self, rel, callback):
+    def _operation(self, rel, callback, *, final=False):
+        """final=True 用于没写完就结束时的补存：没有工具调用编号，任务也可能已经停止。"""
         call = CALL_ID.get()
-        if not call:
+        if not final and not call:
             raise ValueError("缺少工具调用编号，无法安全保存")
         with self.book.tx() as db:
-            done = db.execute("SELECT receipt FROM private.saves WHERE task=? AND call=?", (self.id, call)).fetchone()
-            if done:
-                return json.loads(done[0])
-            if db.execute("SELECT status FROM private.tasks WHERE id=?", (self.id,)).fetchone()[0] != "running":
-                raise ValueError("任务已经停止")
+            if not final:
+                done = db.execute("SELECT receipt FROM private.saves WHERE task=? AND call=?", (self.id, call)).fetchone()
+                if done:
+                    return json.loads(done[0])
+                if db.execute("SELECT status FROM private.tasks WHERE id=?", (self.id,)).fetchone()[0] != "running":
+                    raise ValueError("任务已经停止")
             prior = db.execute("SELECT text FROM private.files WHERE task=? AND path=?", (self.id, rel)).fetchone()
             old = prior[0] if prior else None
             view = self.view / rel
@@ -441,7 +500,8 @@ class Task:
             result, text = callback(db, old)
             if text is not None:
                 db.execute("INSERT OR REPLACE INTO private.files VALUES (?,?,?)", (self.id, rel, text))
-                db.execute("INSERT INTO private.saves VALUES (?,?,?,?)", (self.id, call, rel, _json(result)))
+                if not final:
+                    db.execute("INSERT INTO private.saves VALUES (?,?,?,?)", (self.id, call, rel, _json(result)))
                 _put(view, text)
         self.book.export()
         return result

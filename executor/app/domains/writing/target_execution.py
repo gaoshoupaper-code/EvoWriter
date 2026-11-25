@@ -11,6 +11,7 @@ from pathlib import Path
 import os
 from typing import Any
 
+from contracts.sentence_draft import HEADER_TOOL
 from contracts.target_tasks import TargetTaskRequest
 from app.domains.writing.run_gate import get_workspace_mutation_lock
 from app.platform.agent.runtime.types import AgentMiddleware
@@ -121,9 +122,9 @@ class TargetScopeMiddleware(AgentMiddleware):
 
     def _is_chapter_save(self, request):
         call = request.tool_call
-        return (call.get("name") == "save_artifact"
-                and (call.get("args") or {}).get("kind") == "chapter_text"
-                and self.execution.request.target.task_type == "chapter_text")
+        name, args = call.get("name"), call.get("args") or {}
+        return self.execution.request.target.task_type == "chapter_text" and (
+            name == HEADER_TOOL or (name == "save_artifact" and args.get("kind") == "chapter_text"))
 
 
 @dataclass

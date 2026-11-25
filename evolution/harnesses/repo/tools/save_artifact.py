@@ -23,6 +23,10 @@
 append 落盘成功后把该产物登记进读取登记——内容刚由本工具写出，后续
 append/edit 视为已读，不必为此重读整章。
 
+整章写入（REQ-20261125-154544）：正文包按句写作时，起草不再走 full/append 的
+整批路径。五个写作工具只收句子；文件头工具把状态改为「初稿」时调用这里的整章
+写入——改文件头两行，并把本轮攒下的句子一次写入。走同一条保存通道与取证。
+
 每次「锚点→替换」经既有 TraceMiddleware 进 trace（L4 审计，DEC-008）。
 落盘成功后经 ctx.trace_recorder 冻结 ArtifactRevision——进化侧产物库的唯一
 摄入源（REQ-20261019-203500 FR-001）：内容在手直记，不重读文件；取证失败
@@ -42,6 +46,9 @@ from typing import Literal
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from contracts.sentence_draft import (
+    compose_chapter, draft_state, note_flushed, pending_sentences, package_uses_sentences, rejection, split_chapter,
+)
 from contracts.writing_artifacts import (
     KIND_CHAPTER,
     KIND_CHARACTER,
@@ -92,6 +99,17 @@ kind 取值：theme / outline / style / volume_outline(+volume) / chapter_outlin
 仅卷纲支持 draft=true：读取并编辑修订草稿，须先 read_artifact(draft=true)。
 
 落盘内容遵守文件头两行约定：标题行 + 状态日期行；约束级/参考级分区。"""
+
+# 正文包按句写作时换用这份说明：起草已交给写作工具，这里不再提供整批路径。
+SENTENCE_PACKAGE_TOOL_DESCRIPTION = """保存或修改本章正文（不接触文件路径）。
+
+起草不用这个工具：正文用五个写作工具逐句写，写完用 write_chapter_header 把状态改为「初稿」，系统在那时把整章写入文件。
+这里只做两件事：
+- mode="full"：content = 本章完整的新内容，推翻重写整章时用。先用 read_artifact 读过本章；
+  content 从两行文件头写起：「# 第NNN章 · 章名」和「> 状态：初稿｜日期」。
+- mode="edit"（默认）：anchor + replacement——anchor 是文件里的原文片段（须逐字一致且在文件中唯一），
+  replacement 是替换后的文本。编辑前必须先 read_artifact 读过本章；锚点不唯一或找不到会报错且文件不变，
+  带更多上下文重试；连续失败 3 次后改用 mode="full"。"""
 
 
 class SaveArtifactInput(BaseModel):
@@ -327,6 +345,14 @@ def save_artifact(*args, **kwargs) -> str:  # pragma: no cover - 由 build 闭�
 
 
 def build_save_artifact_tool(
+    workspace_root: Path, registry: dict, failures: dict, **options,
+) -> StructuredTool:
+    """只取落盘工具本身（测试与旧调用方）；整章写入入口经 chapter_draft_flush(abc) 取得。"""
+    tool, _flush = _build_writer(workspace_root, registry, failures, **options)
+    return tool
+
+
+def _build_writer(
     workspace_root: Path, registry: dict, failures: dict,
     *, recorder=None, trace_id: str | None = None,
     agent_name: str = "author-subagent",
@@ -334,8 +360,9 @@ def build_save_artifact_tool(
     writing_context: str | None = None,
     enabled_skill_names: set[str] | None = None,
     read_package_skill_names: set[str] | None = None,
-) -> StructuredTool:
-    """构建落盘工具。
+    sentence_package: bool = False,
+) -> tuple[StructuredTool, Callable]:
+    """构建落盘工具及其整章写入入口。
 
     Args:
         workspace_root:  工作区根。
@@ -348,6 +375,7 @@ def build_save_artifact_tool(
         writing_context: 当前 author 规程与启用技能；None 保持旧调用兼容。
         enabled_skill_names: 同轮启用技能原名；None 兼容旧执行端的标题核验。
         read_package_skill_names: 当前正文角色成功读取的包内技能，与读取工具共用同一集合。
+        sentence_package: 正文包按句写作时为 True，说明文字不再提供整批起草。
     """
     append_batches = append_batches if append_batches is not None else {}
     skill_names_hint = (
@@ -616,17 +644,57 @@ def build_save_artifact_tool(
         receipt = f"已落盘 {_describe(kind, volume, chapter, name)}（校验编辑：替换 {hits} 处，仅目标区段变更）。{_progress_receipt(progress)}"
         return _saved_receipt(receipt, kind, chapter, path)
 
-    def _native_save(*args, **kwargs):
+    def _through_task(values, run):
+        """受限进程里先写本地副本再交父进程落盘；没有任务时直接写。回执连同取证元数据一起返回。"""
         from app.domains.writing.creative_scope import ACTIVE
-        values = dict(kwargs)
-        kwargs.pop("character_role", None)
+
         task = ACTIVE.get()
-        result = task.save(values, lambda: _save(*args, **kwargs)) if task else _save(*args, **kwargs)
+        result = task.save(values, run) if task else run()
         return tuple(result) if isinstance(result, (tuple, list)) else (result, None)
 
-    return StructuredTool.from_function(
-        name="save_artifact",
-        description=SAVE_ARTIFACT_TOOL_DESCRIPTION
+    def _native_save(*args, **kwargs):
+        values = dict(kwargs)
+        kwargs.pop("character_role", None)
+        return _through_task(values, lambda: _save(*args, **kwargs))
+
+    def _flush_chapter(status, title, messages):
+        """整章写入：改文件头两行，并把本轮攒下的句子一次写入（REQ-20261125-154544 FR-005/FR-006）。"""
+        from .sentence_common import current_chapter
+
+        chapter = current_chapter()
+        if chapter is None:
+            return rejection("当前没有目标章节。"), None
+        rel = artifact_relpath(KIND_TEXT, chapter=chapter)
+        path = workspace_root / rel
+        try:
+            current = path.read_text(encoding="utf-8") if path.is_file() else ""
+        except (OSError, UnicodeDecodeError) as exc:
+            return rejection(f"读取现状失败：{type(exc).__name__}。"), None
+        state = draft_state()
+        pending = pending_sentences(messages, state.flushed_through)
+        if not pending and not split_chapter(current)[1]:
+            return rejection("本章还没有正文，先写正文再改文件头。"), None
+        content = compose_chapter(current, chapter, [sentence for _, sentence in pending], title=title, status=status)
+        marker = pending[-1][0] if pending else state.flushed_through
+
+        def write():
+            _atomic_write(path, content)
+            return f"文件头已改为「{status}」" + (f"，写入本章 {len(pending)} 句。" if pending else "。")
+
+        values = {"kind": KIND_TEXT, "chapter": chapter, "mode": "full", "content": content,
+                  "draft_flushed_through": marker, "draft_sentences": len(pending)}
+        if not pending:
+            values.pop("draft_flushed_through")
+        result, _metadata = _through_task(values, write)
+        if not isinstance(result, str) or result.startswith("[拒绝]"):
+            return result, None
+        if pending:
+            note_flushed(marker)
+        receipt = _saved_receipt(result, KIND_TEXT, chapter, path, is_writing_unit=True)
+        return receipt if isinstance(receipt, tuple) else (receipt, None)
+
+    description = (
+        SENTENCE_PACKAGE_TOOL_DESCRIPTION if sentence_package else SAVE_ARTIFACT_TOOL_DESCRIPTION
         + ("\n新建正文的 content 从两行文件头开始。第一行写 # 第NNN章 · 章名，"
            "第二行写 > 状态：起草中｜YYYY-MM-DD，填实际章号、章名和日期。空一行后写正文。"
            "\n普通正文超过 450 字时按完整自然段自动分批并一次落盘；单个自然段仍不可超过 450 字。"
@@ -634,20 +702,28 @@ def build_save_artifact_tool(
         + ("\n匹配当前场景时，作者已启用的技能，或本角色已用 read_writing_skill 读过入口的包内技能，"
            "均可按原名整场保存。仅规定文风的技能仍按普通正文保存。"
            if agent_name == "text-subagent" and read_package_skill_names is not None else "")
-        + ("\n" + skill_names_hint if skill_names_hint else ""),
+        + ("\n" + skill_names_hint if skill_names_hint else "")
+    )
+    return StructuredTool.from_function(
+        name="save_artifact",
+        description=description,
         func=_native_save,
         args_schema=CharacterOwnerSaveInput if agent_name in ("outline-subagent", "volume-subagent") else SaveArtifactInput,
         infer_schema=False,
         response_format="content_and_artifact",
-    )
+    ), _flush_chapter
 
 
 def build(abc):
     """架构清单挂载钩子：与 read_artifact 共享读取登记；失败计数挂 ctx。
 
+    同一装配只建一次落盘工具，文件头工具经 chapter_draft_flush 共用这份入口。
     取证接线（REQ-20261019-203500）：recorder/trace_id 来自 RuntimeContext，
     agent 名用 trace 埋点名（与 TraceMiddleware 同源，如 author-subagent）。
     """
+    existing = getattr(abc, "_save_artifact_tool", None)
+    if existing is not None:
+        return existing
     registry = getattr(abc.ctx, "artifact_read_registry", None)
     if registry is None:
         registry = {}
@@ -672,7 +748,7 @@ def build(abc):
     ctx = getattr(abc, "ctx", None)
     styles = getattr(ctx, "styles", None) or {}
     skill_names = styles.get("_writing_skill_names")
-    return build_save_artifact_tool(
+    tool, flush = _build_writer(
         abc.workspace_path, registry, failures,
         recorder=getattr(ctx, "trace_recorder", None),
         trace_id=getattr(ctx, "trace_id", None),
@@ -682,14 +758,26 @@ def build(abc):
         enabled_skill_names=set(json.loads(skill_names)) if skill_names is not None else None,
         read_package_skill_names=getattr(abc, "read_package_skill_names", None)
         if getattr(abc, "trace_name", None) == "text-subagent" else None,
+        sentence_package=package_uses_sentences(getattr(abc, "pkg_dir", None)),
     )
+    abc._save_artifact_tool = tool
+    abc._chapter_draft_flush = flush
+    return tool
+
+
+def chapter_draft_flush(abc):
+    """文件头工具用的整章写入；与落盘工具共用同一份读取登记和取证。"""
+    build(abc)
+    return abc._chapter_draft_flush
 
 
 __all__ = [
     "SAVE_ARTIFACT_TOOL_DESCRIPTION",
+    "SENTENCE_PACKAGE_TOOL_DESCRIPTION",
     "SaveArtifactInput",
     "apply_edit",
     "build",
     "build_save_artifact_tool",
+    "chapter_draft_flush",
     "find_edit_match",
 ]

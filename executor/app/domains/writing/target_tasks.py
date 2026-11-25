@@ -23,8 +23,9 @@ from contracts.target_tasks import (
 from contracts.trace.files import open_anchored_text
 from app.domains.writing.experiment_stream import experiment_identity, relay_model_frames, write_model_frame
 from app.platform.trace.recorder import observation_context
+from contracts.sentence_draft import DRAFT, DraftState, compose_chapter, package_uses_sentences, sentences_after
 from contracts.writing_artifacts import (
-    is_final_status, load_writing_state, parse_relpath, parse_volume_chapter_range,
+    KIND_TEXT, artifact_relpath, is_final_status, load_writing_state, parse_relpath, parse_volume_chapter_range,
     save_writing_state, scan_writing_progress,
 )
 
@@ -505,6 +506,45 @@ def _usage(recorder, trace_ids):
     return metrics.snapshot(terminal=True).model_dump()
 
 
+def _draft_markers(store, task_id):
+    return dict(store.record(task_id)["metadata"].get("draft_markers") or {})
+
+
+async def flush_step_draft(service, store, task_id, request, workspace, trace_id, draft):
+    """这一轮流结束（含中断、出错）时，把运行记录里已写、未进文件的句子补进本章，状态保持「起草中」（REQ-20261125-154544）。
+
+    返回补进文件的句子数。
+    """
+    chapter = request.target.chapter
+    recorder = getattr(service, "trace_recorder", None)
+    if (request.target.task_type != "chapter_text" or chapter is None
+            or os.environ.get("WRITING_AGENT_ID") != "text" or not trace_id or recorder is None):
+        return 0
+    from app.domains.writing.trace_sentences import recorded_sentences
+
+    try:
+        recorder.flush()  # 读的是盘上的记录：缓冲里的事件先落盘
+        pending = sentences_after(recorded_sentences(recorder, workspace, trace_id), draft.flushed_through)
+    except Exception:  # noqa: BLE001 — 补存是兜底，不盖住任务本身的结局
+        logger.exception("取回未写入的句子失败 trace=%s", trace_id)
+        return 0
+    if not pending:
+        return 0
+    from app.domains.writing.creative_scope import _put
+
+    path = workspace / artifact_relpath(KIND_TEXT, chapter=chapter)
+    try:
+        existing = path.read_text(encoding="utf-8") if path.is_file() else ""
+    except (OSError, UnicodeDecodeError):
+        logger.exception("读取现状失败，未补存 trace=%s", trace_id)
+        return 0
+    _put(path, compose_chapter(existing, chapter, [text for _, text in pending], status="起草中"))
+    draft.flushed_through = pending[-1][0]
+    if draft.persist is not None:
+        draft.persist(draft.flushed_through)
+    return len(pending)
+
+
 async def drive_task(request, workspace, service, thread, execution, store, *, live_fd=None):
     from app.schemas.screenplay import ScreenplayGenerateRequest
     from app.domains.writing.pipeline import on_run_complete
@@ -514,6 +554,11 @@ async def drive_task(request, workspace, service, thread, execution, store, *, l
     trace_ids = list(store.get(task_id).trace_ids)
     step_number = row["metadata"].get("step_number", 0)
     seen_boundaries = set()
+    # 工作进程重启后接着跑：上一轮没来得及收尾的句子先补进文件，续写才不会把它们再写一遍。
+    if trace_ids:  # 上一次运行留下了句子却没能收尾：先补进文件，续写才不会把它们再写一遍。
+        last_thread = (row["metadata"].get("thread") or {}).get("thread_id")
+        await flush_step_draft(service, store, task_id, request, workspace, trace_ids[-1],
+                               DraftState(flushed_through=_draft_markers(store, task_id).get(last_thread)))
     while True:
         if (store.directory(task_id) / "stop").exists():
             raise asyncio.CancelledError
@@ -595,17 +640,30 @@ async def drive_task(request, workspace, service, thread, execution, store, *, l
                 prompt += (
                     f"\n题内文件：{'、'.join(sorted(request.input.files))}。故事资料只取自题内文件。"
                     "如有挂载技能，按系统技能目录读取匹配的写作技能。"
-                    f"本章{'已有正文，先读稿再续写或修订' if has_draft else '尚无正文，直接从首批起草'}。\n"
-                    "用 save_artifact 保存正文。普通单元用 unit_kind=ordinary，"
-                    "用空行分隔自然段，每批约 300–400 字，含标点最多 450 字。"
-                    "剧情匹配且 save_artifact 接受该技能来源时，用 unit_kind=skill_scene "
-                    "并填写 skill_name 原名，整场一次保存。\n"
-                    "首批用 mode=full，只写文件头和首个单元。文件头连续两行，中间无空行：\n"
-                    f"# 第{chapter:03d}章 · <章名>\n> 状态：起草中｜<日期>\n"
-                    "后续逐批用 mode=append 追加正文。整章写完，用 mode=edit 把状态行改为初稿，保留日期。"
-                    f'等保存成功，再单独调用 task(subagent_type="review", description="审第{chapter}章") 一次。'
-                    "已有审稿意见时直接用 mode=edit 局部修订，不复审。审稿通过后直接交付。"
                 )
+                if package_uses_sentences(execution.package_root):
+                    # 按句写作的正文包（REQ-20261125-154544）：规程随包切换，新旧包才能在同一执行端对比。
+                    prompt += (
+                        f"本章{'已有正文，先读稿再续写或修订' if has_draft else '尚无正文，直接起草'}。\n"
+                        "起草一律逐句写：每句从 write_action、write_dialogue、write_sensory、write_reaction、"
+                        "write_narration 里选一个工具，只传这一句。一次回复只写一句，等工具返回再写下一句，每句自成一段。"
+                        f"整章写完，用 write_chapter_header 把状态改为初稿并填章名，系统在那时把整章写入文件。\n"
+                        f'等工具返回，再单独调用 task(subagent_type="review", description="审第{chapter}章") 一次。'
+                        "已有审稿意见时直接用 save_artifact 的 mode=edit 局部修订，不复审。审稿通过后直接交付。"
+                    )
+                else:
+                    prompt += (
+                        f"本章{'已有正文，先读稿再续写或修订' if has_draft else '尚无正文，直接从首批起草'}。\n"
+                        "用 save_artifact 保存正文。普通单元用 unit_kind=ordinary，"
+                        "用空行分隔自然段，每批约 300–400 字，含标点最多 450 字。"
+                        "剧情匹配且 save_artifact 接受该技能来源时，用 unit_kind=skill_scene "
+                        "并填写 skill_name 原名，整场一次保存。\n"
+                        "首批用 mode=full，只写文件头和首个单元。文件头连续两行，中间无空行：\n"
+                        f"# 第{chapter:03d}章 · <章名>\n> 状态：起草中｜<日期>\n"
+                        "后续逐批用 mode=append 追加正文。整章写完，用 mode=edit 把状态行改为初稿，保留日期。"
+                        f'等保存成功，再单独调用 task(subagent_type="review", description="审第{chapter}章") 一次。'
+                        "已有审稿意见时直接用 mode=edit 局部修订，不复审。审稿通过后直接交付。"
+                    )
         payload = ScreenplayGenerateRequest(thread_id=current_thread.thread_id, prompt=prompt,
                                             message_id=f"{task_id}-{step_number}-{uuid.uuid4().hex}")
         if resume_trace:
@@ -618,30 +676,45 @@ async def drive_task(request, workspace, service, thread, execution, store, *, l
         if identity:
             refs.update(experiment_id=identity[0], sample_id=identity[1])
         live_trace_id = resume_trace
-        with execution, observation_context(refs):
-            async for frame in service.generate_stream(
-                payload, current_thread, owner_id=current_thread.user_id,
-                run_purpose="user_generation" if row["metadata"].get("owner_id") else "optimization",
-                traceparent=request.traceparent,
-            ):
-                kind, data = _frame(frame)
-                if kind == "status" and isinstance(data, dict):
-                    trace_id = data.get("trace_id")
-                    if trace_id and trace_id not in trace_ids:
-                        trace_ids.append(trace_id)
-                        store.update(task_id, trace_ids=trace_ids)
-                    if trace_id:
-                        live_trace_id = trace_id
-                    if data.get("status") in {"resume_rejected", "log_failed", "cancelled"}:
-                        raise ValueError(str(data.get("reason") or data.get("error") or data["status"]))
-                elif kind == "interrupt":
-                    interrupted = data
-                elif kind == "final":
-                    final = True
-                elif live_fd is not None and identity:
-                    write_model_frame(live_fd, live_trace_id, kind, data)
-                if (store.directory(task_id) / "stop").exists():
-                    raise asyncio.CancelledError
+        markers = _draft_markers(store, task_id)
+
+        def keep_marker(marker, thread_id=current_thread.thread_id):
+            markers[thread_id] = marker
+            store.journal(task_id, metadata={"draft_markers": dict(markers)})
+
+        draft = DraftState(flushed_through=markers.get(current_thread.thread_id), persist=keep_marker)
+        draft_token = DRAFT.set(draft)
+        try:
+            with execution, observation_context(refs):
+                async for frame in service.generate_stream(
+                    payload, current_thread, owner_id=current_thread.user_id,
+                    run_purpose="user_generation" if row["metadata"].get("owner_id") else "optimization",
+                    traceparent=request.traceparent,
+                ):
+                    kind, data = _frame(frame)
+                    if kind == "status" and isinstance(data, dict):
+                        trace_id = data.get("trace_id")
+                        if trace_id and trace_id not in trace_ids:
+                            trace_ids.append(trace_id)
+                            store.update(task_id, trace_ids=trace_ids)
+                        if trace_id:
+                            live_trace_id = trace_id
+                        if data.get("status") in {"resume_rejected", "log_failed", "cancelled"}:
+                            raise ValueError(str(data.get("reason") or data.get("error") or data["status"]))
+                    elif kind == "interrupt":
+                        interrupted = data
+                    elif kind == "final":
+                        final = True
+                    elif live_fd is not None and identity:
+                        write_model_frame(live_fd, live_trace_id, kind, data)
+                    if (store.directory(task_id) / "stop").exists():
+                        raise asyncio.CancelledError()
+        finally:
+            # 无论怎样结束（含中断），已写出的句子都要进文件。
+            try:
+                await flush_step_draft(service, store, task_id, request, workspace, live_trace_id, draft)
+            finally:
+                DRAFT.reset(draft_token)
         store.journal(task_id, metadata={"evidence": execution.evidence})
         store.update(task_id, artifacts=collect_artifacts(workspace), usage=_usage(service.trace_recorder, trace_ids))
         latest = trace_ids[-1] if trace_ids else None

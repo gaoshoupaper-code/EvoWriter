@@ -10,6 +10,7 @@ from typing_extensions import NotRequired
 
 from ..text_completion import (
     STATE_KEY, completion_snapshot, current_turn, delivery_block_reason, enabled_for, failed_review_note,
+    unflushed_reason,
 )
 from .tool_call_recovery import _FAILURE_TEXT as TOOL_CALL_EXHAUSTED
 
@@ -51,9 +52,9 @@ class TextCompletionMiddleware(AgentMiddleware[TextCompletionState]):
         message = messages[-1]
         if not isinstance(message, AIMessage) or message.tool_calls or message.content == TOOL_CALL_EXHAUSTED:
             return None
-        if completion_snapshot(state, self.root).get("active_turn") != current_turn(state):
-            return None
-        reason = delivery_block_reason(state, self.root)
+        # 句子没写进文件时，本章有没有保存回执都要拦：否则整章只留在对话记录里。
+        active = completion_snapshot(state, self.root).get("active_turn") == current_turn(state)
+        reason = unflushed_reason(state) or (delivery_block_reason(state, self.root) if active else None)
         if not reason:
             note = failed_review_note(state, self.root)
             if note and note not in str(message.content):

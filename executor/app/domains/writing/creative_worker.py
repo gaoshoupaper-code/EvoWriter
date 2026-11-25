@@ -226,7 +226,8 @@ async def run_private_instruction(task, row, payload, owner_id, traceparent=None
                     "chapter": task.row["chapter"], "model": model_name, "skills": skills, "owner": owner_id,
                     "thread": row.model_dump(mode="json"), "payload": payload.model_dump(mode="json"),
                     "traceparent": traceparent, "agent_mode": settings.writer_agent_mode,
-                    "history_budget": settings.conversation_history_char_budget}
+                    "history_budget": settings.conversation_history_char_budget,
+                    "draft_flushed_through": task.draft_marker()}
             await _send(channels[0][1], _json(data))
             try:
                 async for frame in _parent_frames(task, channels, model, current_billing()):

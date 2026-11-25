@@ -1243,8 +1243,12 @@ class TraceRecorder:
                     trace_id, f"event_flush_failed:{type(exc).__name__}"
                 )
 
+    def flush(self) -> None:
+        """把缓冲中的事件立即落盘（收尾前要读回本次运行的记录时调用）。"""
+        self._flush_all_sync()
+
     def _flush_all_sync(self) -> None:
-        """同步刷掉所有残余事件（仅 aclose 关闭时调用）。"""
+        """同步刷掉所有残余事件（aclose 关闭时与 flush 调用）。"""
         with self._pending_lock:
             batch = list(self._pending_writes)
             self._pending_writes.clear()

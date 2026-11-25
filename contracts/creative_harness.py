@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 
 from contracts.architecture_manifest import BASE_CHAIN_MODULES, MAX_SUBAGENTS
+from contracts.sentence_draft import DRAFT_TOOLS, HEADER_TOOL, SENTENCE_TOOLS, package_uses_sentences
 from contracts.writing_artifacts import artifact_relpath, stage_allowed_kinds, volume_draft_relpath
 
 AGENTS = ("outline", "volume", "chapter", "text")
@@ -85,6 +86,10 @@ def write_denial(agent: str, tool: str, args: dict, volume: int, chapter: int,
             return None if args.get("subagent_type") in text_assistants(manifest["agents"]) else "当前入口不能委托这个助手"
         helper = {"volume": "volume_qc", "text": "review"}.get(agent)
         return None if helper and args.get("subagent_type") == helper else "当前入口不能委托这个助手"
+    if tool in DRAFT_TOOLS:
+        if not package_uses_sentences(package_root):
+            return "当前正文包不支持逐句写作"
+        return None if agent == "text" else "仅正文可以逐句写作"
     if tool in {"read_file", "write_file", "edit_file", "ls", "glob", "grep", "execute"}:
         return "请使用当前入口已获准的产物工具"
     if tool == "read_artifact":
@@ -114,6 +119,9 @@ def write_denial(agent: str, tool: str, args: dict, volume: int, chapter: int,
         return "只能写当前目标卷"
     if kind in {"chapter_outline", "chapter_text"} and args.get("chapter") != chapter:
         return "只能写当前目标章"
+    if (agent == "text" and kind == "chapter_text" and package_uses_sentences(package_root)
+            and (args.get("mode") == "append" or args.get("unit_kind"))):
+        return "起草请用写作工具逐句写；保存工具只用于整章重写和审稿后修订"
     return None
 
 
@@ -131,11 +139,12 @@ def build_agent_package(source: Path, destination: Path, agent: str) -> None:
             "middleware": ["stage_gate", "tool_call_recovery"]}
     if agent == "text":
         main["tools"].append("update_character_state")
+        main["tools"].extend([*SENTENCE_TOOLS, HEADER_TOOL])
         main["middleware"].insert(1, "text_completion")
     agents = [main] + [{**a, "delegated_by": agent} for a in manifest["agents"] if a["name"] in delegates]
     files = {"__init__.py", "text_completion.py", "tools/__init__.py"}
     if agent == "text":
-        files.add("prompts/workspace_style.md")
+        files.update({"prompts/workspace_style.md", "tools/sentence_common.py"})
     files.update(f"middleware/{name}.py" for name in (*BASE_CHAIN_MODULES, "revision_limit"))
     for spec in agents:
         files.add(spec["prompt"])

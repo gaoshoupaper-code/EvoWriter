@@ -19,6 +19,6 @@ def test_element_catalog_shows_the_descriptions_the_model_reads(monkeypatch):
         assert tools[name]["description_source"] == "source"
         assert tools[name]["load_error"] is None
     action = tools["write_action"]["description"]
-    assert action.startswith("写一句「动作」：") and action.endswith("等工具返回后再写下一句。")
+    assert action.startswith("写一句人物主动做出的外部可见动作") and action.endswith("说话改用 write_dialogue。")
     assert action.count("\n") == 4
     assert "把本轮写好的句子整章写入文件" in tools[HEADER_TOOL]["description"]

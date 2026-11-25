@@ -7,6 +7,8 @@ from contracts.architecture_manifest import load_architecture_manifest, validate
 from app.domains.writing.creative_scope import Book, entry_missing
 from app.domains.writing.creative_scope import CALL_ID
 
+BUILTIN_FILE_TOOLS = {"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"}
+
 
 @pytest.mark.parametrize("agent,delegates", [
     ("outline", []), ("volume", ["volume_qc"]), ("chapter", []), ("text", ["review"]),
@@ -32,6 +34,81 @@ def test_each_package_contains_only_its_agent_and_helpers(tmp_path, monkeypatch,
                          workspace_path=tmp_path / "book", trace_id=None)
     package = load_package(dest, f"scoped_test_{agent}")
     assert package.assemble(ctx, agent_name=agent)
+
+
+def _offered_tools(tmp_path, monkeypatch, agent, *, disable_file_tools=True, replies=()):
+    """装配入口包并跑到模型被调用，返回（主 agent 清单, 各次调用绑定给模型的工具名）。"""
+    import json
+    import uuid
+    from pydantic import Field
+    from deepagents.backends import FilesystemBackend
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+    from langchain_core.outputs import ChatGeneration, ChatResult
+    from app.platform.agent.loader import load_package
+    from contracts.runtime_context import RuntimeContext
+
+    class Stop(BaseException):
+        pass  # 不走 Exception 分支：重试类中间件只吞 Exception
+
+    class Model(FakeListChatModel):
+        bound: list = Field(default_factory=list)
+
+        def bind_tools(self, tools, **kwargs):
+            self.bound.append([tool.name for tool in tools])
+            return self
+
+        def _generate(self, messages, *args, **kwargs):
+            if len(self.bound) > len(replies):
+                raise Stop()
+            return ChatResult(generations=[ChatGeneration(message=replies[len(self.bound) - 1])])
+
+    # 框架按模型类名登记配置档，重复登记只并集不覆盖：每个用例独占类名与包模块名才互不串扰。
+    unique = uuid.uuid4().hex[:8]
+    Model.__name__ = Model.__qualname__ = f"OfferedToolsModel_{unique}"
+
+    source = Path(__file__).resolve().parents[2] / "evolution/harnesses/repo"
+    dest = tmp_path / "package"
+    build_agent_package(source, dest, agent)
+    path = dest / "architecture.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    main = manifest["agents"][0]
+    main["disable_file_tools"] = disable_file_tools
+    path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setenv("WRITING_AGENT_ID", agent)
+    workspace = tmp_path / "book"
+    workspace.mkdir()
+    model = Model(responses=["unused"])
+    ctx = RuntimeContext(model=model, backend=FilesystemBackend(root_dir=workspace, virtual_mode=True),
+                         checkpointer=None, workspace_path=workspace, trace_id=None)
+    package = load_package(dest, f"offered_tools_{unique}")
+    with pytest.raises(Stop):
+        package.assemble(ctx, agent_name=agent).invoke(
+            {"messages": [{"role": "user", "content": "写第1章"}]}, config={})
+    return main, model.bound
+
+
+@pytest.mark.parametrize("agent", ["outline", "volume", "chapter", "text"])
+def test_builtin_file_tools_are_not_offered_to_a_path_restricted_agent(tmp_path, monkeypatch, agent):
+    main, bound = _offered_tools(tmp_path, monkeypatch, agent)
+    offered = set(bound[0])
+    assert not offered & BUILTIN_FILE_TOOLS
+    assert set(main["tools"]) <= offered
+
+
+def test_builtin_file_tools_stay_offered_when_the_manifest_keeps_file_tools(tmp_path, monkeypatch):
+    _, bound = _offered_tools(tmp_path, monkeypatch, "text", disable_file_tools=False)
+    assert {"ls", "read_file", "write_file", "edit_file", "glob", "grep"} <= set(bound[0])
+
+
+def test_private_assistant_is_not_offered_builtin_file_tools_either(tmp_path, monkeypatch):
+    from langchain_core.messages import AIMessage
+    delegation = AIMessage(content="", tool_calls=[{"name": "task", "id": "delegation", "args": {
+        "description": "审第1章", "subagent_type": "review"}}])
+    _, bound = _offered_tools(tmp_path, monkeypatch, "text", replies=(delegation, AIMessage(content="已审。")))
+    assert len(bound) == 3  # 主 agent 委托 → 审稿助手读档 → 主 agent 收到审稿结果
+    assistant = set(bound[1])
+    assert "read_artifact" in assistant
+    assert not assistant & BUILTIN_FILE_TOOLS
 
 
 @pytest.mark.parametrize(("suite", "role_name", "role"), [

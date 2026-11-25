@@ -62,6 +62,9 @@ logger = logging.getLogger("writer.architecture")
 # ContextAssembler 注入块的展示标签（v7 既有口径）
 CONTEXT_LABEL = "创作需求"
 
+# DeepAgents 注入的内置文件工具。框架升级新增内置工具时须同步本名单。
+BUILTIN_FILE_TOOLS = frozenset({"ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"})
+
 
 class AgentBuildCtx:
     """单 agent 构建上下文：清单挂载模块 build(abc) 钩子的统一入参。
@@ -376,7 +379,13 @@ def _build_compiled(abc: AgentBuildCtx) -> CompiledSubAgent:
         )
         if not key:
             raise ValueError("无法为当前模型固定创作助手范围")
-        register_harness_profile(key, HarnessProfile(general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False)))
+        # 路径收权的 agent 还要把内置文件工具从模型请求里摘掉：permissions 只在
+        # 调用时拦截，工具描述照样占上下文并诱导无效调用。配置档按模型生效，
+        # 共用该模型的子代理（如审稿助手）一并摘除。
+        register_harness_profile(key, HarnessProfile(
+            general_purpose_subagent=GeneralPurposeSubagentProfile(enabled=False),
+            excluded_tools=BUILTIN_FILE_TOOLS if agent.disable_file_tools else frozenset(),
+        ))
 
     graph = create_deep_agent(
         model=abc.ctx.model,

@@ -5,6 +5,7 @@ import asyncio
 import json
 import sqlite3
 import sys
+from collections import Counter
 from threading import Event
 from contextlib import contextmanager
 from pathlib import Path
@@ -37,7 +38,22 @@ def chapter_run(monkeypatch, tmp_path):
     monkeypatch.setattr(runner, "_recorder", None)
     db.init_db()
     repo.init_schema()
-    rule = rubrics.list_rules("chapter_text")[0]
+    rule = {
+        "id": "historical-five-dimensions", "name": "历史正文试验规则", "version": 1,
+        "task_type": "chapter_text", "profile": rubrics.TEXT_PROFILE,
+        "discipline_rules": ["依据题目提供的资料和最终正文评分。"],
+        "dimensions": [
+            {"key": key, "question": question, "focus_points": "核对正文和固定前情。",
+             "anchors": {str(level): f"{level} 分的历史标准" for level in range(1, 6)}, "weight": 1}
+            for key, question in (
+                ("事件因果逻辑", "核对事件的起因和结果。谜底可以留到后文。"),
+                ("人物行为逻辑", "核对关键选择是否符合人物当下的认知和处境。"),
+                ("章纲兑现", "核对正文是否完成章纲指定的事件和结果。"),
+                ("行文清晰度", "核对正文是否自然易读。"),
+                ("场景空间", "核对场景布局和动作衔接。"),
+            )
+        ],
+    }
     case = next(item for item in repo.list_packages() if item["purpose"] == "optimization")
     chapter = case["target"]["chapter"]
     manuscript = f"正文/第{chapter:03d}章.md"
@@ -112,6 +128,54 @@ def _runtime_input():
 
 def _quality_dimension_count(run):
     return len(run["private"]["rules"]["chapter_text"]["dimensions"])
+
+
+def test_current_chapter_rule_averages_nine_dimensions_without_runtime(chapter_run, monkeypatch):
+    run, sample = chapter_run
+    rule = rubrics.list_rules("chapter_text")[0]
+    run["private"]["rules"]["chapter_text"] = rule
+    run["settings"]["rule_versions"]["chapter_text"] = rule["id"]
+    run["judge_input_version"] = 2
+    manuscript = next(path for path in sample["artifacts"] if path.startswith("正文/"))
+    scores = {
+        "事件因果逻辑": 4,
+        "人物行为逻辑": 2,
+        "人物对话": 3,
+        "叙事节奏与张力": 1,
+        "场景空间": 5,
+        "叙事视角与沉浸感": 3,
+        "行文清晰度": 4,
+        "语言质感与去 AI 味": 2,
+        "章纲兑现": 5,
+    }
+    dimensions = {dimension["key"]: dimension for dimension in rule["dimensions"]}
+    calls = []
+
+    def send(judge, messages, *_):
+        instructions = messages[0]["content"]
+        dimension = json.loads(next(line for line in instructions.splitlines() if line.startswith('{"key": ')))
+        material = json.loads(messages[1]["content"])
+        assert dimension == dimensions[dimension["key"]]
+        assert "按 focus_points" in instructions
+        assert set(material["artifacts"]) == {manuscript}
+        assert material["artifacts"][manuscript].startswith(f"{manuscript}:1 ")
+        assert "runtime_trace" not in material
+        calls.append((judge["id"], dimension["key"]))
+        response = {"score": scores[dimension["key"]], "reason": "定档理由", "evidence": [f"{manuscript}:1"]}
+        return json.dumps(response), None
+
+    monkeypatch.setattr(repo, "decrypt_credentials", lambda judge: judge)
+    monkeypatch.setattr(evaluation, "_send_judge", send)
+    result = evaluation.score_sample(run, sample)
+
+    expected_calls = {(judge["id"], key): run["judge_repeats"]
+                      for judge in run["private"]["judges"] for key in scores}
+    assert Counter(calls) == expected_calls
+    assert result["dimensions"] == scores
+    assert result["overall"] == pytest.approx(sum(scores.values()) / 9)
+    assert result["rule_id"] == rule["id"]
+    assert "runtime" not in result
+    assert "runtime_scoring_version" not in result
 
 
 def test_runtime_is_independent_of_five_quality_dimensions(chapter_run, monkeypatch):

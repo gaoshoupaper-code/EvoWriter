@@ -11,8 +11,6 @@ from contracts.target_tasks import configured_task_type
 _lock = threading.RLock()
 PROFILE = "stage-eval-v2"
 TEXT_PROFILE = "chapter-text-outline-v3"
-_LEGACY_TEXT_KEYS = {"事件因果逻辑", "人物行为逻辑", "章纲兑现", "语言清晰度"}
-_PREVIOUS_TEXT_KEYS = _LEGACY_TEXT_KEYS | {"人物语言", "场景空间"}
 _DIMENSIONS = {
     "master_outline": [
         ("主题清晰度", "总纲是否将用户意图落实为能贯穿全书的主题？",
@@ -137,13 +135,13 @@ def get_rule(rule_id: str) -> dict | None:
     return repo.get_rule(rule_id)
 
 
-def _matches_text_dimensions(rule: dict, expected: set[str]) -> bool:
-    keys = [dimension["key"] for dimension in rule.get("dimensions", [])]
-    return rule.get("profile") == TEXT_PROFILE and len(keys) == len(expected) and set(keys) == expected
-
-
 def is_current_text_rule(rule: dict) -> bool:
-    return _matches_text_dimensions(rule, {entry[0] for entry in chapter_rubric.DIMENSIONS})
+    if rule.get("profile") != TEXT_PROFILE:
+        return False
+    dimensions = rule.get("dimensions", [])
+    expected = {entry[0] for entry in chapter_rubric.DIMENSIONS}
+    return (len(dimensions) == len(expected) and {dimension["key"] for dimension in dimensions} == expected
+            and len({dimension["weight"] for dimension in dimensions}) == 1)
 
 
 def save_rule(request: RuleCreate) -> dict:
@@ -197,23 +195,4 @@ def seed_rules() -> None:
                                 "anchors": {str(level): text for level, text in enumerate(anchors, 1)}}
                                for key, question, anchors in dimensions],
             }
-            if profile == TEXT_PROFILE:
-                previous = next((rule for rule in rules if any(
-                    _matches_text_dimensions(rule, keys) for keys in (_PREVIOUS_TEXT_KEYS, _LEGACY_TEXT_KEYS)
-                )), None)
-                if previous:
-                    payload.update(name=previous["name"], discipline_rules=previous["discipline_rules"])
-                    upgraded = {}
-                    for dimension in previous["dimensions"]:
-                        key = dimension["key"]
-                        if key == "人物语言":
-                            continue
-                        if key == "语言清晰度":
-                            key = "行文清晰度"
-                        upgraded[key] = {**dimension, "key": key}
-                        if dimension.get("focus_points") is None:
-                            upgraded[key]["focus_points"] = focus_points[key]
-                    payload["dimensions"] = list(upgraded.values()) + [
-                        d for d in payload["dimensions"] if d["key"] not in upgraded
-                    ]
             save_rule(RuleCreate.model_validate(payload))

@@ -18,7 +18,7 @@ from contracts.target_tasks import configured_task_type
 from contracts.writing_artifacts import KIND_CHAPTER, KIND_TEXT, artifact_relpath, parse_relpath
 
 from app.common.model_factory import _model_family
-from app.experiments import live_output, repo
+from app.experiments import live_output, repo, rubrics
 
 
 def require_heterogeneous_judges(writer_model: str, judges: list[dict]) -> None:
@@ -426,6 +426,7 @@ def score_sample(run: dict, sample: dict) -> dict:
     errors = sample.setdefault("judge_errors", {})
     feedback = sample.get("judge_evidence_feedback", {})
     runtime_enabled = run.get("runtime_scoring_version") == RUNTIME_SCORING_VERSION
+    current_text_rule = rubrics.is_current_text_rule(rule)
     runtime_message, runtime_error, runtime_refs, token_error = None, None, None, None
     if runtime_enabled:
         try:
@@ -488,7 +489,8 @@ def score_sample(run: dict, sample: dict) -> dict:
 
     try:
         repeat_numbers = range(1, repeats + 1) if repeats is not None else (None,)
-        with (ThreadPoolExecutor(max_workers=5) if runtime_enabled else nullcontext()) as pool:
+        parallel_judging = runtime_enabled or (repeats is not None and current_text_rule)
+        with (ThreadPoolExecutor(max_workers=5) if parallel_judging else nullcontext()) as pool:
             for judge, repeat in product(judges, repeat_numbers):
                 pending = {}
                 for dimension in _scoring_dimensions(run, rule):
@@ -565,8 +567,11 @@ def score_sample(run: dict, sample: dict) -> dict:
                 reasons[key] = [{"judge_id": judge["id"], **value} for judge, value in available]
                 reasons[key].extend({"judge_id": judge["id"], "score": None,
                     "error": errors.get(_score_key(judge, key, None))} for judge in judges if _score_key(judge, key, None) not in progress)
-        total_weight = sum(dimension["weight"] for dimension in rule["dimensions"])
-        quality = sum(dimensions[dimension["key"]] * dimension["weight"] for dimension in rule["dimensions"]) / total_weight
+        if current_text_rule:
+            quality = sum(dimensions[dimension["key"]] for dimension in rule["dimensions"]) / len(rule["dimensions"])
+        else:
+            total_weight = sum(dimension["weight"] for dimension in rule["dimensions"])
+            quality = sum(dimensions[dimension["key"]] * dimension["weight"] for dimension in rule["dimensions"]) / total_weight
         overall = quality
         result = {"dimensions": dimensions, "reasons": reasons, "rule_id": rule["id"]}
         if runtime_enabled:

@@ -247,11 +247,15 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
             assert custom_all_run["case_coverage"] == {purpose: {"selected": group["total"], "total": group["total"]}
                                                       for purpose, group in coverage.items()}
         assert run["assessment_version"] == 2
-        assert run["runtime_scoring_version"] == 1
+        assert "runtime_scoring_version" not in run
+        assert "runtime_scoring_version" not in auto_run
         assert run["judge_input_version"] == 2
         assert run["judge_repeats"] == 3
         assert run["regression_repeats"] == 1
         first_rule = run["private"]["rules"][kind]
+        assert len(first_rule["dimensions"]) == 9
+        assert {dimension["weight"] for dimension in first_rule["dimensions"]} == {1}
+        expected_weights = {dimension["key"]: 1 for dimension in first_rule["dimensions"]}
         next_rule = rubrics.save_rule(RuleCreate.model_validate({key: first_rule[key] for key in
             ("task_type", "profile", "name", "dimensions", "discipline_rules")}))
         db.JudgeGroupsRepository.update(1, name="改过的评委组", member_config_ids=[3], score_repeats=1)
@@ -283,11 +287,13 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         saved = repo.get_run(run["id"])
         assert saved["case_coverage"] == coverage
         for summary in (True, False):
-            assert api.public_run(saved, can_read_content=False, summary=summary)["case_coverage"] == coverage
+            public = api.public_run(saved, can_read_content=False, summary=summary)
+            assert public["case_coverage"] == coverage
+            assert public["scoring_rule"]["dimension_weights"] == expected_weights
             old = {key: value for key, value in saved.items() if key != "case_coverage"}
             assert "case_coverage" not in api.public_run(old, can_read_content=False, summary=summary)
         assert "packages" not in saved["private"]
-        assert saved["runtime_scoring_version"] == 1
+        assert "runtime_scoring_version" not in saved
         assert saved["judge_repeats"] == 3
         assert saved["regression_repeats"] == 1
         assert saved["models"]["judges"][0]["id"] == 2

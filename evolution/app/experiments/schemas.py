@@ -71,6 +71,8 @@ class RuleCreate(StrictModel):
                 raise ValueError("评分规则必须使用本套规定的维度")
             if scope == "master_outline" and len({dimension.weight for dimension in self.dimensions}) != 1:
                 raise ValueError("总纲四个规定维度须等权")
+            if scope == "chapter_text" and len({dimension.weight for dimension in self.dimensions}) != 1:
+                raise ValueError("正文九个规定维度须等权")
         keys = [dimension.key for dimension in self.dimensions]
         if len(set(keys)) != len(keys):
             raise ValueError("评分维度不能重复")

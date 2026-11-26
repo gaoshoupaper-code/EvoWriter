@@ -140,15 +140,14 @@ class SeedDatabaseTest(unittest.TestCase):
         self.assertEqual(current["version"], 4)
         dimensions = current["dimensions"]
         self.assertEqual([d["key"] for d in dimensions], [
-            "事件因果逻辑", "人物行为逻辑", "章纲兑现", "行文清晰度", "场景空间",
+            "事件因果逻辑", "人物行为逻辑", "人物对话", "叙事节奏与张力", "场景空间",
+            "叙事视角与沉浸感", "行文清晰度", "语言质感与去 AI 味", "章纲兑现",
         ])
         self.assertEqual({dimension["key"]: dimension["focus_points"] for dimension in dimensions},
                          chapter_rubric.FOCUS_POINTS)
         self.assertEqual({d["weight"] for d in dimensions}, {1})
         self.assertTrue(all(set(d["anchors"]) == {"1", "2", "3", "4", "5"} for d in dimensions))
-        self.assertTrue(all(anchor.count("。") >= 3 for d in dimensions[:4] for anchor in d["anchors"].values()))
-        self.assertTrue(all(len(anchor) >= 100 for d in dimensions[:2] for anchor in d["anchors"].values()))
-        self.assertIn("谜底可以留到后文", dimensions[0]["question"])
+        self.assertEqual(len({tuple(d["anchors"].values()) for d in dimensions}), 9)
 
         payload = {key: current[key] for key in ("task_type", "name", "dimensions", "discipline_rules")}
         edited = rubrics.save_rule(RuleCreate.model_validate(payload))
@@ -156,87 +155,52 @@ class SeedDatabaseTest(unittest.TestCase):
         self.assertEqual(repo.get_rule(current["id"]), current)
         with self.assertRaises(ValidationError):
             RuleCreate.model_validate({**payload, "dimensions": dimensions[:-1]})
+        with self.assertRaisesRegex(ValidationError, "等权"):
+            RuleCreate.model_validate({**payload, "dimensions": [{**dimensions[0], "weight": 2}, *dimensions[1:]]})
 
     @patch.dict("os.environ", {"WRITING_AGENT_ID": "text"})
-    def test_chapter_rule_upgrades_latest_four_dimension_revision(self):
+    def test_chapter_rule_seeds_nine_defaults_alongside_custom_historical_revisions(self):
         from app.experiments import chapter_rubric, repo, rubrics
 
-        dimensions = [
-            {"key": key, "question": question, "weight": 2,
-             "anchors": {str(level): anchor for level, anchor in enumerate(anchors, 1)}}
-            for key, question, anchors in chapter_rubric.DIMENSIONS[:4]
+        shared_keys = ["事件因果逻辑", "人物行为逻辑", "章纲兑现"]
+        historical_keys = [
+            [*shared_keys, "语言清晰度"],
+            [*shared_keys, "语言清晰度", "人物语言", "场景空间"],
+            [*shared_keys, "行文清晰度", "场景空间"],
         ]
-        dimensions[0].update(question="定制判定问题", focus_points="先查条件。")
-        dimensions[0]["anchors"]["4"] = "定制 4 分档位。"
-        dimensions[1]["focus_points"] = ""
-        dimensions[3]["key"] = "语言清晰度"
-        previous = {
-            "id": "custom-four-dimensions", "task_type": "chapter_text", "version": 6,
-            "profile": rubrics.TEXT_PROFILE, "flow_version": 3, "created_at": repo.now(),
-            "name": "自定义正文规则", "discipline_rules": ["定制纪律。"], "dimensions": dimensions,
-        }
-        older = {**previous, "id": "older-four-dimensions", "name": "更早的正文规则", "version": 5}
-        for rule in (older, previous):
+        historical = []
+        for version, keys in enumerate(historical_keys, 9):
+            rule = {"id": f"custom-{len(keys)}-dimensions", "task_type": "chapter_text", "version": version,
+                    "profile": rubrics.TEXT_PROFILE, "flow_version": 3, "created_at": repo.now(),
+                    "name": "自定义正文规则", "discipline_rules": ["定制纪律。"],
+                    "dimensions": [{"key": key, "question": f"定制判定问题：{key}", "weight": weight,
+                                    "focus_points": f"定制关注点：{key}",
+                                    "anchors": {str(level): f"定制 {level} 分档位。" for level in range(1, 6)}}
+                                   for weight, key in enumerate(keys, 1)]}
             repo.insert("self_evolution_rules", rule)
+            historical.append(rule)
 
         rubrics.seed_rules()
         rubrics.seed_rules()
 
-        current, old_current, old_older = rubrics.list_rules("chapter_text")
-        self.assertEqual((old_current, old_older), (previous, older))
-        self.assertFalse(rubrics.is_current_text_rule(previous))
-        self.assertTrue(rubrics.is_current_text_rule(current))
-        self.assertEqual(current["version"], previous["version"] + 1)
-        for key in ("name", "profile", "discipline_rules"):
-            self.assertEqual(current[key], previous[key])
-        renamed = [*dimensions[:3], {**dimensions[3], "key": "行文清晰度"}]
-        self.assertEqual(current["dimensions"][:4], [
-            {"focus_points": chapter_rubric.FOCUS_POINTS[dimension["key"]], **dimension}
-            for dimension in renamed
-        ])
-        self.assertEqual([(d["key"], d["weight"]) for d in current["dimensions"][4:]], [
-            ("场景空间", 1),
-        ])
-
-    @patch.dict("os.environ", {"WRITING_AGENT_ID": "text"})
-    def test_chapter_rule_upgrades_six_dimension_revision_preserving_custom_criteria(self):
-        from app.experiments import chapter_rubric, repo, rubrics
-
-        dimensions = [{"key": key, "question": question, "weight": 1,
-                       "focus_points": chapter_rubric.FOCUS_POINTS[key],
-                       "anchors": {str(level): anchor for level, anchor in enumerate(anchors, 1)}}
-                      for key, question, anchors in chapter_rubric.DIMENSIONS]
-        dimensions[3].update(question="定制清晰度判定问题", focus_points="")
-        dimensions[3]["anchors"]["4"] = "定制清晰度 4 分档位。"
-        dimensions[4]["weight"] = 2
-        old_clarity = {**dimensions[3], "key": "语言清晰度"}
-        removed = {**dimensions[3], "key": "人物语言"}
-        previous = {
-            "id": "custom-six-dimensions", "task_type": "chapter_text", "version": 11,
-            "profile": rubrics.TEXT_PROFILE, "flow_version": 3, "created_at": repo.now(),
-            "name": "自定义正文规则", "discipline_rules": ["定制纪律。"],
-            "dimensions": [*dimensions[:3], old_clarity, removed, dimensions[4]],
-        }
-        repo.insert("self_evolution_rules", previous)
-
-        rubrics.seed_rules()
-        rubrics.seed_rules()
-
-        current, old = rubrics.list_rules("chapter_text")
-        self.assertEqual(old, previous)
-        self.assertFalse(rubrics.is_current_text_rule(old))
+        current, *previous = rubrics.list_rules("chapter_text")
+        self.assertEqual(previous, list(reversed(historical)))
+        self.assertTrue(all(not rubrics.is_current_text_rule(rule) for rule in previous))
         self.assertTrue(rubrics.is_current_text_rule(current))
         self.assertEqual(current["version"], 12)
-        for key in ("name", "profile", "discipline_rules"):
-            self.assertEqual(current[key], previous[key])
-        self.assertEqual(current["dimensions"], dimensions)
+        self.assertEqual(current["discipline_rules"], chapter_rubric.DISCIPLINE_RULES)
+        self.assertEqual(current["dimensions"], [
+            {"key": key, "question": question, "weight": 1, "focus_points": chapter_rubric.FOCUS_POINTS[key],
+             "anchors": {str(level): anchor for level, anchor in enumerate(anchors, 1)}}
+            for key, question, anchors in chapter_rubric.DIMENSIONS
+        ])
 
     @patch.dict("os.environ", {"WRITING_AGENT_ID": "text"})
     def test_focus_upgrade_copies_latest_revision_once_and_preserves_explicit_edits(self):
         from app.experiments import chapter_rubric, repo, rubrics
         from app.experiments.schemas import RuleCreate
 
-        dimensions = [{"key": key, "question": question, "weight": 2,
+        dimensions = [{"key": key, "question": question, "weight": 1,
                        "anchors": {str(level): anchor for level, anchor in enumerate(anchors, 1)}}
                       for key, question, anchors in chapter_rubric.DIMENSIONS]
         first = rubrics.save_rule(RuleCreate.model_validate({

@@ -106,7 +106,7 @@ def public_run(run: dict, *, can_read_content: bool, summary: bool = False) -> d
         rule = run.get("private", {}).get("rules", {}).get("chapter_text")
         if rule and all(key in rule for key in ("id", "name", "version")):
             value["scoring_rule"] = {key: rule[key] for key in ("id", "name", "version")}
-            if run.get("runtime_scoring_version"):
+            if run.get("runtime_scoring_version") or rubrics.is_current_text_rule(rule):
                 value["scoring_rule"]["dimension_weights"] = {
                     dimension["key"]: dimension["weight"] for dimension in rule["dimensions"]}
     if not summary:

@@ -134,7 +134,6 @@ def create_run(request: RunCreate, actor: str) -> dict:
         run["assessment_version"] = 2
         run["judge_repeats"] = judge_repeats
         run["judge_input_version"] = 2
-        run["runtime_scoring_version"] = evaluation.RUNTIME_SCORING_VERSION
         run["private"]["package_revisions"] = {key: p["input_revision"] for key, p in frozen_packages.items()}
         del run["private"]["packages"]
     run["models"] = repo.public_models(run)

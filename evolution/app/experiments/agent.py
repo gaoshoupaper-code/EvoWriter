@@ -480,10 +480,14 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
         if feedback:
             if problem := _failure_review_problem(round_record, stop=True):
                 return problem
-            if set(refs) != set(round_record["failure_review"]["evidence_refs"]):
-                return "请引用停止决策中已核对的样本。"
-        elif not refs or not baseline_reads.issuperset(refs):
+            if set(refs) != set(expected := round_record["failure_review"]["evidence_refs"]):
+                return "引用与停止决策不一致。请原样引用已核对的样本：" + "、".join(expected) + "。"
+        elif not refs or not baseline_reads:
             return "请先读取第 0 轮原版评分、终稿、检查结果或写作记录，再引用实际读过的样本。"
+        elif unknown := sorted(set(refs) - baseline_reads):
+            # 长十六进制 ID 易被模型抄漏末位字符；拒绝时给出可复制的完整引用，避免反复重读仍失败。
+            return ("evidence_refs 含未核对的引用：" + "、".join(unknown)
+                    + "。请原样引用已读样本的完整 evidence_ref：" + "、".join(sorted(baseline_reads)) + "。")
         if not unchanged_checkout():
             return "工作区已有改动，请补齐候选校验和改动报告。"
         no_change = {"outcome": "no_change", "summary": reason, "evidence_samples": refs}

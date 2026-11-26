@@ -368,6 +368,26 @@ def test_real_graph_accepts_a_grounded_no_change_conclusion(chapter_run, monkeyp
     assert asyncio.run(agent._improve(recovered, recovered["rounds"][0], root, [])) == result
 
 
+def test_real_graph_no_change_recovers_from_a_truncated_evidence_ref(chapter_run, monkeypatch):
+    run, record, sample, root = chapter_run
+    reason = "原版评分指出个案节奏问题，尚不能证实存在通用缺口。"
+    truncated = sample["id"][:-1]
+    calls = _script_model(monkeypatch, [
+        _tool_call("read_improvement_sample", **BASELINE_LOCATION, section="scores"),
+        _tool_call("finish_without_changes", call_id="finish-truncated", reason=reason, evidence_refs=[truncated]),
+        _tool_call("finish_without_changes", reason=reason, evidence_refs=[sample["id"]]),
+        AIMessage(content="已按提示原样引用，结束本轮。"),
+    ])
+
+    result = asyncio.run(agent._improve(run, record, root, []))
+
+    rejection = str(_tool_reply(calls, "finish-truncated").content)
+    assert truncated in rejection
+    assert sample["id"] in rejection
+    assert result["outcome"] == "no_change"
+    assert result["evidence_samples"] == [sample["id"]]
+
+
 @pytest.mark.parametrize("case", ["list_only", "dirty_worktree", "foreign_ref"])
 def test_real_graph_rejects_invalid_no_change_and_stops_after_bounded_nudges(chapter_run, monkeypatch, case):
     run, record, sample, root = chapter_run

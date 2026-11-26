@@ -250,8 +250,10 @@ ssh "${DEPLOY_HOST}" bash -s "${REMOTE_DIR}" "${KEEP_VERSIONS}" <<'CLEANUP' || w
 set -euo pipefail
 DIR="$1"
 KEEP="$2"
-# 从 siyen-evolution-<version>-windows.* 解析版本号，去重 + 降序，跳过最新 KEEP 个
-DELETE_VERSIONS=$(ls "${DIR}"/siyen-evolution-*-windows.msi "${DIR}"/siyen-evolution-*-windows-setup.exe 2>/dev/null \
+# 从 siyen-evolution-<version>-windows.* 解析版本号，去重 + 降序，跳过最新 KEEP 个。
+# ls 包一层 `|| true`：进化端默认不构建 MSI，无 .msi 文件时通配符不展开会让
+# ls 退出非零，在 `set -euo pipefail` 下炸掉整条管道，导致清理从未成功过。
+DELETE_VERSIONS=$({ ls "${DIR}"/siyen-evolution-*-windows.msi "${DIR}"/siyen-evolution-*-windows-setup.exe 2>/dev/null || true; } \
   | sed -E 's|.*/siyen-evolution-([0-9]+\.[0-9]+\.[0-9]+)-windows.*|\1|' \
   | sort -Vru \
   | tail -n +"$((${KEEP} + 1))")
@@ -288,14 +290,21 @@ fi
 # 同时把第 2.1 步 bump 改动的 tauri.conf.json + Cargo.toml 一起提交，
 # 保证三处版本号一致。改完后自动 commit + push。
 # 但【不】自动部署官网容器——部署是生产操作，由用户确认后手动执行。
-REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$(dirname "$0")/..")"
-WEBSITE_DIR="$(dirname "$0")/../website"
+# WEBSITE_DIR 必须从 REPO_ROOT（git 解析，与 CWD 无关）推导。
+# 此前用 `$0` 相对路径拼接，而脚本已 cd 进 evolution/desktop，
+# 导致路径指向不存在位置、整个同步块被静默跳过（下载页版本号从未更新成功）。
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$(cd "$(dirname "$0")/.." && pwd)")"
+WEBSITE_DIR="${REPO_ROOT}/website"
 DOWNLOAD_ASTRO="${WEBSITE_DIR}/src/pages/download.astro"
 
 if [ -f "${DOWNLOAD_ASTRO}" ]; then
-  sed -i -E "s/(EVOLUTION_VERSION[[:space:]]*=[[:space:]]*\")[^\"]*/\1${VERSION}/" "${DOWNLOAD_ASTRO}" \
-    && info "已更新 download.astro 进化端版本号 → v${VERSION}" \
-    || warn "更新 download.astro 失败（不影响安装包发布）"
+  sed -i -E "s/(EVOLUTION_VERSION[[:space:]]*=[[:space:]]*\")[^\"]*/\1${VERSION}/" "${DOWNLOAD_ASTRO}"
+  # 替换后必须验证真的落盘，否则报错终止——杜绝「假成功」静默失效再次发生
+  grep -Eq "EVOLUTION_VERSION[[:space:]]*=[[:space:]]*\"${VERSION}\"" "${DOWNLOAD_ASTRO}" \
+    || error "download.astro 版本号替换未生效（期望 v${VERSION}），终止发布"
+  info "已更新 download.astro 进化端版本号 → v${VERSION}"
+else
+  error "未找到 ${DOWNLOAD_ASTRO}，无法同步官网下载页版本号"
 fi
 
 # 统一提交：download.astro + tauri.conf.json + Cargo.toml（版本号同步）

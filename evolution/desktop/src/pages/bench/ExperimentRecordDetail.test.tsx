@@ -65,15 +65,21 @@ it("深链按实验样本读取正文并展开真实工具参数和审稿结果"
     "/bench/experiments/run?agent=text&filter=mine&anchor=record-writing-sample-1&sample=sample-1&section=writing");
 });
 
-it("保留每名评委的分数、评语和所有评分 Trace，返回来源历史", async () => {
+it("默认折叠评语，展开保留评委分数和评语，仍可切换评分记录并返回", async () => {
   open("evaluation", true);
   expect(await screen.findByText("3.50 / 5")).toBeVisible();
+  const disclosure = screen.getByText("查看评测说明");
+  expect(screen.getByText("动作推动转折")).not.toBeVisible();
+  fireEvent.click(disclosure);
   for (const reason of ["动作推动转折", "结尾太急", "伏笔有回应", "动机欠充分"])
     expect(screen.getByText(reason)).toBeVisible();
   expect(screen.getByText(/第一评委.*4.000/)).toBeVisible();
   expect(screen.getByText(/第二评委.*3.000/)).toBeVisible();
+  fireEvent.click(disclosure);
+  expect(screen.getByText("动作推动转折")).not.toBeVisible();
+  expect(screen.getByText("3.50 / 5")).toBeVisible();
   expect(useTracePolling).toHaveBeenCalledWith("judge-b");
-  fireEvent.change(screen.getByRole("combobox", { name: "选择 Trace" }), { target: { value: "judge-a" } });
+  fireEvent.change(screen.getByRole("combobox", { name: "选择运行记录" }), { target: { value: "judge-a" } });
   expect(useTracePolling).toHaveBeenCalledWith("judge-a");
   fireEvent.click(screen.getByRole("button", { name: /返回运行记录/ }));
   expect(await screen.findByText("来源地址 ?agent=text&filter=mine")).toBeVisible();
@@ -90,6 +96,8 @@ it("评分用尽重试后同时保留已通过的评语和最终失败原因", a
   open("evaluation");
   expect(await screen.findByRole("alert")).toHaveTextContent("第 3 次尝试后仍有评分失败。");
   expect(screen.getByText(/已完成 1 \/ 2 份评分.*尚无汇总评分/)).toBeVisible();
+  expect(screen.getByText("评分缺少正文依据")).not.toBeVisible();
+  fireEvent.click(screen.getByText("查看评测说明"));
   expect(screen.getByText(/第一评委.*4.000/)).toBeVisible();
   expect(screen.getByText("动机清楚")).toBeVisible();
   expect(screen.getByText(/第二评委.*评分失败/)).toBeVisible();
@@ -107,6 +115,7 @@ it("等待自动重试评分时显示进度和已有评分，沿用评语读取�
   open("evaluation");
   expect(await screen.findByText("等待自动重试评分。")).toBeVisible();
   expect(screen.getByText(/已完成 1 \/ 2 份评分/)).toBeVisible();
+  expect(screen.queryByText("查看评测说明")).not.toBeInTheDocument();
   expect(screen.queryByText("受限的评语")).not.toBeInTheDocument();
   expect(screen.queryByText("上次失败原文")).not.toBeInTheDocument();
   expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -134,6 +143,8 @@ it("无正文权限只显示分数，不拉取 Trace、评语和错误原文", a
     samples: [{ ...experiment.samples[0], error: "错误含正文片段" }] });
   open("evaluation");
   expect(await screen.findByText("3.50 / 5")).toBeVisible();
+  expect(screen.getByText("因果")).not.toBeVisible();
+  fireEvent.click(screen.getByText("查看评测说明"));
   expect(screen.getByText("因果")).toBeVisible();
   expect(screen.queryByText("结尾太急")).not.toBeInTheDocument();
   expect(screen.queryByText("错误含正文片段")).not.toBeInTheDocument();
@@ -150,7 +161,11 @@ it.each([true, false])("评分详情核对运行数据并保护 Skill 证据，�
   vi.mocked(getExperiment).mockResolvedValue({ ...experiment, can_read_content: canRead, runtime_scoring_version: 1,
     scoring_rule: { id: "rule-2", name: "正文规则", version: 2, dimension_weights: { 因果: 2 } }, samples: [scored] });
   open("evaluation");
-  expect(await screen.findByText("工具调用成功率")).toBeVisible();
+  const disclosure = await screen.findByText("查看评测说明");
+  expect(screen.getByText("工具调用成功率")).not.toBeVisible();
+  expect(screen.getByText(/正文规则.*v2/)).not.toBeVisible();
+  fireEvent.click(disclosure);
+  expect(screen.getByText("工具调用成功率")).toBeVisible();
   expect(screen.getByText(/8 \/ 10/)).toBeVisible();
   expect(screen.getByText(/72,000/)).toBeVisible();
   expect(screen.getByText(/80,000/)).toBeVisible();
@@ -179,7 +194,8 @@ it("缺原版用量时保留候选 Token 与已评结果，不显示汇总分", 
     samples: [{ ...sample, scores: null, status: "failed", runtime_metrics: { tokens: { value: 72000 } },
       score_progress: { completed: 0, total: 1, reasons: { 运行时: [{ judge_id: 1, score: 4 }] } } }] });
   open("evaluation");
-  expect(await screen.findByText("72,000")).toBeVisible();
+  fireEvent.click(await screen.findByText("查看评测说明"));
+  expect(screen.getByText("72,000")).toBeVisible();
   expect(screen.getByText("同题同次原版 Token").nextElementSibling).toHaveTextContent("未知");
   expect(screen.getByRole("heading", { name: "Skill 评委评分" })).toBeVisible();
   expect(screen.getByText(/第一评委 · 4\.000/)).toBeVisible();

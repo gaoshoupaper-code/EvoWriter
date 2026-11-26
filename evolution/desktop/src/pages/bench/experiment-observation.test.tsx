@@ -63,7 +63,10 @@ describe("实验观测 / REQ-20261108-191146、REQ-20261119-203159", () => {
     expect(rating.getAttribute("href")).toBe("/bench/experiments/archive/records/second/evaluation?agent=text");
     shell.scrollTop = 420;
     fireEvent.click(rating);
-    expect(await screen.findByText("人物动机缺少铺垫")).toBeVisible();
+    const disclosure = await screen.findByText("查看评测说明");
+    expect(screen.getByText("人物动机缺少铺垫")).not.toBeVisible();
+    fireEvent.click(disclosure);
+    expect(screen.getByText("人物动机缺少铺垫")).toBeVisible();
     shell.scrollTop = 0;
     fireEvent.click(screen.getByRole("button", { name: /返回/ }));
     await waitFor(() => expect(document.activeElement).toHaveAttribute("href", rating.getAttribute("href")));

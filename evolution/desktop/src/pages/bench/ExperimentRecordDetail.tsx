@@ -55,22 +55,25 @@ function RecordContent({ experimentId, sampleId, section }: {
         <RunEvidence sample={sample} allowed={experiment.can_read_content} />
       </> : <>
         <section aria-label="样本评分"><h2>评分结果</h2>
-          <RuntimeScoringWeights rule={experiment.scoring_rule} version={experiment.runtime_scoring_version} weights={sample.scores?.weights} />
           {experiment.models?.judges.length ? <div className="record-judge-models"><span>评测模型</span>
             {experiment.models.judges.map((judge, index) => <ModelIdentity key={judge.id ?? index} model={judge} />)}</div>
             : <p className="experiment-note">评测模型未记录。</p>}
-          {sample.scores ? <>
-            <p>综合分 <strong>{sample.scores.overall?.toFixed(2) ?? "未知"} / 5</strong></p>
-            {!experiment.can_read_content && <><dl>{Object.entries(sample.scores.dimensions)
+          {sample.scores ? <p>综合分 <strong>{sample.scores.overall?.toFixed(2) ?? "未知"} / 5</strong></p>
+            : <p className="experiment-note">{sample.score_progress &&
+              <>已完成 {sample.score_progress.completed} / {sample.score_progress.total} 份评分 · </>}尚无汇总评分。</p>}
+          {(sample.scores || experiment.runtime_scoring_version || sample.runtime_metrics?.tools || sample.runtime_metrics?.tokens ||
+            (experiment.can_read_content && sample.score_progress?.reasons)) && <details>
+            <summary>查看评测说明</summary>
+            <RuntimeScoringWeights rule={experiment.scoring_rule} version={experiment.runtime_scoring_version} weights={sample.scores?.weights} />
+            {sample.scores && !experiment.can_read_content && <><dl>{Object.entries(sample.scores.dimensions)
               .filter(([key]) => key !== RUNTIME_DIMENSION || !sample.scores?.runtime).map(([key, score]) =>
                 <div key={key}><dt>{key}</dt><dd>{score ?? "未知"} / 5</dd></div>)}</dl>
-                <p className="experiment-note">查看评语需要正文读取权限。</p></>}
-          </> : <p className="experiment-note">{sample.score_progress &&
-            <>已完成 {sample.score_progress.completed} / {sample.score_progress.total} 份评分 · </>}尚无汇总评分。</p>}
-          <RuntimeScoreDetails sample={sample} />
-          {(experiment.can_read_content || experiment.runtime_scoring_version && !sample.scores && sample.score_progress?.reasons) &&
-            <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} canReadEvidence={experiment.can_read_content}
-              runtimeScoringVersion={experiment.runtime_scoring_version} />}
+              <p className="experiment-note">查看评语需要正文读取权限。</p></>}
+            <RuntimeScoreDetails sample={sample} />
+            {(experiment.can_read_content || experiment.runtime_scoring_version && !sample.scores && sample.score_progress?.reasons) &&
+              <SampleScoreDetails sample={sample} judges={experiment.models?.judges ?? []} canReadEvidence={experiment.can_read_content}
+                runtimeScoringVersion={experiment.runtime_scoring_version} />}
+          </details>}
         </section>
       </>}
     </>)}

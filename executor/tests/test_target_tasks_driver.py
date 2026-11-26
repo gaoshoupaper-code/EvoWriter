@@ -330,14 +330,14 @@ def test_repeated_final_without_durable_progress_stops_after_three_rounds(tmp_pa
 
 
 def _sentence_package(root):
-    """清单里声明了写作工具的正文包（按句写作）。"""
+    """清单里声明了写作工具的正文包（按段写作）。"""
     (root / "architecture.json").write_text(json.dumps({"schema_version": "writer.architecture/1", "agents": [
-        {"name": "text", "role": "main", "tools": ["save_artifact", "write_action"]}]}), encoding="utf-8")
+        {"name": "text", "role": "main", "tools": ["save_artifact", "write_info"]}]}), encoding="utf-8")
 
 
-@pytest.mark.parametrize("by_sentence", [True, False], ids=["sentence-package", "old-package"])
-def test_experiment_prompt_follows_the_drafting_flow_of_the_package(tmp_path, monkeypatch, by_sentence):
-    """AC-005、AC-009：评测注入的规程随正文包切换，旧包分支保留整批流程。"""
+@pytest.mark.parametrize("by_paragraph", [True, False], ids=["paragraph-package", "old-package"])
+def test_experiment_prompt_follows_the_drafting_flow_of_the_package(tmp_path, monkeypatch, by_paragraph):
+    """评测注入的规程随正文包切换，旧包分支保留整批流程。"""
     monkeypatch.setenv("WRITING_AGENT_ID", "text")
     request = TargetTaskRequest(
         task_id="sample-" + "d" * 32, attempt_id="first", source_commit="a" * 40,
@@ -346,7 +346,7 @@ def test_experiment_prompt_follows_the_drafting_flow_of_the_package(tmp_path, mo
         input={"confirmation_rules": "自动决定并执行，不等待人工", "files": {"章纲/第001章.md": _chapter(1)}},
     )
     _, workspace, store, thread, execution, recorder = _text_driver(tmp_path, request)
-    if by_sentence:
+    if by_paragraph:
         _sentence_package(execution.package_root)
     prompts = []
 
@@ -361,8 +361,8 @@ def test_experiment_prompt_follows_the_drafting_flow_of_the_package(tmp_path, mo
     assert asyncio.run(drive_task(request, workspace, Service(), thread, execution, store))["complete"]
     (prompt,) = prompts
     batch_wording = ("unit_kind=ordinary", "300–400", "450", "unit_kind=skill_scene", "mode=append", "首批用 mode=full")
-    if by_sentence:
-        assert "write_chapter_header" in prompt and "write_action" in prompt
+    if by_paragraph:
+        assert "write_chapter_header" in prompt and "write_causal" in prompt
         assert 'description="审第1章"' in prompt and "mode=edit" in prompt
         assert not any(word in prompt for word in batch_wording)
     else:
@@ -370,8 +370,8 @@ def test_experiment_prompt_follows_the_drafting_flow_of_the_package(tmp_path, mo
         assert all(word in prompt for word in batch_wording)
 
 
-def test_target_run_keeps_sentences_written_before_an_interruption(tmp_path, monkeypatch):
-    """AC-003（评测任务路径）：这一轮中途被打断，已写的句子在流结束时补进文件；工作进程重启后不再重复。"""
+def test_target_run_keeps_paragraphs_written_before_an_interruption(tmp_path, monkeypatch):
+    """评测任务路径：这一轮中途被打断，已写的段落在流结束时补进文件；工作进程重启后不再重复。"""
     from datetime import date
 
     from app.platform.trace.recorder import TraceRecorder
@@ -393,13 +393,13 @@ def test_target_run_keeps_sentences_written_before_an_interruption(tmp_path, mon
                 for kind in ("tool_start", "tool_end"):
                     self.trace_recorder.append_event(trace_id, {
                         "type": kind, "status": "running" if kind == "tool_start" else "completed", "source": "middleware",
-                        "tool_call_id": f"c{index}", "tool_name": "write_action", "tool_args": {"text": text},
-                        **({"tool_output": "第 1 句。"} if kind == "tool_end" else {})})
+                        "tool_call_id": f"c{index}", "tool_name": "write_causal", "tool_args": {"text": text},
+                        **({"tool_output": "第 1 段。"} if kind == "tool_end" else {})})
             yield f'event: status\ndata: {json.dumps({"status": "started", "trace_id": trace_id})}\n\n'
 
     class Interrupted(Run):
         async def generate_stream(self, payload, current_thread, **kwargs):
-            # 三句已写出；事件还在缓冲里没落盘，任务随后被打断。
+            # 三段已写出；事件还在缓冲里没落盘，任务随后被打断。
             async for frame in self.write_sentences(current_thread):
                 yield frame
             raise asyncio.CancelledError()

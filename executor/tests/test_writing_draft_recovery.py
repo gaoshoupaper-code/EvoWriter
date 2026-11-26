@@ -1,7 +1,7 @@
-"""没写完就结束时不丢句子：作者对话路径（REQ-20261125-154544 FR-005、FR-007、DEC-012；AC-003、AC-004）。
+"""没写完就结束时不丢段落：作者对话路径。
 
-正文按句写作后，句子先不进文件，文件头工具转「初稿」时才整章写入。
-任务中途停止或中断时，执行端从本次运行的记录（Trace）里取回写作工具已写出的句子，
+正文按段写作后，段落先不进文件，文件头工具转「初稿」时才整章写入。
+任务中途停止或中断时，执行端从本次运行的记录（Trace）里取回写作工具已写出的段落，
 补进本章并保持「起草中」。记录由项目自己的接口读取，不依赖框架检查点的内部格式。
 """
 from __future__ import annotations
@@ -60,9 +60,9 @@ def _chapter(book):
 
 
 def _trace(session, calls, *, thread_id="thread"):
-    """在会话目录里留下一份运行记录：写作工具逐个写出了这些句子，章节还没转初稿。
+    """在会话目录里留下一份运行记录：写作工具逐个写出了这些段落，章节还没转初稿。
 
-    calls 每项是 (调用编号, 句子, 回执)；回执以「[拒绝]」开头的算没写出。
+    calls 每项是 (调用编号, 段落, 回执)；回执以「[拒绝]」开头的算没写出。
     """
     from app.schemas.screenplay import ThreadSummary
 
@@ -72,21 +72,21 @@ def _trace(session, calls, *, thread_id="thread"):
     trace_id = recorder.create_run(row, "screenplay.generate.stream").trace_id
     for call_id, text, receipt in calls:
         recorder.append_event(trace_id, {"type": "tool_start", "status": "running", "source": "middleware",
-                                         "tool_call_id": call_id, "tool_name": "write_action", "tool_args": {"text": text}})
+                                         "tool_call_id": call_id, "tool_name": "write_causal", "tool_args": {"text": text}})
         recorder.append_event(trace_id, {"type": "tool_end", "status": "completed", "source": "middleware",
-                                         "tool_call_id": call_id, "tool_name": "write_action",
+                                         "tool_call_id": call_id, "tool_name": "write_causal",
                                          "tool_args": {"text": text}, "tool_output": receipt})
     asyncio.run(recorder.aclose())
     return trace_id
 
 
 def _ran(task, session, calls):
-    """任务跑到一半：运行记录里已有这些句子，任务随后被标为中断。"""
+    """任务跑到一半：运行记录里已有这些段落，任务随后被标为中断。"""
     task.mark("running", _trace(session, calls))
     return flush_unfinished_draft(task, session)
 
 
-# ── 标记：已写进文件到哪一句 ────────────────────────────────────────────
+# ── 标记：已写进文件到哪一段 ────────────────────────────────────────────
 
 
 def test_a_whole_chapter_save_records_where_the_file_stops(book):
@@ -100,14 +100,14 @@ def test_a_whole_chapter_save_records_where_the_file_stops(book):
     assert "已落盘" in task.apply_worker_save("head", flush, content)
     assert task.draft_marker() == "c2"
     assert "已落盘" in task.apply_worker_save("edit", {"kind": "chapter_text", "chapter": 1, "mode": "full",
-                                                      "content": content + "\n后来补的一句。\n"}, content)
+                                                      "content": content + "\n后来补的一段。\n"}, content)
     assert task.draft_marker() == "c2"
 
 
 # ── 补存：没写完就结束 ─────────────────────────────────────────────────
 
 
-def test_stopping_mid_chapter_keeps_every_written_sentence_as_an_unfinished_draft(book):
+def test_stopping_mid_chapter_keeps_every_written_paragraph_as_an_unfinished_draft(book):
     task = _task(book)
     task.mark("stopped")
     assert task.flush_draft(_written("c1", "c2", "c3")) == 3
@@ -117,7 +117,7 @@ def test_stopping_mid_chapter_keeps_every_written_sentence_as_an_unfinished_draf
     assert _chapter(book).count("热气漫上纸页。") == 1
 
 
-def test_flushing_twice_adds_only_sentences_written_after_the_first_flush(book):
+def test_flushing_twice_adds_only_paragraphs_written_after_the_first_flush(book):
     task = _task(book)
     assert task.flush_draft(_written("c1", "c2")) == 2
     assert task.flush_draft(_written("c1", "c2", "c3")) == 1
@@ -134,15 +134,15 @@ def test_flush_joins_a_half_chapter_written_in_batches_and_keeps_its_date(book):
 
 
 @pytest.mark.parametrize("count", [1, 120])
-def test_flush_handles_a_single_sentence_and_a_long_chapter(book, count):
+def test_flush_handles_a_single_paragraph_and_a_long_chapter(book, count):
     task = _task(book)
-    written = [(f"c{index}", f"第{index}句。") for index in range(count)]
+    written = [(f"c{index}", f"第{index}段。") for index in range(count)]
     assert task.flush_draft(written) == count
-    assert _chapter(book) == f"# 第001章\n> 状态：起草中｜{_TODAY}\n\n" + "".join(f"第{index}句。\n\n" for index in range(count))[:-1]
+    assert _chapter(book) == f"# 第001章\n> 状态：起草中｜{_TODAY}\n\n" + "".join(f"第{index}段。\n\n" for index in range(count))[:-1]
     assert task.flush_draft(written) == 0
 
 
-def test_flush_writes_nothing_for_other_agents_or_without_pending_sentences(book):
+def test_flush_writes_nothing_for_other_agents_or_without_pending_paragraphs(book):
     book.register_thread("outline", "plan")
     outline = book.start("outline", "plan", "plan", {}, 1, 1, "a" * 40)
     outline.begin()
@@ -163,13 +163,13 @@ def test_markers_are_kept_per_task_and_a_flush_needs_no_tool_call_id(book):
         first.save({"kind": "chapter_text", "chapter": 1, "mode": "edit", "anchor": "x", "replacement": "y"}, lambda: "x")
 
 
-# ── 中断后恢复：从运行记录取回句子 ─────────────────────────────────────
+# ── 中断后恢复：从运行记录取回段落 ─────────────────────────────────────
 
 
-def test_an_interrupted_task_gets_its_sentences_back_before_it_resumes(book, monkeypatch):
+def test_an_interrupted_task_gets_its_paragraphs_back_before_it_resumes(book, monkeypatch):
     task = _task(book)
     session = book.session_dir("text", "thread")
-    trace_id = _trace(session, [(call_id, text, "第 1 句。") for call_id, text in _WRITTEN])
+    trace_id = _trace(session, [(call_id, text, "第 1 段。") for call_id, text in _WRITTEN])
     task.mark("running", trace_id)
     monkeypatch.setattr(creative_scope, "PROCESS", "重启后的进程")
     resumed = book.task("text", task_id=task.id)
@@ -183,21 +183,21 @@ def test_an_interrupted_task_gets_its_sentences_back_before_it_resumes(book, mon
 def test_a_resumed_run_does_not_write_what_it_already_got_back(book, monkeypatch):
     task = _task(book)
     session = book.session_dir("text", "thread")
-    assert asyncio.run(_ran(task, session, [(call_id, text, "第 1 句。") for call_id, text in _written("c1", "c2")])) == 2
+    assert asyncio.run(_ran(task, session, [(call_id, text, "第 1 段。") for call_id, text in _written("c1", "c2")])) == 2
     monkeypatch.setattr(creative_scope, "PROCESS", "重启后的进程")
     resumed = book.task("text", task_id=task.id)
     resumed.begin(resume=True)
-    resumed.mark("running", _trace(session, [(call_id, text, "第 1 句。") for call_id, text in _WRITTEN]))
+    resumed.mark("running", _trace(session, [(call_id, text, "第 1 段。") for call_id, text in _WRITTEN]))
     assert asyncio.run(flush_unfinished_draft(resumed, session)) == 1
     assert _chapter(book) == f"# 第001章\n> 状态：起草中｜{_TODAY}\n\n" + _text("c1", "c2", "c3")
 
 
-def test_only_sentences_the_tools_actually_accepted_are_written_back(book):
+def test_only_paragraphs_the_tools_actually_accepted_are_written_back(book):
     task = _task(book)
     session = book.session_dir("text", "thread")
-    calls = [("c1", "她推门进来。", "第 1 句，本章累计约 6 字。"),
-             ("c2", "  ", "[拒绝] 句子是空的，请写一个完整的句子。"),
-             ("c3", "「谁？」", "第 2 句，本章累计约 10 字。")]
+    calls = [("c1", "她推门进来。", "第 1 段，本章累计约 6 字。"),
+             ("c2", "  ", "[拒绝] 段落是空的，请写完整的成段正文。"),
+             ("c3", "「谁？」", "第 2 段，本章累计约 10 字。")]
     assert asyncio.run(_ran(task, session, calls)) == 2
     assert _chapter(book) == f"# 第001章\n> 状态：起草中｜{_TODAY}\n\n" + _text("c1", "c2")
     assert task.draft_marker() == "c3"
@@ -253,7 +253,7 @@ def test_child_finalizes_the_chapter_through_the_parent_and_leaves_a_marker(tmp_
             header = importlib.import_module("draft_recovery_package.tools.write_chapter_header").build(abc)
             runtime = SimpleNamespace(state={"messages": _messages("c1", "c2")}, tool_call_id="head")
             content, meta = header.func(status="初稿", title="夜探", runtime=runtime)
-            assert (content, meta["writer_text"]["status"]) == ("文件头已改为「初稿」，写入本章 2 句。", "初稿")
+            assert (content, meta["writer_text"]["status"]) == ("文件头已改为「初稿」，写入本章 2 段。", "初稿")
         finally:
             DRAFT.reset(draft_token)
             ACTIVE.reset(active_token)
@@ -269,12 +269,12 @@ def _messages(*ids):
 
     messages = [HumanMessage(content="写第1章", id="h1")]
     for call_id, text in _written(*ids):
-        messages += [AIMessage(content="", tool_calls=[{"name": "write_action", "args": {"text": text}, "id": call_id}]),
-                     ToolMessage(content="第 1 句。", tool_call_id=call_id)]
+        messages += [AIMessage(content="", tool_calls=[{"name": "write_causal", "args": {"text": text}, "id": call_id}]),
+                     ToolMessage(content="第 1 段。", tool_call_id=call_id)]
     return messages
 
 
-def test_child_cannot_draft_in_batches_once_the_package_writes_by_sentence(tmp_path, monkeypatch, book, channels):
+def test_child_cannot_draft_in_batches_once_the_package_writes_by_paragraph(tmp_path, monkeypatch, book, channels):
     monkeypatch.setenv("WRITING_AGENT_ID", "text")
     monkeypatch.setenv("CREATIVE_PRIVATE_ROOT", str(tmp_path / "private"))
     task = _task(book)
@@ -283,5 +283,5 @@ def test_child_cannot_draft_in_batches_once_the_package_writes_by_sentence(tmp_p
     child, _parent = channels
     instruction = _child_instruction(task, package, tmp_path / "isolated", child)
     args = {"kind": "chapter_text", "chapter": 1, "mode": "append", "content": "一批正文", "unit_kind": "ordinary"}
-    assert instruction.save(args, lambda: pytest.fail("被拒的保存不应执行")).startswith("[拒绝] 起草请用写作工具逐句写")
+    assert instruction.save(args, lambda: pytest.fail("被拒的保存不应执行")).startswith("[拒绝] 起草请用写作工具逐段写")
     assert not (book.root / "正文").exists()

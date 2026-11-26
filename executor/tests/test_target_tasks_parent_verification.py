@@ -100,13 +100,13 @@ def test_parent_accepts_a_chapter_finalized_by_the_header_tool(tmp_path, monkeyp
     abc = SimpleNamespace(ctx=SimpleNamespace(trace_recorder=recorder, trace_id=trace_id, styles={"author": "起草规程"}),
                           workspace_path=workspace, pkg_dir=seed, trace_name="text-subagent")
     written = [HumanMessage(content="写第1章", id="h1")]
-    for call_id, name, text in (("c1", "write_action", "小舟靠岸。"), ("c2", "write_dialogue", "「船家。」")):
+    for call_id, name, text in (("c1", "write_info", "小舟靠岸。"), ("c2", "write_causal", "「船家。」")):
         written += [AIMessage(content="", tool_calls=[{"name": name, "args": {"text": text}, "id": call_id}]),
-                    ToolMessage(content="第 1 句。", tool_call_id=call_id)]
+                    ToolMessage(content="第 1 段。", tool_call_id=call_id)]
     try:
         content, _meta = write_chapter_header.build(abc).func(
             status="初稿", title="渡口", runtime=SimpleNamespace(state={"messages": written}, tool_call_id="head"))
-        assert content == "文件头已改为「初稿」，写入本章 2 句。"
+        assert content == "文件头已改为「初稿」，写入本章 2 段。"
     finally:
         DRAFT.reset(draft)
         target_execution._execution.reset(execution)

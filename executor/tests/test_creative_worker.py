@@ -215,7 +215,7 @@ _SPAWN = asyncio.create_subprocess_exec
 
 
 @contextmanager
-def _linux_text_worker(tmp_path, monkeypatch, *, by_sentence=True, replies=()):
+def _linux_text_worker(tmp_path, monkeypatch, *, by_paragraph=True, replies=()):
     """真实受限子进程加正文包，模型由 replies 脚本代答（父进程里的转发函数）。
 
     replies 每项是一次模型回复：字符串是纯文字收尾，三元组是 (调用编号, 工具名, 参数)。
@@ -257,7 +257,7 @@ runpy.run_module(sys.argv.pop(1), run_name="__main__", alter_sys=True)
     task.begin()
     pkg = tmp_path / "package"
     build_agent_package(Path(__file__).resolve().parents[2] / "evolution/harnesses/repo", pkg, "text")
-    if not by_sentence:  # 已发布的旧包：清单里没有写作工具，起草仍走整批保存
+    if not by_paragraph:  # 已发布的旧包：清单里没有写作工具，起草仍走整批保存
         path = pkg / "architecture.json"
         manifest = json.loads(path.read_text(encoding="utf-8"))
         manifest["agents"][0]["tools"] = [
@@ -315,11 +315,11 @@ runpy.run_module(sys.argv.pop(1), run_name="__main__", alter_sys=True)
     yield env
 
 
-def _by_sentence_replies():
+def _by_paragraph_replies():
     return [
-        ("c1", "write_action", {"text": "小舟靠岸。"}),
-        ("c2", "write_dialogue", {"text": "「船家，渡我。」"}),
-        ("c3", "write_narration", {"text": "三日后，河开了。"}),
+        ("c1", "write_info", {"text": "小舟靠岸。"}),
+        ("c2", "write_setup", {"text": "「船家，渡我。」"}),
+        ("c3", "write_transition", {"text": "三日后，河开了。"}),
         ("head", "write_chapter_header", {"status": "初稿", "title": "渡口"}),
         ("review", "task", {"subagent_type": "review", "description": "审第1章"}),
         "通过，无修改意见。",
@@ -346,45 +346,47 @@ def _started_trace(env):
                 if event == "status" and message.get("status") == "started")
 
 
-def test_linux_text_worker_writes_a_chapter_sentence_by_sentence(tmp_path, monkeypatch):
-    """AC-001：带写作工具的包逐句起草，转初稿时整章一次写入，再实际审稿。"""
+def test_linux_text_worker_writes_a_chapter_paragraph_by_paragraph(tmp_path, monkeypatch):
+    """带写作工具的包逐段起草，转初稿时整章一次写入，再实际审稿。"""
     from datetime import date
 
     from app.schemas.screenplay import ScreenplayGenerateRequest
 
     request = ScreenplayGenerateRequest(thread_id="thread", message_id="first", prompt="写第1章")
-    with _linux_text_worker(tmp_path, monkeypatch, replies=_by_sentence_replies()) as env:
+    with _linux_text_worker(tmp_path, monkeypatch, replies=_by_paragraph_replies()) as env:
         frames = asyncio.run(env.turn(request))
         assert any(event == "final" for event, _ in frames)
         assert env.chapter.read_text(encoding="utf-8") == (
             f"# 第001章 · 渡口\n> 状态：初稿｜{date.today().isoformat()}\n\n"
             "小舟靠岸。\n\n「船家，渡我。」\n\n三日后，河开了。\n")
-        assert {"write_action", "write_chapter_header"} <= set(env.offered[0])
+        assert {"write_info", "write_chapter_header"} <= set(env.offered[0])
         assert env.task.draft_marker() == "c3"
 
 
 def test_linux_old_package_still_drafts_in_batches(tmp_path, monkeypatch):
-    """AC-005：不带写作工具的已发布旧包，在同一版执行端上照旧整批保存并交稿。"""
+    """不带写作工具的已发布旧包，在同一版执行端上照旧整批保存并交稿。"""
+    from datetime import date
+
     from app.schemas.screenplay import ScreenplayGenerateRequest
 
     request = ScreenplayGenerateRequest(thread_id="thread", message_id="first", prompt="写第1章")
-    with _linux_text_worker(tmp_path, monkeypatch, by_sentence=False, replies=_by_batch_replies()) as env:
+    with _linux_text_worker(tmp_path, monkeypatch, by_paragraph=False, replies=_by_batch_replies()) as env:
         assert any(event == "final" for event, _ in asyncio.run(env.turn(request)))
         text = env.chapter.read_text(encoding="utf-8")
         # 旧流程照旧：整批保存，文件头保留它自己的进度行。
         assert text.startswith("# 第001章 · 渡口\n> 状态：初稿｜2026-11-25\n")
         assert text.endswith("\n\n小舟靠岸。\n\n船家收了钱。\n")
-        assert all("write_action" not in names for names in env.offered)
+        assert all("write_causal" not in names for names in env.offered)
 
 
-def test_linux_text_worker_keeps_sentences_written_before_a_service_failure(tmp_path, monkeypatch):
-    """AC-003：模型服务中途出错，已写的句子在收尾时补进文件（起草中），续写后每句只出现一次。"""
+def test_linux_text_worker_keeps_paragraphs_written_before_a_service_failure(tmp_path, monkeypatch):
+    """模型服务中途出错，已写的段落在收尾时补进文件（起草中），续写后每段只出现一次。"""
     from datetime import date
 
     from app.domains.writing.creative_scope import flush_unfinished_draft
     from app.schemas.screenplay import ScreenplayGenerateRequest
 
-    replies = _by_sentence_replies()
+    replies = _by_paragraph_replies()
     request = ScreenplayGenerateRequest(thread_id="thread", message_id="first", prompt="写第1章")
     with _linux_text_worker(tmp_path, monkeypatch, replies=[*replies[:2], "FAIL", *replies[2:]]) as env:
         with pytest.raises(RuntimeError):
@@ -407,8 +409,8 @@ def test_linux_text_worker_keeps_sentences_written_before_a_service_failure(tmp_
         assert (text.count("小舟靠岸。"), text.count("「船家，渡我。」")) == (1, 1)
 
 
-def test_linux_text_worker_keeps_sentences_when_the_author_stops(tmp_path, monkeypatch):
-    """AC-003：作者主动停止（子进程收到终止信号），停止前刚写出的句子在收尾时补进文件。"""
+def test_linux_text_worker_keeps_paragraphs_when_the_author_stops(tmp_path, monkeypatch):
+    """作者主动停止（子进程收到终止信号），停止前刚写出的段落在收尾时补进文件。"""
     from datetime import date
 
     from app.domains.writing.creative_scope import flush_unfinished_draft
@@ -416,13 +418,13 @@ def test_linux_text_worker_keeps_sentences_when_the_author_stops(tmp_path, monke
     from app.schemas.screenplay import ScreenplayGenerateRequest
 
     request = ScreenplayGenerateRequest(thread_id="thread", message_id="first", prompt="写第1章")
-    with _linux_text_worker(tmp_path, monkeypatch, replies=[*_by_sentence_replies()[:2], "HOLD"]) as env:
+    with _linux_text_worker(tmp_path, monkeypatch, replies=[*_by_paragraph_replies()[:2], "HOLD"]) as env:
         async def scenario():
             consuming = asyncio.create_task(env.turn(request))
             async with asyncio.timeout(120):
                 while not env.holding:
                     await asyncio.sleep(0.02)
-            # 路由的顺序：先标停止，再终止子进程；两句刚写完，运行记录还在缓冲里。
+            # 路由的顺序：先标停止，再终止子进程；两段刚写完，运行记录还在缓冲里。
             env.task.mark("running", _started_trace(env))
             env.task.mark("stopped")
             assert host.cancel_private_instruction(env.task.id)

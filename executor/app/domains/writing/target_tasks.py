@@ -642,12 +642,12 @@ async def drive_task(request, workspace, service, thread, execution, store, *, l
                     "如有挂载技能，按系统技能目录读取匹配的写作技能。"
                 )
                 if package_uses_sentences(execution.package_root):
-                    # 按句写作的正文包（REQ-20261125-154544）：规程随包切换，新旧包才能在同一执行端对比。
+                    # 按段写作的正文包：规程随包切换，新旧包才能在同一执行端对比。
                     prompt += (
                         f"本章{'已有正文，先读稿再续写或修订' if has_draft else '尚无正文，直接起草'}。\n"
-                        "起草一律逐句写：先想清下一句怎么承接，再从 write_action、write_dialogue、write_sensory、"
-                        "write_reaction、write_narration 里选一个，按工具参数写这一句。"
-                        "一次回复只调用一个工具，等工具返回再想下一句，每句自成一段。"
+                        "起草一律逐段写：先明确本段的叙事目的，再从 write_info、write_setup、"
+                        "write_causal、write_transition 里选一个，按工具参数写这一段。"
+                        "一次回复只调用一个工具，等工具返回再想下一段。"
                         f"整章写完，用 write_chapter_header 把状态改为初稿并填章名，系统在那时把整章写入文件。\n"
                         f'等工具返回，再单独调用 task(subagent_type="review", description="审第{chapter}章") 一次。'
                         "已有审稿意见时直接用 save_artifact 的 mode=edit 局部修订，不复审。审稿通过后直接交付。"

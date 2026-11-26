@@ -23,9 +23,9 @@
 append 落盘成功后把该产物登记进读取登记——内容刚由本工具写出，后续
 append/edit 视为已读，不必为此重读整章。
 
-整章写入（REQ-20261125-154544）：正文包按句写作时，起草不再走 full/append 的
-整批路径。五个写作工具只收句子；文件头工具把状态改为「初稿」时调用这里的整章
-写入——改文件头两行，并把本轮攒下的句子一次写入。走同一条保存通道与取证。
+整章写入（REQ-20261125-154544）：正文包按段写作时，起草不再走 full/append 的
+整批路径。四个写作工具只收段落；文件头工具把状态改为「初稿」时调用这里的整章
+写入——改文件头两行，并把本轮攒下的段落一次写入。走同一条保存通道与取证。
 
 每次「锚点→替换」经既有 TraceMiddleware 进 trace（L4 审计，DEC-008）。
 落盘成功后经 ctx.trace_recorder 冻结 ArtifactRevision——进化侧产物库的唯一
@@ -101,10 +101,10 @@ kind 取值：theme / outline / style / volume_outline(+volume) / chapter_outlin
 
 落盘内容遵守文件头两行约定：标题行 + 状态日期行；约束级/参考级分区。"""
 
-# 正文包按句写作时换用这份说明：起草已交给写作工具，这里不再提供整批路径。
+# 正文包按段写作时换用这份说明：起草已交给写作工具，这里不再提供整批路径。
 SENTENCE_PACKAGE_TOOL_DESCRIPTION = """保存或修改本章正文（不接触文件路径）。
 
-起草不用这个工具：正文用五个写作工具逐句写，写完用 write_chapter_header 把状态改为「初稿」，系统在那时把整章写入文件。
+起草不用这个工具：正文用四个写作工具逐段写，写完用 write_chapter_header 把状态改为「初稿」，系统在那时把整章写入文件。
 这里只做两件事：
 - mode="full"：content = 本章完整的新内容，推翻重写整章时用。先用 read_artifact 读过本章；
   content 从两行文件头写起：「# 第NNN章 · 章名」和「> 状态：初稿｜日期」。
@@ -376,7 +376,7 @@ def _build_writer(
         writing_context: 当前 author 规程与启用技能；None 保持旧调用兼容。
         enabled_skill_names: 同轮启用技能原名；None 兼容旧执行端的标题核验。
         read_package_skill_names: 当前正文角色成功读取的包内技能，与读取工具共用同一集合。
-        sentence_package: 正文包按句写作时为 True，说明文字不再提供整批起草。
+        sentence_package: 正文包按段写作时为 True，说明文字不再提供整批起草。
     """
     append_batches = append_batches if append_batches is not None else {}
     skill_names_hint = (
@@ -659,7 +659,7 @@ def _build_writer(
         return _through_task(values, lambda: _save(*args, **kwargs))
 
     def _flush_chapter(status, title, messages):
-        """整章写入：改文件头两行，并把本轮攒下的句子一次写入（REQ-20261125-154544 FR-005/FR-006）。"""
+        """整章写入：改文件头两行，并把本轮攒下的段落一次写入（REQ-20261125-154544 FR-005/FR-006）。"""
         from .sentence_common import current_chapter
 
         chapter = current_chapter()
@@ -675,7 +675,7 @@ def _build_writer(
         pending = pending_sentences(messages, state.flushed_through)
         if not pending and not split_chapter(current)[1]:
             return rejection("本章还没有正文，先写正文再改文件头。"), None
-        content = compose_chapter(current, chapter, [sentence for _, sentence in pending], title=title, status=status)
+        content = compose_chapter(current, chapter, [paragraph for _, paragraph in pending], title=title, status=status)
         marker = pending[-1][0] if pending else state.flushed_through
 
         def write():
@@ -685,7 +685,7 @@ def _build_writer(
             _capture_revision(rel, content, tool_name=HEADER_TOOL)
             _register(rel, content, KIND_TEXT)
             failures.pop(rel, None)
-            return f"文件头已改为「{status}」" + (f"，写入本章 {len(pending)} 句。" if pending else "。")
+            return f"文件头已改为「{status}」" + (f"，写入本章 {len(pending)} 段。" if pending else "。")
 
         values = {"kind": KIND_TEXT, "chapter": chapter, "mode": "full", "content": content,
                   "draft_flushed_through": marker, "draft_sentences": len(pending)}

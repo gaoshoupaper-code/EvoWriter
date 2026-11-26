@@ -1,7 +1,7 @@
-"""逐句写作工具：五个写作工具、文件头工具与整章写入（REQ-20261125-154544）。
+"""逐段写作工具：四个写作工具、文件头工具与整章写入。
 
-锁定 FR-001/FR-002/FR-003/FR-005/FR-006/FR-007 与 AC-001、AC-002、AC-005、AC-008，
-以及 AC-003 的拼装部分（已有半章之后接上新句子、已写入的句子不再写第二遍）。
+覆盖写作工具只收一段只回短回执、段内换行允许、intent 一行短语上限，
+以及拼装部分（已有半章之后接上新段落、已写入的段落不再写第二遍）。
 """
 from __future__ import annotations
 
@@ -25,10 +25,10 @@ load_package(_HARNESS_DIR)
 from harness_current.text_completion import completion_snapshot  # noqa: E402
 from harness_current.tools import save_artifact as save_module  # noqa: E402
 from harness_current.tools.write_chapter_header import build as build_header  # noqa: E402
-from harness_current.tools.write_sensory import build as build_sensory  # noqa: E402
+from harness_current.tools.write_causal import build as build_causal  # noqa: E402
 
-SENTENCES = [("c1", "write_action", "她推门进来。"), ("c2", "write_dialogue", "「谁？」"),
-             ("c3", "write_sensory", "热气漫上纸页。")]
+PARAGRAPHS = [("c1", "write_info", "她推门进来。"), ("c2", "write_setup", "「谁？」"),
+              ("c3", "write_causal", "热气漫上纸页。")]
 TODAY = date.today().isoformat()
 
 
@@ -55,14 +55,14 @@ def _runtime(messages, call_id):
     return SimpleNamespace(state={"messages": messages}, tool_call_id=call_id)
 
 
-def _turn(calls=SENTENCES, answered=True):
-    """本轮对话：一条用户指令，加上逐个已返回的句子调用。"""
+def _turn(calls=PARAGRAPHS, answered=True):
+    """本轮对话：一条用户指令，加上逐个已返回的段落调用。"""
     messages = [HumanMessage(content="写第2章", id="h1")]
     for call_id, name, text in calls:
         messages.append(AIMessage(content="", id=f"a-{call_id}",
                                   tool_calls=[{"name": name, "args": {"text": text}, "id": call_id}]))
         if answered:
-            messages.append(ToolMessage(content=f"第 1 句，本章累计约 {len(text)} 字。", tool_call_id=call_id))
+            messages.append(ToolMessage(content=f"第 1 段，本章累计约 {len(text)} 字。", tool_call_id=call_id))
     return messages
 
 
@@ -70,71 +70,81 @@ def _header(chapter, messages, status="初稿", title="夜探"):
     return build_header(_abc(chapter.root)).func(status=status, title=title, runtime=_runtime(messages, "head"))
 
 
-# ── 写作工具：只收一句，只回短回执（FR-001、FR-002、FR-003）──────────────
+# ── 写作工具：只收一段，只回短回执 ──────────────────────────────────────────
 
 
-def test_sentence_tool_takes_one_sentence_and_writes_nothing_to_disk(chapter):
-    receipt = build_sensory(_abc(chapter.root)).func(
+def test_paragraph_tool_takes_one_paragraph_and_writes_nothing_to_disk(chapter):
+    receipt = build_causal(_abc(chapter.root)).func(
         "从端茶的动作接到纸页上的热气", "热气漫上纸页。", runtime=_runtime(_turn([]), "c1"),
     )
-    assert receipt == "第 1 句，本章累计约 7 字。"
+    assert receipt == "第 1 段，本章累计约 7 字。"
     assert not chapter.path.exists()
 
 
-@pytest.mark.parametrize("text", ["   ", "他站起来。\n走到窗边。"])
-def test_sentence_tool_rejects_an_empty_sentence_or_a_line_break(chapter, text):
-    receipt = build_sensory(_abc(chapter.root)).func(
+@pytest.mark.parametrize("text", ["   ", "\n\t "])
+def test_paragraph_tool_rejects_an_empty_paragraph(chapter, text):
+    receipt = build_causal(_abc(chapter.root)).func(
         "从端茶的动作接到纸页上的热气", text, runtime=_runtime(_turn(), "c4"),
     )
     assert receipt.startswith("[拒绝] ")
     assert chapter.path.exists() is False
 
 
+def test_paragraph_tool_accepts_inner_line_breaks_and_the_flush_keeps_them(chapter):
+    text = "他伸手按住账本。\n「这一页，重算。」"
+    receipt = build_causal(_abc(chapter.root)).func(
+        "按住账本逼对方重算 → 对方僵住应声 → 主导权换手", text, runtime=_runtime(_turn([]), "c1"),
+    )
+    assert receipt == f"第 1 段，本章累计约 {len(text)} 字。"
+    _header(chapter, _turn([("c1", "write_causal", text)]))
+    assert chapter.path.read_text(encoding="utf-8").endswith("\n\n他伸手按住账本。\n「这一页，重算。」\n")
+
+
 def test_receipt_counts_this_turn_and_the_existing_body(chapter):
     chapter.path.parent.mkdir(parents=True)
     chapter.path.write_text("# 第002章\n> 状态：起草中｜2026-11-20\n\n旧批次的一段。\n", encoding="utf-8")
-    written = [("c1", "write_action", "她推门进来。"), ("c2", "write_dialogue", "「谁？」")]
-    receipt = build_sensory(_abc(chapter.root)).func(
+    written = [("c1", "write_info", "她推门进来。"), ("c2", "write_setup", "「谁？」")]
+    receipt = build_causal(_abc(chapter.root)).func(
         "从端茶的动作接到纸页上的热气", "热气漫上纸页。", runtime=_runtime(_turn(written), "c3"),
     )
-    assert receipt == "第 3 句，本章累计约 24 字。"
+    assert receipt == "第 3 段，本章累计约 24 字。"
 
 
-@pytest.mark.parametrize("intent", ["   ", "接上。\n往下写。", "字" * 61])
-def test_sentence_tool_rejects_an_invalid_writing_intent(chapter, intent):
-    receipt = build_sensory(_abc(chapter.root)).func(
+@pytest.mark.parametrize("intent", ["   ", "接上。\n往下写。", "字" * 101])
+def test_paragraph_tool_rejects_an_invalid_writing_intent(chapter, intent):
+    receipt = build_causal(_abc(chapter.root)).func(
         intent, "热气漫上纸页。", runtime=_runtime(_turn([]), "c1"),
     )
-    assert receipt.startswith("[拒绝] 请先用一行短语写下本句的具体写法")
+    assert receipt.startswith("[拒绝] 请先用一行短语写清本段目的与因果去向")
 
 
-def test_sentence_tool_waits_for_its_own_model_reply(chapter):
-    tool = build_sensory(_abc(chapter.root))
+def test_paragraph_tool_waits_for_its_own_model_reply(chapter):
+    tool = build_causal(_abc(chapter.root))
     args = {"writing_intent": "从端茶的动作接到纸页上的热气", "text": "热气漫上纸页。"}
-    write_call = {"name": "write_sensory", "args": args, "id": "c2"}
+    write_call = {"name": "write_causal", "args": args, "id": "c2"}
     read_call = {"name": "read_artifact", "args": {}, "id": "r1"}
     messages = [*_turn([]), AIMessage(content="", tool_calls=[read_call, write_call])]
     refused = tool.func(**args, runtime=_runtime(messages, "c2"))
-    assert refused.startswith("[拒绝] 写句子时一次只调用一个工具")
+    assert refused.startswith("[拒绝] 写段落时一次只调用一个工具")
     messages.extend([
         ToolMessage(content="已读章纲。", tool_call_id="r1"),
         ToolMessage(content=refused, tool_call_id="c2"),
         AIMessage(content="", tool_calls=[{**write_call, "id": "c3"}]),
     ])
     receipt = tool.func(**args, runtime=_runtime(messages, "c3"))
-    assert receipt == "第 1 句，本章累计约 7 字。"
+    assert receipt == "第 1 段，本章累计约 7 字。"
     messages.append(ToolMessage(content=receipt, tool_call_id="c3"))
     _header(chapter, messages)
     assert chapter.path.read_text(encoding="utf-8").endswith("\n\n热气漫上纸页。\n")
     assert args["writing_intent"] not in chapter.path.read_text(encoding="utf-8")
 
 
-# ── 文件头工具：转「初稿」时整章一次写入（FR-005、FR-006）────────────────
+# ── 文件头工具：转「初稿」时整章一次写入 ───────────────────────────────────
 
 
 def test_header_tool_writes_the_whole_chapter_when_the_status_becomes_draft(chapter):
     content, _meta = _header(chapter, _turn())
-    assert content == f"文件头已改为「初稿」，写入本章 3 句。"
+    assert content == f"文件头已改为「初稿」，写入本章 3 段。"
     assert chapter.path.read_text(encoding="utf-8") == (
         f"# 第002章 · 夜探\n> 状态：初稿｜{TODAY}\n\n她推门进来。\n\n「谁？」\n\n热气漫上纸页。\n"
     )
@@ -142,21 +152,21 @@ def test_header_tool_writes_the_whole_chapter_when_the_status_becomes_draft(chap
     assert draft_state().flushed_through == "c3"
 
 
-def test_header_tool_joins_new_sentences_after_an_existing_draft_and_keeps_its_date(chapter):
+def test_header_tool_joins_new_paragraphs_after_an_existing_draft_and_keeps_its_date(chapter):
     chapter.path.parent.mkdir(parents=True)
     chapter.path.write_text("# 第002章\n> 状态：起草中｜2026-11-20\n\n旧批次的一段。\n", encoding="utf-8")
-    _header(chapter, _turn([("c9", "write_narration", "新写的一句。")]))
+    _header(chapter, _turn([("c9", "write_transition", "新写的一段。")]))
     assert chapter.path.read_text(encoding="utf-8") == (
-        "# 第002章 · 夜探\n> 状态：初稿｜2026-11-20\n\n旧批次的一段。\n\n新写的一句。\n"
+        "# 第002章 · 夜探\n> 状态：初稿｜2026-11-20\n\n旧批次的一段。\n\n新写的一段。\n"
     )
 
 
-def test_header_flush_tells_the_run_where_the_file_stops_only_when_sentences_were_written(chapter):
+def test_header_flush_tells_the_run_where_the_file_stops_only_when_paragraphs_were_written(chapter):
     saved = []
     token = DRAFT.set(DraftState(persist=saved.append))
     try:
-        _header(chapter, _turn([("c1", "write_action", "她推门进来。")]))
-        _header(chapter, _turn([("c1", "write_action", "她推门进来。")]))
+        _header(chapter, _turn([("c1", "write_info", "她推门进来。")]))
+        _header(chapter, _turn([("c1", "write_info", "她推门进来。")]))
     finally:
         DRAFT.reset(token)
     assert saved == ["c1"]
@@ -172,7 +182,7 @@ def test_header_flush_leaves_an_artifact_revision_for_the_whole_chapter(chapter)
     assert (revisions[0]["tool_name"], revisions[0]["file_path"]) == (HEADER_TOOL, "正文/第002章.md")
 
 
-def test_sentences_after_a_flush_are_not_written_twice(chapter):
+def test_paragraphs_after_a_flush_are_not_written_twice(chapter):
     _header(chapter, _turn())
     before = chapter.path.read_text(encoding="utf-8")
     content, _meta = _header(chapter, _turn())
@@ -194,20 +204,20 @@ def test_header_tool_still_rewrites_the_header_of_an_existing_draft(chapter):
 
 
 def test_header_tool_waits_for_sibling_calls_of_the_same_reply(chapter):
-    calls = [{"name": "write_action", "args": {"text": "她推门进来。"}, "id": "c1"},
+    calls = [{"name": "write_info", "args": {"text": "她推门进来。"}, "id": "c1"},
              {"name": HEADER_TOOL, "args": {"status": "初稿"}, "id": "head"}]
     pending = [HumanMessage(content="写第2章", id="h1"), AIMessage(content="", tool_calls=calls, id="a-1")]
     content, meta = _header(chapter, pending)
-    assert content.startswith("[拒绝] 同一轮里还有句子没返回")
+    assert content.startswith("[拒绝] 同一轮里还有写作调用没返回")
     assert (meta, chapter.path.exists()) == (None, False)
-    answered = [*pending, ToolMessage(content="第 1 句，本章累计约 6 字。", tool_call_id="c1")]
+    answered = [*pending, ToolMessage(content="第 1 段，本章累计约 6 字。", tool_call_id="c1")]
     _header(chapter, answered)
     assert chapter.path.read_text(encoding="utf-8").endswith("\n\n她推门进来。\n")
 
 
-def test_rejected_sentences_are_not_part_of_the_chapter(chapter):
-    messages = _turn([("c1", "write_action", "她推门进来。"), ("c2", "write_dialogue", "「谁？」")])
-    messages[-1] = ToolMessage(content="[拒绝] 句子是空的，请写一个完整的句子。", tool_call_id="c2")
+def test_rejected_paragraphs_are_not_part_of_the_chapter(chapter):
+    messages = _turn([("c1", "write_info", "她推门进来。"), ("c2", "write_setup", "「谁？」")])
+    messages[-1] = ToolMessage(content="[拒绝] 段落是空的，请写完整的成段正文。", tool_call_id="c2")
     _header(chapter, messages)
     assert chapter.path.read_text(encoding="utf-8") == f"# 第002章 · 夜探\n> 状态：初稿｜{TODAY}\n\n她推门进来。\n"
 
@@ -219,12 +229,12 @@ def test_header_tool_refuses_a_title_that_is_not_one_short_line(chapter, title):
     assert chapter.path.exists() is False
 
 
-def test_historical_successful_sentence_calls_are_kept_in_call_order(chapter):
-    calls = [{"name": "write_action", "args": {"text": "她推门进来。"}, "id": "c1"},
-             {"name": "write_dialogue", "args": {"text": "「谁？」"}, "id": "c2"}]
+def test_historical_successful_paragraph_calls_are_kept_in_call_order(chapter):
+    calls = [{"name": "write_info", "args": {"text": "她推门进来。"}, "id": "c1"},
+             {"name": "write_causal", "args": {"text": "「谁？」"}, "id": "c2"}]
     messages = [HumanMessage(content="写第2章", id="h1"), AIMessage(content="", tool_calls=calls, id="a-1"),
-                ToolMessage(content="第 1 句，本章累计约 6 字。", tool_call_id="c1"),
-                ToolMessage(content="第 2 句，本章累计约 10 字。", tool_call_id="c2")]
+                ToolMessage(content="第 1 段，本章累计约 6 字。", tool_call_id="c1"),
+                ToolMessage(content="第 2 段，本章累计约 10 字。", tool_call_id="c2")]
     _header(chapter, messages)
     assert chapter.path.read_text(encoding="utf-8") == f"# 第002章 · 夜探\n> 状态：初稿｜{TODAY}\n\n她推门进来。\n\n「谁？」\n"
 
@@ -245,7 +255,7 @@ def test_header_flush_is_a_real_save_for_the_delivery_gate(chapter):
     assert snapshot["chapters"]["2"] == {"unit": "head", "status": "初稿", "review": None, "review_turn": None, "order": 1}
 
 
-# ── 落盘工具随包切换；正文包带齐六个工具（FR-007、FR-008）────────────────
+# ── 落盘工具随包切换；正文包带齐五个工具 ───────────────────────────────────
 
 
 def _package(root: Path, tools: list[str]) -> Path:
@@ -270,10 +280,10 @@ def test_save_tool_is_built_once_per_assembly(chapter):
     assert save_module.build(abc) is save_module.build(abc)
 
 
-def test_text_package_ships_the_sentence_tools_and_their_shared_module(tmp_path):
+def test_text_package_ships_the_paragraph_tools_and_their_shared_module(tmp_path):
     build_agent_package(_HARNESS_DIR, tmp_path / "text", "text")
     tools = json.loads((tmp_path / "text" / "architecture.json").read_text(encoding="utf-8"))["agents"][0]["tools"]
-    assert tools[-6:] == [*SENTENCE_TOOLS, HEADER_TOOL]
+    assert tools[-5:] == [*SENTENCE_TOOLS, HEADER_TOOL]
     assert all((tmp_path / "text" / "tools" / f"{name}.py").is_file() for name in tools)
     assert (tmp_path / "text" / "tools" / "sentence_common.py").is_file()
 

@@ -1,7 +1,7 @@
-"""逐句写作工具的共用部分（REQ-20261125-154544 FR-001/FR-002/FR-003/FR-006）。
+"""逐段写作工具的共用部分。
 
-五个写作工具只收一句、只回一条短回执。句子在这里不写入文件：文件头工具把状态
-改为「初稿」时，由 save_artifact 一次写入整章（FR-005）。本轮已写的句子每次都
+四个写作工具只收一段、只回一条短回执。段落在这里不写入文件：文件头工具把状态
+改为「初稿」时，由 save_artifact 一次写入整章。本轮已写的段落每次都
 从对话记录里重新取，所以任务恢复后不必另存一份。
 """
 from __future__ import annotations
@@ -17,10 +17,7 @@ from contracts.sentence_draft import (
 )
 from contracts.writing_artifacts import KIND_TEXT, artifact_relpath
 
-
-class SentenceInput(BaseModel):
-    writing_intent: str = Field(description="先想清这一句怎么接、落到哪个具体细节，再用一行短语写下选择，最多 60 字")
-    text: str = Field(description="这一句的正文：一个完整的句子，不带换行")
+INTENT_LIMIT = 100
 
 
 def current_chapter() -> int | None:
@@ -52,32 +49,41 @@ def existing_chapter(workspace_root: Path) -> str:
         return ""
 
 
-def build_sentence_tool(abc, name: str, description: str) -> StructuredTool:
-    """一类形式一个工具：收一句，回「第几句、本章累计多少字」。说明全文由各工具文件给出。"""
+def build_paragraph_tool(abc, name: str, description: str, intent_guide: str) -> StructuredTool:
+    """一类形式一个工具：收一段，回「第几段、本章累计多少字」。
+
+    各工具的 writing_intent 填法不同，由 intent_guide 给出箭头格式说明。
+    说明全文由各工具文件给出。
+    """
     workspace_root = Path(abc.workspace_path)
 
-    def write_sentence(writing_intent: str, text: str, runtime: ToolRuntime = None) -> str:
+    class ParagraphInput(BaseModel):
+        writing_intent: str = Field(
+            description=f"{intent_guide}。一行短语，最多 {INTENT_LIMIT} 字")
+        text: str = Field(description="这一段的成段正文")
+
+    def write_paragraph(writing_intent: str, text: str, runtime: ToolRuntime = None) -> str:
         messages = messages_of(runtime)
         if messages and len(getattr(messages[-1], "tool_calls", ())) > 1:
-            return rejection("写句子时一次只调用一个工具。等上一句的回执，再单独想和写当前这一句。")
-        if not 1 <= len(writing_intent.strip()) <= 60 or "\n" in writing_intent or "\r" in writing_intent:
-            return rejection("请先用一行短语写下本句的具体写法，最多 60 字。")
+            return rejection("写段落时一次只调用一个工具。等上一段的回执，再单独想和写当前这一段。")
+        if not 1 <= len(writing_intent.strip()) <= INTENT_LIMIT or "\n" in writing_intent or "\r" in writing_intent:
+            return rejection(f"请先用一行短语写清本段目的与因果去向，最多 {INTENT_LIMIT} 字。")
         reason = validate_sentence(text)
         if reason:
             return rejection(reason)
-        sentence = text.strip()
+        paragraph = text.strip()
         pending = pending_sentences(messages, draft_state().flushed_through)
         total = (body_char_count(existing_chapter(workspace_root))
-                 + sum(len(item) for _, item in pending) + len(sentence))
-        return f"第 {len(turn_sentences(messages)) + 1} 句，本章累计约 {total} 字。"
+                 + sum(len(item) for _, item in pending) + len(paragraph))
+        return f"第 {len(turn_sentences(messages)) + 1} 段，本章累计约 {total} 字。"
 
     return StructuredTool.from_function(
         name=name,
         description=description,
-        func=write_sentence,
-        args_schema=SentenceInput,
+        func=write_paragraph,
+        args_schema=ParagraphInput,
         infer_schema=False,
     )
 
 
-__all__ = ["SentenceInput", "build_sentence_tool", "current_chapter", "existing_chapter", "messages_of"]
+__all__ = ["build_paragraph_tool", "current_chapter", "existing_chapter", "messages_of"]

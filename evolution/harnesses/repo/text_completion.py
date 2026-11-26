@@ -112,13 +112,13 @@ def parallel_writing_unit(state: dict, root: Path) -> bool:
 
 
 def unflushed_sentences(state: dict) -> list:
-    """本轮已写出、还没写进文件的句子（REQ-20261125-154544）。整章写入前只留在对话记录里。"""
+    """本轮已写出、还没写进文件的段落。整章写入前只留在对话记录里。"""
     return pending_sentences(state.get("messages", []), draft_state().flushed_through)
 
 
 def unflushed_reason(state: dict) -> str | None:
     count = len(unflushed_sentences(state))
-    return f"本章还有 {count} 句没写入文件，先用 write_chapter_header 把状态改为初稿。" if count else None
+    return f"本章还有 {count} 段没写入文件，先用 write_chapter_header 把状态改为初稿。" if count else None
 
 
 def review_block_reason(state: dict, root: Path, description: str = "") -> str | None:

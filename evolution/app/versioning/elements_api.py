@@ -399,11 +399,10 @@ _TOOL_FUNCTIONS = {
     "update_foreshadow_table": "更新总纲中的伏笔登记表，保留总纲其余内容。",
     "rewrite_rhythm_table": "更新指定卷纲的剧情推进表，保留其余内容。",
     "append_chapter_deviation": "把定稿正文与章纲的实际偏差记到对应章纲。",
-    "write_action": "逐句写作：写下一句动作，人物做了什么、旁人看得见。",
-    "write_dialogue": "逐句写作：写下一句语言，人物说了什么。",
-    "write_sensory": "逐句写作：写下一句感官，人物看到、听到、闻到、尝到、触到什么。",
-    "write_reaction": "逐句写作：写下一句反应，人物对刚发生之事的回应。",
-    "write_narration": "逐句写作：写下一句叙述：过渡、时间跳跃、背景、概述。",
+    "write_info": "逐段写作：写信息段，定时间地点、空间布局与相对距离。",
+    "write_setup": "逐段写作：写铺垫段，立立场筹码、规则前提与伏笔。",
+    "write_causal": "逐段写作：写因果段，写全触发、在场者反应与局势变化。",
+    "write_transition": "逐段写作：写过渡段，衔接时空并压缩非重点过程。",
     "write_chapter_header": "只改正文文件开头的章名行和状态行；转为初稿时把整章一次写入文件。",
 }
 

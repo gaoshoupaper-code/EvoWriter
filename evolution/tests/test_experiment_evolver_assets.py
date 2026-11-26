@@ -71,7 +71,7 @@ def test_evolver_assets_follow_the_authenticated_suite(client, monkeypatch, suit
     assert ("【优先改写作工具说明】" in data["system_prompt"]) == is_text
 
 
-def test_text_evolver_prompt_routes_sentence_evidence_to_the_tool_description(client, monkeypatch):
+def test_text_evolver_prompt_routes_paragraph_evidence_to_the_tool_description(client, monkeypatch):
     monkeypatch.setenv("WRITING_AGENT_ID", "text")
     client.cookies.set("session", "reader")
     prompt = client.get(URL).json()["system_prompt"]
@@ -79,13 +79,13 @@ def test_text_evolver_prompt_routes_sentence_evidence_to_the_tool_description(cl
     guidance = prompt.split("【优先改写作工具说明】", 1)[1].split("【小步试改】", 1)[0]
     assert "一个证据明确的差句就可以试" in guidance
     assert all(tool in guidance for tool in (
-        "write_action", "write_dialogue", "write_sensory", "write_reaction", "write_narration",
+        "write_info", "write_setup", "write_causal", "write_transition",
     ))
     assert guidance.index("list_writing_events") < guidance.index("read_writing_event") < guidance.index("edit_source")
     assert guidance.index("read_source") < guidance.index("edit_source")
     assert "只改实际传给模型的工具描述" in guidance
     assert "调用前想清什么" in guidance and "writing_intent" in guidance
-    assert all(detail in guidance for detail in ("体态", "相对位置", "动作的落点"))
+    assert all(detail in guidance for detail in ("站位", "克制理由", "局势落到什么变化"))
 
     from app.evolve.agent.prompt import evolve_system_prompt
     assert "【优先改写作工具说明】" not in evolve_system_prompt("s", "", "")

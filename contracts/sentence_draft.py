@@ -1,9 +1,9 @@
-"""逐句写作的共享规则（REQ-20261125-154544）。
+"""逐段写作的共享规则。
 
-正文 agent 用五个写作工具一句一句写，文件头工具把状态改为「初稿」时整章一次写入。
-这里只放不依赖执行端的纯规则：工具名、本轮已写句子的判定、整章文本的拼装，
-以及「已写进文件到哪一句」的进程内标记。执行端与正文包共用同一份判定，
-所以中断后补存与运行中写入对「哪些句子还没进文件」的答案一致。
+正文 agent 用四个写作工具一段一段写，文件头工具把状态改为「初稿」时整章一次写入。
+这里只放不依赖执行端的纯规则：工具名、本轮已写段落的判定、整章文本的拼装，
+以及「已写进文件到哪一段」的进程内标记。执行端与正文包共用同一份判定，
+所以中断后补存与运行中写入对「哪些段落还没进文件」的答案一致。
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from contextvars import ContextVar
 from datetime import date
 from pathlib import Path
 
-SENTENCE_TOOLS = ("write_action", "write_dialogue", "write_sensory", "write_reaction", "write_narration")
+SENTENCE_TOOLS = ("write_info", "write_setup", "write_causal", "write_transition")
 HEADER_TOOL = "write_chapter_header"
 DRAFT_TOOLS = frozenset((*SENTENCE_TOOLS, HEADER_TOOL))
 DRAFT_STATUSES = ("起草中", "初稿")
@@ -26,7 +26,7 @@ def rejection(reason: str) -> str:
 
 
 def package_uses_sentences(package_root) -> bool:
-    """正文包是否按句写作：清单里声明了写作工具才算。读不到清单按旧包处理。"""
+    """正文包是否按段写作：清单里声明了写作工具才算。读不到清单按旧包处理。"""
     if package_root is None:
         return False
     try:
@@ -37,11 +37,9 @@ def package_uses_sentences(package_root) -> bool:
 
 
 def validate_sentence(text) -> str | None:
-    """只拦两种格式硬伤：空句、带换行。合格返回 None。"""
+    """只拦一种格式硬伤：空段。段内换行允许（因果段可用换行自然分段）。合格返回 None。"""
     if not isinstance(text, str) or not text.strip():
-        return "句子是空的，请写一个完整的句子。"
-    if "\n" in text or "\r" in text:
-        return "一次只写一句，句子中间不能换行。"
+        return "段落是空的，请写完整的成段正文。"
     return None
 
 
@@ -66,9 +64,9 @@ def _accepted(result) -> bool:
 
 
 def turn_sentences(messages) -> list[tuple[str, str]]:
-    """本轮（最后一条用户消息之后）写作工具已成功写出的句子，按调用顺序：(调用编号, 句子)。
+    """本轮（最后一条用户消息之后）写作工具已成功写出的段落，按调用顺序：(调用编号, 段落)。
 
-    被拒的调用和还没返回的调用都不算。句子是对话记录里那次调用的参数，不在别处另存。
+    被拒的调用和还没返回的调用都不算。段落是对话记录里那次调用的参数，不在别处另存。
     """
     start = 0
     for index in range(len(messages) - 1, -1, -1):
@@ -86,7 +84,7 @@ def turn_sentences(messages) -> list[tuple[str, str]]:
 
 
 def sentences_after(written, flushed_through=None) -> list:
-    """已写出的句子里，标记之后的那一段。标记不属于这一批时全部待存。"""
+    """已写出的段落里，标记之后的那一部分。标记不属于这一批时全部待存。"""
     if not flushed_through:
         return list(written)
     for index, (call_id, _) in enumerate(written):
@@ -96,12 +94,12 @@ def sentences_after(written, flushed_through=None) -> list:
 
 
 def pending_sentences(messages, flushed_through=None) -> list[tuple[str, str]]:
-    """本轮已写出、还没写进文件的句子。"""
+    """本轮已写出、还没写进文件的段落。"""
     return sentences_after(turn_sentences(messages), flushed_through)
 
 
 def unresolved_draft_calls(messages, own_call=None) -> bool:
-    """最后一条模型消息里，除本次调用外是否还有逐句写作调用没返回。"""
+    """最后一条模型消息里，除本次调用外是否还有写作调用没返回。"""
     last = messages[-1] if messages else None
     if last is None or _kind(last) != "ai":
         return False
@@ -126,9 +124,10 @@ def _date_of(status_line: str | None) -> str:
 
 
 def compose_chapter(existing: str, chapter: int, sentences, *, title=None, status: str) -> str:
-    """整章文件文本：章名行、状态行、其余原有文件头行，然后是原有正文加攒下的句子。
+    """整章文件文本：章名行、状态行、其余原有文件头行，然后是原有正文加攒下的段落。
 
-    原有正文原样保留，新句子接在末尾，一句一段。状态行沿用原日期，没有就用今天。
+    原有正文原样保留，新段落接在末尾，一次调用自成一段，段内换行原样保留。
+    状态行沿用原日期，没有就用今天。
     """
     existing = existing or ""
     newline = "\r\n" if "\r\n" in existing else "\n"
@@ -139,7 +138,7 @@ def compose_chapter(existing: str, chapter: int, sentences, *, title=None, statu
     title_line = f"# 第{chapter:03d}章 · {name}" if name else old_title or f"# 第{chapter:03d}章"
     status_line = f"> 状态：{status}｜{_date_of(old_status)}"
     others = [line for line in header if line not in (old_title, old_status)]
-    paragraphs = ([body] if body else []) + [sentence for sentence in sentences if sentence]
+    paragraphs = ([body] if body else []) + [paragraph for paragraph in sentences if paragraph]
     return (newline.join([title_line, status_line, *others]) + newline * 2
             + (newline * 2).join(paragraphs) + newline)
 
@@ -151,7 +150,7 @@ def body_char_count(text: str) -> int:
 
 
 class DraftState:
-    """一次运行内「已写进文件到哪一句」的标记。persist 在整章写入成功后保存标记。"""
+    """一次运行内「已写进文件到哪一段」的标记。persist 在整章写入成功后保存标记。"""
 
     def __init__(self, flushed_through: str | None = None, persist=None):
         self.flushed_through = flushed_through

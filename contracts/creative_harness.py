@@ -88,8 +88,8 @@ def write_denial(agent: str, tool: str, args: dict, volume: int, chapter: int,
         return None if helper and args.get("subagent_type") == helper else "当前入口不能委托这个助手"
     if tool in DRAFT_TOOLS:
         if not package_uses_sentences(package_root):
-            return "当前正文包不支持逐句写作"
-        return None if agent == "text" else "仅正文可以逐句写作"
+            return "当前正文包不支持逐段写作"
+        return None if agent == "text" else "仅正文可以逐段写作"
     if tool in {"read_file", "write_file", "edit_file", "ls", "glob", "grep", "execute"}:
         return "请使用当前入口已获准的产物工具"
     if tool == "read_artifact":
@@ -121,7 +121,7 @@ def write_denial(agent: str, tool: str, args: dict, volume: int, chapter: int,
         return "只能写当前目标章"
     if (agent == "text" and kind == "chapter_text" and package_uses_sentences(package_root)
             and (args.get("mode") == "append" or args.get("unit_kind"))):
-        return "起草请用写作工具逐句写；保存工具只用于整章重写和审稿后修订"
+        return "起草请用写作工具逐段写；保存工具只用于整章重写和审稿后修订"
     return None
 
 

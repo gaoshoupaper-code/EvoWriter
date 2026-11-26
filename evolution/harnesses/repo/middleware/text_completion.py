@@ -52,7 +52,7 @@ class TextCompletionMiddleware(AgentMiddleware[TextCompletionState]):
         message = messages[-1]
         if not isinstance(message, AIMessage) or message.tool_calls or message.content == TOOL_CALL_EXHAUSTED:
             return None
-        # 句子没写进文件时，本章有没有保存回执都要拦：否则整章只留在对话记录里。
+        # 段落没写进文件时，本章有没有保存回执都要拦：否则整章只留在对话记录里。
         active = completion_snapshot(state, self.root).get("active_turn") == current_turn(state)
         reason = unflushed_reason(state) or (delivery_block_reason(state, self.root) if active else None)
         if not reason:

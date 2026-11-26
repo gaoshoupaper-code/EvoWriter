@@ -60,13 +60,10 @@
 .trace-model-stream-status { color: var(--evo-ink-secondary); font-size: var(--text-ui-caption); }
 .trace-model-stream pre { max-height: 14rem; overflow: auto; overscroll-behavior: contain; }
 
-.trace-model-tools {
+.trace-model-tool-line {
   color: var(--evo-ink-secondary);
   font-size: var(--text-ui-caption);
 }
-
-.trace-model-tools > summary { width: fit-content; cursor: pointer; }
-.trace-model-tools > p { padding-top: 4px; }
 
 .trace-model-expand {
   background: none;

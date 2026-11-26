@@ -109,9 +109,7 @@ describe("评测运行的模型输入和输出", () => {
     expect(outputs.getByText("先核对章纲中的因果关系。")).toBeVisible();
     expect(outputs.getByText("读取材料")).toBeVisible();
     expect(outputs.queryByText(/encrypted-provider-data|private-reasoning-text/)).not.toBeInTheDocument();
-    expect(outputs.getByText("read_file")).not.toBeVisible();
-    fireEvent.click(outputs.getByText("工具调用（1）"));
-    expect(outputs.getByText("read_file")).toBeVisible();
+    expect(outputs.getByText("↳ 调用了工具 read_file")).toBeVisible();
     expect(screen.queryByRole("button", { name: "调用链" })).not.toBeInTheDocument();
 
     fireEvent.click(outputs.getByRole("button", { name: "加载更多输出" }));

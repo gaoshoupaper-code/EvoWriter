@@ -127,26 +127,25 @@ function ModelPayload({ value, toolCalls, showRoles, showSummary, empty }: {
     const tools = toolNames(message?.tool_calls);
     return { label, text, summary, hasThinking, tools };
   });
-  const summary = showSummary ? items.flatMap(item => item.summary) : [];
-  const tools = [...new Set([...items.flatMap(item => item.tools), ...toolNames(toolCalls)])];
-  const text = items.filter(item => item.text.trim());
-  const unavailableSummary = showSummary && !summary.length && items.some(item => item.hasThinking);
-  if (!text.length && !summary.length && !structured && !tools.length && !unavailableSummary) {
+  // 卡片内按真实发生顺序（思考 → 文字 → 工具调用）渲染；结构化输出是整次调用的汇总，保持在末尾。
+  const unavailableSummary = showSummary && !items.some(item => item.summary.length) && items.some(item => item.hasThinking);
+  const fallbackTools = items.some(item => item.tools.length) ? [] : toolNames(toolCalls);
+  const visible = items.filter(item => item.text.trim() || (showSummary && item.summary.length) || item.tools.length);
+  if (!visible.length && !fallbackTools.length && !structured && !unavailableSummary) {
     return empty ? <p>{empty}</p> : null;
   }
   return <div className="trace-model-payload">
-    {!!summary.length && <div className="trace-model-summary">
-      <p className="trace-model-role">思考摘要</p><PreviewText text={summary.join("\n\n")} />
-    </div>}
     {unavailableSummary && <p className="trace-model-meta">本次调用没有可读的思考摘要。</p>}
-    {text.map(({ label, text }, index) => <div key={index}>
+    {visible.map(({ label, text, summary, tools }, index) => <div key={index}>
       {showRoles && label && <p className="trace-model-role">{label}</p>}
-      <PreviewText text={text} />
+      {!!summary.length && <div className="trace-model-summary">
+        <p className="trace-model-role">思考摘要</p><PreviewText text={summary.join("\n\n")} />
+      </div>}
+      {text.trim() && <PreviewText text={text} />}
+      {tools.map((name, toolIndex) => <p className="trace-model-tool-line" key={toolIndex}>↳ 调用了工具 {name}</p>)}
     </div>)}
+    {fallbackTools.map((name, toolIndex) => <p className="trace-model-tool-line" key={"f" + toolIndex}>↳ 调用了工具 {name}</p>)}
     {structured && <div><p className="trace-model-role">结构化输出</p><PreviewText text={structured} /></div>}
-    {!!tools.length && <details className="trace-model-tools">
-      <summary>工具调用（{tools.length}）</summary><p>{tools.join("、")}</p>
-    </details>}
   </div>;
 }
 

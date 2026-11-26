@@ -405,6 +405,8 @@ def make_history_tools(run: dict, *, on_baseline_evidence: Callable[[str], None]
             note_baseline_read(round_number, sample_id)
             if on_evidence_read is not None:
                 on_evidence_read(reads)
+            if on_sample_read is not None and offset == 0:
+                on_sample_read(round_number, sample_id, "scores")
         end = offset + len(items)
         return {"dimension": dimension, "score": scores.get("dimensions", {}).get(dimension),
                 "items": items, "total": len(reasons), "next_offset": end if end < len(reasons) else None}
@@ -433,6 +435,8 @@ def make_history_tools(run: dict, *, on_baseline_evidence: Callable[[str], None]
             if on_evidence_read is not None:
                 on_evidence_read({ref: {"kind": "manuscript", "round_number": round_number, "sample_id": sample_id,
                                         "path": path, "start_line": start_line, "end_line": end_line}})
+            if on_sample_read is not None:
+                on_sample_read(round_number, sample_id, "manuscript")
         return result
 
     @tool(args_schema=_Timeline)

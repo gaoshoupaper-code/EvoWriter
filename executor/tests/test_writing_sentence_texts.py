@@ -23,25 +23,27 @@ def regimen() -> str:
 
 def test_regimen_describes_writing_by_paragraph_and_no_longer_by_batch(regimen):
     assert all(tool in regimen for tool in DRAFT_TOOLS)
-    assert "每次只调用一个写作工具" in regimen and "正文只收录 `text`" in regimen
+    assert "每次只调用一个写作工具" in regimen and "把正文填入 `text`" in regimen
     assert regimen.index("`writing_intent`") < regimen.index("`text`")
-    assert "逐段推进" in regimen and "再决定下一段" in regimen
+    assert "逐段推进" in regimen and "收到回执后再写下一段" in regimen
     assert not [word for word in _BATCH_DRAFTING if word in regimen]
 
 
 def test_regimen_keeps_the_forms_a_choice_and_never_a_quota(regimen):
-    assert "不按固定顺序轮换，也不凑数" in regimen
+    assert "每段按需选用" in regimen
     assert "信息" in regimen and "铺垫" in regimen and "因果" in regimen and "过渡" in regimen
 
 
-def test_regimen_states_the_pacing_floorline(regimen):
-    assert "节奏与连贯底线" in regimen
-    assert "write_setup` / `write_info" in regimen and "给足关键在场者的反应或克制理由" in regimen
+def test_regimen_plans_the_chapter_before_thinking_through_each_paragraph(regimen):
+    chapter_plan = "开写前先定本章的推进方向和预计段数"
+    paragraph_plan = "每段动笔前，对照章纲和已写正文"
+    assert regimen.index(chapter_plan) < regimen.index(paragraph_plan) < regimen.index("`write_info`")
+    assert "写哪些细节、按什么顺序写，以及怎样接上前文" in regimen
 
 
 def test_regimen_tells_the_model_where_paragraphs_live_before_the_chapter_is_finalized(regimen):
     assert HEADER_TOOL in regimen and "初稿" in regimen
-    assert "只看工具回执" in regimen
+    assert "起草进度以工具回执为准" in regimen
     assert "整章重写" in regimen and "`full`" in regimen
 
 

@@ -1,14 +1,17 @@
 import { render, screen, within } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TraceLogEvent } from "@/lib/types";
 
 vi.mock("@/lib/api", () => ({ getTraceModelIO: vi.fn() }));
-vi.mock("@/hooks/useTraceModelStream", () => ({
-  useTraceModelStream: () => ({ calls: [], status: "closed" }),
-}));
+vi.mock("@/hooks/useTraceModelStream", () => ({ useTraceModelStream: vi.fn() }));
 
 import { getTraceModelIO } from "@/lib/api";
+import { useTraceModelStream } from "@/hooks/useTraceModelStream";
 import { TraceModelIO } from "./TraceModelIO";
+
+beforeEach(() => {
+  vi.mocked(useTraceModelStream).mockReturnValue({ calls: [], status: "closed" });
+});
 
 function event(sequence: number, value: Partial<TraceLogEvent> = {}): TraceLogEvent {
   return { trace_id: "trace-order", event_id: "event-" + sequence, sequence, type: "llm_end",
@@ -52,6 +55,28 @@ describe("模型输出按真实顺序展示（AC-001）", () => {
     expect(text.indexOf("第一条消息")).toBeGreaterThanOrEqual(0);
     expect(text.indexOf("第一条消息")).toBeLessThan(text.indexOf("第二条消息"));
     expect(text.indexOf("第二条消息")).toBeLessThan(text.indexOf("结构化输出"));
+  });
+});
+
+describe("实时输出按真实到达顺序渲染（AC-004）", () => {
+  it("思考、文字、再思考按交错顺序出现在同一条时间线", async () => {
+    vi.mocked(useTraceModelStream).mockReturnValue({ status: "live", calls: [{
+      run_id: "call-1", finished: false, segments: [
+        { channel: "reasoning", text: "先核对章纲。" },
+        { channel: "text", text: "我开始写第一章。" },
+        { channel: "reasoning", text: "检查伏笔是否闭合。" },
+      ],
+    }] });
+    vi.mocked(getTraceModelIO).mockResolvedValue({ initial_input: null, outputs: [], has_more: false });
+    render(<TraceModelIO traceId="trace-live" eventCount={1} live archiveReady />);
+    const outputs = within(await screen.findByRole("region", { name: "实时模型输出" }));
+    const first = outputs.getByText("先核对章纲。");
+    const middle = outputs.getByText("我开始写第一章。");
+    const last = outputs.getByText("检查伏笔是否闭合。");
+    expect(first.compareDocumentPosition(middle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(middle.compareDocumentPosition(last) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(outputs.getAllByText("思考")).toHaveLength(2);
+    expect(outputs.getByText("回复")).toBeVisible();
   });
 });
 

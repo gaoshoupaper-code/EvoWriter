@@ -65,8 +65,9 @@ export function TraceModelIO({ traceId, eventCount, modelRationale, live, archiv
               : generating.length ? "模型正在输出…" : currentCalls.length ? "本次模型输出已结束" : "等待模型输出…"}
           </p>
           {currentCalls.map(call => <div className="trace-model-payload" key={call.run_id}>
-            {call.reasoning && <StreamingText label="思考" text={call.reasoning} />}
-            {call.text && <StreamingText label="回复" text={call.text} />}
+            {call.segments.map((segment, index) => <StreamingText key={index}
+              label={segment.channel === "reasoning" ? "思考" : "回复"} text={segment.text}
+              muted={segment.channel === "reasoning"} />)}
           </div>)}
         </section>}
         {modelRationale && <div className="trace-model-payload trace-model-summary">
@@ -95,7 +96,8 @@ export function TraceModelIO({ traceId, eventCount, modelRationale, live, archiv
   </div>;
 }
 
-function StreamingText({ label, text }: { label: string; text: string }) {
+// muted：思考段沿用归档思考摘要的左侧竖线样式，便于在时间线里一眼区分思考与正文。
+function StreamingText({ label, text, muted }: { label: string; text: string; muted?: boolean }) {
   const ref = useRef<HTMLPreElement>(null);
   const follow = useRef(true);
 
@@ -104,7 +106,7 @@ function StreamingText({ label, text }: { label: string; text: string }) {
     if (element && follow.current) element.scrollTop = element.scrollHeight;
   }, [text]);
 
-  return <div>
+  return <div className={muted ? "trace-model-summary" : undefined}>
     <p className="trace-model-role">{label}</p>
     <pre ref={ref} tabIndex={0} aria-label={label} onScroll={({ currentTarget }) => {
       follow.current = currentTarget.scrollHeight - currentTarget.clientHeight - currentTarget.scrollTop <= 8;

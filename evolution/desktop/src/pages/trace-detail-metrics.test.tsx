@@ -192,6 +192,12 @@ describe("评测运行的模型输入和输出", () => {
     expect(live.getByText("继续写作")).toBeVisible();
     expect(getTraceModelIO).not.toHaveBeenCalled();
 
+    // AC-004：文字之后再到达的思考增量必须出现在文字之后，而不是跳回顶部的思考框
+    await act(async () => { stream.push(sse("delta", { run_id: "call-1", channel: "reasoning", text: "回头核对伏笔。" })); });
+    const mid = live.getByText("继续写作");
+    const late = live.getByText("回头核对伏笔。");
+    expect(mid.compareDocumentPosition(late) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
     mockDetail(snapshot);
     await act(async () => page.rerender(<TraceDetailPage prioritizeModelIO modelLiveHint />));
     expect(getTraceModelIO).toHaveBeenCalledTimes(1);

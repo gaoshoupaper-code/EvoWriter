@@ -20,6 +20,12 @@ class IncompleteImprovement(ValueError):
 
 _MAX_COMPLETION_NUDGES = 3
 _FEEDBACK_SECTIONS = {"manuscript", "scores"}
+_NEW_ASSET_LOCATIONS = {
+    "write_prompt": ("prompts", ".md"),
+    "write_middleware": ("middleware", ".py"),
+    "write_tool": ("tools", ".py"),
+    "write_subagent": ("subagents", ".py"),
+}
 
 
 def _failure_review_problem(record: dict, *, stop: bool = False) -> str | None:
@@ -90,9 +96,50 @@ def _record_design(run, record, path):
     doc = read_design_doc(path)
     record["design"] = doc["body"]
     refs = {ref for change in doc["meta"].get("changes", []) for ref in change.get("evidence_ref", [])}
+    reads = record.get("change_evidence_reads", {})
+    refs = {reads[ref]["sample_id"] if ref in reads else ref for ref in refs}
     record["evidence_samples"] = [s["id"] for s in run["samples"]
                                   if s["phase"] in {"baseline", "exploration"}
                                   and s["package_id"] in run["settings"]["optimization_ids"] and s["id"] in refs]
+
+
+def _design_evidence_problem(changes, reads) -> str | None:
+    from app.versioning.asset_candidates import is_candidate_asset
+
+    if not isinstance(changes, list) or not changes:
+        return "请提交至少一条有证据的改动方案。"
+    for number, change in enumerate(changes, 1):
+        target = change.get("target") if isinstance(change, dict) else None
+        if not isinstance(target, str) or not is_candidate_asset(target):
+            return f"方案第 {number} 条须填写相对于 Harness 根目录的实际文件路径。"
+        refs = change.get("evidence_ref")
+        if not isinstance(refs, list) or any(not isinstance(ref, str) or ref not in reads for ref in refs):
+            return f"方案第 {number} 条请原样引用工具实际返回的评语和正文 evidence_ref。"
+        scored = {reads[ref]["sample_id"] for ref in refs if reads[ref]["kind"] == "score"}
+        located = {reads[ref]["sample_id"] for ref in refs if reads[ref]["kind"] == "manuscript"}
+        if not scored or scored != located:
+            return f"方案第 {number} 条须同时引用同一样本中读过的评语和正文行号。"
+    return None
+
+
+def _change_log_problem(applied, changes, root: Path, base_commit: str) -> str | None:
+    if not isinstance(applied, list) or not applied:
+        return "请在改动记录中逐项列出实际落地的文件和对应方案编号。"
+    recorded = set()
+    for entry in applied:
+        index = entry.get("design_ref") if isinstance(entry, dict) else None
+        if type(index) is not int or not 1 <= index <= len(changes) or entry.get("target") != changes[index - 1]["target"]:
+            return "改动记录的目标文件须与 design_ref 指向的方案目标一致。"
+        if entry.get("result") == "ok":
+            recorded.add(entry["target"])
+    changed = set(_git(root, "diff", "--name-only", "--no-renames", "-z", base_commit, "--").split("\0"))
+    changed.update(_git(root, "ls-files", "--others", "--exclude-standard", "-z").split("\0"))
+    changed.discard("")
+    if missing := sorted(changed - recorded):
+        return "这些实际改动尚未关联有证据的方案和落地记录：" + "、".join(missing)
+    if extra := sorted(recorded - changed):
+        return "这些成功记录没有对应的实际改动：" + "、".join(extra)
+    return None
 
 
 def improve_candidate(run: dict, round_record: dict, evidence: list[dict]) -> dict:
@@ -201,8 +248,9 @@ def _system_prompt(assessment: bool) -> str:
     if assessment:
         prompt += (
             "\n\n【全面排查】\n"
-            "你负责正文 Agent 从题目到单章交稿的整体效果。首轮先查第 0 轮原版。"
-            "用 read_assessment_round（section=samples）列出样本，先扫交稿情况、正文各项评分和运行开销。"
+            "你负责正文 Agent 从题目到单章交稿的整体效果。先扫任务给出的第 0 轮全维评分摘要。"
+            "用 read_score_reasons 按摘要中的轮次、样本编号和维度读取具体评语。"
+            "用 read_manuscript_lines 读取对应的正文原句和行号。"
             "结合题面与终稿核对重要问题，再查相关写作 Trace，判断问题出现在取材、起稿、审稿、修订还是交稿。"
             "读取 architecture.json，核对实际装配的提示词、技能、工具、中间件与子 Agent。"
             "遇到题意不清、判分分歧或生成波动，先核查现有证据。优先追查影响大、改动可归因的问题。"
@@ -210,7 +258,9 @@ def _system_prompt(assessment: bool) -> str:
             "从具体问题找出可复现的触发条件、可能失效的环节和应做的动作。"
             "换掉作品、人物和情节后，同一条件应仍可识别，同一修正应仍可执行。"
             "个案细节留在证据和说明中。设计写明适用条件、具体改法、一个适用例和一个不适用例。"
-            "假设例用于核对边界。引用改进题时，将样本列表返回的 evidence_ref 原样写入设计条目。"
+            "每条设计的 target 写实际文件路径。每条 evidence_ref 至少包含一条读过的评语和同题同稿的一处正文行。"
+            "原样使用 read_score_reasons 与 read_manuscript_lines 返回的 evidence_ref。"
+            "落地记录逐个列出实际修改的文件，design_ref 指向该文件的证据方案。"
             "\n\n【优先改写作工具说明】\n"
             "段落写得不好，先圈出具体句子。用 list_writing_events 找到相关调用。"
             "再用 read_writing_event 核对已有写法、正文参数和回执。对照起稿与审修，确认问题在哪一步出现。"
@@ -245,7 +295,7 @@ def _system_prompt(assessment: bool) -> str:
 
 
 def _evolver_tools(backend, run: dict, ctx=None, *, on_baseline_evidence=None, on_sample_read=None,
-                   finish_no_change=None):
+                   on_evidence_read=None, finish_no_change=None):
     from langchain_core.tools import tool
 
     from app.evolve.agent.tools.flow import make_flow_tools
@@ -274,7 +324,8 @@ def _evolver_tools(backend, run: dict, ctx=None, *, on_baseline_evidence=None, o
                 raise RuntimeError("Finishing requires an experiment checkout")
             return finish_no_change(reason, evidence_refs)
 
-        tools.extend(make_history_tools(run, on_baseline_evidence=on_baseline_evidence, on_sample_read=on_sample_read))
+        tools.extend(make_history_tools(run, on_baseline_evidence=on_baseline_evidence, on_sample_read=on_sample_read,
+                                        on_evidence_read=on_evidence_read))
         tools.append(finish_without_changes)
     return tools, validate_changes
 
@@ -300,7 +351,7 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
     from app.common.middleware.no_fs import NoFilesystemToolsMiddleware
     from app.common.model_factory import _ensure_gp_disabled
-    from app.evolve import db as sessions
+    from app.evolve import db as sessions, docs
     from app.evolve.ctx import EvolveContext, set_tool_context
     from app.evolve.agent.agent import _run_agent_streamed
     from app.evolve.agent.middleware.flow_guard import FINALIZE_ONLY_TOOLS, FlowGuardMiddleware
@@ -351,20 +402,36 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
                                        status="error", tool_call_id=request.tool_call["id"])
             if any(part.startswith(".") for part in parts) or (parts and parts[0] in {"registry.json", "contracts", "dataset", "experiments"}):
                 return ToolMessage(content="拒绝访问受保护的元数据或实验区域。", tool_call_id=request.tool_call["id"])
-            if feedback and tool_name in FINALIZE_ONLY_TOOLS:
+            if assessment and tool_name in FINALIZE_ONLY_TOOLS:
                 problem = _failure_review_problem(round_record)
                 if not problem and tool_name == "write_design_doc":
-                    selected = set(round_record["failure_review"]["evidence_refs"])
-                    candidate_refs = selected & {case["candidate_id"] for case in feedback["cases"]}
                     changes = arguments.get("changes")
-                    if not isinstance(changes, list) or not any(
-                            any(isinstance(ref, str) and ref in candidate_refs for ref in change["evidence_ref"])
-                            for change in changes if isinstance(change, dict) and isinstance(change.get("evidence_ref"), list)):
-                        problem = "改动方案须引用已核对的上轮失败样本。"
-                elif not problem and not ctx.design_doc_path:
-                    problem = "请先用 write_design_doc 提交含失败证据的本轮方案。"
+                    problem = _design_evidence_problem(changes, evidence_reads)
+                    if not problem and feedback:
+                        selected = set(round_record["failure_review"]["evidence_refs"])
+                        candidate_refs = selected & {case["candidate_id"] for case in feedback["cases"]}
+                        if not any(evidence_reads[ref]["sample_id"] in candidate_refs
+                                   for change in changes for ref in change["evidence_ref"]):
+                            problem = "改动方案须引用已核对的上轮失败稿评语及正文。"
+                elif not problem:
+                    changes = design_changes()
+                    problem = _design_evidence_problem(changes, evidence_reads)
+                    if not problem and tool_name == "write_change_log":
+                        problem = _change_log_problem(arguments.get("applied"), changes, root, round_record["base_commit"])
+                    if not problem and tool_name not in {"validate_changes", "write_change_log"}:
+                        target = str(path).lstrip("/")
+                        if tool_name == "write_skill":
+                            target = f"skills/{target}"
+                        elif tool_name in _NEW_ASSET_LOCATIONS:
+                            directory, suffix = _NEW_ASSET_LOCATIONS[tool_name]
+                            target = f"{directory}/{arguments.get('name', '')}{suffix}"
+                        if not any(change["target"] == target for change in changes):
+                            problem = f"请先在方案中为 {target} 绑定已读的评语和正文。"
                 if problem:
                     return ToolMessage(content=problem, status="error", tool_call_id=request.tool_call["id"])
+                if ctx.change_log_path and tool_name not in {"validate_changes", "write_change_log"}:
+                    ctx.change_log_path = None
+                    sessions.update_session(ctx.session_id, change_log_path="")
             return None
 
         def wrap_tool_call(self, request, handler):
@@ -414,7 +481,19 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
         repo.put_run(run)
 
     baseline_reads = set(round_record.get("baseline_evidence_read", []))
+    evidence_reads = round_record.get("change_evidence_reads", {})
     no_change = None
+
+    def design_changes():
+        return docs.read_design_doc(ctx.design_doc_path)["meta"].get("changes") if ctx.design_doc_path else None
+
+    def note_evidence_read(reads):
+        with repo.run_lock(run["id"]):
+            if reads.keys() - evidence_reads.keys():
+                evidence_reads.update(reads)
+                round_record["change_evidence_reads"] = evidence_reads
+                round_record["baseline_evidence_read"] = sorted(baseline_reads)
+                repo.put_run(run)
 
     feedback_samples = {}
     for case in (feedback or {}).get("cases", []):
@@ -506,11 +585,15 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
             return None
         if not ctx.design_doc_path:
             return "请提交设计文档。若没有可复用的改法，请调用 finish_without_changes。"
+        changes = design_changes()
+        if problem := _design_evidence_problem(changes, evidence_reads):
+            return problem
         if ctx.code_mutations_since_validate or (ctx.validation_result is None and not ctx.change_log_path):
             return "请用 validate_changes 校验最终改动。"
         if not ctx.change_log_path:
             return "请用 write_change_log 提交改动报告。"
-        return None
+        applied = docs.read_change_log(ctx.change_log_path)["meta"].get("applied")
+        return _change_log_problem(applied, changes, root, round_record["base_commit"])
 
     class AssessmentCompletionGuard(FlowGuardMiddleware):
         def _check_completion(self):
@@ -539,7 +622,8 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     backend = FilesystemBackend(root_dir=str(root), virtual_mode=True)
     tools, validate_changes = _evolver_tools(
         backend, run, ctx, on_baseline_evidence=baseline_reads.add,
-        on_sample_read=note_feedback_read if feedback else None, finish_no_change=finish_no_change)
+        on_sample_read=note_feedback_read if feedback else None, on_evidence_read=note_evidence_read,
+        finish_no_change=finish_no_change)
     if feedback:
         tools.append(record_failure_review)
     allowed_tools = {item.name for item in tools}
@@ -552,16 +636,18 @@ async def _improve(run: dict, round_record: dict, root: Path, evidence: list[dic
     checkpoint_path = root.parent / f"round-{round_record['round']}.sqlite"
     prompt = _system_prompt(assessment)
     if assessment:
-        from app.experiments.history import baseline_evidence_entries
+        from app.experiments.history import assessment_review_summary
 
-        entries = json.dumps(baseline_evidence_entries(run), ensure_ascii=False)
         base_round = next((item["round"] for item in run["rounds"]
                            if item.get("source_commit") == round_record["base_commit"] and item.get("report")), 0)
+        rounds = {0, base_round}
+        if feedback:
+            rounds.add(feedback["round"])
+        summaries = json.dumps([assessment_review_summary(run, number) for number in sorted(rounds)], ensure_ascii=False)
+        task = ("以下是本次各样本的全维评分摘要与评语入口。score_dimensions 中的维度可用 "
+                "read_score_reasons 按轮次、样本编号和维度读取。\n" + summaries)
         if base_round:
-            task = (f"当前工作区沿用第 {base_round} 轮候选。先查看该轮的改进题样本，找出仍需解决的问题。"
-                    "再查看第 0 轮原版证据作为对照。原版样本入口：" + entries)
-        else:
-            task = "先核查第 0 轮原版样本的实际证据，再决定是否改进。原版样本入口：" + entries
+            task += f"\n当前工作区沿用第 {base_round} 轮候选。用第 0 轮原版对照核查。"
         if feedback:
             task += ("\n改版起点与必查失败轮分别指定。先核对下列失败轮。"
                      "优先读取 cases 首组的原稿与失败稿，各查正文及逐项评分；必要时继续翻页。"

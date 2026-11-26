@@ -145,6 +145,12 @@ def read_design_doc(path: str) -> dict[str, Any]:
     return {"meta": meta, "body": body}
 
 
+def read_change_log(path: str) -> dict[str, Any]:
+    """读 change_log.md，返回 {meta, body}。"""
+    meta, body = _load_doc(path)
+    return {"meta": meta, "body": body}
+
+
 def parse_design_doc_intent(path: str) -> list[dict[str, Any]]:
     """从 design_doc.md 提取改动意图列表（供版本差异展示存 version_changes.intent_json）。
 

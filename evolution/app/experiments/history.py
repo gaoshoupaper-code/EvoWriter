@@ -42,6 +42,17 @@ class _SampleRead(_Sample):
     offset: int = Field(0, ge=0)
 
 
+class _ScoreReasons(_Sample):
+    dimension: str = Field(min_length=1)
+    offset: int = Field(0, ge=0)
+    limit: int = Field(5, ge=1, le=20)
+
+
+class _ManuscriptLines(_Sample):
+    start_line: int = Field(ge=1)
+    end_line: int | None = Field(None, ge=1)
+
+
 class _Trace(_Sample):
     trace_number: int = Field(ge=1)
 
@@ -60,6 +71,7 @@ _UNAVAILABLE = "本档案中没有可读取的对应记录。"
 _ROUND_FIELDS = ("design", "summary", "diff", "startup_check", "error")
 _EVENT_TYPES = ("tool_start", "tool_end", "tool_error", "skill_activation", "artifact_revision",
                 "middleware_assembly", "middleware_intervention", "run_error", "llm_error")
+_MANUSCRIPT_LINE_LIMIT = 30
 
 
 def _page(value, offset: int) -> dict:
@@ -121,9 +133,36 @@ def baseline_evidence_entries(run: dict) -> list[dict]:
     return [_sample_entry(number, sample) for number, sample in enumerate(_samples_at(run, 0), 1)]
 
 
-def _manuscript(sample: dict) -> str | None:
+def assessment_review_summary(run: dict, round_number: int = 0) -> dict:
+    """Publish all selected improvement scores and the count of readable judgments."""
+    samples = _samples_at(run, round_number)
+    rule = run.get("private", {}).get("rules", {}).get(run.get("task_type"))
+    dimensions = dict.fromkeys(item["key"] for item in evaluation._scoring_dimensions(run, rule)) if rule else {}
+    for sample in samples:
+        scores = sample.get("scores") or {}
+        dimensions.update(dict.fromkeys(scores.get("dimensions", {})))
+        dimensions.update(dict.fromkeys(scores.get("reasons", {})))
+
+    entries = []
+    for number, sample in enumerate(samples, 1):
+        scores = sample.get("scores") or {}
+        values = scores.get("dimensions", {})
+        reasons = scores.get("reasons", {})
+        entries.append({**_sample_entry(number, sample), "title": sample["package_title"],
+                        "repeat": sample["repeat"], "overall": scores.get("overall"),
+                        "dimensions": {key: values.get(key) for key in dimensions},
+                        "score_dimensions": {key: len(items) for key, items in reasons.items() if items}})
+    return {"round_number": round_number, "dimensions": list(dimensions), "samples": entries}
+
+
+def _manuscript_path(sample: dict) -> str | None:
     chapter = sample.get("target", {}).get("chapter")
-    return sample.get("artifacts", {}).get(f"正文/第{chapter:03d}章.md") if chapter else None
+    return f"正文/第{chapter:03d}章.md" if chapter else None
+
+
+def _manuscript(sample: dict) -> str | None:
+    path = _manuscript_path(sample)
+    return sample.get("artifacts", {}).get(path) if path else None
 
 
 def _score_delta(baseline, candidate) -> float | None:
@@ -176,7 +215,8 @@ def prepare_failure_feedback(run: dict, round_record: dict) -> dict | None:
 
 
 def make_history_tools(run: dict, *, on_baseline_evidence: Callable[[str], None] | None = None,
-                       on_sample_read: Callable[[int, str, str], None] | None = None) -> list:
+                       on_sample_read: Callable[[int, str, str], None] | None = None,
+                       on_evidence_read: Callable[[dict[str, dict]], None] | None = None) -> list:
     def sample_at(round_number, sample_number):
         samples = _samples_at(run, round_number)
         return samples[sample_number - 1] if sample_number <= len(samples) else None
@@ -334,6 +374,67 @@ def make_history_tools(run: dict, *, on_baseline_evidence: Callable[[str], None]
                 on_sample_read(round_number, sample["id"], section)
         return page
 
+    @tool(args_schema=_ScoreReasons)
+    def read_score_reasons(round_number: int, sample_number: int, dimension: str,
+                           offset: int = 0, limit: int = 5) -> dict:
+        """按改进题和评分维度读取完整评语。每项返回评委、评分、理由、原始依据和可引用的 evidence_ref。按 next_offset 续读。"""
+        sample = sample_at(round_number, sample_number)
+        scores = (sample.get("scores") or {}) if sample else {}
+        reasons = scores.get("reasons", {}).get(dimension)
+        if not reasons:
+            return {"error": _UNAVAILABLE}
+        sample_id = sample["id"]
+        items = []
+        reads = {}
+        for index, reason in enumerate(reasons[offset:offset + limit], offset + 1):
+            # Older archives may store the comment alone or an unavailable judge's error.
+            if isinstance(reason, str):
+                item = {"reason": reason}
+                valid = bool(reason.strip())
+            else:
+                item = {key: value for key, value in reason.items() if key != "evidence_ref"}
+                valid = bool(item) and not item.get("error") and not ("score" in item and item["score"] is None)
+            items.append(item)
+            if not valid:
+                continue
+            ref = f"{sample_id}:score:{dimension}:{index}"
+            item["evidence_ref"] = ref
+            reads[ref] = {"kind": "score", "round_number": round_number, "sample_id": sample_id,
+                          "dimension": dimension, "reason_index": index}
+        if reads:
+            note_baseline_read(round_number, sample_id)
+            if on_evidence_read is not None:
+                on_evidence_read(reads)
+        end = offset + len(items)
+        return {"dimension": dimension, "score": scores.get("dimensions", {}).get(dimension),
+                "items": items, "total": len(reasons), "next_offset": end if end < len(reasons) else None}
+
+    @tool(args_schema=_ManuscriptLines)
+    def read_manuscript_lines(round_number: int, sample_number: int, start_line: int,
+                              end_line: int | None = None) -> dict:
+        """读取改进题终稿的含首尾行范围，最多 30 行。行号与评语一致，引用返回的 evidence_ref。"""
+        sample = sample_at(round_number, sample_number)
+        manuscript = _manuscript(sample) if sample else None
+        if not manuscript or not manuscript.strip():
+            return {"error": _UNAVAILABLE}
+        lines = manuscript.splitlines()
+        end_line = start_line if end_line is None else end_line
+        if end_line < start_line or end_line > len(lines) or end_line - start_line >= _MANUSCRIPT_LINE_LIMIT:
+            return {"error": f"请选择有效的正文行号范围，每次最多 {_MANUSCRIPT_LINE_LIMIT} 行。", "total_lines": len(lines)}
+        path = _manuscript_path(sample)
+        sample_id = sample["id"]
+        selected = lines[start_line - 1:end_line]
+        result = {"path": path, "total_lines": len(lines),
+                  "lines": [{"line": index, "text": text} for index, text in enumerate(selected, start_line)]}
+        if any(line.strip() for line in selected):
+            ref = f"{sample_id}:manuscript:{start_line}-{end_line}"
+            result["evidence_ref"] = ref
+            note_baseline_read(round_number, sample_id)
+            if on_evidence_read is not None:
+                on_evidence_read({ref: {"kind": "manuscript", "round_number": round_number, "sample_id": sample_id,
+                                        "path": path, "start_line": start_line, "end_line": end_line}})
+        return result
+
     @tool(args_schema=_Timeline)
     def list_writing_events(round_number: int, sample_number: int, trace_number: int,
                             after_sequence: int = 0, limit: int = 40) -> dict:
@@ -400,4 +501,4 @@ def make_history_tools(run: dict, *, on_baseline_evidence: Callable[[str], None]
         return {**page, **notice}
 
     return [list_assessment_history, search_assessment_history, read_assessment_round, read_improvement_sample,
-            list_writing_events, read_writing_event]
+            read_score_reasons, read_manuscript_lines, list_writing_events, read_writing_event]

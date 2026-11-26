@@ -186,9 +186,13 @@
 .experiment-stepper li.active { color: var(--evo-accent); font-weight: 600; }
 .experiment-stepper li.active > span { background: var(--evo-accent); color: var(--evo-surface); border-color: var(--evo-accent); }
 .experiment-stepper li.done > span { color: var(--evo-accent); border-color: var(--evo-accent); background: var(--evo-accent-soft); }
-.experiment-primary-facts { display: grid; grid-template-columns: 1.4fr 1fr 1.2fr .8fr; padding: 18px 0; border-top: 1px solid var(--evo-line); border-bottom: 1px solid var(--evo-line); }
-.experiment-primary-facts > div { min-width: 0; }
-.experiment-primary-facts dd { line-height: 1.7; }
+.experiment-primary-facts { display: flex; flex-wrap: wrap; gap: 4px 20px; margin: 8px 0 12px; font-size: 12px; line-height: 1.6; }
+.experiment-primary-facts > div, .experiment-primary-facts dd { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 6px; min-width: 0; }
+.experiment-primary-facts dt { color: var(--evo-ink-muted); }
+.experiment-primary-facts dd { margin: 0; overflow-wrap: anywhere; }
+.experiment-primary-facts .experiment-model { display: inline; margin: 0; }
+.experiment-primary-facts .experiment-model strong { font-size: inherit; }
+.experiment-primary-facts .experiment-model small { margin-inline-start: 4px; }
 .experiment-active-samples { margin: 14px 0; border-left: 3px solid var(--evo-accent); padding-left: 14px; }
 .experiment-active-samples > div { margin: 12px 0; font-size: 13px; }
 .experiment-active-samples span, .experiment-active-samples small { display: block; color: var(--evo-ink-muted); line-height: 1.7; margin-top: 4px; }
@@ -206,7 +210,6 @@
 @media (max-width: 1050px) {
   .experiment-launch-grid { grid-template-columns: 1fr 1fr; }
   .experiment-launch-summary { grid-template-columns: 1.4fr 1fr; gap: 16px; }
-  .experiment-primary-facts { grid-template-columns: 1fr 1fr; }
   .experiment-dataset-layout { grid-template-columns: 170px minmax(0, 1fr); }
 }
 @media (max-width: 700px) {
@@ -214,7 +217,7 @@
   .experiment-rule-anchors > label { grid-template-columns: 32px minmax(0,1fr); }
   .experiment-evidence > div { grid-template-columns: 1fr; gap: 4px; }
   .experiment-events li { flex-direction: column; gap: 4px; }
-  .experiment-launch-grid, .experiment-launch-summary, .experiment-primary-facts, .experiment-reason-columns { grid-template-columns: 1fr; }
+  .experiment-launch-grid, .experiment-launch-summary, .experiment-reason-columns { grid-template-columns: 1fr; }
   .experiment-dataset-layout { grid-template-columns: 1fr; }
   .experiment-dataset-nav { display: grid; grid-template-columns: 1fr 1fr; border-right: 0; border-bottom: 1px solid var(--evo-line); }
   .experiment-dataset-content { padding: 16px; }

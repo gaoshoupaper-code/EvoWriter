@@ -10,6 +10,9 @@ from uuid import uuid4
 from app.core import db
 from app.experiments import assessment
 from contracts.target_tasks import TaskInput, configured_task_type
+from contracts.writing_artifacts import KIND_CHARACTER, parse_relpath
+
+CHAPTER_ASSESSMENT_VERSION = 3
 
 _locks: dict[str, threading.RLock] = {}
 _locks_guard = threading.Lock()
@@ -64,7 +67,7 @@ def get_package(package_id: str) -> dict | None:
     return _get("self_evolution_packages", package_id)
 
 
-def chapter_case(package: dict, assessment_version: int = 2) -> dict:
+def chapter_case(package: dict, assessment_version: int = CHAPTER_ASSESSMENT_VERSION) -> dict:
     inputs = package["input"]
     if assessment_version == 1:
         if not inputs.get("skills"):
@@ -72,7 +75,14 @@ def chapter_case(package: dict, assessment_version: int = 2) -> dict:
         updates = {"skills": []}
     else:
         outline = f"章纲/第{package['target']['chapter']:03d}章.md"
-        updates = {"files": {outline: inputs["files"][outline]}, "demand_md": ""}
+        files = {outline: inputs["files"][outline]}
+        # Version 2 tasks must resume with their original outline-only fingerprint.
+        if assessment_version >= 3:
+            for path, content in inputs["files"].items():
+                ref = parse_relpath(path)
+                if ref and ref.kind == KIND_CHARACTER:
+                    files[path] = content
+        updates = {"files": files, "demand_md": ""}
     source = TaskInput.model_validate({**inputs, **updates, "input_revision": ""})
     return {**package, "input": source.model_dump(mode="json"), "input_revision": source.input_revision}
 

@@ -131,7 +131,7 @@ def create_run(request: RunCreate, actor: str) -> dict:
         from app.experiments import snapshots
         snapshots.ensure_baseline(selected["commit"])
         snapshots.retain(run["id"], selected["commit"])
-        run["assessment_version"] = 2
+        run["assessment_version"] = repo.CHAPTER_ASSESSMENT_VERSION
         run["judge_repeats"] = judge_repeats
         run["judge_input_version"] = 2
         run["private"]["package_revisions"] = {key: p["input_revision"] for key, p in frozen_packages.items()}

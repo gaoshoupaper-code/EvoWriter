@@ -45,6 +45,12 @@ const options = {
   builtin_suite: { id: "isolated-writing-v1", total: packages.length },
 };
 
+function markdownFile(name: string, content: string) {
+  const file = new File([content], name, { type: "text/markdown" });
+  Object.defineProperty(file, "text", { value: async () => content });
+  return file;
+}
+
 beforeEach(() => {
   window.location.hash = "#/agents/volume/bench";
   vi.clearAllMocks();
@@ -262,6 +268,64 @@ describe("三阶段实验台 / REQ-20261107-172211", () => {
     await waitFor(() => expect(api.replaceExperimentPackage).toHaveBeenCalledWith(sample.id, expect.objectContaining({
       input: { ...input, input_revision: undefined, skills: [{ stage: "text", name: "对白", content }] },
     })));
+  });
+
+  it("导入正文题时可以随章纲添加多张人物卡", async () => {
+    window.location.hash = "#/agents/text/bench";
+    const sample = packages.find((item) => item.task_type === "chapter_text")!;
+    api.importExperimentPackage.mockResolvedValue(sample as never);
+    render(<StagePackages />);
+    await screen.findByText(sample.title);
+    fireEvent.click(screen.getByRole("button", { name: "导入章纲" }));
+    fireEvent.change(screen.getByLabelText("章纲文件"), {
+      target: { files: [markdownFile("夜渡.md", "本章章纲")] },
+    });
+    fireEvent.change(screen.getByLabelText("人物卡文件（可多选）"), {
+      target: { files: [markdownFile("沈棠.md", "# 沈棠\r\n不说谎。"), markdownFile("凌川.MD", "# 凌川")] },
+    });
+    fireEvent.submit(screen.getByRole<HTMLButtonElement>("button", { name: "保存题目" }).form!);
+    await waitFor(() => expect(api.importExperimentPackage).toHaveBeenCalledWith({
+      title: "夜渡", purpose: "optimization", target: { task_type: "chapter_text", chapter: 1, volume_ids: [] },
+      input: { demand_md: "", confirmation_rules: "按本章章纲直接完成，不等待确认。", skills: [],
+        files: { "章纲/第001章.md": "本章章纲", "人物/沈棠.md": "# 沈棠\r\n不说谎。", "人物/凌川.md": "# 凌川" } },
+    }));
+  });
+
+  it("人物卡可单独查看，编辑时可增删改并保留其他固定输入", async () => {
+    window.location.hash = "#/agents/text/bench";
+    const sample = packages.find((item) => item.task_type === "chapter_text")!;
+    const input = { demand_md: "", confirmation_rules: "直接写", input_revision: sample.input_revision,
+      skills: [{ stage: "text", name: "对白", content: "写有冲突的对白。" }],
+      files: { "章纲/第001章.md": "本章章纲", "章纲/第002章.md": "旁章章纲", "人物/沈棠.md": "守诺。",
+        "人物/凌川.md": "等潮水。", "人物/秋禾.md": "# 秋禾\r\n从南方来。", "人物/旧卡.md": "" } };
+    api.getExperimentPackage.mockResolvedValue({ ...sample, input } as never);
+    api.replaceExperimentPackage.mockResolvedValue({ ...sample, id: "new-cards", input_revision: "new-revision" } as never);
+    render(<StagePackages />);
+    const row = (await screen.findByText(sample.title)).closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: "查看输入" }));
+    const preview = await screen.findByRole("region", { name: "人物卡" });
+    expect(within(preview).getByText("人物/沈棠.md")).toBeVisible();
+    expect(within(preview).queryByText("章纲/第001章.md")).not.toBeInTheDocument();
+    fireEvent.click(within(row).getByRole("button", { name: "编辑" }));
+    const editor = await screen.findByRole("group", { name: "人物卡" });
+    fireEvent.click(within(editor).getByText("沈棠", { selector: "summary" }));
+    fireEvent.change(within(editor).getByLabelText("沈棠的人物卡内容"), { target: { value: "  " } });
+    fireEvent.click(screen.getByRole("button", { name: "保存为新版本" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("人物卡「沈棠」内容不能为空。");
+    expect(api.replaceExperimentPackage).not.toHaveBeenCalled();
+    fireEvent.change(within(editor).getByLabelText("沈棠的人物卡内容"), { target: { value: "守诺，怕水。" } });
+    fireEvent.click(within(editor).getByText("凌川", { selector: "summary" }));
+    fireEvent.click(within(editor).getByRole("checkbox", { name: "保存时移除凌川的人物卡" }));
+    fireEvent.change(within(editor).getByLabelText("导入人物卡文件（可多选）"), {
+      target: { files: [markdownFile("陆望.md", "# 陆望\r\n老水手。")] },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存为新版本" }));
+    await waitFor(() => expect(api.replaceExperimentPackage).toHaveBeenCalledWith(sample.id, {
+      title: sample.title, purpose: sample.purpose, target: sample.target,
+      input: { ...input, input_revision: undefined,
+        files: { "章纲/第001章.md": "本章章纲", "章纲/第002章.md": "旁章章纲", "人物/沈棠.md": "守诺，怕水。",
+          "人物/秋禾.md": "# 秋禾\r\n从南方来。", "人物/旧卡.md": "", "人物/陆望.md": "# 陆望\r\n老水手。" } },
+    }));
   });
 
   it("页内编辑保存新版本并保留用途、目标和技能", async () => {

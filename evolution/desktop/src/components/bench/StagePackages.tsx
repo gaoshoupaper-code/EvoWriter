@@ -14,6 +14,7 @@ import "./evaluation-readability.css";
 
 const DATASETS = ["optimization", "regression"] as const;
 type DatasetKey = typeof DATASETS[number];
+const CHARACTER_PREFIX = "人物/";
 
 async function readSkills(files: File[]) {
   const skills = await Promise.all(files.map(async (file) => {
@@ -26,6 +27,31 @@ async function readSkills(files: File[]) {
   }));
   if (new Set(skills.map((skill) => skill.name)).size !== skills.length) throw new Error("技能名称不能重复。");
   return skills;
+}
+
+function selectedFiles(form: HTMLFormElement, name: string) {
+  const field = form.elements.namedItem(name);
+  return field instanceof HTMLInputElement ? Array.from(field.files ?? []) : [];
+}
+
+async function readCharacterCards(files: File[]) {
+  const cards = await Promise.all(files.map(async (file) => {
+    const name = file.name.replace(/\.md$/i, "");
+    if (name === file.name || !/^[\p{L}\p{N}_][\p{L}\p{N}_·-]{0,23}$/u.test(name)) {
+      throw new Error(`人物卡文件名无效：${file.name}。请使用人名作为 .md 文件名。`);
+    }
+    const content = await file.text();
+    if (!content.trim()) throw new Error(`人物卡「${name}」内容不能为空。`);
+    return [`${CHARACTER_PREFIX}${name}.md`, content] as const;
+  }));
+  if (new Set(cards.map(([path]) => path)).size !== cards.length) {
+    throw new Error("同一次导入中，人物卡文件名不能重复。");
+  }
+  return Object.fromEntries(cards);
+}
+
+function characterName(path: string) {
+  return path.slice(CHARACTER_PREFIX.length, -".md".length);
 }
 
 function editedText(form: FormData, name: string, original: string) {
@@ -113,15 +139,27 @@ export function StagePackages() {
     event.preventDefault();
     if (!selected) return;
     const form = new FormData(event.currentTarget);
+    const newCards = selectedFiles(event.currentTarget, "characters");
     const files = Object.fromEntries(Object.entries(selected.input.files)
+      .filter(([path]) => !form.has(`remove:${path}`))
       .map(([path, content]) => [path, editedText(form, `file:${path}`, content)]));
-    void savePackage(async () => ({
-      title: String(form.get("title") ?? "").trim(),
-      purpose: selected.purpose,
-      target: selected.target,
-      input: { ...selected.input, demand_md: editedText(form, "demand", selected.input.demand_md),
-        confirmation_rules: editedText(form, "rules", selected.input.confirmation_rules), files, input_revision: undefined },
-    }), selected.id);
+    void savePackage(async () => {
+      const updatedFiles = { ...files, ...await readCharacterCards(newCards) };
+      for (const [path, original] of characterCards) {
+        const content = updatedFiles[path];
+        if (content !== undefined && content !== original && !content.trim()) {
+          throw new Error(`人物卡「${characterName(path)}」内容不能为空。`);
+        }
+      }
+      return {
+        title: String(form.get("title") ?? "").trim(),
+        purpose: selected.purpose,
+        target: selected.target,
+        input: { ...selected.input, demand_md: editedText(form, "demand", selected.input.demand_md),
+          confirmation_rules: editedText(form, "rules", selected.input.confirmation_rules),
+          files: updatedFiles, input_revision: undefined },
+      };
+    }, selected.id);
   }
   async function removePackage(item: ExperimentPackage) {
     if (busy || !isCurrentAgent() || !window.confirm(`删除「${item.title}」？今后评测将跳过这道题。`)) return;
@@ -166,7 +204,10 @@ export function StagePackages() {
   }
   const itemsFor = (key: DatasetKey) => packages.filter((item) => item.task_type === task && item.purpose === key);
   const visible = itemsFor(dataset);
-  const editedFiles = selected ? Object.entries(selected.input.files).filter(([path]) =>
+  const chapterPackage = selected?.task_type === "chapter_text";
+  const fixedFiles = Object.entries(selected?.input.files ?? {});
+  const characterCards = chapterPackage ? fixedFiles.filter(([path]) => path.startsWith(CHARACTER_PREFIX)) : [];
+  const editedFiles = selected ? fixedFiles.filter(([path]) =>
     selected.task_type !== "chapter_text" || path === `章纲/第${String(selected.target.chapter).padStart(3, "0")}章.md`,
   ) : [];
   function table(items: ExperimentPackage[]) {
@@ -223,20 +264,24 @@ export function StagePackages() {
       event.preventDefault();
       const form = new FormData(event.currentTarget);
       const chapter = Number(form.get("chapter"));
-      const outline = form.get("outline") as File;
-      const skills = (form.getAll("skills") as File[]).filter((file) => file.name);
+      const [outline] = selectedFiles(event.currentTarget, "outline");
+      if (!outline) return;
+      const newCards = selectedFiles(event.currentTarget, "characters");
+      const skills = selectedFiles(event.currentTarget, "skills");
       void savePackage(async () => ({
         title: outline.name.replace(/\.md$/i, ""), purpose: dataset,
         target: { task_type: "chapter_text", chapter, volume_ids: [] },
         input: { demand_md: "", confirmation_rules: "按本章章纲直接完成，不等待确认。",
-          files: { [`章纲/第${String(chapter).padStart(3, "0")}章.md`]: await outline.text() }, skills: await readSkills(skills) },
+          files: { [`章纲/第${String(chapter).padStart(3, "0")}章.md`]: await outline.text(),
+            ...await readCharacterCards(newCards) }, skills: await readSkills(skills) },
       }));
     }}>
-      <p className="experiment-note">导入到{dataset === "optimization" ? "改进题" : "回归题"}。只需本章章纲，技能可选。</p>
+      <p className="experiment-note">导入到{dataset === "optimization" ? "改进题" : "回归题"}。章纲必填，人物卡和技能可选。</p>
       <div className="experiment-actions">
-        <label>章号 <input name="chapter" type="number" min="1" max={Number.MAX_SAFE_INTEGER} required defaultValue={1} /></label>
-        <label>章纲文件 <input name="outline" type="file" accept=".md" required /></label>
-        <label>技能文件（可多选） <input name="skills" type="file" accept=".md" multiple /></label>
+        <label>章号 <input name="chapter" type="number" min="1" max={Number.MAX_SAFE_INTEGER} required defaultValue={1} disabled={busy} /></label>
+        <label>章纲文件 <input name="outline" type="file" accept=".md" required disabled={busy} /></label>
+        <label>人物卡文件（可多选） <input name="characters" type="file" accept=".md" multiple disabled={busy} /></label>
+        <label>技能文件（可多选） <input name="skills" type="file" accept=".md" multiple disabled={busy} /></label>
         <button className="config-button readable-button" type="submit" disabled={busy}>保存题目</button>
       </div>
     </form>}
@@ -263,6 +308,22 @@ export function StagePackages() {
             name={`file:${path}`} rows={8} defaultValue={content} disabled={busy} /></div>
         </details>)}
       </div>
+      {chapterPackage && <fieldset className="evaluation-character-cards">
+        <legend>人物卡</legend>
+        <p className="experiment-note">评测时正文 Agent 可读取本题的人物卡。同名文件将在新版本中替换原卡。</p>
+        <label className="experiment-field">导入人物卡文件（可多选）
+          <input name="characters" type="file" accept=".md" multiple disabled={busy} />
+        </label>
+        {characterCards.length > 0 && <div className="experiment-files">{characterCards.map(([path, content]) => {
+          const name = characterName(path);
+          return <details key={path}>
+            <summary className="readable-button">{name}</summary>
+            <div className="experiment-field"><textarea className="config-input" aria-label={`${name}的人物卡内容`}
+              name={`file:${path}`} rows={6} defaultValue={content} disabled={busy} /></div>
+            <label><input type="checkbox" name={`remove:${path}`} disabled={busy} /> 保存时移除{name}的人物卡</label>
+          </details>;
+        })}</div>}
+      </fieldset>}
       {error && <p className="experiment-error" role="alert">{error}</p>}
       <div className="experiment-actions">
         <button type="submit" className="config-button primary readable-button" disabled={busy}>保存为新版本</button>
@@ -286,7 +347,14 @@ export function StagePackages() {
       <p className="mono">输入版本：{selected.input_revision}</p>
       <h4>完整需求</h4><p className="experiment-prewrap">{selected.input.demand_md || "使用下方固定上游文稿"}</p>
       <h4>预设确认规则</h4><p className="experiment-prewrap">{selected.input.confirmation_rules}</p>
-      <ArtifactFiles files={selected.input.files} />
+      <ArtifactFiles files={chapterPackage
+        ? Object.fromEntries(fixedFiles.filter(([path]) => !path.startsWith(CHARACTER_PREFIX)))
+        : selected.input.files} />
+      {chapterPackage && <section className="evaluation-character-cards" aria-label="人物卡">
+        <h4>人物卡</h4>
+        {characterCards.length > 0 ? <ArtifactFiles files={Object.fromEntries(characterCards)} />
+          : <p className="experiment-note">本题未添加人物卡。</p>}
+      </section>}
       {!!selected.input.skills.length && <details><summary className="readable-button">固定技能</summary><EvidenceValues value={selected.input.skills} /></details>}
     </section>)}
   </section>;

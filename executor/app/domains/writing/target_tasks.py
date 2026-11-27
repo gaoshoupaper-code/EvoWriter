@@ -25,7 +25,7 @@ from app.domains.writing.experiment_stream import experiment_identity, relay_mod
 from app.platform.trace.recorder import observation_context
 from contracts.sentence_draft import DRAFT, DraftState, compose_chapter, package_uses_sentences, sentences_after
 from contracts.writing_artifacts import (
-    KIND_TEXT, artifact_relpath, is_final_status, load_writing_state, parse_relpath, parse_volume_chapter_range,
+    KIND_CHARACTER, KIND_TEXT, artifact_relpath, is_final_status, load_writing_state, parse_relpath, parse_volume_chapter_range,
     save_writing_state, scan_writing_progress,
 )
 
@@ -641,6 +641,13 @@ async def drive_task(request, workspace, service, thread, execution, store, *, l
                     f"\n题内文件：{'、'.join(sorted(request.input.files))}。故事资料只取自题内文件。"
                     "如有挂载技能，按系统技能目录读取匹配的写作技能。"
                 )
+                if any(text.strip() and (ref := parse_relpath(path)) and ref.kind == KIND_CHARACTER
+                       for path, text in request.input.files.items()):
+                    prompt += (
+                        "\n本题除章纲外还提供人物卡。用 list_characters 查看卡名，"
+                        "再用 read_artifact（kind=character，name=卡名）读取本章相关人物的卡片。"
+                        "人物设定和言行参考人物卡，出场人物和剧情按章纲执行。"
+                    )
                 if package_uses_sentences(execution.package_root):
                     # 按段写作的正文包：规程随包切换，新旧包才能在同一执行端对比。
                     prompt += (

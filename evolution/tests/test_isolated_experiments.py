@@ -30,19 +30,26 @@ def test_four_fresh_packages_with_only_local_dependencies(monkeypatch, agent, ki
             assert not case["target"]["volume_ids"] and not case["input"]["demand_md"]
 
 
-def test_chapter_case_preserves_imported_skills_only_in_new_runs():
+def test_chapter_case_preserves_the_input_rules_of_each_assessment_version():
     from app.experiments import repo
     from contracts.target_tasks import TaskInput
 
     skills = [{"stage": "text", "name": "对白", "content": "对白简短。"}]
+    outline = {"章纲/第002章.md": "章纲"}
+    cards = {"人物/主角.md": "渡口人", "人物/林晚.md": "守渡船"}
     inputs = TaskInput(demand_md="旧需求", confirmation_rules="直接写。", skills=skills,
-                       files={"章纲/第002章.md": "章纲", "卷纲/第01卷.md": "卷纲", "文风.md": "文风"})
+                       files={**outline, **cards, "卷纲/第01卷.md": "卷纲", "文风.md": "文风"})
     package = {"target": {"chapter": 2}, "input": inputs.model_dump(), "input_revision": inputs.input_revision}
     current = repo.chapter_case(package)
     assert current["input"]["skills"] == skills
-    assert current["input"]["files"] == {"章纲/第002章.md": "章纲"}
+    assert current["input"]["files"] == {**outline, **cards}
     assert not current["input"]["demand_md"]
-    assert current["input_revision"] != inputs.input_revision
+    previous = repo.chapter_case(package, 2)
+    expected = TaskInput(files=outline, skills=skills, confirmation_rules="直接写。")
+    assert previous["input"] == expected.model_dump()
+    assert previous["input_revision"] == expected.input_revision
+    assert current["input_revision"] == TaskInput.model_validate(current["input"]).input_revision
+    assert len({current["input_revision"], previous["input_revision"], inputs.input_revision}) == 3
     historical = repo.chapter_case(package, 1)
     assert historical["input"]["skills"] == []
     assert historical["input"]["files"] == inputs.files
@@ -170,8 +177,8 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
     import sqlite3
     from app.core import db
     from app.core.security import encrypt_secret
-    from app.experiments import agent, api, clients, evaluation, release as publishing, repo, rubrics, runner
-    from app.experiments.schemas import RuleCreate, RunCreate
+    from app.experiments import agent, api, clients, evaluation, packages, release as publishing, repo, rubrics, runner
+    from app.experiments.schemas import PackageCreate, RuleCreate, RunCreate
 
     monkeypatch.setenv("WRITING_AGENT_ID", "text")
     monkeypatch.setattr(db.settings, "evolution_db", str(tmp_path / "evolution.db"))
@@ -191,6 +198,13 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         cases = repo.list_packages()
         opt = [case["id"] for case in cases if case["purpose"] == "optimization"]
         reg = [case["id"] for case in cases if case["purpose"] == "regression"]
+        original = repo.get_package(opt[0])
+        card_path = "人物/守渡人.md"
+        fixed_card = "守渡人畏水，遇险时先保住船客。"
+        revised = {key: original[key] for key in ("title", "purpose", "target")}
+        revised["input"] = {**original["input"], "files": {**original["input"]["files"], card_path: fixed_card},
+                            "input_revision": ""}
+        opt[0] = packages.import_package(PackageCreate.model_validate(revised), previous_id=opt[0])["id"]
         settings = RunCreate.model_validate(dict(task_type=kind, rule_versions={kind: rubrics.list_rules(kind)[0]["id"]},
             optimization_ids=opt, regression_ids={kind: reg}, model_config_id=1, judge_group_id=1, baseline_version=2))
         release = {"commit": "a" * 40, "version": 2}
@@ -246,7 +260,7 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
             created_ids.add(custom_all_run["id"])
             assert custom_all_run["case_coverage"] == {purpose: {"selected": group["total"], "total": group["total"]}
                                                       for purpose, group in coverage.items()}
-        assert run["assessment_version"] == 2
+        assert run["assessment_version"] == 3
         assert "runtime_scoring_version" not in run
         assert "runtime_scoring_version" not in auto_run
         assert run["judge_input_version"] == 2
@@ -268,10 +282,11 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         repo.insert("self_evolution_packages", {**repo.get_package(opt[1]), "id": "added-question"})
         with pytest.raises(ValueError, match="刷新题库"):
             runner.create_run(all_settings, "author")
-        changed = repo.get_package(opt[0])
-        changed["id"] = "new-question"
-        changed["input"]["demand_md"] = "实验启动后维护的内容"
-        repo.replace_package(opt[0], changed)
+        current = repo.get_package(opt[0])
+        changed = {key: current[key] for key in ("title", "purpose", "target", "input")}
+        changed["input"].update(demand_md="实验启动后维护的内容", input_revision="")
+        changed["input"]["files"][card_path] = "实验启动后维护的人物设定"
+        packages.import_package(PackageCreate.model_validate(changed), previous_id=opt[0])
         if case_selection == "custom":
             with pytest.raises(ValueError, match="刷新题库"):
                 runner.create_run(settings, "author")
@@ -301,13 +316,20 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         assert repo.run_package(saved, reg[0])["input"] == repo.chapter_case(removed)["input"]
         frozen_input = repo.run_package(saved, opt[0])["input"]
         assert frozen_input["demand_md"] != changed["input"]["demand_md"]
+        assert frozen_input["files"][card_path] == fixed_card
         archived = {**run, "id": "old", "flow_version": 2}
         foreign = {**run, "id": "foreign", "task_type": "chapter_outlines"}
         for hidden in (archived, foreign):
             repo.insert("self_evolution_runs", hidden)
             assert repo.get_run(hidden["id"]) is None
         assert {row["id"] for row in repo.list_runs()} == created_ids
+        card_receivers = set()
         def completed(payload):
+            if payload["target"]["chapter"] == original["target"]["chapter"]:
+                assert payload["input"] == frozen_input
+                card_receivers.add(payload["source_commit"])
+            else:
+                assert card_path not in payload["input"]["files"]
             return {"task_id": payload["task_id"], "status": "completed", "completed": True, "trace_ids": [],
                     "artifacts": {"正文/第001章.md": "测试文稿"}, "checks": {"complete": True},
                     "input_revision": payload["input"]["input_revision"], "source_commit": payload["source_commit"],
@@ -336,6 +358,7 @@ def test_new_run_retries_only_local_cases_then_requires_approval(monkeypatch, tm
         assert end["status"] == ("awaiting_review" if pass_round else "exhausted")
         assert end["current_round"] == (pass_round or 3)
         assert end["publish_status"] == "not_started"
+        assert card_receivers == {release["commit"]} | {record["source_commit"] for record in end["rounds"]}
         assert {sample["package_id"] for sample in end["samples"]} == set(selected_opt + selected_reg)
         assert "validation" not in {sample["phase"] for sample in end["samples"]}
         regression_samples = [sample for sample in end["samples"] if sample["phase"] == "regression"]

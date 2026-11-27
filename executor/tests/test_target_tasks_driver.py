@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+from importlib import import_module
+from pathlib import Path
 from types import SimpleNamespace
 import pytest
 
@@ -180,8 +182,10 @@ def _text_driver(tmp_path, request=None):
     return request, workspace, store, thread, execution, recorder
 
 
-@pytest.mark.parametrize("evaluation", [True, False], ids=["experiment", "ordinary-target"])
-def test_first_model_prompt_only_omits_attempt_identifiers_for_experiments(tmp_path, monkeypatch, evaluation):
+@pytest.mark.parametrize(("evaluation", "with_character_card"), [(True, False), (True, True), (False, False)],
+                         ids=["experiment", "experiment-with-character-card", "ordinary-target"])
+def test_first_model_prompt_only_omits_attempt_identifiers_for_experiments(tmp_path, monkeypatch, evaluation,
+                                                                         with_character_card):
     from app.domains.writing.agent import MetaAgentService
     from app.domains.writing.pipeline import route
 
@@ -190,6 +194,20 @@ def test_first_model_prompt_only_omits_attempt_identifiers_for_experiments(tmp_p
     captures = []
     workspaces = []
     sample_id = f"sample-{'a' * 32}"
+    files = {"章纲/第001章.md": _chapter(1)}
+    if with_character_card:
+        from app.platform.agent.loader import load_package
+        from contracts.creative_harness import build_agent_package
+
+        card = "# 辛岚\n用船票换渡船，不说客套话。"
+        files["人物/辛岚.md"] = card
+        source = Path(__file__).resolve().parents[2] / "evolution/harnesses/repo"
+        package = tmp_path / "text-package"
+        build_agent_package(source, package, "text")
+        package_name = "character_input_text_package"
+        load_package(package, package_name)
+        read_artifact = import_module(package_name + ".tools.read_artifact").build_read_artifact_tool
+        list_characters = import_module(package_name + ".tools.list_characters").build_list_characters_tool
 
     for task_id in (sample_id, f"{sample_id}-a2"):
         root = tmp_path / task_id
@@ -199,10 +217,13 @@ def test_first_model_prompt_only_omits_attempt_identifiers_for_experiments(tmp_p
             model_snapshot={"model": "fixture", "base_url": "https://example.test",
                             "api_key_ref": "experiment:fixture:model"} if evaluation else None,
             target={"task_type": "chapter_text", "chapter": 1},
-            input={"confirmation_rules": "自动决定并执行，不等待人工",
-                   "files": {"章纲/第001章.md": _chapter(1)}},
+            input={"confirmation_rules": "自动决定并执行，不等待人工", "files": files},
         )
         _, workspace, store, thread, execution, recorder = _text_driver(root, request)
+        materialize_input(workspace, request.input)
+        if with_character_card:
+            assert "辛岚" in list_characters(workspace).invoke({})
+            assert read_artifact(workspace, {}).invoke({"kind": "character", "name": "辛岚"}) == card
         thread = thread.model_copy(update={"thread_id": f"target-{task_id}"})
         workspaces.append(workspace)
 
@@ -226,9 +247,15 @@ def test_first_model_prompt_only_omits_attempt_identifiers_for_experiments(tmp_p
     if evaluation:
         assert first[0] == second[0]
         assert "当前 session：" not in first[0] and "message_id:" not in first[0]
-        assert "题内文件：章纲/第001章.md" in first[0]
+        assert "章纲/第001章.md" in first[0]
         assert "故事资料只取自题内文件" in first[0]
         assert "按系统技能目录读取匹配的写作技能" in first[0]
+        if with_character_card:
+            assert "人物/辛岚.md" in first[0]
+            assert "本题除章纲外还提供人物卡" in first[0]
+            assert "list_characters" in first[0] and "read_artifact" in first[0] and "kind=character" in first[0]
+        else:
+            assert "本题除章纲外还提供人物卡" not in first[0]
         assert "# 第001章 · <章名>\n> 状态：起草中｜<日期>" in first[0]
         assert all(value in first[0] for value in (
             "unit_kind=ordinary", "300–400", "450", "unit_kind=skill_scene", "skill_name",
